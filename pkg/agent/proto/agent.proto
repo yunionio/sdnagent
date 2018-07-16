@@ -1,0 +1,79 @@
+syntax = "proto3";
+
+package pb;
+
+// TODO add comment: idempotency
+
+service VSwitch {
+	rpc AddBridge (AddBridgeRequest) returns (Response) {}
+	rpc DelBridge (DelBridgeRequest) returns (Response) {}
+	rpc AddBridgePort (AddBridgePortRequest) returns (Response) {}
+	rpc DelBridgePort (DelBridgePortRequest) returns (Response) {}
+}
+
+service Openflow {
+	rpc AddFlow (AddFlowRequest) returns (Response) {}
+	rpc DelFlow (DelFlowRequest) returns (Response) {}
+	rpc SyncFlows (SyncFlowsRequest) returns (Response) {}
+	rpc DumpBridgePort (DumpBridgePortRequest) returns (DumpBridgePortResponse) {}
+}
+
+message Response {
+	uint32 code = 1;
+	string mesg = 2;
+}
+
+message AddBridgeRequest {
+	string bridge = 1;
+}
+
+message DelBridgeRequest {
+	string bridge = 1;
+}
+
+message AddBridgePortRequest {
+	string bridge = 1;
+	string port = 2;
+}
+
+message DelBridgePortRequest {
+	string bridge = 1;
+	string port = 2;
+}
+
+message AddFlowRequest {
+	string bridge = 1;
+	Flow flow = 2;
+}
+
+message DelFlowRequest {
+	string bridge = 1;
+	Flow flow = 2;
+}
+
+message SyncFlowsRequest {
+	string bridge =1;
+}
+
+message Flow {
+	uint64 cookie = 1;
+	uint32 priority = 2;
+	uint32 table = 3;
+	string matches = 4;
+	string actions = 5;
+}
+
+message PortStats {
+	uint32 port_no = 1;
+}
+
+message DumpBridgePortRequest {
+	string bridge = 1;
+	string port = 2;
+}
+
+message DumpBridgePortResponse {
+	uint32 code = 1;
+	string mesg = 2;
+	PortStats port_stats = 3;
+}
