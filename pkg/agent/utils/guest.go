@@ -35,13 +35,16 @@ type guestNIC struct {
 	Virtual    bool
 	VLAN       int
 	WireId     string `json:"wire_id"`
+
+	CtZoneId uint16 `json:"-"`
 }
 
 func (n *guestNIC) Map() map[string]interface{} {
 	m := map[string]interface{}{
-		"IP":   n.IP,
-		"MAC":  n.MAC,
-		"VLAN": n.VLAN & 0xfff,
+		"IP":      n.IP,
+		"MAC":     n.MAC,
+		"VLAN":    n.VLAN & 0xfff,
+		"CT_ZONE": n.CtZoneId,
 	}
 	vlanTci := n.VLAN & 0xfff
 	if n.VLAN > 1 {

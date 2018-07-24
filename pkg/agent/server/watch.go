@@ -2,6 +2,7 @@ package server
 
 import (
 	"context"
+	"fmt"
 	"io/ioutil"
 	"path"
 	"path/filepath"
@@ -23,6 +24,7 @@ type serversWatcher struct {
 	watcher    *fsnotify.Watcher
 	guests     map[string]*utils.Guest
 	agent      *AgentServer
+	zoneMan    *utils.ZoneMan
 }
 
 func newServersWatcher() (*serversWatcher, error) {
@@ -38,6 +40,7 @@ func newServersWatcher() (*serversWatcher, error) {
 		hostConfig: hc,
 		watcher:    w,
 		guests:     map[string]*utils.Guest{},
+		zoneMan:    utils.NewZoneMan(GuestCtZoneBase),
 	}, nil
 }
 
@@ -56,15 +59,43 @@ type watchEvent struct {
 	guestPath string // path to the servers/<uuid> dir
 }
 
+func (w *serversWatcher) reloadGuestDesc(ctx context.Context, g *utils.Guest) error {
+	oldM := map[string]uint16{}
+	oldNICs := g.NICs
+	for _, nic := range oldNICs {
+		oldM[nic.MAC] = nic.CtZoneId
+	}
+	err := g.LoadDesc()
+	if err != nil {
+		return err
+	}
+	for _, nic := range g.NICs {
+		if i, ok := oldM[nic.MAC]; ok {
+			delete(oldM, nic.MAC)
+			nic.CtZoneId = i
+			continue
+		}
+		zoneId, err := w.zoneMan.AllocateZoneId(nic.MAC)
+		if err != nil {
+			return fmt.Errorf("ct zone id allocation failed: %s", err)
+		}
+		nic.CtZoneId = zoneId
+	}
+	for mac, _ := range oldM {
+		w.zoneMan.FreeZoneId(mac)
+	}
+	return nil
+}
+
 func (w *serversWatcher) updGuestFlows(ctx context.Context, g *utils.Guest) {
 	// TODO TODO tick faster on error
 	if !g.Running() {
 		log.Warningf("guest %s is not running yet", g.Id)
 		return
 	}
-	err := g.LoadDesc()
+	err := w.reloadGuestDesc(ctx, g)
 	if err != nil {
-		log.Errorf("load guest %s desc failed: %s", g.Id, err)
+		log.Warningf("guest %s load desc failed: %s", g.Id, err)
 		return
 	}
 	bfs, err := g.FlowsMap()
@@ -83,6 +114,7 @@ func (w *serversWatcher) delGuestFlows(ctx context.Context, g *utils.Guest) {
 	bridges := map[string]bool{}
 	for _, nic := range g.NICs {
 		bridges[nic.Bridge] = true
+		w.zoneMan.FreeZoneId(nic.MAC)
 	}
 	for bridge, _ := range bridges {
 		flowman := w.agent.GetFlowMan(bridge)

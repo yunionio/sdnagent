@@ -16,6 +16,9 @@ type FlowSource interface {
 }
 
 func F(table, priority int, matches, actions string) *ovs.Flow {
+	//if matches != "" || actions != "normal" {
+	//table += 1
+	//}
 	txt := fmt.Sprintf("table=%d,priority=%d,%s,actions=%s", table, priority, matches, actions)
 	of := &ovs.Flow{}
 	err := of.UnmarshalText([]byte(txt))
@@ -116,10 +119,8 @@ func (g *Guest) FlowsMap() (map[string][]*ovs.Flow, error) {
 		T := t(m)
 		if nic.VLAN > 1 {
 			m["_dl_vlan"] = T("dl_vlan={{.VLAN}}")
-			m["_ct_zone"] = 1000 + nic.VLAN
 		} else {
 			m["_dl_vlan"] = T("vlan_tci={{.VLANTci}}")
-			m["_ct_zone"] = 1000
 		}
 		flows := []*ovs.Flow{
 			F(0, 29200,
@@ -144,24 +145,25 @@ func (g *Guest) FlowsMap() (map[string][]*ovs.Flow, error) {
 
 func (sr *SecurityRules) Flows(data map[string]interface{}) []*ovs.Flow {
 	T := t(data)
-	data["_in_port_phy"] = "reg0=0x1/0x1"
-	data["_in_port_vm"] = "reg0=0x0/0x1"
-	loadReg0BitPhy := "load:0x1->NXM_NX_REG0[0]"
-	loadReg0BitVm := "load:0->NXM_NX_REG0[0]" // "0->" is important, not "0x0->"
+	data["_in_port_phy"] = "reg0=0x10000/0x10000"
+	data["_in_port_vm"] = "reg0=0x0/0x10000"
+	loadReg0BitPhy := "load:0x1->NXM_NX_REG0[16]"
+	loadReg0BitVm := "load:0->NXM_NX_REG0[16]" // "0->" is important, not "0x0->"
+	loadZone := fmt.Sprintf("load:0x%x->NXM_NX_REG0[0..15]", data["CT_ZONE"])
 
 	flows := []*ovs.Flow{}
 	// table 0
 	// table 1 sec_CT
 	flows = append(flows,
 		F(0, 26900, T("in_port={{.PortNoPhy}},dl_dst={{.MAC}},{{._dl_vlan}},ip,ct_state=-trk"),
-			loadReg0BitPhy+T(",ct(table=1,zone={{._ct_zone}})")),
+			loadReg0BitPhy+","+loadZone+T(",ct(table=1,zone={{.CT_ZONE}})")),
 		F(0, 26800, T("in_port={{.PortNo}},ip,ct_state=-trk"),
-			loadReg0BitVm+T(",ct(table=1,zone={{._ct_zone}})")),
+			loadReg0BitVm+","+loadZone+T(",ct(table=1,zone={{.CT_ZONE}})")),
 		// ct_state= flags order matters
-		F(1, 7900, T("ip,ct_zone={{._ct_zone}},ct_state=+inv+trk"), "drop"),
-		F(1, 7800, T("ip,ct_zone={{._ct_zone}},ct_state=+new+trk,{{._in_port_phy}}"), "resubmit(,3)"),
-		F(1, 7700, T("ip,ct_zone={{._ct_zone}},ct_state=+new+trk,{{._in_port_vm}}"), "resubmit(,2)"),
-		F(1, 7600, T("ip,ct_zone={{._ct_zone}}"), "normal"),
+		F(1, 7900, T("ip,ct_zone={{.CT_ZONE}},ct_state=+inv+trk"), "drop"),
+		F(1, 7800, T("ip,ct_zone={{.CT_ZONE}},ct_state=+new+trk,{{._in_port_phy}}"), "resubmit(,3)"),
+		F(1, 7700, T("ip,ct_zone={{.CT_ZONE}},ct_state=+new+trk,{{._in_port_vm}}"), "resubmit(,2)"),
+		F(1, 7600, T("ip,ct_zone={{.CT_ZONE}}"), "normal"),
 	)
 
 	// table sec_CT_OUT
@@ -195,7 +197,8 @@ func (sr *SecurityRules) Flows(data map[string]interface{}) []*ovs.Flow {
 	// NOTE assume MAC is unique across the platform
 	prioIn := 40000
 	matchIn := T("dl_dst={{.MAC}}")
-	actionAllowIn := T("ct(commit,zone={{._ct_zone}}),normal")
+	actionAllowIn := T("ct(commit,zone={{.CT_ZONE}}),normal")
+	actionAllowInLast := "ct(commit,zone=NXM_NX_REG0[0..15]),normal"
 	for _, r := range sr.inRules {
 		if prioIn <= 30 {
 			log.Errorf("%s: %q generated too many in rules",
@@ -217,7 +220,7 @@ func (sr *SecurityRules) Flows(data map[string]interface{}) []*ovs.Flow {
 	// Indeed this is needed for accessing network entities other than
 	// those locally managed.  This also means traffics from phy port will
 	// be allowed if no ingress rule matches it
-	flows = append(flows, F(3, 30, "ip", actionAllowIn))
+	flows = append(flows, F(3, 30, "ip", actionAllowInLast))
 	return flows
 }
 
