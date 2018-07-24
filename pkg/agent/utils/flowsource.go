@@ -251,19 +251,19 @@ func (sr *SecurityRules) Flows(data map[string]interface{}) []*ovs.Flow {
 // 25600 in_port=PORT_PHY,actions=drop
 //
 // Table 1 sec_CT
-//  7900 ip,ct_zone=ZONE,ct_state=+trk+inv,actions=drop
+//  7900 ip,ct_zone=ZONE,ct_state=+trk+inv,actions=normal
 //  7800 ip,ct_zone=ZONE,ct_state=+trk+new,{{reg0_phy_set}},actions=resubmit(,sec_IN)
 //  7700 ip,ct_zone=ZONE,ct_state=+trk+new,{{reg0_vm_set}},actions=resubmit(,sec_OUT)
 //  7600 ip,ct_zone=ZONE,actions=normal
 //
 // Table 2 sec_OUT
 // 40000 in_port=PORT_VM,match_allow,actions=resubmit(,sec_IN)
-//   ... in_port=PORT_VM,match-deny,actions=drop
+//   ... in_port=PORT_VM,match_deny,actions=drop
 //    20 in_port=PORT_VM,,actions=drop
 //
 // Table 3 sec_IN
-// 40000 dl_dst=MAC_VM,match_allow,actions=ct(zone=ZONE,commit),normal
+// 40000 dl_dst=MAC_VM,match_allow,actions=ct(commit,zone=ZONE),normal
 //   ... dl_dst=MAC_VM,match_deny,,actions=drop
-//    30 dl_src=MAC_VM,actions=normal
+//    30 ip,actions="ct(commit,zone=ZONE_REG),normal"
 //
 // grep -oE '\<F\([0-9].*' pkg/agent/utils/flowsource.go  | sort -k 1.3,1.4n -k2r
