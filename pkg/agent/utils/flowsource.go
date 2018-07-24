@@ -160,7 +160,7 @@ func (sr *SecurityRules) Flows(data map[string]interface{}) []*ovs.Flow {
 		F(0, 26800, T("in_port={{.PortNo}},ip,ct_state=-trk"),
 			loadReg0BitVm+","+loadZone+T(",ct(table=1,zone={{.CT_ZONE}})")),
 		// ct_state= flags order matters
-		F(1, 7900, T("ip,ct_zone={{.CT_ZONE}},ct_state=+inv+trk"), "drop"),
+		F(1, 7900, T("ip,ct_zone={{.CT_ZONE}},ct_state=+inv+trk"), "normal"),
 		F(1, 7800, T("ip,ct_zone={{.CT_ZONE}},ct_state=+new+trk,{{._in_port_phy}}"), "resubmit(,3)"),
 		F(1, 7700, T("ip,ct_zone={{.CT_ZONE}},ct_state=+new+trk,{{._in_port_vm}}"), "resubmit(,2)"),
 		F(1, 7600, T("ip,ct_zone={{.CT_ZONE}}"), "normal"),
