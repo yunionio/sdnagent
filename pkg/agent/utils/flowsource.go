@@ -124,7 +124,7 @@ func (g *Guest) FlowsMap() (map[string][]*ovs.Flow, error) {
 		flows := []*ovs.Flow{
 			F(0, 29200,
 				T("in_port=LOCAL,tcp,nw_dst={{.IP}},tp_src={{.MetadataPort}}"),
-				T("mod_nw_src:169.254.169.254,mod_tp_src:80,output:{{.PortNo}}")),
+				T("mod_dl_dst:{{.MAC}},mod_nw_src:169.254.169.254,mod_tp_src:80,output:{{.PortNo}}")),
 			F(0, 28400, T("in_port={{.PortNo}},udp,tp_src=68,tp_dst=67"), "local"),
 			F(0, 28300, T("in_port=LOCAL,dl_dst={{.MAC}}"), T("output:{{.PortNo}}")),
 			F(0, 25900, T("in_port={{.PortNoPhy}},dl_dst={{.MAC}},{{._dl_vlan}}"), "normal"),
