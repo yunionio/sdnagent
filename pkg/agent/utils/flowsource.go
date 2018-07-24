@@ -263,4 +263,4 @@ func (sr *SecurityRules) Flows(data map[string]interface{}) []*ovs.Flow {
 //   ... dl_dst=MAC_VM,match_deny,,actions=drop
 //    30 dl_src=MAC_VM,actions=normal
 //
-// grep -oE '\<F\([0-9].*' pkg/agent/utils/flowsource.go  | cat
+// grep -oE '\<F\([0-9].*' pkg/agent/utils/flowsource.go  | sort -k 1.3,1.4n -k2r
