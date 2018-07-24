@@ -150,13 +150,9 @@ func (sr *SecurityRules) Flows(data map[string]interface{}) []*ovs.Flow {
 	flows := []*ovs.Flow{}
 	// table 0
 	// table 1 sec_CT
-	if sr.InAllowAny() {
-		flows = append(flows, F(0, 26901, T("in_port={{.PortNoPhy}},dl_dst={{.MAC}}"), "normal"))
-	} else {
-		flows = append(flows, F(0, 26900, T("in_port={{.PortNoPhy}},dl_dst={{.MAC}},{{._dl_vlan}},ip,ct_state=-trk"),
-			loadReg0BitPhy+T(",ct(table=1,zone={{._ct_zone}})")))
-	}
 	flows = append(flows,
+		F(0, 26900, T("in_port={{.PortNoPhy}},dl_dst={{.MAC}},{{._dl_vlan}},ip,ct_state=-trk"),
+			loadReg0BitPhy+T(",ct(table=1,zone={{._ct_zone}})")),
 		F(0, 26800, T("in_port={{.PortNo}},ip,ct_state=-trk"),
 			loadReg0BitVm+T(",ct(table=1,zone={{._ct_zone}})")),
 		// ct_state= flags order matters
@@ -242,8 +238,7 @@ func (sr *SecurityRules) Flows(data map[string]interface{}) []*ovs.Flow {
 // 27200 in_port=LOCAL,actions=normal
 // 27100 in_port=PORT_PHY,dl_dst=MAC_PHY,actions=normal
 //
-// 26901 in_port=PORT_PHY,{ if_VM_in_allow_any},dl_dst=MAC_VM,actions=normal
-// 26900 in_port=PORT_PHY,{!if_VM_in_allow_any},dl_dst=MAC_VM,dl_vlan=VLAN_VM,ip,ct_state=-trk,actions=load_ZONE,load_PHY_BIT,ct(zone=ZONE,table=sec_CT)
+// 26900 in_port=PORT_PHY,dl_dst=MAC_VM,dl_vlan=VLAN_VM,ip,ct_state=-trk,actions=load_ZONE,load_PHY_BIT,ct(zone=ZONE,table=sec_CT)
 // 26800 in_port=PORT_VM,ip,ct_state=-trk,actions=load_ZONE,load_VM_BIT,ct(zone=ZONE,table=sec_CT)
 // 26700 in_port=PORT_PHY,dl_dst=01:00:00:00:00:00/01:00:00:00:00:00,actions=normal
 // 26600 in_port=PORT_PHY,actions=drop
