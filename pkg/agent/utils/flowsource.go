@@ -71,8 +71,8 @@ func (h *HostLocal) FlowsMap() (map[string][]*ovs.Flow, error) {
 			T("mod_dl_dst:{{.MAC}},mod_nw_dst:{{.IP}},mod_tp_dst:{{.MetadataPort}},LOCAL")),
 		F(0, 27200, "in_port=LOCAL", "normal"),
 		F(0, 27100, T("in_port={{.PortNoPhy}},dl_dst={{.MAC}}"), "normal"),
-		F(0, 26700, T("in_port={{.PortNoPhy}},dl_dst=01:00:00:00:00:00/01:00:00:00:00:00"), "normal"),
-		F(0, 26600, T("in_port={{.PortNoPhy}}"), "drop"),
+		F(0, 25700, T("in_port={{.PortNoPhy}},dl_dst=01:00:00:00:00:00/01:00:00:00:00:00"), "normal"),
+		F(0, 25600, T("in_port={{.PortNoPhy}}"), "drop"),
 	)
 	return map[string][]*ovs.Flow{h.Bridge: flows}, nil
 }
@@ -127,6 +127,8 @@ func (g *Guest) FlowsMap() (map[string][]*ovs.Flow, error) {
 				T("mod_nw_src:169.254.169.254,mod_tp_src:80,output:{{.PortNo}}")),
 			F(0, 28400, T("in_port={{.PortNo}},udp,tp_src=68,tp_dst=67"), "local"),
 			F(0, 28300, T("in_port=LOCAL,dl_dst={{.MAC}}"), T("output:{{.PortNo}}")),
+			F(0, 25900, T("in_port={{.PortNoPhy}},dl_dst={{.MAC}},{{._dl_vlan}}"), "normal"),
+			F(0, 25800, T("in_port={{.PortNo}}"), "normal"),
 		}
 		flows = append(flows, g.SecurityRules.Flows(m)...)
 		if fs, ok := r[nic.Bridge]; ok {
@@ -240,8 +242,10 @@ func (sr *SecurityRules) Flows(data map[string]interface{}) []*ovs.Flow {
 //
 // 26900 in_port=PORT_PHY,dl_dst=MAC_VM,dl_vlan=VLAN_VM,ip,ct_state=-trk,actions=load_ZONE,load_PHY_BIT,ct(zone=ZONE,table=sec_CT)
 // 26800 in_port=PORT_VM,ip,ct_state=-trk,actions=load_ZONE,load_VM_BIT,ct(zone=ZONE,table=sec_CT)
-// 26700 in_port=PORT_PHY,dl_dst=01:00:00:00:00:00/01:00:00:00:00:00,actions=normal
-// 26600 in_port=PORT_PHY,actions=drop
+// 25900 in_port=PORT_PHY,dl_dst=MAC_VM,dl_vlan=VLAN_VM,actions=normal
+// 25800 in_port=PORT_VM,actions=normal
+// 25700 in_port=PORT_PHY,dl_dst=01:00:00:00:00:00/01:00:00:00:00:00,actions=normal
+// 25600 in_port=PORT_PHY,actions=drop
 //
 // Table 1 sec_CT
 //  7900 ip,ct_zone=ZONE,ct_state=+trk+inv,actions=drop
