@@ -114,6 +114,13 @@ func (g *Guest) FlowsMap() (map[string][]*ovs.Flow, error) {
 		m["PortNo"] = portNo
 		m["PortNoPhy"] = portNoPhy
 		T := t(m)
+		if nic.VLAN > 1 {
+			m["_dl_vlan"] = T("dl_vlan={{.VLAN}}")
+			m["_ct_zone"] = 1000 + nic.VLAN
+		} else {
+			m["_dl_vlan"] = T("vlan_tci={{.VLANTci}}")
+			m["_ct_zone"] = 1000
+		}
 		flows := []*ovs.Flow{
 			F(0, 29200,
 				T("in_port=LOCAL,tcp,nw_dst={{.IP}},tp_src={{.MetadataPort}}"),
@@ -135,15 +142,6 @@ func (g *Guest) FlowsMap() (map[string][]*ovs.Flow, error) {
 
 func (sr *SecurityRules) Flows(data map[string]interface{}) []*ovs.Flow {
 	T := t(data)
-	vlan := data["VLAN"].(int)
-	if vlan > 1 {
-		data["_dl_vlan"] = T("dl_vlan={{.VLAN}}")
-		data["_ct_zone"] = 1000 + vlan
-	} else {
-		data["_dl_vlan"] = "vlan_tci=0x0000"
-		data["_ct_zone"] = 1000
-	}
-	//
 	data["_in_port_phy"] = "reg0=0x1/0x1"
 	data["_in_port_vm"] = "reg0=0x0/0x1"
 	loadReg0BitPhy := "load:0x1->NXM_NX_REG0[0]"

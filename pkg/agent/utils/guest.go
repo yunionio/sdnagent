@@ -47,8 +47,10 @@ func (n *guestNIC) Map() map[string]interface{} {
 	if n.VLAN > 1 {
 		// 802.1Q vlan header present
 		vlanTci |= 0x1000
+	} else {
+		vlanTci = 0
 	}
-	m["VLANTci"] = fmt.Sprintf("0x%4x/0x1fff", vlanTci)
+	m["VLANTci"] = fmt.Sprintf("0x%04x/0x1fff", vlanTci)
 	return m
 }
 
