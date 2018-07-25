@@ -20,12 +20,13 @@ import (
 var REGEX_UUID *regexp.Regexp = regexp.MustCompile(`^[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}$`)
 
 type serversWatcher struct {
-	hostConfig *utils.HostConfig
-	watcher    *fsnotify.Watcher
-	guests     map[string]*utils.Guest
-	agent      *AgentServer
-	zoneMan    *utils.ZoneMan
-	ofCli      *ovs.OpenFlowService
+	hostConfig    *utils.HostConfig
+	watcher       *fsnotify.Watcher
+	guests        map[string]*utils.Guest
+	guestsPending map[string]*utils.Guest
+	agent         *AgentServer
+	zoneMan       *utils.ZoneMan
+	ofCli         *ovs.OpenFlowService
 }
 
 func newServersWatcher() (*serversWatcher, error) {
@@ -38,11 +39,12 @@ func newServersWatcher() (*serversWatcher, error) {
 		return nil, err
 	}
 	return &serversWatcher{
-		hostConfig: hc,
-		watcher:    w,
-		guests:     map[string]*utils.Guest{},
-		zoneMan:    utils.NewZoneMan(GuestCtZoneBase),
-		ofCli:      ovs.New().OpenFlow,
+		hostConfig:    hc,
+		watcher:       w,
+		guests:        map[string]*utils.Guest{},
+		guestsPending: map[string]*utils.Guest{},
+		zoneMan:       utils.NewZoneMan(GuestCtZoneBase),
+		ofCli:         ovs.New().OpenFlow,
 	}, nil
 }
 
@@ -89,7 +91,7 @@ func (w *serversWatcher) reloadGuestDesc(ctx context.Context, g *utils.Guest) er
 	return nil
 }
 
-func (w *serversWatcher) guestReady(ctx context.Context, g *utils.Guest) bool {
+func (w *serversWatcher) guestPortReady(ctx context.Context, g *utils.Guest) bool {
 	for _, nic := range g.NICs {
 		bridge := nic.Bridge
 		ifname := nic.IfnameHost
@@ -102,24 +104,38 @@ func (w *serversWatcher) guestReady(ctx context.Context, g *utils.Guest) bool {
 	return true
 }
 
-func (w *serversWatcher) updGuestFlows(ctx context.Context, g *utils.Guest) {
-	// TODO TODO tick faster on error
-	err := w.reloadGuestDesc(ctx, g)
+func (w *serversWatcher) updGuestFlows(ctx context.Context, g *utils.Guest) (err error) {
+	defer func() {
+		if err != nil {
+			log.Warningf("update guest flows %s: %s", g.Id, err)
+			w.guestsPending[g.Id] = g
+		} else {
+			delete(w.guestsPending, g.Id)
+		}
+	}()
+
+	err = w.reloadGuestDesc(ctx, g)
 	if err != nil {
-		log.Warningf("guest %s load desc failed: %s", g.Id, err)
-		return
+		return err
 	}
-	if !w.guestReady(ctx, g) {
-		log.Warningf("guest %s is not ready", g.Id)
-		return
+	if !w.guestPortReady(ctx, g) {
+		if g.IsVM() && !g.Running() {
+			// we will be notified when its pid is to be updated
+			// so there is no need to set pending for it now
+			log.Warningf("update guest flows %s: not running", g.Id)
+			return nil
+		}
+		return fmt.Errorf("guest port not ready")
 	}
 	bfs, err := g.FlowsMap()
 	if err != nil {
+		return err
 	}
 	for bridge, flows := range bfs {
 		flowman := w.agent.GetFlowMan(bridge)
 		flowman.updateFlows(ctx, g.Who(), flows)
 	}
+	return nil
 }
 
 func (w *serversWatcher) delGuestFlows(ctx context.Context, g *utils.Guest) {
@@ -135,6 +151,7 @@ func (w *serversWatcher) delGuestFlows(ctx context.Context, g *utils.Guest) {
 		flowman := w.agent.GetFlowMan(bridge)
 		flowman.updateFlows(ctx, g.Who(), []*ovs.Flow{})
 	}
+	delete(w.guestsPending, g.Id)
 }
 
 func (w *serversWatcher) scan(ctx context.Context) {
@@ -220,8 +237,14 @@ func (w *serversWatcher) Start(ctx context.Context) {
 		w.scan(ctx)
 	})
 	refreshTicker := time.NewTicker(WatcherRefreshRate)
+	pendingRefreshTicker := time.NewTicker(WatcherRefreshRateOnError)
 	defer refreshTicker.Stop()
+	defer pendingRefreshTicker.Stop()
 	for {
+		var pendingChan <-chan time.Time
+		if len(w.guestsPending) > 0 {
+			pendingChan = pendingRefreshTicker.C
+		}
 		select {
 		case ev := <-w.watcher.Events:
 			wev := w.watchEvent(&ev)
@@ -266,6 +289,13 @@ func (w *serversWatcher) Start(ctx context.Context) {
 					log.Warningf("unexpected guest down event: %s", guestPath)
 				}
 			}
+		case <-pendingChan:
+			log.Infof("watcher refresh pendings")
+			w.withWait(ctx, func(ctx context.Context) {
+				for _, g := range w.guestsPending {
+					w.updGuestFlows(ctx, g)
+				}
+			})
 		case <-refreshTicker.C:
 			log.Infof("watcher refresh time ;)")
 			w.withWait(ctx, func(ctx context.Context) {

@@ -68,6 +68,15 @@ type Guest struct {
 	HostConfig    *HostConfig
 }
 
+func (g *Guest) IsVM() bool {
+	startvmPath := path.Join(g.Path, "startvm")
+	_, err := os.Stat(startvmPath)
+	if err == nil {
+		return true
+	}
+	return false
+}
+
 func (g *Guest) Running() bool {
 	pidPath := path.Join(g.Path, "pid")
 	pidData, err := ioutil.ReadFile(pidPath)

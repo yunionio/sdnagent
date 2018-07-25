@@ -17,7 +17,6 @@
 24. vlan and ct zone allocation
 26. match field, order by Name()
 27. ovsdb port external_id
-28. faster tick on not_all_good
 29. hostconfig with ct zone management, collision with ovn-controller?
 30. set_queue for tc support
 31. check availability of conntrack
