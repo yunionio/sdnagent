@@ -25,6 +25,7 @@ type serversWatcher struct {
 	guests     map[string]*utils.Guest
 	agent      *AgentServer
 	zoneMan    *utils.ZoneMan
+	ofCli      *ovs.OpenFlowService
 }
 
 func newServersWatcher() (*serversWatcher, error) {
@@ -41,6 +42,7 @@ func newServersWatcher() (*serversWatcher, error) {
 		watcher:    w,
 		guests:     map[string]*utils.Guest{},
 		zoneMan:    utils.NewZoneMan(GuestCtZoneBase),
+		ofCli:      ovs.New().OpenFlow,
 	}, nil
 }
 
@@ -87,15 +89,28 @@ func (w *serversWatcher) reloadGuestDesc(ctx context.Context, g *utils.Guest) er
 	return nil
 }
 
+func (w *serversWatcher) guestReady(ctx context.Context, g *utils.Guest) bool {
+	for _, nic := range g.NICs {
+		bridge := nic.Bridge
+		ifname := nic.IfnameHost
+		portStats, err := w.ofCli.DumpPort(bridge, ifname)
+		if err != nil {
+			return false
+		}
+		nic.PortNo = portStats.PortID
+	}
+	return true
+}
+
 func (w *serversWatcher) updGuestFlows(ctx context.Context, g *utils.Guest) {
 	// TODO TODO tick faster on error
-	if !g.Running() {
-		log.Warningf("guest %s is not running yet", g.Id)
-		return
-	}
 	err := w.reloadGuestDesc(ctx, g)
 	if err != nil {
 		log.Warningf("guest %s load desc failed: %s", g.Id, err)
+		return
+	}
+	if !w.guestReady(ctx, g) {
+		log.Warningf("guest %s is not ready", g.Id)
 		return
 	}
 	bfs, err := g.FlowsMap()

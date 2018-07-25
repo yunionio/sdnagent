@@ -89,14 +89,6 @@ func (g *Guest) FlowsMap() (map[string][]*ovs.Flow, error) {
 	allGood := true
 	for _, nic := range g.NICs {
 		ofCli := ovs.New().OpenFlow
-		ps, err := ofCli.DumpPort(nic.Bridge, nic.IfnameHost)
-		if err != nil {
-			log.Warningf("fetch guest %s port_no %s,%s failed: %s",
-				g.Id, nic.Bridge, nic.IfnameHost, err)
-			allGood = false
-			continue
-		}
-		portNo := ps.PortID
 		hcn := g.HostConfig.HostNetworkConfig(nic.Bridge)
 		if hcn == nil {
 			log.Warningf("guest %s port %s: no host network config for %s",
@@ -104,7 +96,7 @@ func (g *Guest) FlowsMap() (map[string][]*ovs.Flow, error) {
 			allGood = false
 			continue
 		}
-		ps, err = ofCli.DumpPort(nic.Bridge, hcn.Ifname)
+		ps, err := ofCli.DumpPort(nic.Bridge, hcn.Ifname)
 		if err != nil {
 			log.Warningf("fetch phy port_no of %s,%s failed: %s",
 				nic.Bridge, hcn.Ifname, err)
@@ -114,7 +106,6 @@ func (g *Guest) FlowsMap() (map[string][]*ovs.Flow, error) {
 		portNoPhy := ps.PortID
 		m := nic.Map()
 		m["MetadataPort"] = g.HostConfig.Port
-		m["PortNo"] = portNo
 		m["PortNoPhy"] = portNoPhy
 		T := t(m)
 		if nic.VLAN > 1 {
