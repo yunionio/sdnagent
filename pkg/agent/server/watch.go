@@ -246,7 +246,11 @@ func (w *serversWatcher) Start(ctx context.Context) {
 				w.guests[guestId] = g
 				w.updGuestFlows(ctx, g)
 			case watchEventTypeDelServerDir:
-				delete(w.guests, guestId)
+				if g, ok := w.guests[guestId]; ok {
+					// this is needed for containers
+					w.delGuestFlows(ctx, g)
+					delete(w.guests, guestId)
+				}
 				log.Infof("guest path deleted: %s", guestPath)
 			case watchEventTypeUpdServer:
 				if g, ok := w.guests[guestId]; ok {
