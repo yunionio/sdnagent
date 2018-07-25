@@ -7,7 +7,6 @@
 
 8. lock yunioncloud/pkg/log in Gopkg.toml
 10. ping check on startup
-14. unlink .sock on startup: systemd
 15. After host_server
 18. vlan_tci - dl_vlan
 19. vlan = 1
