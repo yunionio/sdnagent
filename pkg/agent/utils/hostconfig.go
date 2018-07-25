@@ -21,6 +21,7 @@ type HostConfig struct {
 	Networks       []*HostConfigNetwork
 	ServersPath    string
 	K8sClusterCidr *net.IPNet
+	AllowSwitchVMs bool // allow virtual machines act as switches
 }
 
 var snippet_pre []byte = []byte(`
@@ -30,6 +31,7 @@ listen_interface = None
 networks = []
 servers_path = "/opt/cloud/workspace/servers"
 k8s_cluster_cidr = '10.43.0.0/16'
+allow_switch_vms = False
 
 `)
 var snippet_post []byte = []byte(`
@@ -41,6 +43,7 @@ print(json.dumps({
 	'listen_interface': listen_interface,
 	'servers_path': servers_path,
 	'k8s_cluster_cidr': k8s_cluster_cidr,
+	'allow_switch_vms': bool(allow_switch_vms),
 }))
 `)
 
@@ -78,6 +81,7 @@ func NewHostConfig(file string) (*HostConfig, error) {
 		Networks        []string
 		ServersPath     string `json:"servers_path"`
 		K8sClusterCidr  string `json:"k8s_cluster_cidr"`
+		AllowSwitchVMs  bool   `json:"allow_switch_vms"`
 	}{}
 	err = json.Unmarshal(jstr, &v)
 	if err != nil {
@@ -85,9 +89,10 @@ func NewHostConfig(file string) (*HostConfig, error) {
 	}
 
 	hc := &HostConfig{
-		Port:         v.Port,
-		ListenIfname: v.ListenInterface,
-		ServersPath:  v.ServersPath,
+		Port:           v.Port,
+		ListenIfname:   v.ListenInterface,
+		ServersPath:    v.ServersPath,
+		AllowSwitchVMs: v.AllowSwitchVMs,
 	}
 	_, k8sCidr, err := net.ParseCIDR(v.K8sClusterCidr)
 	if err == nil {

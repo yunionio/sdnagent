@@ -54,17 +54,17 @@ func (h *HostLocal) FlowsMap() (map[string][]*ovs.Flow, error) {
 		return nil, err
 	}
 	m := map[string]interface{}{
-		"K8SCidr":      h.K8SCidr,
+		"MetadataPort": h.HostConfig.Port,
+		"K8SCidr":      h.HostConfig.K8sClusterCidr,
 		"MAC":          h.MAC,
 		"IP":           h.IP,
-		"MetadataPort": h.MetadataPort,
 		"PortNoPhy":    ps.PortID,
 	}
 	T := t(m)
 	flows := []*ovs.Flow{
 		F(0, 40000, "ipv6", "drop"),
 	}
-	if h.K8SCidr != nil {
+	if h.HostConfig.K8sClusterCidr != nil {
 		flows = append(flows, F(0, 30050,
 			T("ip,nw_dst={{.K8SCidr}}"),
 			T("mod_dl_dst:{{.MAC}},local")))
@@ -74,9 +74,17 @@ func (h *HostLocal) FlowsMap() (map[string][]*ovs.Flow, error) {
 			T("mod_dl_dst:{{.MAC}},mod_nw_dst:{{.IP}},mod_tp_dst:{{.MetadataPort}},LOCAL")),
 		F(0, 27200, "in_port=LOCAL", "normal"),
 		F(0, 27100, T("in_port={{.PortNoPhy}},dl_dst={{.MAC}}"), "normal"),
-		F(0, 25700, T("in_port={{.PortNoPhy}},dl_dst=01:00:00:00:00:00/01:00:00:00:00:00"), "normal"),
-		F(0, 25600, T("in_port={{.PortNoPhy}}"), "drop"),
 	)
+	if !h.HostConfig.AllowSwitchVMs {
+		flows = append(flows,
+			F(0, 25600, T("in_port={{.PortNoPhy}},dl_dst=01:00:00:00:00:00/01:00:00:00:00:00"), "normal"),
+			F(0, 25500, T("in_port={{.PortNoPhy}}"), "drop"),
+		)
+	} else {
+		flows = append(flows,
+			F(0, 25700, T("in_port={{.PortNoPhy}}"), "normal"),
+		)
+	}
 	return map[string][]*ovs.Flow{h.Bridge: flows}, nil
 }
 
@@ -238,8 +246,9 @@ func (sr *SecurityRules) Flows(data map[string]interface{}) []*ovs.Flow {
 // 26800 in_port=PORT_VM,ip,ct_state=-trk,actions=load_ZONE,load_VM_BIT,ct(zone=ZONE,table=sec_CT)
 // 25900 in_port=PORT_PHY,dl_dst=MAC_VM,dl_vlan=VLAN_VM,actions=normal
 // 25800 in_port=PORT_VM,actions=normal
-// 25700 in_port=PORT_PHY,dl_dst=01:00:00:00:00:00/01:00:00:00:00:00,actions=normal
-// 25600 in_port=PORT_PHY,actions=drop
+// 25700 in_port=PORT_PHY,{ allow_switch_vms},actions=normal
+// 25600 in_port=PORT_PHY,{!allow_switch_vms},dl_dst=01:00:00:00:00:00/01:00:00:00:00:00,actions=normal
+// 25500 in_port=PORT_PHY,{!allow_switch_vms},actions=drop
 //
 // Table 1 sec_CT
 //  7900 ip,ct_zone=ZONE,ct_state=+trk+inv,actions=normal

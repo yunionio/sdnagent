@@ -196,12 +196,11 @@ func (w *serversWatcher) updHostLocalFlows(ctx context.Context) {
 			continue
 		}
 		hostLocal := &utils.HostLocal{
-			MetadataPort: w.hostConfig.Port,
-			K8SCidr:      w.hostConfig.K8sClusterCidr,
-			Bridge:       hcn.Bridge,
-			Ifname:       hcn.Ifname,
-			IP:           ip,
-			MAC:          mac,
+			HostConfig: w.hostConfig,
+			Bridge:     hcn.Bridge,
+			Ifname:     hcn.Ifname,
+			IP:         ip,
+			MAC:        mac,
 		}
 		flows, err := hostLocal.FlowsMap()
 		if err != nil {
