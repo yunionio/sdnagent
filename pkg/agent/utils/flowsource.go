@@ -222,7 +222,8 @@ func (sr *SecurityRules) Flows(data map[string]interface{}) []*ovs.Flow {
 	//
 	// Indeed this is needed for accessing network entities other than
 	// those locally managed.  This also means traffics from phy port will
-	// be allowed if no ingress rule matches it
+	// be allowed if no ingress rule matches it (or we can add such a rule
+	// if preferred)
 	flows = append(flows, F(3, 30, "ip", actionAllowInLast))
 	return flows
 }
