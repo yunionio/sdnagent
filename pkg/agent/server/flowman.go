@@ -46,7 +46,7 @@ func (fm *FlowMan) doDumpFlows() (*utils.FlowSet, error) {
 	ofCli := ovs.New().OpenFlow
 	flows, err := ofCli.DumpFlows(fm.bridge)
 	if err != nil {
-		log.Errorf("%s: dump-flows failed; %s", fm.bridge, err)
+		log.Errorf("flowman %s: dump-flows failed: %s", fm.bridge, err)
 		return nil, err
 	}
 	for _, of := range flows {
@@ -58,9 +58,9 @@ func (fm *FlowMan) doDumpFlows() (*utils.FlowSet, error) {
 
 func (fm *FlowMan) doCheck() {
 	if atomic.LoadInt32(&fm.waitCount) != 0 {
-		log.Infof("flowman %s: %d waiting", fm.bridge, atomic.LoadInt32(&fm.waitCount))
 		return
 	}
+	defer log.Infof("flowman %s: check done", fm.bridge)
 	var err error
 	fs0, err := fm.doDumpFlows()
 	if err != nil {
@@ -123,7 +123,7 @@ func (fm *FlowMan) doCommitChange(flowsAdd, flowsDel []*ovs.Flow) {
 		return tx.Commit()
 	})
 	if err != nil {
-		log.Errorf("add flow bundle failed: %s", err)
+		log.Errorf("flowman %s: add flow bundle failed: %s", fm.bridge, err)
 		return
 	}
 }
@@ -135,17 +135,17 @@ func (fm *FlowMan) doCmd(cmd *flowManCmd) {
 		newAdd := fm.flowSets[THEMAN].Add(flow)
 		if !newAdd {
 			txt, _ := flow.MarshalText()
-			log.Warningf("%s: add-flow %s, already recorded", fm.bridge, txt)
+			log.Warningf("flowman %s: add-flow %s, already recorded", fm.bridge, txt)
 		}
 	case flowManCmdDelFlow:
 		flow, _ := cmd.Arg.(*ovs.Flow)
 		newDel := fm.flowSets[THEMAN].Remove(flow)
 		if !newDel {
 			txt, _ := flow.MarshalText()
-			log.Warningf("%s: del-flows %s, but not found", fm.bridge, txt)
+			log.Warningf("flowman %s: del-flows %s, but not found", fm.bridge, txt)
 		}
 	case flowManCmdSyncFlows:
-		log.Infof("execute check command")
+		log.Infof("flowman %s: do check command", fm.bridge)
 		fm.doCheck()
 		fm.scheduleIdleCheck(true)
 	case flowManCmdUpdateFlows:
@@ -204,7 +204,7 @@ func (fm *FlowMan) Start(ctx context.Context) {
 			}
 			fm.doCmd(recvV.Interface().(*flowManCmd))
 		case caseTimer:
-			log.Infof("do idle check")
+			log.Infof("flowman %s: do idle check", fm.bridge)
 			fm.doCheck()
 			fm.scheduleIdleCheck(false)
 		case caseCtx:
@@ -220,7 +220,7 @@ func (fm *FlowMan) sendCmd(ctx context.Context, cmd *flowManCmd) {
 	select {
 	case fm.cmdChan <- cmd:
 	case <-ctx.Done():
-		log.Warningf("flowman add-flow done: %s", ctx.Err())
+		log.Warningf("flowman %s: sendCmd ctx done: %s", ctx.Err())
 	}
 }
 

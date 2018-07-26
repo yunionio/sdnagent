@@ -2,6 +2,7 @@ package server
 
 import (
 	"context"
+	"fmt"
 	"io/ioutil"
 	"path"
 	"path/filepath"
@@ -19,10 +20,13 @@ import (
 var REGEX_UUID *regexp.Regexp = regexp.MustCompile(`^[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}$`)
 
 type serversWatcher struct {
-	hostConfig *utils.HostConfig
-	watcher    *fsnotify.Watcher
-	guests     map[string]*utils.Guest
-	agent      *AgentServer
+	hostConfig    *utils.HostConfig
+	watcher       *fsnotify.Watcher
+	guests        map[string]*utils.Guest
+	guestsPending map[string]*utils.Guest
+	agent         *AgentServer
+	zoneMan       *utils.ZoneMan
+	ofCli         *ovs.OpenFlowService
 }
 
 func newServersWatcher() (*serversWatcher, error) {
@@ -35,9 +39,12 @@ func newServersWatcher() (*serversWatcher, error) {
 		return nil, err
 	}
 	return &serversWatcher{
-		hostConfig: hc,
-		watcher:    w,
-		guests:     map[string]*utils.Guest{},
+		hostConfig:    hc,
+		watcher:       w,
+		guests:        map[string]*utils.Guest{},
+		guestsPending: map[string]*utils.Guest{},
+		zoneMan:       utils.NewZoneMan(GuestCtZoneBase),
+		ofCli:         ovs.New().OpenFlow,
 	}, nil
 }
 
@@ -56,24 +63,79 @@ type watchEvent struct {
 	guestPath string // path to the servers/<uuid> dir
 }
 
-func (w *serversWatcher) updGuestFlows(ctx context.Context, g *utils.Guest) {
-	// TODO TODO tick faster on error
-	if !g.Running() {
-		log.Warningf("guest %s is not running yet", g.Id)
-		return
+func (w *serversWatcher) reloadGuestDesc(ctx context.Context, g *utils.Guest) error {
+	oldM := map[string]uint16{}
+	oldNICs := g.NICs
+	for _, nic := range oldNICs {
+		oldM[nic.MAC] = nic.CtZoneId
 	}
 	err := g.LoadDesc()
 	if err != nil {
-		log.Errorf("load guest %s desc failed: %s", g.Id, err)
-		return
+		return err
+	}
+	for _, nic := range g.NICs {
+		if i, ok := oldM[nic.MAC]; ok {
+			delete(oldM, nic.MAC)
+			nic.CtZoneId = i
+			continue
+		}
+		zoneId, err := w.zoneMan.AllocateZoneId(nic.MAC)
+		if err != nil {
+			return fmt.Errorf("ct zone id allocation failed: %s", err)
+		}
+		nic.CtZoneId = zoneId
+	}
+	for mac, _ := range oldM {
+		w.zoneMan.FreeZoneId(mac)
+	}
+	return nil
+}
+
+func (w *serversWatcher) guestPortReady(ctx context.Context, g *utils.Guest) bool {
+	for _, nic := range g.NICs {
+		bridge := nic.Bridge
+		ifname := nic.IfnameHost
+		portStats, err := w.ofCli.DumpPort(bridge, ifname)
+		if err != nil {
+			return false
+		}
+		nic.PortNo = portStats.PortID
+	}
+	return true
+}
+
+func (w *serversWatcher) updGuestFlows(ctx context.Context, g *utils.Guest) (err error) {
+	defer func() {
+		if err != nil {
+			log.Warningf("update guest flows %s: %s", g.Id, err)
+			w.guestsPending[g.Id] = g
+		} else {
+			delete(w.guestsPending, g.Id)
+		}
+	}()
+
+	err = w.reloadGuestDesc(ctx, g)
+	if err != nil {
+		return err
+	}
+	if !w.guestPortReady(ctx, g) {
+		if g.IsVM() && !g.Running() {
+			// we will be notified when its pid is to be updated
+			// so there is no need to set pending for it now
+			log.Warningf("update guest flows %s: not running", g.Id)
+			return nil
+		}
+		return fmt.Errorf("guest port not ready")
 	}
 	bfs, err := g.FlowsMap()
 	if err != nil {
+		return err
 	}
 	for bridge, flows := range bfs {
 		flowman := w.agent.GetFlowMan(bridge)
 		flowman.updateFlows(ctx, g.Who(), flows)
 	}
+	return nil
 }
 
 func (w *serversWatcher) delGuestFlows(ctx context.Context, g *utils.Guest) {
@@ -83,11 +145,13 @@ func (w *serversWatcher) delGuestFlows(ctx context.Context, g *utils.Guest) {
 	bridges := map[string]bool{}
 	for _, nic := range g.NICs {
 		bridges[nic.Bridge] = true
+		w.zoneMan.FreeZoneId(nic.MAC)
 	}
 	for bridge, _ := range bridges {
 		flowman := w.agent.GetFlowMan(bridge)
 		flowman.updateFlows(ctx, g.Who(), []*ovs.Flow{})
 	}
+	delete(w.guestsPending, g.Id)
 }
 
 func (w *serversWatcher) scan(ctx context.Context) {
@@ -132,12 +196,11 @@ func (w *serversWatcher) updHostLocalFlows(ctx context.Context) {
 			continue
 		}
 		hostLocal := &utils.HostLocal{
-			MetadataPort: w.hostConfig.Port,
-			K8SCidr:      w.hostConfig.K8sClusterCidr,
-			Bridge:       hcn.Bridge,
-			Ifname:       hcn.Ifname,
-			IP:           ip,
-			MAC:          mac,
+			HostConfig: w.hostConfig,
+			Bridge:     hcn.Bridge,
+			Ifname:     hcn.Ifname,
+			IP:         ip,
+			MAC:        mac,
 		}
 		flows, err := hostLocal.FlowsMap()
 		if err != nil {
@@ -173,8 +236,14 @@ func (w *serversWatcher) Start(ctx context.Context) {
 		w.scan(ctx)
 	})
 	refreshTicker := time.NewTicker(WatcherRefreshRate)
+	pendingRefreshTicker := time.NewTicker(WatcherRefreshRateOnError)
 	defer refreshTicker.Stop()
+	defer pendingRefreshTicker.Stop()
 	for {
+		var pendingChan <-chan time.Time
+		if len(w.guestsPending) > 0 {
+			pendingChan = pendingRefreshTicker.C
+		}
 		select {
 		case ev := <-w.watcher.Events:
 			wev := w.watchEvent(&ev)
@@ -199,7 +268,11 @@ func (w *serversWatcher) Start(ctx context.Context) {
 				w.guests[guestId] = g
 				w.updGuestFlows(ctx, g)
 			case watchEventTypeDelServerDir:
-				delete(w.guests, guestId)
+				if g, ok := w.guests[guestId]; ok {
+					// this is needed for containers
+					w.delGuestFlows(ctx, g)
+					delete(w.guests, guestId)
+				}
 				log.Infof("guest path deleted: %s", guestPath)
 			case watchEventTypeUpdServer:
 				if g, ok := w.guests[guestId]; ok {
@@ -215,6 +288,13 @@ func (w *serversWatcher) Start(ctx context.Context) {
 					log.Warningf("unexpected guest down event: %s", guestPath)
 				}
 			}
+		case <-pendingChan:
+			log.Infof("watcher refresh pendings")
+			w.withWait(ctx, func(ctx context.Context) {
+				for _, g := range w.guestsPending {
+					w.updGuestFlows(ctx, g)
+				}
+			})
 		case <-refreshTicker.C:
 			log.Infof("watcher refresh time ;)")
 			w.withWait(ctx, func(ctx context.Context) {

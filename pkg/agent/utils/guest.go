@@ -35,13 +35,18 @@ type guestNIC struct {
 	Virtual    bool
 	VLAN       int
 	WireId     string `json:"wire_id"`
+
+	CtZoneId uint16 `json:"-"`
+	PortNo   int    `json:"-"`
 }
 
 func (n *guestNIC) Map() map[string]interface{} {
 	m := map[string]interface{}{
-		"IP":   n.IP,
-		"MAC":  n.MAC,
-		"VLAN": n.VLAN & 0xfff,
+		"IP":      n.IP,
+		"MAC":     n.MAC,
+		"VLAN":    n.VLAN & 0xfff,
+		"CT_ZONE": n.CtZoneId,
+		"PortNo":  n.PortNo,
 	}
 	vlanTci := n.VLAN & 0xfff
 	if n.VLAN > 1 {
@@ -61,6 +66,15 @@ type Guest struct {
 	SecurityRules *SecurityRules
 	NICs          []*guestNIC
 	HostConfig    *HostConfig
+}
+
+func (g *Guest) IsVM() bool {
+	startvmPath := path.Join(g.Path, "startvm")
+	_, err := os.Stat(startvmPath)
+	if err == nil {
+		return true
+	}
+	return false
 }
 
 func (g *Guest) Running() bool {
