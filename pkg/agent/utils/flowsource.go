@@ -148,10 +148,8 @@ func (g *Guest) FlowsMap() (map[string][]*ovs.Flow, error) {
 
 func (sr *SecurityRules) Flows(data map[string]interface{}) []*ovs.Flow {
 	T := t(data)
-	data["_in_port_phy"] = "reg0=0x10000/0x10000"
-	data["_in_port_vm"] = "reg0=0x0/0x10000"
-	loadReg0BitPhy := "load:0x1->NXM_NX_REG0[16]"
-	loadReg0BitVm := "load:0->NXM_NX_REG0[16]" // "0->" is important, not "0x0->"
+	data["_in_port_vm"] = "reg0=0x10000/0x10000"
+	loadReg0BitVm := "load:0x1->NXM_NX_REG0[16]" // "0x1->" is important, not "1->"
 	loadZone := fmt.Sprintf("load:0x%x->NXM_NX_REG0[0..15]", data["CT_ZONE"])
 
 	flows := []*ovs.Flow{}
@@ -159,13 +157,13 @@ func (sr *SecurityRules) Flows(data map[string]interface{}) []*ovs.Flow {
 	// table 1 sec_CT
 	flows = append(flows,
 		F(0, 26900, T("in_port={{.PortNoPhy}},dl_dst={{.MAC}},{{._dl_vlan}},ip,ct_state=-trk"),
-			loadReg0BitPhy+","+loadZone+T(",ct(table=1,zone={{.CT_ZONE}})")),
+			loadZone+T(",ct(table=1,zone={{.CT_ZONE}})")),
 		F(0, 26800, T("in_port={{.PortNo}},ip,ct_state=-trk"),
 			loadReg0BitVm+","+loadZone+T(",ct(table=1,zone={{.CT_ZONE}})")),
 		// ct_state= flags order matters
 		F(1, 7900, T("ip,ct_zone={{.CT_ZONE}},ct_state=+inv+trk"), "drop"),
-		F(1, 7800, T("ip,ct_zone={{.CT_ZONE}},ct_state=+new+trk,{{._in_port_phy}}"), "resubmit(,3)"),
-		F(1, 7700, T("ip,ct_zone={{.CT_ZONE}},ct_state=+new+trk,{{._in_port_vm}}"), "resubmit(,2)"),
+		F(1, 7800, T("ip,ct_zone={{.CT_ZONE}},ct_state=+new+trk,{{._in_port_vm}}"), "resubmit(,2)"),
+		F(1, 7700, T("ip,ct_zone={{.CT_ZONE}},ct_state=+new+trk"), "resubmit(,3)"),
 		F(1, 7600, T("ip,ct_zone={{.CT_ZONE}}"), "normal"),
 	)
 
@@ -256,8 +254,8 @@ func (sr *SecurityRules) Flows(data map[string]interface{}) []*ovs.Flow {
 //
 // Table 1 sec_CT
 //  7900 ip,ct_zone=ZONE,ct_state=+trk+inv,actions=drop
-//  7800 ip,ct_zone=ZONE,ct_state=+trk+new,{{reg0_phy_set}},actions=resubmit(,sec_IN)
-//  7700 ip,ct_zone=ZONE,ct_state=+trk+new,{{reg0_vm_set}},actions=resubmit(,sec_OUT)
+//  7800 ip,ct_zone=ZONE,ct_state=+trk+new,{{reg0_vm_set}},actions=resubmit(,sec_OUT)
+//  7700 ip,ct_zone=ZONE,ct_state=+trk+new,actions=resubmit(,sec_IN)
 //  7600 ip,ct_zone=ZONE,actions=normal
 //
 // Table 2 sec_OUT
