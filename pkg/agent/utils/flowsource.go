@@ -130,7 +130,7 @@ func (g *Guest) FlowsMap() (map[string][]*ovs.Flow, error) {
 				T("in_port=LOCAL,tcp,nw_dst={{.IP}},tp_src={{.MetadataPort}}"),
 				T("mod_dl_dst:{{.MAC}},mod_nw_src:169.254.169.254,mod_tp_src:80,output:{{.PortNo}}")),
 			F(0, 28400, T("in_port={{.PortNo}},udp,tp_src=68,tp_dst=67"), "local"),
-			F(0, 28300, T("in_port=LOCAL,dl_dst={{.MAC}}"), T("output:{{.PortNo}}")),
+			F(0, 28300, T("in_port=LOCAL,dl_dst={{.MAC}},udp,tp_src=67,tp_dst=68"), T("output:{{.PortNo}}")),
 			F(0, 25900, T("in_port={{.PortNoPhy}},dl_dst={{.MAC}},{{._dl_vlan}}"), "normal"),
 			F(0, 25800, T("in_port={{.PortNo}}"), "normal"),
 		}
@@ -156,6 +156,8 @@ func (sr *SecurityRules) Flows(data map[string]interface{}) []*ovs.Flow {
 	// table 0
 	// table 1 sec_CT
 	flows = append(flows,
+		F(0, 27300, T("in_port=LOCAL,dl_dst={{.MAC}},ip,ct_state=-trk"),
+			loadZone+T(",ct(table=1,zone={{.CT_ZONE}})")),
 		F(0, 26900, T("in_port={{.PortNoPhy}},dl_dst={{.MAC}},{{._dl_vlan}},ip,ct_state=-trk"),
 			loadZone+T(",ct(table=1,zone={{.CT_ZONE}})")),
 		F(0, 26800, T("in_port={{.PortNo}},ip,ct_state=-trk"),
@@ -240,7 +242,8 @@ func (sr *SecurityRules) Flows(data map[string]interface{}) []*ovs.Flow {
 // 29300 metaserver_req,actions=mod_metaserver
 // 29200 metaserver_resp_VM_IP,actions=mod_metaserver_PORT_VM
 // 28400 in_port=PORT_VM,dhcp_req,actions=LOCAL
-// 28300 in_port=LOCAL,dl_dst=MAC_VM,actions=output:PORT_VM
+// 28300 in_port=LOCAL,dhcp_resp,actions=PORT_VM
+// 27300 in_port=LOCAL,dl_dst=MAC_VM,ip,ct_state=-trk,actions=load_ZONE,ct(zone=ZONE,table=sec_IN)
 // 27200 in_port=LOCAL,actions=normal
 // 27100 in_port=PORT_PHY,dl_dst=MAC_PHY,actions=normal
 //
