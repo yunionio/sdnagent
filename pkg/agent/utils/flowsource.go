@@ -151,15 +151,16 @@ func (sr *SecurityRules) Flows(data map[string]interface{}) []*ovs.Flow {
 	data["_in_port_vm"] = "reg0=0x10000/0x10000"
 	loadReg0BitVm := "load:0x1->NXM_NX_REG0[16]" // "0x1->" is important, not "1->"
 	loadZone := fmt.Sprintf("load:0x%x->NXM_NX_REG0[0..15]", data["CT_ZONE"])
+	loadZonePhy := fmt.Sprintf("load:0x%x->NXM_NX_REG0[0..15]", 1000)
 
 	flows := []*ovs.Flow{}
 	// table 0
 	// table 1 sec_CT
 	flows = append(flows,
-		F(0, 27300, T("in_port=LOCAL,dl_dst={{.MAC}},ip,ct_state=-trk"),
-			loadZone+T(",ct(table=1,zone={{.CT_ZONE}})")),
+		F(0, 27300, T("in_port=LOCAL,dl_dst={{.MAC}},ip"),
+			T("ct(table=1,zone={{.CT_ZONE}})")),
 		F(0, 26900, T("in_port={{.PortNoPhy}},dl_dst={{.MAC}},{{._dl_vlan}},ip,ct_state=-trk"),
-			loadZone+T(",ct(table=1,zone={{.CT_ZONE}})")),
+			loadZonePhy+T(",ct(table=1,zone={{.CT_ZONE}})")),
 		F(0, 26800, T("in_port={{.PortNo}},ip,ct_state=-trk"),
 			loadReg0BitVm+","+loadZone+T(",ct(table=1,zone={{.CT_ZONE}})")),
 		// ct_state= flags order matters
@@ -200,8 +201,7 @@ func (sr *SecurityRules) Flows(data map[string]interface{}) []*ovs.Flow {
 	// NOTE assume MAC is unique across the platform
 	prioIn := 40000
 	matchIn := T("dl_dst={{.MAC}}")
-	actionAllowIn := T("ct(commit,zone={{.CT_ZONE}}),normal")
-	actionAllowInLast := "ct(commit,zone=NXM_NX_REG0[0..15]),normal"
+	actionAllowIn := T("ct(commit,zone=NXM_NX_REG0[0..15]),ct(commit,zone={{.CT_ZONE}}),normal")
 	for _, r := range sr.inRules {
 		if prioIn <= 30 {
 			log.Errorf("%s: %q generated too many in rules",
@@ -217,14 +217,6 @@ func (sr *SecurityRules) Flows(data map[string]interface{}) []*ovs.Flow {
 			prioIn -= 1
 		}
 	}
-	// NOTE when this rule matches, it means no in vm secgroup rules blocks
-	// or accepts the packet in question, which means it's free to go.
-	//
-	// Indeed this is needed for accessing network entities other than
-	// those locally managed.  This also means traffics from phy port will
-	// be allowed if no ingress rule matches it (or we can add such a rule
-	// if preferred)
-	flows = append(flows, F(3, 30, "ip", actionAllowInLast))
 	return flows
 }
 
