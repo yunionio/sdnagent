@@ -118,8 +118,8 @@ func (fm *FlowMan) doCommitChange(flowsAdd, flowsDel []*ovs.Flow) {
 			mfs[i] = of.MatchFlowStrict()
 			mfs[i].CookieMask = ^uint64(0)
 		}
-		tx.Add(flowsAdd...)
 		tx.DeleteStrict(mfs...)
+		tx.Add(flowsAdd...)
 		return tx.Commit()
 	})
 	if err != nil {
