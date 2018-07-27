@@ -10,4 +10,5 @@ const (
 	FlowManIdleCheckDuration  time.Duration = 13 * time.Second
 	WatcherRefreshRate        time.Duration = 31 * time.Second
 	WatcherRefreshRateOnError time.Duration = 3 * time.Second
+	WatcherRecentPendingTime  time.Duration = WatcherRefreshRateOnError * 5
 )

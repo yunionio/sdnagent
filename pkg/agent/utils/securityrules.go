@@ -39,7 +39,7 @@ func (sr *SecurityRule) OvsMatches() []string {
 	switch r.Direction {
 	case secrules.DIR_IN:
 		nwField = "nw_src="
-		tpField = "tp_src="
+		tpField = "tp_dst="
 	case secrules.DIR_OUT:
 		nwField = "nw_dst="
 		tpField = "tp_dst="
@@ -62,18 +62,21 @@ func (sr *SecurityRule) OvsMatches() []string {
 		} else if r.PortStart > 0 && r.PortStart < r.PortEnd {
 			ms := PortRangeToMasks(r.PortStart, r.PortEnd)
 			for _, m := range ms {
-				var vs string
 				// NOTE both start and end should never be zero, the
 				// check is here just in case
-				if m[0] == 0 {
-					vs = "0"
-				} else {
-					vs = fmt.Sprintf("0x%x", m[0])
-				}
-				if m[1] == 0 {
+				if m[1] == 0xffff {
+					tpMatch = append(tpMatch, fmt.Sprintf("%s%d", tpField, m[0]))
+				} else if m[1] == 0 {
 					break
+				} else {
+					var vs string
+					if m[0] == 0 {
+						vs = "0"
+					} else {
+						vs = fmt.Sprintf("0x%x", m[0])
+					}
+					tpMatch = append(tpMatch, fmt.Sprintf("%s%s/0x%x", tpField, vs, m[1]))
 				}
-				tpMatch = append(tpMatch, fmt.Sprintf("%s%s/0x%x", tpField, vs, m[1]))
 			}
 		}
 		fallthrough

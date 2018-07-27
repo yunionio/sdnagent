@@ -220,7 +220,7 @@ func (fm *FlowMan) sendCmd(ctx context.Context, cmd *flowManCmd) {
 	select {
 	case fm.cmdChan <- cmd:
 	case <-ctx.Done():
-		log.Warningf("flowman %s: sendCmd ctx done: %s", ctx.Err())
+		log.Warningf("flowman %s: sendCmd ctx done: %s", fm.bridge, ctx.Err())
 	}
 }
 
