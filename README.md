@@ -49,3 +49,47 @@ virtual host with 2 nics enslaved to the same br0
 32. test ftp rel
 20. regrestion test
 38. nat for testing purposes
+
+# plan: stateless flavour
+
+- PRO: More efficient
+- PRO: More straightforward, less error-prone
+- CON: Bob can DoS Alice with invalid TCP traffic
+
+`in:<ACTION> any`
+
+	dl_dst=<MAC_VM>,ip[,nw_src=<NET>] <ACTION>
+
+`out:<ACTION> any`
+
+	dl_src=<MAC_VM>,ip[,nw_dst=<NET>] <ACTION>
+
+`in:<ACTION> tcp`
+
+	dl_dst=<MAC_VM>,tcp,tcpflags=+syn-ack[,tp_dst=<PORT>][,nw_src=<NET>] <ACTION>
+	dl_dst=<MAC_VM>,tcp[,tp_dst=<PORT>][,nw_src=<NET>] accept
+	dl_src=<MAC_VM>,tcp[,tp_src=<PORT>][,nw_dst=<NET>] accept
+
+`out:<ACTION> tcp`
+
+	dl_src=<MAC_VM>,tcp,tcpflags=+syn-ack[,tp_dst=<PORT>][,nw_dst=<NET>] <ACTION>
+	dl_dst=<MAC_VM>,tcp[,tp_src=<PORT>][,nw_src=<NET>] accept
+	dl_src=<MAC_VM>,tcp[,tp_dst=<PORT>][,nw_dst=<NET>] accept
+
+`in:<ACTION> udp`
+
+	dl_dst=<MAC_VM>.udp[,tp_dst=<PORT>][,nw_src=<NET>] <ACTION>
+	dl_src=<MAC_VM>.udp[,tp_src=<PORT>][,nw_dst=<NET>] <ACTION>
+
+`out:<ACTION> udp`
+
+	dl_src=<MAC_VM>.udp[,tp_dst=<PORT>][,nw_dst=<NET>] <ACTION>
+	dl_dst=<MAC_VM>.udp[,tp_src=<PORT>][,nw_src=<NET>] <ACTION>
+
+`in:<ACTION> icmp`
+
+	dl_dst=<MAC_VM>,icmp[,nw_src=<NET>] <ACTION>
+
+`out:<ACTION> icmp`
+
+	dl_src=<MAC_VM>,icmp[,nw_dst=<NET>] <ACTION>
