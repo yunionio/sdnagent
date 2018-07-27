@@ -39,7 +39,7 @@ func (sr *SecurityRule) OvsMatches() []string {
 	switch r.Direction {
 	case secrules.DIR_IN:
 		nwField = "nw_src="
-		tpField = "tp_src="
+		tpField = "tp_dst="
 	case secrules.DIR_OUT:
 		nwField = "nw_dst="
 		tpField = "tp_dst="
