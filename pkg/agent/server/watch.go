@@ -92,23 +92,27 @@ func (w *serversWatcher) reloadGuestDesc(ctx context.Context, g *utils.Guest) er
 }
 
 func (w *serversWatcher) guestPortReady(ctx context.Context, g *utils.Guest) bool {
+	someOk := false
 	for _, nic := range g.NICs {
 		bridge := nic.Bridge
 		ifname := nic.IfnameHost
 		portStats, err := w.ofCli.DumpPort(bridge, ifname)
-		if err != nil {
-			return false
+		if err == nil {
+			someOk = true
+			nic.PortNo = portStats.PortID
 		}
-		nic.PortNo = portStats.PortID
 	}
-	return true
+	return someOk
 }
 
 func (w *serversWatcher) updGuestFlows(ctx context.Context, g *utils.Guest) (err error) {
+	setPending := true
 	defer func() {
 		if err != nil {
 			log.Warningf("update guest flows %s: %s", g.Id, err)
-			w.guestsPending[g.Id] = g
+			if setPending {
+				w.guestsPending[g.Id] = g
+			}
 		} else {
 			delete(w.guestsPending, g.Id)
 		}
@@ -116,26 +120,31 @@ func (w *serversWatcher) updGuestFlows(ctx context.Context, g *utils.Guest) (err
 
 	err = w.reloadGuestDesc(ctx, g)
 	if err != nil {
-		return err
+		return
 	}
-	if !w.guestPortReady(ctx, g) {
+	bfs := map[string][]*ovs.Flow{}
+	if w.guestPortReady(ctx, g) {
+		bfs, err = g.FlowsMap()
+		if err != nil {
+			return
+		}
+	} else {
 		if g.IsVM() && !g.Running() {
 			// we will be notified when its pid is to be updated
 			// so there is no need to set pending for it now
-			log.Warningf("update guest flows %s: not running", g.Id)
-			return nil
+			err = fmt.Errorf("not running")
+			setPending = false
+		} else {
+			// NOTE crashed container can make pending watcher busy
+			err = fmt.Errorf("port not ready")
 		}
-		return fmt.Errorf("guest port not ready")
-	}
-	bfs, err := g.FlowsMap()
-	if err != nil {
-		return err
+		// next we will clean flow rules for them
 	}
 	for bridge, flows := range bfs {
 		flowman := w.agent.GetFlowMan(bridge)
 		flowman.updateFlows(ctx, g.Who(), flows)
 	}
-	return nil
+	return
 }
 
 func (w *serversWatcher) delGuestFlows(ctx context.Context, g *utils.Guest) {

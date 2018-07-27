@@ -147,7 +147,7 @@ func (g *Guest) FlowsMap() (map[string][]*ovs.Flow, error) {
 		r[nic.Bridge] = flows
 	}
 	if !allGood {
-		return r, fmt.Errorf("guest port is not ready yet")
+		return r, fmt.Errorf("not all nics ready")
 	}
 	return r, nil
 }
