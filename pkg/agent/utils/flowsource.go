@@ -266,7 +266,7 @@ func (sr *SecurityRules) Flows(data map[string]interface{}) []*ovs.Flow {
 //  7900 ip,ct_state=+trk+inv,actions=drop
 //  7800 ip,ct_state=+trk+new,{{!in_port_vm}},actions=resubmit(,sec_IN)
 //  7700 ip,ct_state=+trk+new,{{ in_port_vm}},actions=resubmit(,sec_OUT)
-//  7600 actions=normal
+//  7600 ip,actions=resubmit(,sec_CT_OkayEd)
 //
 // Table 2 sec_OUT
 // 40000 in_port=PORT_VM,match_allow,actions=resubmit(,sec_IN)
