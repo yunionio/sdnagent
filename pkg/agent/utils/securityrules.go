@@ -103,8 +103,8 @@ func (sr *SecurityRule) OvsActionAllow() bool {
 	return sr.r.Action == secrules.ACTION_ALLOW
 }
 
-func (sr *SecurityRule) IsAllowAny() bool {
-	return sr.r.IsAllowAny()
+func (sr *SecurityRule) IsWildMatch() bool {
+	return sr.r.IsWildMatch()
 }
 
 // TODO squash neighbouring rules of the same direction
@@ -113,7 +113,6 @@ type SecurityRules struct {
 	outRules      []*SecurityRule
 	inOvsMatches  []string
 	outOvsMatches []string
-	inAllowAny    bool
 	outAllowAny   bool
 }
 
@@ -136,8 +135,6 @@ func (sr *SecurityRules) OutRulesString() string {
 func NewSecurityRules(s string) (*SecurityRules, error) {
 	inRules := []*SecurityRule{}
 	outRules := []*SecurityRule{}
-	in, inAllowAny := false, false
-	out, outAllowAny := false, false
 	srs := strings.Split(s, ";")
 	for _, sr := range srs {
 		sr = strings.TrimSpace(sr)
@@ -151,51 +148,25 @@ func NewSecurityRules(s string) (*SecurityRules, error) {
 		}
 		switch r.Direction() {
 		case secrules.DIR_IN:
-			if !in {
-				if r.IsAllowAny() {
-					inAllowAny = true
-				}
-				in = true
-			}
 			inRules = append(inRules, r)
 		case secrules.DIR_OUT:
-			if !out {
-				if r.IsAllowAny() {
-					outAllowAny = true
-				}
-				out = true
-			}
 			outRules = append(outRules, r)
 		}
 	}
-	// These can only happen when users have secgroup specified but rules
-	// for each direction can be empty.
-	//
 	// In the case where no secgroup was assigned, default security_rules
 	// "in:allow_any; out:allow_any" will be used by the caller
-	if len(inRules) == 0 {
+	if l := len(inRules); l == 0 || (l > 0 && !inRules[l-1].IsWildMatch()) {
 		r, _ := NewSecurityRule("in:deny any")
 		inRules = append(inRules, r)
 	}
-	if len(outRules) == 0 {
+	if l := len(outRules); l == 0 || (l > 0 && !outRules[l-1].IsWildMatch()) {
 		r, _ := NewSecurityRule("out:allow any")
 		outRules = append(outRules, r)
-		outAllowAny = true
 	}
 	return &SecurityRules{
-		inRules:     inRules,
-		outRules:    outRules,
-		inAllowAny:  inAllowAny,
-		outAllowAny: outAllowAny,
+		inRules:  inRules,
+		outRules: outRules,
 	}, nil
-}
-
-func (sr *SecurityRules) InAllowAny() bool {
-	return sr.inAllowAny
-}
-
-func (sr *SecurityRules) OutAllowAny() bool {
-	return sr.outAllowAny
 }
 
 func PortRangeToMasks(s, e uint16) [][2]uint16 {
