@@ -69,9 +69,7 @@ func (h *HostLocal) FlowsMap() (map[string][]*ovs.Flow, error) {
 		F(0, 40000, "ipv6", "drop"),
 	}
 	if h.HostConfig.K8sClusterCidr != nil {
-		flows = append(flows, F(0, 30050,
-			T("ip,nw_dst={{.K8SCidr}}"),
-			T("mod_dl_dst:{{.MAC}},local")))
+		flows = append(flows, F(0, 30050, T("ip,nw_dst={{.K8SCidr}}"), T("mod_dl_dst:{{.MAC}},local")))
 	}
 	flows = append(flows,
 		F(0, 29300, "tcp,nw_dst=169.254.169.254,tp_dst=80",
@@ -125,7 +123,15 @@ func (g *Guest) FlowsMap() (map[string][]*ovs.Flow, error) {
 		} else {
 			m["_dl_vlan"] = T("vlan_tci={{.VLANTci}}")
 		}
-		flows := []*ovs.Flow{
+		flows := []*ovs.Flow{}
+		if g.HostConfig.K8sClusterCidr != nil {
+			m["K8SCidr"] = g.HostConfig.K8sClusterCidr
+			flows = append(flows,
+				F(0, 30040, T("in_port=LOCAL,ip,nw_src={{.K8SCidr}},nw_dst={{.IP}}"),
+					T("mod_dl_dst:{{.MAC}},output:{{.PortNo}}")),
+			)
+		}
+		flows = append(flows,
 			F(0, 29200,
 				T("in_port=LOCAL,tcp,nw_dst={{.IP}},tp_src={{.MetadataPort}}"),
 				T("mod_dl_dst:{{.MAC}},mod_nw_src:169.254.169.254,mod_tp_src:80,output:{{.PortNo}}")),
@@ -133,7 +139,7 @@ func (g *Guest) FlowsMap() (map[string][]*ovs.Flow, error) {
 			F(0, 28300, T("in_port=LOCAL,dl_dst={{.MAC}},udp,tp_src=67,tp_dst=68"), T("output:{{.PortNo}}")),
 			F(0, 26700, T("in_port={{.PortNoPhy}},dl_dst={{.MAC}},{{._dl_vlan}}"), "normal"),
 			F(0, 25700, T("in_port={{.PortNo}}"), "normal"),
-		}
+		)
 		flows = append(flows, g.SecurityRules.Flows(m)...)
 		if fs, ok := r[nic.Bridge]; ok {
 			flows = append(fs, flows...)
@@ -141,7 +147,7 @@ func (g *Guest) FlowsMap() (map[string][]*ovs.Flow, error) {
 		r[nic.Bridge] = flows
 	}
 	if !allGood {
-		return r, fmt.Errorf("guest port is not ready yet")
+		return r, fmt.Errorf("not all nics ready")
 	}
 	return r, nil
 }
@@ -236,6 +242,7 @@ func (sr *SecurityRules) Flows(data map[string]interface{}) []*ovs.Flow {
 // Table 0
 // 40000 ipv6,actions=drop
 // 30050 ip,nw_dst=K8S_CIDR,actions=mod_LOCAL
+// 30040 ip,nw_src=K8S_CIDR,nw_dst=IP_VM,in_port=LOCAL,actions=mod_dl_dst:MAC_VM,output:PORT_VM
 // 29300 metaserver_req,actions=mod_metaserver
 // 29200 metaserver_resp_VM_IP,actions=mod_metaserver_PORT_VM
 // 28400 in_port=PORT_VM,dhcp_req,actions=LOCAL
@@ -259,7 +266,7 @@ func (sr *SecurityRules) Flows(data map[string]interface{}) []*ovs.Flow {
 //  7900 ip,ct_state=+trk+inv,actions=drop
 //  7800 ip,ct_state=+trk+new,{{!in_port_vm}},actions=resubmit(,sec_IN)
 //  7700 ip,ct_state=+trk+new,{{ in_port_vm}},actions=resubmit(,sec_OUT)
-//  7600 actions=normal
+//  7600 ip,actions=resubmit(,sec_CT_OkayEd)
 //
 // Table 2 sec_OUT
 // 40000 in_port=PORT_VM,match_allow,actions=resubmit(,sec_IN)
