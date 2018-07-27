@@ -19,11 +19,16 @@ import (
 
 var REGEX_UUID *regexp.Regexp = regexp.MustCompile(`^[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}$`)
 
+type pendingGuest struct {
+	guest     *utils.Guest
+	firstSeen time.Time
+}
+
 type serversWatcher struct {
 	hostConfig    *utils.HostConfig
 	watcher       *fsnotify.Watcher
 	guests        map[string]*utils.Guest
-	guestsPending map[string]*utils.Guest
+	pendingGuests map[string]*pendingGuest
 	agent         *AgentServer
 	zoneMan       *utils.ZoneMan
 	ofCli         *ovs.OpenFlowService
@@ -42,7 +47,7 @@ func newServersWatcher() (*serversWatcher, error) {
 		hostConfig:    hc,
 		watcher:       w,
 		guests:        map[string]*utils.Guest{},
-		guestsPending: map[string]*utils.Guest{},
+		pendingGuests: map[string]*pendingGuest{},
 		zoneMan:       utils.NewZoneMan(GuestCtZoneBase),
 		ofCli:         ovs.New().OpenFlow,
 	}, nil
@@ -111,10 +116,10 @@ func (w *serversWatcher) updGuestFlows(ctx context.Context, g *utils.Guest) (err
 		if err != nil {
 			log.Warningf("update guest flows %s: %s", g.Id, err)
 			if setPending {
-				w.guestsPending[g.Id] = g
+				w.setPending(g)
 			}
 		} else {
-			delete(w.guestsPending, g.Id)
+			w.delPending(g)
 		}
 	}()
 
@@ -160,7 +165,7 @@ func (w *serversWatcher) delGuestFlows(ctx context.Context, g *utils.Guest) {
 		flowman := w.agent.GetFlowMan(bridge)
 		flowman.updateFlows(ctx, g.Who(), []*ovs.Flow{})
 	}
-	delete(w.guestsPending, g.Id)
+	w.delPending(g)
 }
 
 func (w *serversWatcher) scan(ctx context.Context) {
@@ -231,6 +236,28 @@ func (w *serversWatcher) withWait(ctx context.Context, f func(context.Context)) 
 	}
 }
 
+func (w *serversWatcher) setPending(g *utils.Guest) {
+	if _, ok := w.pendingGuests[g.Id]; !ok {
+		w.pendingGuests[g.Id] = &pendingGuest{
+			guest:     g,
+			firstSeen: time.Now(),
+		}
+	}
+}
+
+func (w *serversWatcher) delPending(g *utils.Guest) {
+	delete(w.pendingGuests, g.Id)
+}
+
+func (w *serversWatcher) hasRecentPending() bool {
+	for _, pg := range w.pendingGuests {
+		if time.Since(pg.firstSeen) < WatcherRecentPendingTime {
+			return true
+		}
+	}
+	return false
+}
+
 func (w *serversWatcher) Start(ctx context.Context) {
 	wg := ctx.Value("wg").(*sync.WaitGroup)
 	wg.Add(1)
@@ -250,7 +277,7 @@ func (w *serversWatcher) Start(ctx context.Context) {
 	defer pendingRefreshTicker.Stop()
 	for {
 		var pendingChan <-chan time.Time
-		if len(w.guestsPending) > 0 {
+		if w.hasRecentPending() {
 			pendingChan = pendingRefreshTicker.C
 		}
 		select {
@@ -300,8 +327,8 @@ func (w *serversWatcher) Start(ctx context.Context) {
 		case <-pendingChan:
 			log.Infof("watcher refresh pendings")
 			w.withWait(ctx, func(ctx context.Context) {
-				for _, g := range w.guestsPending {
-					w.updGuestFlows(ctx, g)
+				for _, pg := range w.pendingGuests {
+					w.updGuestFlows(ctx, pg.guest)
 				}
 			})
 		case <-refreshTicker.C:
