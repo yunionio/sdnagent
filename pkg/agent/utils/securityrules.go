@@ -21,7 +21,7 @@ func NewSecurityRule(s string) (*SecurityRule, error) {
 	return &SecurityRule{r: r}, nil
 }
 
-func (sr *SecurityRule) Direction() string {
+func (sr *SecurityRule) Direction() secrules.TSecurityRuleDirection {
 	return sr.r.Direction
 }
 
@@ -60,7 +60,7 @@ func (sr *SecurityRule) OvsMatches() []string {
 				tpMatch = append(tpMatch, tpField+fmt.Sprintf("%d", p))
 			}
 		} else if r.PortStart > 0 && r.PortStart < r.PortEnd {
-			ms := PortRangeToMasks(r.PortStart, r.PortEnd)
+			ms := PortRangeToMasks(uint16(r.PortStart), uint16(r.PortEnd))
 			for _, m := range ms {
 				// NOTE both start and end should never be zero, the
 				// check is here just in case
@@ -103,7 +103,7 @@ func (sr *SecurityRule) OvsMatches() []string {
 }
 
 func (sr *SecurityRule) OvsActionAllow() bool {
-	return sr.r.Action == secrules.ACTION_ALLOW
+	return sr.r.Action == secrules.SecurityRuleAllow
 }
 
 func (sr *SecurityRule) IsWildMatch() bool {
