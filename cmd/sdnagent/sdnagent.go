@@ -8,7 +8,7 @@ import (
 
 	"yunion.io/yunion-sdnagent/pkg/agent/common"
 	"yunion.io/yunion-sdnagent/pkg/agent/server"
-	"yunion.io/yunioncloud/pkg/log"
+	"github.com/yunionio/log"
 )
 
 const (
