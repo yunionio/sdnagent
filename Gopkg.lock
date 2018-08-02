@@ -148,6 +148,15 @@
 
 [[projects]]
   branch = "master"
+  name = "github.com/yunionio/pkg"
+  packages = [
+    "util/regutils",
+    "util/secrules"
+  ]
+  revision = "8c5eab6f0b758d3888fd9041419e38a5b1129725"
+
+[[projects]]
+  branch = "master"
   name = "golang.org/x/crypto"
   packages = ["ssh/terminal"]
   revision = "c126467f60eb25f8f27e5a981f32a87e3965053f"
@@ -245,6 +254,6 @@
 [solve-meta]
   analyzer-name = "dep"
   analyzer-version = 1
-  inputs-digest = "8a6475786decdb56f20d2167df70ef5a40404f9a55cb3eff02b229a4a7d89a16"
+  inputs-digest = "87bc596529694610e54d0e7d90030241e1205692fd8ff4748718c2ba4e11f7ba"
   solver-name = "gps-cdcl"
   solver-version = 1

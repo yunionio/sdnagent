@@ -15,8 +15,7 @@ pkg/agent/proto/agent_pb2.py: pkg/agent/proto/agent.proto
 	python -m grpc_tools.protoc -Ipkg/agent/proto --python_out=pkg/agent/proto --grpc_python_out=pkg/agent/proto pkg/agent/proto/agent.proto
 
 rpm: bins
-	ROOT_DIR=$(CURDIR) \
 	EXTRA_BINS=sdncli \
-		 ../yunioncloud/build/build.sh sdnagent
+		 $(CURDIR)/build/build.sh sdnagent
 
 .PHONY: all bins rpm
