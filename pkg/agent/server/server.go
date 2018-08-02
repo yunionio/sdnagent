@@ -10,7 +10,7 @@ import (
 
 	"yunion.io/yunion-sdnagent/pkg/agent/common"
 	pb "yunion.io/yunion-sdnagent/pkg/agent/proto"
-	"yunion.io/yunioncloud/pkg/log"
+	"github.com/yunionio/log"
 )
 
 type AgentServer struct {

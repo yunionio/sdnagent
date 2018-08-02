@@ -24,7 +24,7 @@
 #   go-tests = true
 #   unused-packages = true
 
-ignored = ["yunion.io/yunioncloud/pkg/log", "yunion.io/yunioncloud/pkg/util/secrules"]
+ignored = ["yunion.io/pkg/util/secrules"]
 
 [[constraint]]
   branch = "master"
