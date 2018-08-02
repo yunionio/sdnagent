@@ -24,8 +24,6 @@
 #   go-tests = true
 #   unused-packages = true
 
-ignored = ["yunion.io/pkg/util/secrules"]
-
 [[constraint]]
   branch = "master"
   name = "github.com/digitalocean/go-openvswitch"
