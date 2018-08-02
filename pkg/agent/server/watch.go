@@ -14,7 +14,7 @@ import (
 	"github.com/fsnotify/fsnotify"
 
 	"yunion.io/yunion-sdnagent/pkg/agent/utils"
-	"yunion.io/yunioncloud/pkg/log"
+	"github.com/yunionio/log"
 )
 
 var REGEX_UUID *regexp.Regexp = regexp.MustCompile(`^[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}$`)

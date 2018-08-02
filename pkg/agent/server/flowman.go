@@ -12,7 +12,7 @@ import (
 	"github.com/digitalocean/go-openvswitch/ovs"
 
 	"yunion.io/yunion-sdnagent/pkg/agent/utils"
-	"yunion.io/yunioncloud/pkg/log"
+	"github.com/yunionio/log"
 )
 
 type flowManCmdType int

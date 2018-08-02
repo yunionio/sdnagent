@@ -9,7 +9,7 @@ import (
 
 	"yunion.io/yunion-sdnagent/pkg/agent"
 	pb "yunion.io/yunion-sdnagent/pkg/agent/proto"
-	"yunion.io/yunioncloud/pkg/log"
+	"github.com/yunionio/log"
 )
 
 func flagSetMustGet(v interface{}, err error) interface{} {
