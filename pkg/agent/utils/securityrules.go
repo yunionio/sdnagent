@@ -4,7 +4,7 @@ import (
 	"fmt"
 	"strings"
 
-	"yunion.io/pkg/util/secrules"
+	"github.com/yunionio/pkg/util/secrules"
 )
 
 type SecurityRule struct {
