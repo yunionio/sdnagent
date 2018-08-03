@@ -45,6 +45,23 @@ virtual host with 2 nics enslaved to the same br0
 20. regrestion test
 38. nat for testing purposes
 
+traffic control test
+
+ - server start
+ - server stop
+ - server change bandwidth
+ - zero bandwidth: no limit: api forbids this
+ - qdisc statistics no reset on normal running
+ - qdisc automatic restore after manual delete, change
+
+		sudo tc qdisc delete dev vnet2-197 root
+		sudo tc qdisc replace dev vnet2-197 root handle 1: tbf rate 100Kbit burst 100b latency 10ms
+
+ - initial noqueue
+ - initial with ingress
+ - initial pfifo_fast
+ - minimize erruption on restart
+
 # plan: stateless flavour
 
 - PRO: More efficient
