@@ -175,6 +175,8 @@ func (sr *SecurityRules) Flows(data map[string]interface{}) []*ovs.Flow {
 		F(0, 25800, T("in_port={{.PortNo}},dl_src={{.MAC}},ip"),
 			loadReg0BitVm+","+loadZone+T(",ct(table=1,zone={{.CT_ZONE}})")),
 		F(0, 25700, T("in_port={{.PortNo}},dl_src={{.MAC}}"), "normal"),
+		F(0, 23300, T("dl_dst={{.MAC}},ip"),
+			loadZone+T(",ct(table=1,zone={{.CT_ZONE}})")),
 		// ct_state= flags order matters
 		F(1, 7900, "ip,ct_state=+inv+trk", "drop"),
 		F(1, 7800, T("ip,ct_state=+new+trk,{{._in_port_not_vm}}"), "resubmit(,3)"),
@@ -269,6 +271,8 @@ func (sr *SecurityRules) Flows(data map[string]interface{}) []*ovs.Flow {
 // 24700 in_port=PORT_PHY,{ allow_switch_vms},actions=normal
 // 24600 in_port=PORT_PHY,{!allow_switch_vms},dl_dst=01:00:00:00:00:00/01:00:00:00:00:00,actions=normal
 // 24500 in_port=PORT_PHY,{!allow_switch_vms},actions=drop
+//
+// 23300 dl_dst=MAC_VM,ip,actions=load_dst_VM_ZONE,ct(zone=dst_VM_ZONE,table=sec_CT)
 //
 // Table 1 sec_CT
 //  7900 ip,ct_state=+trk+inv,actions=drop
