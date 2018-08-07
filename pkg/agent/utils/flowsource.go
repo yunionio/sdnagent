@@ -191,7 +191,7 @@ func (sr *SecurityRules) Flows(data map[string]interface{}) []*ovs.Flow {
 	matchOut := T("in_port={{.PortNo}}")
 	for _, r := range sr.outRules {
 		if prioOut <= 20 {
-			log.Errorf("%s: %q generated too out rules",
+			log.Errorf("%s: %q generated too many out rules",
 				data["IP"], sr.OutRulesString())
 			break
 		}
