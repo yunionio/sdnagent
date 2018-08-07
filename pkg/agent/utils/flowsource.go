@@ -234,7 +234,8 @@ func (sr *SecurityRules) Flows(data map[string]interface{}) []*ovs.Flow {
 //
 // Assumptions
 //
-//  - MAC is unique, IP is not.  IP can be unique we hold the ground now
+//  - MAC is unique, this can be an issue when allow_switch_vms
+//  - We try to not depend on IP uniqueness, but this is also requirement for LOCAL-vm communication
 //  - We are the only user of ct_zone other than 0
 //
 // Flows with "VM" in them are guest nic-specific flows
