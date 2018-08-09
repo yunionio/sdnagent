@@ -7,9 +7,6 @@
 
 8. lock yunioncloud/pkg/log in Gopkg.toml
 10. ping check on startup
-15. After host_server
-18. vlan_tci - dl_vlan
-19. vlan = 1
 21. encode who in cookie
 22. intranet, external net
 23. config file
@@ -17,13 +14,11 @@
 26. match field, order by Name()
 27. ovsdb port external_id
 29. hostconfig with ct zone management, collision with ovn-controller?
-30. set_queue for tc support
 31. check availability of conntrack
 25. cgo libopenvswitch
 33. maybe, robustness, add logic to detect ct() , ct_state arguments order
 
 34. TODO redirect broadcast ip traffic to sec_IN
-35. TODO redirect LOCAL ip traffic to sec_IN
 36. do we need to kill existing connection when new secrule applies
 	- delete zone conntrack entries
 37. conntrack entry timeout setting
