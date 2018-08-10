@@ -10,14 +10,14 @@ import (
 )
 
 type guestDesc struct {
-	NICs               []*guestNIC `json:"nics"`
+	NICs               []*GuestNIC `json:"nics"`
 	SecurityRules      string      `json:"security_rules"`
 	AdminSecurityRules string      `json:"admin_security_rules"`
 	Secgroup           string
 	Name               string
 }
 
-type guestNIC struct {
+type GuestNIC struct {
 	Bridge     string
 	Bw         int
 	Dns        string
@@ -40,7 +40,15 @@ type guestNIC struct {
 	PortNo   int    `json:"-"`
 }
 
-func (n *guestNIC) Map() map[string]interface{} {
+func (n *GuestNIC) TcData() *TcData {
+	return &TcData{
+		Type:        TC_DATA_TYPE_GUEST,
+		Ifname:      n.IfnameHost,
+		IngressMbps: uint64(n.Bw),
+	}
+}
+
+func (n *GuestNIC) Map() map[string]interface{} {
 	m := map[string]interface{}{
 		"IP":      n.IP,
 		"MAC":     n.MAC,
@@ -64,7 +72,7 @@ type Guest struct {
 	Path          string
 	Name          string
 	SecurityRules *SecurityRules
-	NICs          []*guestNIC
+	NICs          []*GuestNIC
 	HostConfig    *HostConfig
 }
 

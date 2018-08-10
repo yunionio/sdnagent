@@ -8,9 +8,9 @@ import (
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/reflection"
 
+	"github.com/yunionio/log"
 	"yunion.io/yunion-sdnagent/pkg/agent/common"
 	pb "yunion.io/yunion-sdnagent/pkg/agent/proto"
-	"github.com/yunionio/log"
 )
 
 type AgentServer struct {
@@ -42,7 +42,7 @@ func (s *AgentServer) Start() error {
 	}
 	defer lis.Close()
 	defer s.wg.Wait()
-	go s.serversWatcher.Start(s.ctx)
+	go s.serversWatcher.Start(s.ctx, s)
 	err = s.rpcServer.Serve(lis)
 	return err
 }
