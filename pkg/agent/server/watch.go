@@ -2,7 +2,6 @@ package server
 
 import (
 	"context"
-	"fmt"
 	"io/ioutil"
 	"path"
 	"path/filepath"
@@ -13,8 +12,8 @@ import (
 	"github.com/digitalocean/go-openvswitch/ovs"
 	"github.com/fsnotify/fsnotify"
 
-	"yunion.io/yunion-sdnagent/pkg/agent/utils"
 	"github.com/yunionio/log"
+	"yunion.io/yunion-sdnagent/pkg/agent/utils"
 )
 
 var REGEX_UUID *regexp.Regexp = regexp.MustCompile(`^[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}$`)
@@ -25,32 +24,24 @@ type pendingGuest struct {
 }
 
 type serversWatcher struct {
-	hostConfig    *utils.HostConfig
-	watcher       *fsnotify.Watcher
-	guests        map[string]*utils.Guest
-	pendingGuests map[string]*pendingGuest
-	agent         *AgentServer
-	zoneMan       *utils.ZoneMan
-	ofCli         *ovs.OpenFlowService
+	agent      *AgentServer
+	tcMan      *TcMan
+	hostConfig *utils.HostConfig
+	watcher    *fsnotify.Watcher
+	hostLocal  *HostLocal
+	guests     map[string]*Guest
+	zoneMan    *utils.ZoneMan
+	ofCli      *ovs.OpenFlowService
 }
 
 func newServersWatcher() (*serversWatcher, error) {
-	w, err := fsnotify.NewWatcher()
-	if err != nil {
-		return nil, err
+	w := &serversWatcher{
+		guests:  map[string]*Guest{},
+		zoneMan: utils.NewZoneMan(GuestCtZoneBase),
+		tcMan:   NewTcMan(),
+		ofCli:   ovs.New().OpenFlow,
 	}
-	hc, err := utils.NewHostConfig(DefaultHostConfigPath)
-	if err != nil {
-		return nil, err
-	}
-	return &serversWatcher{
-		hostConfig:    hc,
-		watcher:       w,
-		guests:        map[string]*utils.Guest{},
-		pendingGuests: map[string]*pendingGuest{},
-		zoneMan:       utils.NewZoneMan(GuestCtZoneBase),
-		ofCli:         ovs.New().OpenFlow,
-	}, nil
+	return w, nil
 }
 
 type watchEventType int
@@ -68,106 +59,6 @@ type watchEvent struct {
 	guestPath string // path to the servers/<uuid> dir
 }
 
-func (w *serversWatcher) reloadGuestDesc(ctx context.Context, g *utils.Guest) error {
-	oldM := map[string]uint16{}
-	oldNICs := g.NICs
-	for _, nic := range oldNICs {
-		oldM[nic.MAC] = nic.CtZoneId
-	}
-	err := g.LoadDesc()
-	if err != nil {
-		return err
-	}
-	for _, nic := range g.NICs {
-		if i, ok := oldM[nic.MAC]; ok {
-			delete(oldM, nic.MAC)
-			nic.CtZoneId = i
-			continue
-		}
-		zoneId, err := w.zoneMan.AllocateZoneId(nic.MAC)
-		if err != nil {
-			return fmt.Errorf("ct zone id allocation failed: %s", err)
-		}
-		nic.CtZoneId = zoneId
-	}
-	for mac, _ := range oldM {
-		w.zoneMan.FreeZoneId(mac)
-	}
-	return nil
-}
-
-func (w *serversWatcher) guestPortReady(ctx context.Context, g *utils.Guest) bool {
-	someOk := false
-	for _, nic := range g.NICs {
-		bridge := nic.Bridge
-		ifname := nic.IfnameHost
-		portStats, err := w.ofCli.DumpPort(bridge, ifname)
-		if err == nil {
-			someOk = true
-			nic.PortNo = portStats.PortID
-		}
-	}
-	return someOk
-}
-
-func (w *serversWatcher) updGuestFlows(ctx context.Context, g *utils.Guest) (err error) {
-	setPending := true
-	defer func() {
-		if err != nil {
-			log.Warningf("update guest flows %s: %s", g.Id, err)
-			if setPending {
-				w.setPending(g)
-			}
-		} else {
-			w.delPending(g)
-		}
-	}()
-
-	err = w.reloadGuestDesc(ctx, g)
-	if err != nil {
-		return
-	}
-	bfs := map[string][]*ovs.Flow{}
-	if w.guestPortReady(ctx, g) {
-		bfs, err = g.FlowsMap()
-		if err != nil {
-			return
-		}
-	} else {
-		if g.IsVM() && !g.Running() {
-			// we will be notified when its pid is to be updated
-			// so there is no need to set pending for it now
-			err = fmt.Errorf("not running")
-			setPending = false
-		} else {
-			// NOTE crashed container can make pending watcher busy
-			err = fmt.Errorf("port not ready")
-		}
-		// next we will clean flow rules for them
-	}
-	for bridge, flows := range bfs {
-		flowman := w.agent.GetFlowMan(bridge)
-		flowman.updateFlows(ctx, g.Who(), flows)
-	}
-	return
-}
-
-func (w *serversWatcher) delGuestFlows(ctx context.Context, g *utils.Guest) {
-	if g.NICs == nil {
-		return
-	}
-	bridges := map[string]bool{}
-	for _, nic := range g.NICs {
-		bridges[nic.Bridge] = true
-		w.zoneMan.FreeZoneId(nic.MAC)
-	}
-	for bridge, _ := range bridges {
-		flowman := w.agent.GetFlowMan(bridge)
-		flowman.updateFlows(ctx, g.Who(), []*ovs.Flow{})
-	}
-	w.delPending(g)
-}
-
 func (w *serversWatcher) scan(ctx context.Context) {
 	serversPath := w.hostConfig.ServersPath
 	fis, err := ioutil.ReadDir(serversPath)
@@ -179,51 +70,30 @@ func (w *serversWatcher) scan(ctx context.Context) {
 		if !fi.IsDir() {
 			continue
 		}
-		name := fi.Name()
-		if REGEX_UUID.MatchString(name) {
-			path := path.Join(serversPath, name)
-			g := &utils.Guest{
-				Id:         name,
-				Path:       path,
-				HostConfig: w.hostConfig,
-			}
-			err := w.watcher.Add(path)
+		id := fi.Name()
+		if REGEX_UUID.MatchString(id) {
+			path := path.Join(serversPath, id)
+			g, err := w.addGuestWatch(id, path)
 			if err != nil {
-				log.Errorf("watch guest path %s failed during scan: %s", path, err)
+				log.Errorf("watch guest failed during scan: %s: %s", path, err)
 			}
-			w.guests[name] = g
-			w.updGuestFlows(ctx, g)
+			g.UpdateSettings(ctx)
 		}
 	}
 }
 
-func (w *serversWatcher) updHostLocalFlows(ctx context.Context) {
-	for _, hcn := range w.hostConfig.Networks {
-		ip, err := w.hostConfig.MasterIP()
-		if err != nil {
-			log.Errorf("get master ip failed; %s", err)
-			continue
-		}
-		mac, err := w.hostConfig.MasterMAC()
-		if err != nil {
-			log.Errorf("get master mac failed; %s", err)
-			continue
-		}
-		hostLocal := &utils.HostLocal{
-			HostConfig: w.hostConfig,
-			Bridge:     hcn.Bridge,
-			Ifname:     hcn.Ifname,
-			IP:         ip,
-			MAC:        mac,
-		}
-		flows, err := hostLocal.FlowsMap()
-		if err != nil {
-			log.Errorf("prepare %s hostlocal flows failed: %s", hcn.Bridge, err)
-			continue
-		}
-		flowman := w.agent.GetFlowMan(hcn.Bridge)
-		flowman.updateFlows(ctx, hostLocal.Who(), flows[hcn.Bridge])
+// addGuestWatch adds the server with <id> in <path> to watch list.  It returns
+// error when adding watch failed, but it will always return non-nil *Guest
+func (w *serversWatcher) addGuestWatch(id, path string) (*Guest, error) {
+	ug := &utils.Guest{
+		Id:         id,
+		Path:       path,
+		HostConfig: w.hostConfig,
 	}
+	g := NewGuest(ug, w)
+	w.guests[id] = g
+	err := w.watcher.Add(path)
+	return g, err
 }
 
 func (w *serversWatcher) withWait(ctx context.Context, f func(context.Context)) {
@@ -236,41 +106,53 @@ func (w *serversWatcher) withWait(ctx context.Context, f func(context.Context)) 
 	}
 }
 
-func (w *serversWatcher) setPending(g *utils.Guest) {
-	if _, ok := w.pendingGuests[g.Id]; !ok {
-		w.pendingGuests[g.Id] = &pendingGuest{
-			guest:     g,
-			firstSeen: time.Now(),
-		}
-	}
-}
-
-func (w *serversWatcher) delPending(g *utils.Guest) {
-	delete(w.pendingGuests, g.Id)
-}
-
 func (w *serversWatcher) hasRecentPending() bool {
-	for _, pg := range w.pendingGuests {
-		if time.Since(pg.firstSeen) < WatcherRecentPendingTime {
+	for _, g := range w.guests {
+		if g.isPending() {
 			return true
 		}
 	}
 	return false
 }
 
-func (w *serversWatcher) Start(ctx context.Context) {
+func (w *serversWatcher) Start(ctx context.Context, agent *AgentServer) {
+	// workgroup
 	wg := ctx.Value("wg").(*sync.WaitGroup)
 	wg.Add(1)
 	defer wg.Done()
-	defer w.watcher.Close()
-	err := w.watcher.Add(w.hostConfig.ServersPath)
+
+	w.agent = agent
+
+	// hostConfig
+	hc, err := utils.NewHostConfig(DefaultHostConfigPath)
 	if err != nil {
+		log.Errorf("getting host config failed: %s", err)
 		return
 	}
+	w.hostConfig = hc
+
+	// start watcher before scan
+	w.watcher, err = fsnotify.NewWatcher()
+	if err != nil {
+		log.Errorf("creating inotify watcher failed: %s", err)
+		return
+	}
+	defer w.watcher.Close()
+	err = w.watcher.Add(w.hostConfig.ServersPath)
+	if err != nil {
+		log.Errorf("wathcing %s failed: %s", w.hostConfig.ServersPath, err)
+		return
+	}
+
+	go w.tcMan.Start(ctx)
+
+	// init scan
+	w.hostLocal = NewHostLocal(w)
 	w.withWait(ctx, func(ctx context.Context) {
-		w.updHostLocalFlows(ctx)
+		w.hostLocal.UpdateSettings(ctx)
 		w.scan(ctx)
 	})
+
 	refreshTicker := time.NewTicker(WatcherRefreshRate)
 	pendingRefreshTicker := time.NewTicker(WatcherRefreshRateOnError)
 	defer refreshTicker.Stop()
@@ -292,34 +174,28 @@ func (w *serversWatcher) Start(ctx context.Context) {
 			switch wev.evType {
 			case watchEventTypeAddServerDir:
 				log.Errorf("received guest path add event: %s", guestPath)
-				err := w.watcher.Add(guestPath)
+				g, err := w.addGuestWatch(guestId, guestPath)
 				if err != nil {
-					log.Errorf("watch guest path %s failed: %s", guestPath, err)
+					log.Errorf("watch guest failed: %s: %s", guestPath, err)
 				}
-				g := &utils.Guest{
-					Id:         guestId,
-					Path:       guestPath,
-					HostConfig: w.hostConfig,
-				}
-				w.guests[guestId] = g
-				w.updGuestFlows(ctx, g)
+				g.UpdateSettings(ctx)
 			case watchEventTypeDelServerDir:
 				if g, ok := w.guests[guestId]; ok {
 					// this is needed for containers
-					w.delGuestFlows(ctx, g)
+					g.ClearSettings(ctx)
 					delete(w.guests, guestId)
 				}
 				log.Infof("guest path deleted: %s", guestPath)
 			case watchEventTypeUpdServer:
 				if g, ok := w.guests[guestId]; ok {
-					w.updGuestFlows(ctx, g)
+					g.UpdateSettings(ctx)
 				} else {
 					log.Warningf("unexpected guest update event: %s", guestPath)
 				}
 			case watchEventTypeDelServer:
 				if g, ok := w.guests[guestId]; ok {
-					log.Infof("remove guest flows %s", guestId)
-					w.delGuestFlows(ctx, g)
+					log.Infof("remove guest settings %s", guestId)
+					g.ClearSettings(ctx)
 				} else {
 					log.Warningf("unexpected guest down event: %s", guestPath)
 				}
@@ -327,16 +203,18 @@ func (w *serversWatcher) Start(ctx context.Context) {
 		case <-pendingChan:
 			log.Infof("watcher refresh pendings")
 			w.withWait(ctx, func(ctx context.Context) {
-				for _, pg := range w.pendingGuests {
-					w.updGuestFlows(ctx, pg.guest)
+				for _, g := range w.guests {
+					if g.isPending() {
+						g.UpdateSettings(ctx)
+					}
 				}
 			})
 		case <-refreshTicker.C:
 			log.Infof("watcher refresh time ;)")
 			w.withWait(ctx, func(ctx context.Context) {
-				w.updHostLocalFlows(ctx)
+				w.hostLocal.UpdateSettings(ctx)
 				for _, g := range w.guests {
-					w.updGuestFlows(ctx, g)
+					g.UpdateSettings(ctx)
 				}
 			})
 		case err := <-w.watcher.Errors:

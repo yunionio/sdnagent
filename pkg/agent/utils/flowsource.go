@@ -98,6 +98,10 @@ func (g *Guest) FlowsMap() (map[string][]*ovs.Flow, error) {
 	r := map[string][]*ovs.Flow{}
 	allGood := true
 	for _, nic := range g.NICs {
+		if nic.PortNo <= 0 {
+			allGood = false
+			continue
+		}
 		ofCli := ovs.New().OpenFlow
 		hcn := g.HostConfig.HostNetworkConfig(nic.Bridge)
 		if hcn == nil {
