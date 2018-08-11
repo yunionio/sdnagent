@@ -7,8 +7,8 @@ import (
 
 	"github.com/digitalocean/go-openvswitch/ovs"
 
-	"github.com/yunionio/log"
-	"yunion.io/yunion-sdnagent/pkg/agent/utils"
+	"yunion.io/x/log"
+	"yunion.io/x/sdnagent/pkg/agent/utils"
 )
 
 type Guest struct {

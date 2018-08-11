@@ -6,9 +6,9 @@ import (
 	"sync"
 	"time"
 
-	"github.com/yunionio/log"
-	"yunion.io/yunion-sdnagent/pkg/agent/utils"
-	"yunion.io/yunion-sdnagent/pkg/tc"
+	"yunion.io/x/log"
+	"yunion.io/x/sdnagent/pkg/agent/utils"
+	"yunion.io/x/sdnagent/pkg/tc"
 )
 
 type TcManPage struct {

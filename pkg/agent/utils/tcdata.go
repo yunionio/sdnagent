@@ -3,7 +3,7 @@ package utils
 import (
 	"fmt"
 
-	"yunion.io/yunion-sdnagent/pkg/tc"
+	"yunion.io/x/sdnagent/pkg/tc"
 )
 
 type TcDataType string
