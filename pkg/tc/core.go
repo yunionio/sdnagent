@@ -19,5 +19,4 @@ func init() {
 		return
 	}
 	tickInUsec = float64(t2us) / float64(us2t)
-	fmt.Printf("%d %x %x %x", tickInUsec, t2us, us2t, clockRes)
 }
