@@ -15,7 +15,7 @@
 package cmd
 
 import (
-	"yunion.io/yunion-sdnagent/cmd/sdncli/cli"
+	"yunion.io/x/sdnagent/cmd/sdncli/cli"
 
 	"github.com/spf13/cobra"
 )

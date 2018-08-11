@@ -14,7 +14,7 @@ package main
 import (
   "errors"
 
-  "github.com/yunionio/log"
+  "yunion.io/x/log"
 )
 
 func main() {

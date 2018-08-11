@@ -6,9 +6,9 @@ import (
 	"os/signal"
 	"syscall"
 
-	"yunion.io/yunion-sdnagent/pkg/agent/common"
-	"yunion.io/yunion-sdnagent/pkg/agent/server"
-	"github.com/yunionio/log"
+	"yunion.io/x/sdnagent/pkg/agent/common"
+	"yunion.io/x/sdnagent/pkg/agent/server"
+	"yunion.io/x/log"
 )
 
 const (
