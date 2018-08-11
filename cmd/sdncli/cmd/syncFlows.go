@@ -17,7 +17,7 @@ package cmd
 import (
 	"github.com/spf13/cobra"
 
-	"yunion.io/yunion-sdnagent/cmd/sdncli/cli"
+	"yunion.io/x/sdnagent/cmd/sdncli/cli"
 )
 
 // syncFlowsCmd represents the syncFlows command

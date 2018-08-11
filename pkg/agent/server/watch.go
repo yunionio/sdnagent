@@ -12,8 +12,8 @@ import (
 	"github.com/digitalocean/go-openvswitch/ovs"
 	"github.com/fsnotify/fsnotify"
 
-	"github.com/yunionio/log"
-	"yunion.io/yunion-sdnagent/pkg/agent/utils"
+	"yunion.io/x/log"
+	"yunion.io/x/sdnagent/pkg/agent/utils"
 )
 
 var REGEX_UUID *regexp.Regexp = regexp.MustCompile(`^[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}$`)

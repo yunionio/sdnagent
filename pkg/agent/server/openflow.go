@@ -5,7 +5,7 @@ import (
 	"fmt"
 
 	"github.com/digitalocean/go-openvswitch/ovs"
-	pb "yunion.io/yunion-sdnagent/pkg/agent/proto"
+	pb "yunion.io/x/sdnagent/pkg/agent/proto"
 )
 
 type openflowService struct {
