@@ -1,1 +1,1 @@
-package proto // import "yunion.io/x/sdnagent/pkg/agent/proto"
+package pb // import "yunion.io/x/sdnagent/pkg/agent/proto"
