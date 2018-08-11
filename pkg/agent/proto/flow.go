@@ -1,4 +1,4 @@
-package pb
+package proto
 
 import (
 	"fmt"
