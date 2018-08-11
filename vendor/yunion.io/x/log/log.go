@@ -6,7 +6,7 @@ import (
 
 	"github.com/sirupsen/logrus"
 
-	"github.com/yunionio/log/hooks"
+	"yunion.io/x/log/hooks"
 )
 
 var (

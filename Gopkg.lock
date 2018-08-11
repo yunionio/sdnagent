@@ -139,24 +139,6 @@
 
 [[projects]]
   branch = "master"
-  name = "github.com/yunionio/log"
-  packages = [
-    ".",
-    "hooks"
-  ]
-  revision = "d2fe137411c230927e28dd82b1a3bcb618dbb28d"
-
-[[projects]]
-  branch = "master"
-  name = "github.com/yunionio/pkg"
-  packages = [
-    "util/regutils",
-    "util/secrules"
-  ]
-  revision = "8c5eab6f0b758d3888fd9041419e38a5b1129725"
-
-[[projects]]
-  branch = "master"
   name = "golang.org/x/crypto"
   packages = ["ssh/terminal"]
   revision = "c126467f60eb25f8f27e5a981f32a87e3965053f"
@@ -251,9 +233,27 @@
   revision = "5420a8b6744d3b0345ab293f6fcba19c978f1183"
   version = "v2.2.1"
 
+[[projects]]
+  branch = "master"
+  name = "yunion.io/x/log"
+  packages = [
+    ".",
+    "hooks"
+  ]
+  revision = "a10b94c5038480920262e0f344656328434955a2"
+
+[[projects]]
+  branch = "master"
+  name = "yunion.io/x/pkg"
+  packages = [
+    "util/regutils",
+    "util/secrules"
+  ]
+  revision = "07cad0cb1df5155b3bfa15079594d01050931554"
+
 [solve-meta]
   analyzer-name = "dep"
   analyzer-version = 1
-  inputs-digest = "87bc596529694610e54d0e7d90030241e1205692fd8ff4748718c2ba4e11f7ba"
+  inputs-digest = "47f4973fdc920370af5813ca3b0955ca9b8bd628754732a13bd7afd3641f58b2"
   solver-name = "gps-cdcl"
   solver-version = 1

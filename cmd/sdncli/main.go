@@ -14,7 +14,7 @@
 
 package main
 
-import "yunion.io/yunion-sdnagent/cmd/sdncli/cmd"
+import "yunion.io/x/sdnagent/cmd/sdncli/cmd"
 
 func main() {
 	cmd.Execute()

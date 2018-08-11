@@ -7,9 +7,9 @@ import (
 	"github.com/spf13/cobra"
 	"github.com/spf13/pflag"
 
-	"yunion.io/yunion-sdnagent/pkg/agent"
-	pb "yunion.io/yunion-sdnagent/pkg/agent/proto"
-	"github.com/yunionio/log"
+	"yunion.io/x/sdnagent/pkg/agent"
+	pb "yunion.io/x/sdnagent/pkg/agent/proto"
+	"yunion.io/x/log"
 )
 
 func flagSetMustGet(v interface{}, err error) interface{} {
