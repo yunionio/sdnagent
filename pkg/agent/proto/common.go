@@ -1,4 +1,4 @@
-package pb
+package proto
 
 type CommonResponse interface {
 	GetCode() uint32
