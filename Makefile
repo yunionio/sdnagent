@@ -4,9 +4,9 @@ all: bins pkg/agent/proto/agent.pb.go
 
 bins:
 	mkdir -p $(BINDIR)
-	go build yunion.io/yunion-sdnagent/pkg/agent
-	go build -o $(BINDIR)/sdnagent yunion.io/yunion-sdnagent/cmd/sdnagent
-	go build -o $(BINDIR)/sdncli yunion.io/yunion-sdnagent/cmd/sdncli
+	go build yunion.io/x/sdnagent/pkg/agent
+	go build -o $(BINDIR)/sdnagent yunion.io/x/sdnagent/cmd/sdnagent
+	go build -o $(BINDIR)/sdncli yunion.io/x/sdnagent/cmd/sdncli
 
 pkg/agent/proto/agent.pb.go: pkg/agent/proto/agent.proto
 	protoc -I pkg/agent/proto pkg/agent/proto/agent.proto --go_out=plugins=grpc:pkg/agent/proto
