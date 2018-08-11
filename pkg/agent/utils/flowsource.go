@@ -7,7 +7,7 @@ import (
 
 	"github.com/digitalocean/go-openvswitch/ovs"
 
-	"github.com/yunionio/log"
+	"yunion.io/x/log"
 )
 
 var disableFirewallRules = false

@@ -3,7 +3,7 @@ package server
 import (
 	"context"
 
-	pb "yunion.io/yunion-sdnagent/pkg/agent/proto"
+	pb "yunion.io/x/sdnagent/pkg/agent/proto"
 
 	"github.com/digitalocean/go-openvswitch/ovs"
 )
