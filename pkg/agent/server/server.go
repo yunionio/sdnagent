@@ -8,9 +8,9 @@ import (
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/reflection"
 
-	"github.com/yunionio/log"
-	"yunion.io/yunion-sdnagent/pkg/agent/common"
-	pb "yunion.io/yunion-sdnagent/pkg/agent/proto"
+	"yunion.io/x/log"
+	"yunion.io/x/sdnagent/pkg/agent/common"
+	pb "yunion.io/x/sdnagent/pkg/agent/proto"
 )
 
 type AgentServer struct {
