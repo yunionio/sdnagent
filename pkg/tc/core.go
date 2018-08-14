@@ -6,7 +6,7 @@ import (
 )
 
 // how many ticks within one microsecond
-var tickInUsec float64 = float64(0x3e8) / float64(0x40)
+var tickInUsec = float64(0x3e8) / float64(0x40)
 
 func init() {
 	f, err := os.Open("/proc/net/psched")
