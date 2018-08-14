@@ -80,7 +80,7 @@ type TcManCmd struct {
 
 type TcMan struct {
 	book      map[string]*TcManSection
-	idleTimer *time.Timer
+	idleTimer *time.Ticker
 	cmdChan   chan *TcManCmd
 	tcCli     *tc.TcCli
 }
@@ -98,7 +98,8 @@ func (tm *TcMan) Start(ctx context.Context) {
 	wg.Add(1)
 	defer wg.Done()
 
-	tm.idleTimer = time.NewTimer(TcManIdleCheckDuration)
+	tm.idleTimer = time.NewTicker(TcManIdleCheckDuration)
+	defer tm.idleTimer.Stop()
 	for {
 		select {
 		case cmd := <-tm.cmdChan:
