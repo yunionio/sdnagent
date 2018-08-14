@@ -24,7 +24,7 @@ type HostConfig struct {
 	AllowSwitchVMs bool // allow virtual machines act as switches
 }
 
-var snippet_pre []byte = []byte(`
+var snippet_pre = []byte(`
 from __future__ import print_function
 port = None
 listen_interface = None
@@ -34,7 +34,7 @@ k8s_cluster_cidr = '10.43.0.0/16'
 allow_switch_vms = False
 
 `)
-var snippet_post []byte = []byte(`
+var snippet_post = []byte(`
 
 import json
 print(json.dumps({
