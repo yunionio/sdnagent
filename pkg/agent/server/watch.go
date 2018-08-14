@@ -16,7 +16,7 @@ import (
 	"yunion.io/x/sdnagent/pkg/agent/utils"
 )
 
-var REGEX_UUID *regexp.Regexp = regexp.MustCompile(`^[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}$`)
+var REGEX_UUID = regexp.MustCompile(`^[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}$`)
 
 type pendingGuest struct {
 	guest     *utils.Guest
