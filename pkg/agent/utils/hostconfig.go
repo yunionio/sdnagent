@@ -13,6 +13,21 @@ type HostConfigNetwork struct {
 	Bridge string
 	Ifname string
 	IP     net.IP
+	mac    net.HardwareAddr
+}
+
+func (hcn *HostConfigNetwork) IPMAC() (net.IP, net.HardwareAddr, error) {
+	if hcn.mac == nil {
+		iface, err := net.InterfaceByName(hcn.Bridge)
+		if err != nil {
+			return nil, nil, err
+		}
+		hcn.mac = iface.HardwareAddr
+	}
+	if hcn.IP != nil && hcn.mac != nil {
+		return hcn.IP, hcn.mac, nil
+	}
+	return nil, nil, fmt.Errorf("cannot find proper ip/mac")
 }
 
 type HostConfig struct {
@@ -110,51 +125,38 @@ func NewHostConfig(file string) (*HostConfig, error) {
 	return hc, nil
 }
 
-func (hc *HostConfig) MasterIP() (net.IP, error) {
+func (hc *HostConfig) MasterIPMAC() (net.IP, net.HardwareAddr, error) {
 	if len(hc.ListenIfname) > 0 {
 		iface, err := net.InterfaceByName(hc.ListenIfname)
 		if err != nil {
-			return nil, err
+			return nil, nil, err
 		}
-		addrs, err := iface.Addrs()
+		hwAddr := iface.HardwareAddr
+		ipAddrs, err := iface.Addrs()
 		if err != nil {
-			return nil, err
+			return nil, nil, err
 		}
-		for _, addr := range addrs {
-			switch v := addr.(type) {
+		for _, ipAddr := range ipAddrs {
+			switch v := ipAddr.(type) {
 			case *net.IPNet:
-				return v.IP, nil
+				return v.IP, hwAddr, nil
 			case *net.IPAddr:
-				return v.IP, nil
+				return v.IP, hwAddr, nil
 			}
 		}
 	} else {
 		for _, hcn := range hc.Networks {
-			if hcn.IP != nil {
-				return hcn.IP, nil
+			if hcn.IP == nil {
+				continue
 			}
-		}
-	}
-	return nil, fmt.Errorf("cannot find master ip")
-}
-
-func (hc *HostConfig) MasterMAC() (net.HardwareAddr, error) {
-	if len(hc.ListenIfname) > 0 {
-		iface, err := net.InterfaceByName(hc.ListenIfname)
-		if err != nil {
-			return nil, err
-		}
-		return iface.HardwareAddr, nil
-	} else {
-		for _, hcn := range hc.Networks {
 			iface, err := net.InterfaceByName(hcn.Bridge)
 			if err != nil {
 				continue
 			}
-			return iface.HardwareAddr, nil
+			return hcn.IP, iface.HardwareAddr, nil
 		}
 	}
-	return nil, fmt.Errorf("cannot find master mac")
+	return nil, nil, fmt.Errorf("cannot find proper master ip/mac")
 }
 
 func (hc *HostConfig) HostNetworkConfig(bridge string) *HostConfigNetwork {
