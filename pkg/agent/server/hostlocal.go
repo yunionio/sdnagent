@@ -18,15 +18,15 @@ func NewHostLocal(watcher *serversWatcher) *HostLocal {
 }
 
 func (hl *HostLocal) updateFlows(ctx context.Context) {
+	masterIP, masterMAC, err := hl.watcher.hostConfig.MasterIPMAC()
+	if err != nil {
+		log.Errorf("get master ip/mac failed: %s", err)
+		return
+	}
 	for _, hcn := range hl.watcher.hostConfig.Networks {
-		ip, err := hl.watcher.hostConfig.MasterIP()
+		ip, mac, err := hcn.IPMAC()
 		if err != nil {
-			log.Errorf("get master ip failed; %s", err)
-			continue
-		}
-		mac, err := hl.watcher.hostConfig.MasterMAC()
-		if err != nil {
-			log.Errorf("get master mac failed; %s", err)
+			log.Errorf("get ip/mac for %s failed: %s", hcn.Bridge, err)
 			continue
 		}
 		hostLocal := &utils.HostLocal{
@@ -35,6 +35,8 @@ func (hl *HostLocal) updateFlows(ctx context.Context) {
 			Ifname:     hcn.Ifname,
 			IP:         ip,
 			MAC:        mac,
+			MasterIP:   masterIP,
+			MasterMAC:  masterMAC,
 		}
 		flows, err := hostLocal.FlowsMap()
 		if err != nil {
