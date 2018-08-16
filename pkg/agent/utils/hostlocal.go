@@ -10,4 +10,6 @@ type HostLocal struct {
 	Ifname     string
 	IP         net.IP
 	MAC        net.HardwareAddr
+	MasterIP   net.IP
+	MasterMAC  net.HardwareAddr
 }

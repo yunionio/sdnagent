@@ -13,8 +13,8 @@ import (
 	"github.com/digitalocean/go-openvswitch/ovs"
 	"github.com/fsnotify/fsnotify"
 
-	"yunion.io/x/sdnagent/pkg/agent/utils"
 	"yunion.io/x/log"
+	"yunion.io/x/sdnagent/pkg/agent/utils"
 )
 
 var REGEX_UUID = regexp.MustCompile(`^[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}$`)
@@ -198,15 +198,15 @@ func (w *serversWatcher) scan(ctx context.Context) {
 }
 
 func (w *serversWatcher) updHostLocalFlows(ctx context.Context) {
+	masterIP, masterMAC, err := w.hostConfig.MasterIPMAC()
+	if err != nil {
+		log.Errorf("get master ip/mac failed: %s", err)
+		return
+	}
 	for _, hcn := range w.hostConfig.Networks {
-		ip, err := w.hostConfig.MasterIP()
+		ip, mac, err := hcn.IPMAC()
 		if err != nil {
-			log.Errorf("get master ip failed; %s", err)
-			continue
-		}
-		mac, err := w.hostConfig.MasterMAC()
-		if err != nil {
-			log.Errorf("get master mac failed; %s", err)
+			log.Errorf("get ip/mac for %s failed: %s", hcn.Bridge, err)
 			continue
 		}
 		hostLocal := &utils.HostLocal{
@@ -215,6 +215,8 @@ func (w *serversWatcher) updHostLocalFlows(ctx context.Context) {
 			Ifname:     hcn.Ifname,
 			IP:         ip,
 			MAC:        mac,
+			MasterIP:   masterIP,
+			MasterMAC:  masterMAC,
 		}
 		flows, err := hostLocal.FlowsMap()
 		if err != nil {
