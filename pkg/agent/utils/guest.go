@@ -36,8 +36,9 @@ type guestNIC struct {
 	VLAN       int
 	WireId     string `json:"wire_id"`
 
-	CtZoneId uint16 `json:"-"`
-	PortNo   int    `json:"-"`
+	CtZoneId    uint16 `json:"-"`
+	CtZoneIdSet bool   `json:"-"`
+	PortNo      int    `json:"-"`
 }
 
 func (n *guestNIC) Map() map[string]interface{} {
@@ -60,12 +61,13 @@ func (n *guestNIC) Map() map[string]interface{} {
 }
 
 type Guest struct {
-	Id            string
-	Path          string
+	Id         string
+	Path       string
+	HostConfig *HostConfig
+
 	Name          string
 	SecurityRules *SecurityRules
 	NICs          []*guestNIC
-	HostConfig    *HostConfig
 }
 
 func (g *Guest) IsVM() bool {
