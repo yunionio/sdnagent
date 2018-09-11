@@ -45,7 +45,9 @@ func (g *Guest) reloadDesc(ctx context.Context) error {
 	oldM := map[string]uint16{}
 	oldNICs := g.NICs
 	for _, nic := range oldNICs {
-		oldM[nic.MAC] = nic.CtZoneId
+		if nic.CtZoneIdSet {
+			oldM[nic.MAC] = nic.CtZoneId
+		}
 	}
 	err := g.LoadDesc()
 	if err != nil {
@@ -62,6 +64,7 @@ func (g *Guest) reloadDesc(ctx context.Context) error {
 			return fmt.Errorf("ct zone id allocation failed: %s", err)
 		}
 		nic.CtZoneId = zoneId
+		nic.CtZoneIdSet = true
 	}
 	for mac, _ := range oldM {
 		g.watcher.zoneMan.FreeZoneId(mac)
