@@ -72,7 +72,9 @@ func (w *serversWatcher) reloadGuestDesc(ctx context.Context, g *utils.Guest) er
 	oldM := map[string]uint16{}
 	oldNICs := g.NICs
 	for _, nic := range oldNICs {
-		oldM[nic.MAC] = nic.CtZoneId
+		if nic.CtZoneIdSet {
+			oldM[nic.MAC] = nic.CtZoneId
+		}
 	}
 	err := g.LoadDesc()
 	if err != nil {
@@ -89,6 +91,7 @@ func (w *serversWatcher) reloadGuestDesc(ctx context.Context, g *utils.Guest) er
 			return fmt.Errorf("ct zone id allocation failed: %s", err)
 		}
 		nic.CtZoneId = zoneId
+		nic.CtZoneIdSet = true
 	}
 	for mac, _ := range oldM {
 		w.zoneMan.FreeZoneId(mac)

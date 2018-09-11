@@ -163,8 +163,15 @@ func (sr *SecurityRules) Flows(data map[string]interface{}) []*ovs.Flow {
 	data["_in_port_vm"] = "reg0=0x10000/0x10000"
 	data["_in_port_not_vm"] = "reg0=0x0/0x10000"
 	loadReg0BitVm := "load:0x1->NXM_NX_REG0[16]" // "0x1->" is important, not "1->"
-	loadZone := fmt.Sprintf("load:0x%x->NXM_NX_REG0[0..15]", data["CT_ZONE"])
-	loadZoneDstVM := fmt.Sprintf("load:0x%x->NXM_NX_REG1[0..15]", data["CT_ZONE"])
+	var loadZone, loadZoneDstVM string
+	{
+		s := fmt.Sprintf("0x%x", data["CT_ZONE"])
+		if data["CT_ZONE"] == 0 {
+			s = "0" // always 0, not 0x0
+		}
+		loadZone = fmt.Sprintf("load:%s->NXM_NX_REG0[0..15]", s)
+		loadZoneDstVM = fmt.Sprintf("load:%s->NXM_NX_REG1[0..15]", s)
+	}
 
 	flows := []*ovs.Flow{}
 	// table 0
