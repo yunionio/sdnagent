@@ -81,12 +81,12 @@ func (h *HostLocal) FlowsMap() (map[string][]*ovs.Flow, error) {
 	)
 	if h.HostConfig.AllowSwitchVMs {
 		flows = append(flows,
-			F(0, 24700, T("in_port={{.PortNoPhy}}"), "normal"),
+			F(0, 23700, T("in_port={{.PortNoPhy}}"), "normal"),
 		)
 	} else {
 		flows = append(flows,
-			F(0, 24600, T("in_port={{.PortNoPhy}},dl_dst=01:00:00:00:00:00/01:00:00:00:00:00"), "normal"),
-			F(0, 24500, T("in_port={{.PortNoPhy}}"), "drop"),
+			F(0, 23600, T("in_port={{.PortNoPhy}},dl_dst=01:00:00:00:00:00/01:00:00:00:00:00"), "normal"),
+			F(0, 23500, T("in_port={{.PortNoPhy}}"), "drop"),
 		)
 	}
 	return map[string][]*ovs.Flow{h.Bridge: flows}, nil
@@ -142,9 +142,9 @@ func (g *Guest) FlowsMap() (map[string][]*ovs.Flow, error) {
 			F(0, 26700, T("in_port={{.PortNoPhy}},dl_dst={{.MAC}},{{._dl_vlan}}"), "normal"),
 		)
 		if g.HostConfig.AllowSwitchVMs {
-			flows = append(flows, F(0, 25600, T("in_port={{.PortNo}}"), "normal"))
+			flows = append(flows, F(0, 24600, T("in_port={{.PortNo}}"), "normal"))
 		} else {
-			flows = append(flows, F(0, 25500, T("in_port={{.PortNo}}"), "drop"))
+			flows = append(flows, F(0, 24500, T("in_port={{.PortNo}}"), "drop"))
 		}
 		flows = append(flows, g.SecurityRules.Flows(m)...)
 		if fs, ok := r[nic.Bridge]; ok {
@@ -184,7 +184,7 @@ func (sr *SecurityRules) Flows(data map[string]interface{}) []*ovs.Flow {
 		F(0, 25800, T("in_port={{.PortNo}},dl_src={{.MAC}},ip"),
 			loadReg0BitVm+","+loadZone+T(",ct(table=1,zone={{.CT_ZONE}})")),
 		F(0, 25700, T("in_port={{.PortNo}},dl_src={{.MAC}}"), "normal"),
-		F(0, 23300, T("dl_dst={{.MAC}},ip"),
+		F(0, 24700, T("dl_dst={{.MAC}},ip"),
 			loadZone+T(",ct(table=1,zone={{.CT_ZONE}})")),
 		// ct_state= flags order matters
 		F(1, 7900, "ip,ct_state=+inv+trk", "drop"),
@@ -274,14 +274,14 @@ func (sr *SecurityRules) Flows(data map[string]interface{}) []*ovs.Flow {
 //
 // 25800 in_port=PORT_VM,dl_src=MAC_VM,ip,actions=load_src_VM_ZONE,load_VM_BIT,ct(zone=src_VM_ZONE,table=sec_CT)
 // 25700 in_port=PORT_VM,dl_src=MAC_VM,actions=normal
-// 25600 in_port=PORT_VM,{ allow_switch_vms},actions=normal
-// 25500 in_port=PORT_VM,{!allow_switch_vms},actions=drop
 //
-// 24700 in_port=PORT_PHY,{ allow_switch_vms},actions=normal
-// 24600 in_port=PORT_PHY,{!allow_switch_vms},dl_dst=01:00:00:00:00:00/01:00:00:00:00:00,actions=normal
-// 24500 in_port=PORT_PHY,{!allow_switch_vms},actions=drop
+// 24700 dl_dst=MAC_VM,ip,actions=load_dst_VM_ZONE,ct(zone=dst_VM_ZONE,table=sec_CT)
+// 24600 in_port=PORT_VM,{ allow_switch_vms},actions=normal
+// 24500 in_port=PORT_VM,{!allow_switch_vms},actions=drop
 //
-// 23300 dl_dst=MAC_VM,ip,actions=load_dst_VM_ZONE,ct(zone=dst_VM_ZONE,table=sec_CT)
+// 23700 in_port=PORT_PHY,{ allow_switch_vms},actions=normal
+// 23600 in_port=PORT_PHY,{!allow_switch_vms},dl_dst=01:00:00:00:00:00/01:00:00:00:00:00,actions=normal
+// 23500 in_port=PORT_PHY,{!allow_switch_vms},actions=drop
 //
 // Table 1 sec_CT
 //  7900 ip,ct_state=+trk+inv,actions=drop
