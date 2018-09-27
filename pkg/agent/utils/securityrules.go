@@ -59,7 +59,8 @@ func (sr *SecurityRule) OvsMatches() []string {
 			for _, p := range r.Ports {
 				tpMatch = append(tpMatch, tpField+fmt.Sprintf("%d", p))
 			}
-		} else if r.PortStart > 0 && r.PortStart < r.PortEnd {
+		}
+		if r.PortStart > 0 && r.PortStart <= r.PortEnd {
 			ms := PortRangeToMasks(uint16(r.PortStart), uint16(r.PortEnd))
 			for _, m := range ms {
 				// NOTE both start and end should never be zero, the

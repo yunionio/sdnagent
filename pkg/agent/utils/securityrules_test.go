@@ -3,8 +3,72 @@ package utils
 import "testing"
 import (
 	"fmt"
+	"reflect"
 	"strings"
 )
+
+func TestSecurityRuleOvsMatches(t *testing.T) {
+	cases := []struct {
+		in      string
+		matches []string
+	}{
+		{
+			in: `in:allow tcp 3389`,
+			matches: []string{
+				`tcp,tp_dst=3389`,
+			},
+		},
+		{
+			in: `in:allow tcp 3389-3389`,
+			matches: []string{
+				`tcp,tp_dst=3389`,
+			},
+		},
+		{
+			in: `in:allow tcp 22-3389`,
+			matches: []string{
+				`tcp,tp_dst=0x16/0xfffe`,
+				`tcp,tp_dst=0x18/0xfff8`,
+				`tcp,tp_dst=0x20/0xffe0`,
+				`tcp,tp_dst=0x40/0xffc0`,
+				`tcp,tp_dst=0x80/0xff80`,
+				`tcp,tp_dst=0x100/0xff00`,
+				`tcp,tp_dst=0x200/0xfe00`,
+				`tcp,tp_dst=0x400/0xfc00`,
+				`tcp,tp_dst=0x800/0xfc00`,
+				`tcp,tp_dst=0xc00/0xff00`,
+				`tcp,tp_dst=0xd00/0xffe0`,
+				`tcp,tp_dst=0xd20/0xfff0`,
+				`tcp,tp_dst=0xd30/0xfff8`,
+				`tcp,tp_dst=0xd38/0xfffc`,
+				`tcp,tp_dst=0xd3c/0xfffe`,
+			},
+		},
+		{
+			in: `in:allow tcp 22,3389`,
+			matches: []string{
+				`tcp,tp_dst=22`,
+				`tcp,tp_dst=3389`,
+			},
+		},
+	}
+	for _, c := range cases {
+		t.Run(c.in, func(t *testing.T) {
+			sr, err := NewSecurityRule(c.in)
+			if err != nil {
+				t.Fatalf("unexpected err: %s", err)
+			}
+			got := sr.OvsMatches()
+			if !reflect.DeepEqual(c.matches, got) {
+				t.Errorf("ovs matches, want %d, got %d;\n%s\n--\n%s",
+					len(c.matches), len(got),
+					"  "+strings.Join(c.matches, "\n  "),
+					"  "+strings.Join(got, "\n  "),
+				)
+			}
+		})
+	}
+}
 
 func TestPortRangeToMasks(t *testing.T) {
 	cases := []struct {
