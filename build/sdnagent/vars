@@ -1,1 +1,5 @@
 DESCRIPTION="Yunion Cloud SDN Agent Service"
+
+REQUIRES=(
+	"kmod-openvswitch >= 2.8.2"
+)
