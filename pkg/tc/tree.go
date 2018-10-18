@@ -18,6 +18,11 @@ func (qt *QdiscTree) IsRoot() bool {
 	return qt.qdisc.IsRoot()
 }
 
+func (qt *QdiscTree) String() string {
+	lines := qt.BatchReplaceLines("dummy0")
+	return strings.Join(lines, "\n")
+}
+
 func (qt *QdiscTree) BatchReplaceLines(ifname string) []string {
 	lines := []string{}
 	queue := []*QdiscTree{qt}
