@@ -33,6 +33,7 @@ func (td *TcData) String() string {
 func (td *TcData) qdiscTreeGuest() (qt *tc.QdiscTree, err error) {
 	if td.IngressMbps == 0 {
 		qt, err = tc.NewQdiscTreeFromString("qdisc fq_codel root handle 1:")
+		return
 	}
 	bytesPerSec := td.IngressMbps * 1000 * 1000 / 8
 	burst := bytesPerSec / 1000
@@ -45,7 +46,7 @@ func (td *TcData) qdiscTreeGuest() (qt *tc.QdiscTree, err error) {
 	s := fmt.Sprintf("qdisc tbf root handle 1: rate %s burst %s latency 100ms\n", rates, bursts)
 	s += "qdisc fq_codel parent 1: handle 10:\n"
 	qt, err = tc.NewQdiscTreeFromString(s)
-	return qt, err
+	return
 }
 
 func (td *TcData) qdiscTreeHostLocal() (qt *tc.QdiscTree, err error) {
