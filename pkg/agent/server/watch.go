@@ -201,11 +201,6 @@ func (w *serversWatcher) scan(ctx context.Context) {
 }
 
 func (w *serversWatcher) updHostLocalFlows(ctx context.Context) {
-	masterIP, masterMAC, err := w.hostConfig.MasterIPMAC()
-	if err != nil {
-		log.Errorf("get master ip/mac failed: %s", err)
-		return
-	}
 	for _, hcn := range w.hostConfig.Networks {
 		ip, mac, err := hcn.IPMAC()
 		if err != nil {
@@ -218,8 +213,6 @@ func (w *serversWatcher) updHostLocalFlows(ctx context.Context) {
 			Ifname:     hcn.Ifname,
 			IP:         ip,
 			MAC:        mac,
-			MasterIP:   masterIP,
-			MasterMAC:  masterMAC,
 		}
 		flows, err := hostLocal.FlowsMap()
 		if err != nil {
