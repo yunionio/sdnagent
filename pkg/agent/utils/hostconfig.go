@@ -32,7 +32,6 @@ func (hcn *HostConfigNetwork) IPMAC() (net.IP, net.HardwareAddr, error) {
 
 type HostConfig struct {
 	Port           int
-	ListenIfname   string
 	Networks       []*HostConfigNetwork
 	ServersPath    string
 	K8sClusterCidr *net.IPNet
@@ -91,12 +90,11 @@ func NewHostConfig(file string) (*HostConfig, error) {
 	}
 	// parse json dump
 	v := struct {
-		Port            int
-		ListenInterface string `json:"listen_interface"`
-		Networks        []string
-		ServersPath     string `json:"servers_path"`
-		K8sClusterCidr  string `json:"k8s_cluster_cidr"`
-		AllowSwitchVMs  bool   `json:"allow_switch_vms"`
+		Port           int
+		Networks       []string
+		ServersPath    string `json:"servers_path"`
+		K8sClusterCidr string `json:"k8s_cluster_cidr"`
+		AllowSwitchVMs bool   `json:"allow_switch_vms"`
 	}{}
 	err = json.Unmarshal(jstr, &v)
 	if err != nil {
@@ -105,7 +103,6 @@ func NewHostConfig(file string) (*HostConfig, error) {
 
 	hc := &HostConfig{
 		Port:           v.Port,
-		ListenIfname:   v.ListenInterface,
 		ServersPath:    v.ServersPath,
 		AllowSwitchVMs: v.AllowSwitchVMs,
 	}
@@ -123,40 +120,6 @@ func NewHostConfig(file string) (*HostConfig, error) {
 		hc.Networks = append(hc.Networks, hcn)
 	}
 	return hc, nil
-}
-
-func (hc *HostConfig) MasterIPMAC() (net.IP, net.HardwareAddr, error) {
-	if len(hc.ListenIfname) > 0 {
-		iface, err := net.InterfaceByName(hc.ListenIfname)
-		if err != nil {
-			return nil, nil, err
-		}
-		hwAddr := iface.HardwareAddr
-		ipAddrs, err := iface.Addrs()
-		if err != nil {
-			return nil, nil, err
-		}
-		for _, ipAddr := range ipAddrs {
-			switch v := ipAddr.(type) {
-			case *net.IPNet:
-				return v.IP, hwAddr, nil
-			case *net.IPAddr:
-				return v.IP, hwAddr, nil
-			}
-		}
-	} else {
-		for _, hcn := range hc.Networks {
-			if hcn.IP == nil {
-				continue
-			}
-			iface, err := net.InterfaceByName(hcn.Bridge)
-			if err != nil {
-				continue
-			}
-			return hcn.IP, iface.HardwareAddr, nil
-		}
-	}
-	return nil, nil, fmt.Errorf("cannot find proper master ip/mac")
 }
 
 func (hc *HostConfig) HostNetworkConfig(bridge string) *HostConfigNetwork {
