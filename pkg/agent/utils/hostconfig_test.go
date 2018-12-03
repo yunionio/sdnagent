@@ -15,11 +15,6 @@ func TestHostConfig(t *testing.T) {
 		t.Fatalf("hostconfig: cannot find network config for %s", "br0")
 	}
 	t.Logf("hostconfig: %s/%s/%s", hcn.Ifname, hcn.Bridge, hcn.IP)
-	masterIP, masterMAC, err := hc.MasterIPMAC()
-	if err != nil {
-		t.Fatalf("hostconfig: %s", err)
-	}
-	t.Logf("hostconfig: masterIP/masterMAC: %s/%s", masterIP, masterMAC)
 	for _, hcn := range hc.Networks {
 		IP, MAC, err := hcn.IPMAC()
 		if err != nil {
