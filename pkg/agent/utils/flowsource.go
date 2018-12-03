@@ -62,8 +62,6 @@ func (h *HostLocal) FlowsMap() (map[string][]*ovs.Flow, error) {
 		"K8SCidr":      h.HostConfig.K8sClusterCidr,
 		"IP":           h.IP,
 		"MAC":          h.MAC,
-		"MasterIP":     h.MasterIP,
-		"MasterMAC":    h.MasterMAC,
 		"PortNoPhy":    ps.PortID,
 	}
 	T := t(m)
@@ -71,11 +69,11 @@ func (h *HostLocal) FlowsMap() (map[string][]*ovs.Flow, error) {
 		F(0, 40000, "ipv6", "drop"),
 	}
 	if h.HostConfig.K8sClusterCidr != nil {
-		flows = append(flows, F(0, 30050, T("ip,nw_dst={{.K8SCidr}}"), T("mod_dl_dst:{{.MasterMAC}},local")))
+		flows = append(flows, F(0, 30050, T("ip,nw_dst={{.K8SCidr}}"), T("mod_dl_dst:{{.MAC}},LOCAL")))
 	}
 	flows = append(flows,
 		F(0, 29300, "tcp,nw_dst=169.254.169.254,tp_dst=80",
-			T("mod_dl_dst:{{.MasterMAC}},mod_nw_dst:{{.MasterIP}},mod_tp_dst:{{.MetadataPort}},LOCAL")),
+			T("mod_dl_dst:{{.MAC}},mod_nw_dst:{{.IP}},mod_tp_dst:{{.MetadataPort}},LOCAL")),
 		F(0, 27200, "in_port=LOCAL", "normal"),
 		F(0, 26900, T("in_port={{.PortNoPhy}},dl_dst={{.MAC}}"), "normal"),
 	)
