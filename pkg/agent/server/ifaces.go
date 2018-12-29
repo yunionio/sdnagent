@@ -68,7 +68,6 @@ func newIfaceJanitor() *ifaceJanitor {
 
 func (ij *ifaceJanitor) Start(ctx context.Context) {
 	wg := ctx.Value("wg").(*sync.WaitGroup)
-	wg.Add(1)
 	defer wg.Done()
 
 	scanTicker := time.NewTicker(IfaceJanitorInterval)
