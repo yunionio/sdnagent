@@ -21,6 +21,7 @@ type AgentServer struct {
 	serversWatcher *serversWatcher
 	flowMansLock   *sync.RWMutex
 	flowMans       map[string]*FlowMan
+	ifaceJanitor   *ifaceJanitor
 }
 
 func (s *AgentServer) GetFlowMan(bridge string) *FlowMan {
@@ -43,6 +44,7 @@ func (s *AgentServer) Start() error {
 	defer lis.Close()
 	defer s.wg.Wait()
 	go s.serversWatcher.Start(s.ctx, s)
+	go s.ifaceJanitor.Start(s.ctx)
 	err = s.rpcServer.Serve(lis)
 	return err
 }
@@ -59,6 +61,7 @@ func init() {
 	if err != nil {
 		panic("creating servers watcher failed: " + err.Error())
 	}
+	ifaceJanitor := newIfaceJanitor()
 	wg := &sync.WaitGroup{}
 	ctx, cancelFunc := context.WithCancel(context.Background())
 	ctx = context.WithValue(ctx, "wg", wg)
@@ -66,6 +69,7 @@ func init() {
 		flowMans:       map[string]*FlowMan{},
 		flowMansLock:   &sync.RWMutex{},
 		serversWatcher: watcher,
+		ifaceJanitor:   ifaceJanitor,
 		wg:             wg,
 		ctx:            ctx,
 		ctxCancel:      cancelFunc,
