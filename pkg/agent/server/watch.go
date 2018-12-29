@@ -118,7 +118,6 @@ func (w *serversWatcher) hasRecentPending() bool {
 func (w *serversWatcher) Start(ctx context.Context, agent *AgentServer) {
 	// workgroup
 	wg := ctx.Value("wg").(*sync.WaitGroup)
-	wg.Add(1)
 	defer wg.Done()
 
 	w.agent = agent
@@ -145,6 +144,7 @@ func (w *serversWatcher) Start(ctx context.Context, agent *AgentServer) {
 	}
 
 	go w.tcMan.Start(ctx)
+	wg.Add(1)
 
 	// init scan
 	w.hostLocal = NewHostLocal(w)
