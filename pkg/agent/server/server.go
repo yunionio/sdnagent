@@ -33,6 +33,7 @@ func (s *AgentServer) GetFlowMan(bridge string) *FlowMan {
 	flowman := NewFlowMan(bridge)
 	theAgentServer.flowMans[bridge] = flowman
 	go flowman.Start(s.ctx)
+	s.wg.Add(1)
 	return flowman
 }
 
@@ -45,6 +46,7 @@ func (s *AgentServer) Start() error {
 	defer s.wg.Wait()
 	go s.serversWatcher.Start(s.ctx, s)
 	go s.ifaceJanitor.Start(s.ctx)
+	s.wg.Add(2)
 	err = s.rpcServer.Serve(lis)
 	return err
 }
