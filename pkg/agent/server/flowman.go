@@ -11,8 +11,9 @@ import (
 
 	"github.com/digitalocean/go-openvswitch/ovs"
 
-	"yunion.io/x/sdnagent/pkg/agent/utils"
 	"yunion.io/x/log"
+
+	"yunion.io/x/sdnagent/pkg/agent/utils"
 )
 
 type flowManCmdType int
@@ -175,7 +176,6 @@ func (fm *FlowMan) scheduleIdleCheck(drain bool) {
 
 func (fm *FlowMan) Start(ctx context.Context) {
 	wg := ctx.Value("wg").(*sync.WaitGroup)
-	wg.Add(1)
 	defer wg.Done()
 	if fm.idleTimer == nil {
 		fm.idleTimer = time.NewTimer(FlowManIdleCheckDuration)
