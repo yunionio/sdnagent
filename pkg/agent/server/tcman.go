@@ -95,7 +95,6 @@ func NewTcMan() *TcMan {
 
 func (tm *TcMan) Start(ctx context.Context) {
 	wg := ctx.Value("wg").(*sync.WaitGroup)
-	wg.Add(1)
 	defer wg.Done()
 
 	tm.idleTimer = time.NewTicker(TcManIdleCheckDuration)
