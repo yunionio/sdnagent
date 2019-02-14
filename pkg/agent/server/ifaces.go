@@ -178,7 +178,9 @@ func (ij *ifaceJanitor) tryDestroy(br, iface string) {
 		// iface driver must be either tap or veth
 		lkType := lk.Type()
 		msgs = append(msgs, fmt.Sprintf("[linkType=%q]", lkType))
-		if lkType != "veth" && lkType != "tuntap" {
+		switch lkType {
+		case "veth", "tun":
+		default:
 			return
 		}
 	}
