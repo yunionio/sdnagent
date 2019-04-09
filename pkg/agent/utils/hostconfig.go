@@ -76,14 +76,18 @@ func NewHostConfigNetwork(network string) (*HostConfigNetwork, error) {
 }
 
 func NewHostConfig(file string) (*HostConfig, error) {
-	config, err := ioutil.ReadFile(file)
+	data, err := ioutil.ReadFile(file)
 	if err != nil {
 		return nil, err
 	}
+	return newHostConfigFromBytes(data)
+}
+
+func newHostConfigFromBytes(data []byte) (*HostConfig, error) {
 	// NOTE python hack
-	config = append(snippet_pre, config...)
-	config = append(config, snippet_post...)
-	cmd := exec.Command("python", "-c", string(config))
+	data = append(snippet_pre, data...)
+	data = append(data, snippet_post...)
+	cmd := exec.Command("python", "-c", string(data))
 	jstr, err := cmd.Output()
 	if err != nil {
 		return nil, err
