@@ -1,25 +1,66 @@
 package utils
 
-import "testing"
+import (
+	"net"
+	"reflect"
+	"testing"
+)
+
+const configData = `
+port = None
+listen_interface = None
+networks = []
+servers_path = "/opt/cloud/workspace/servers"
+k8s_cluster_cidr = '10.43.0.0/16'
+allow_switch_vms = True
+`
 
 func TestHostConfig(t *testing.T) {
-	hc, err := NewHostConfig("/etc/yunion/host.conf")
-	if err != nil {
-		t.Fatalf("hostconfig: load error: %s", err)
+	_, defaultK8sCidr, _ := net.ParseCIDR("10.43.0.0/16")
+	_, nonDefaultK8sCidr, _ := net.ParseCIDR("10.44.0.0/17")
+	cases := []struct {
+		data string
+		want *HostConfig
+	}{
+		{
+			data: "",
+			want: &HostConfig{
+				Port:           0,
+				ServersPath:    "/opt/cloud/workspace/servers",
+				K8sClusterCidr: defaultK8sCidr,
+			},
+		},
+		{
+			data: `
+port = 8885
+servers_path = '/opt/cloud/workspace/servers_owl'
+networks = ['eth0/br0/10.168.222.136']
+k8s_cluster_cidr = '10.44.0.0/17'
+allow_switch_vms = True
+			`,
+			want: &HostConfig{
+				Port: 8885,
+				Networks: []*HostConfigNetwork{
+					&HostConfigNetwork{
+						Bridge: "br0",
+						Ifname: "eth0",
+						IP:     net.IPv4(10, 168, 222, 136),
+					},
+				},
+				ServersPath:    "/opt/cloud/workspace/servers_owl",
+				K8sClusterCidr: nonDefaultK8sCidr,
+				AllowSwitchVMs: true,
+			},
+		},
 	}
-	t.Logf("hostconfig: port: %d", hc.Port)
-	t.Logf("hostconfig: servers_path: %s", hc.ServersPath)
-	t.Logf("hostconfig: k8s_cluster_cidr: %s", hc.K8sClusterCidr)
-	hcn := hc.HostNetworkConfig("br0")
-	if hcn == nil {
-		t.Fatalf("hostconfig: cannot find network config for %s", "br0")
-	}
-	t.Logf("hostconfig: %s/%s/%s", hcn.Ifname, hcn.Bridge, hcn.IP)
-	for _, hcn := range hc.Networks {
-		IP, MAC, err := hcn.IPMAC()
+	for _, c := range cases {
+		hc, err := newHostConfigFromBytes([]byte(c.data))
 		if err != nil {
-			t.Fatalf("hcn %s: %s", hcn.Bridge, err)
+			t.Errorf("loading config failed: %v\n%s", err, c.data)
+			continue
 		}
-		t.Logf("hcn %s: IP/MAC: %s/%s", hcn.Bridge, IP, MAC)
+		if !reflect.DeepEqual(hc, c.want) {
+			t.Errorf("\ngot config\n  %#v\nwant\n  %#v", hc, c.want)
+		}
 	}
 }
