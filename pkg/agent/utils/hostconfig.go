@@ -38,6 +38,10 @@ type HostConfig struct {
 	AllowSwitchVMs bool // allow virtual machines act as switches
 }
 
+func (hc *HostConfig) MetadataPort() int {
+	return hc.Port + 1000
+}
+
 var snippet_pre = []byte(`
 from __future__ import print_function
 port = None
