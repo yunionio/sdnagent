@@ -58,7 +58,7 @@ func (h *HostLocal) FlowsMap() (map[string][]*ovs.Flow, error) {
 		return nil, err
 	}
 	m := map[string]interface{}{
-		"MetadataPort": h.HostConfig.Port,
+		"MetadataPort": h.HostConfig.MetadataPort(),
 		"K8SCidr":      h.HostConfig.K8sClusterCidr,
 		"IP":           h.IP,
 		"MAC":          h.MAC,
@@ -119,7 +119,7 @@ func (g *Guest) FlowsMap() (map[string][]*ovs.Flow, error) {
 		}
 		portNoPhy := ps.PortID
 		m := nic.Map()
-		m["MetadataPort"] = g.HostConfig.Port
+		m["MetadataPort"] = g.HostConfig.MetadataPort()
 		m["PortNoPhy"] = portNoPhy
 		T := t(m)
 		if nic.VLAN > 1 {
