@@ -72,6 +72,7 @@ func (h *HostLocal) FlowsMap() (map[string][]*ovs.Flow, error) {
 		flows = append(flows, F(0, 30050, T("ip,nw_dst={{.K8SCidr}}"), T("mod_dl_dst:{{.MAC}},LOCAL")))
 	}
 	flows = append(flows,
+		F(0, 29310, "in_port=LOCAL,tcp,nw_dst=169.254.169.254,tp_dst=80", T("normal")),
 		F(0, 29300, "tcp,nw_dst=169.254.169.254,tp_dst=80",
 			T("mod_dl_dst:{{.MAC}},mod_nw_dst:{{.IP}},mod_tp_dst:{{.MetadataPort}},LOCAL")),
 		F(0, 27200, "in_port=LOCAL", "normal"),
@@ -262,6 +263,7 @@ func (sr *SecurityRules) Flows(data map[string]interface{}) []*ovs.Flow {
 // 40000 ipv6,actions=drop
 // 30050 ip,nw_dst=K8S_CIDR,actions=mod_LOCAL
 // 30040 ip,nw_src=K8S_CIDR,nw_dst=IP_VM,in_port=LOCAL,actions=mod_dl_dst:MAC_VM,output:PORT_VM
+// 29310 in_port=LOCAL,metaserver_req,actions=normal
 // 29300 metaserver_req,actions=mod_metaserver
 // 29200 metaserver_resp_VM_IP,actions=mod_metaserver_PORT_VM
 // 28400 in_port=PORT_VM,dhcp_req,actions=LOCAL
