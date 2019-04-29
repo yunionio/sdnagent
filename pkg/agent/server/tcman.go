@@ -19,7 +19,8 @@ type TcManPage struct {
 }
 
 func (p *TcManPage) batchReplaceInput() string {
-	lines := p.qtWant.BatchReplaceLines(p.ifname)
+	lines := []string{"qdisc del dev " + p.ifname + " root"}
+	lines = append(lines, p.qtWant.BatchReplaceLines(p.ifname)...)
 	lines = append(lines, "qdisc show dev "+p.ifname)
 	input := strings.Join(lines, "\n")
 	// NOTE final newline is needed to workaround buffer overflow issues in
