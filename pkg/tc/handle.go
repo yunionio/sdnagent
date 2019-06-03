@@ -15,6 +15,18 @@ const (
 )
 
 func parseHandle(s string) (uint32, error) {
+	switch s {
+	case "root":
+		// "root" as a keyword should be handled by its own kind, but
+		// we keep it here for completeness
+		return TC_H_ROOT, nil
+	case "none":
+		return TC_H_UNSPEC, nil
+	}
+	if i := strings.IndexByte(s, '#'); i >= 0 {
+		// clname#handle
+		s = s[i+1:]
+	}
 	vs := strings.SplitN(s, ":", 2)
 	if len(vs) != 2 {
 		return 0, fmt.Errorf("invalid handle %s", s)
@@ -22,7 +34,7 @@ func parseHandle(s string) (uint32, error) {
 	IDX2NAME := [2]string{"major", "minor"}
 	mm := [2]uint32{}
 	for i, v := range vs {
-		if i == 1 && len(v) == 0 {
+		if len(v) == 0 {
 			mm[i] = 0
 			continue
 		}
