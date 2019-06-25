@@ -50,6 +50,7 @@ type HostConfig struct {
 	ServersPath    string
 	K8sClusterCidr *net.IPNet
 	AllowSwitchVMs bool // allow virtual machines act as switches
+	DHCPServerPort int
 }
 
 func (hc *HostConfig) MetadataPort() int {
@@ -64,6 +65,7 @@ networks = []
 servers_path = "/opt/cloud/workspace/servers"
 k8s_cluster_cidr = '10.43.0.0/16'
 allow_switch_vms = False
+dhcp_server_port = 67
 
 `)
 var snippet_post = []byte(`
@@ -76,6 +78,7 @@ print(json.dumps({
 	'servers_path': servers_path,
 	'k8s_cluster_cidr': k8s_cluster_cidr,
 	'allow_switch_vms': bool(allow_switch_vms),
+	'dhcp_server_port': dhcp_server_port,
 }))
 `)
 
@@ -117,6 +120,7 @@ func newHostConfigFromBytes(data []byte) (*HostConfig, error) {
 		ServersPath    string `json:"servers_path"`
 		K8sClusterCidr string `json:"k8s_cluster_cidr"`
 		AllowSwitchVMs bool   `json:"allow_switch_vms"`
+		DHCPServerPort int    `json:"dhcp_server_port"`
 	}{}
 	err = json.Unmarshal(jstr, &v)
 	if err != nil {
@@ -127,6 +131,7 @@ func newHostConfigFromBytes(data []byte) (*HostConfig, error) {
 		Port:           v.Port,
 		ServersPath:    v.ServersPath,
 		AllowSwitchVMs: v.AllowSwitchVMs,
+		DHCPServerPort: v.DHCPServerPort,
 	}
 	_, k8sCidr, err := net.ParseCIDR(v.K8sClusterCidr)
 	if err == nil {
