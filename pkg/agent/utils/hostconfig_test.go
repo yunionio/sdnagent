@@ -28,6 +28,7 @@ func TestHostConfig(t *testing.T) {
 				Port:           0,
 				ServersPath:    "/opt/cloud/workspace/servers",
 				K8sClusterCidr: defaultK8sCidr,
+				DHCPServerPort: 67,
 			},
 		},
 		{
@@ -37,6 +38,7 @@ servers_path = '/opt/cloud/workspace/servers_owl'
 networks = ['eth0/br0/10.168.222.136']
 k8s_cluster_cidr = '10.44.0.0/17'
 allow_switch_vms = True
+dhcp_server_port = 1067
 			`,
 			want: &HostConfig{
 				Port: 8885,
@@ -50,6 +52,7 @@ allow_switch_vms = True
 				ServersPath:    "/opt/cloud/workspace/servers_owl",
 				K8sClusterCidr: nonDefaultK8sCidr,
 				AllowSwitchVMs: true,
+				DHCPServerPort: 1067,
 			},
 		},
 	}
