@@ -1,0 +1,19 @@
+[Unit]
+Description=Yunion Cloud Host SDN Agent server
+Documentation=https://docs.yunion.cn
+After=network.target
+
+[Service]
+Type=simple
+User=root
+Group=root
+ExecStart=/opt/yunion/bin/sdnagent
+WorkingDirectory=/opt/yunion
+KillMode=process
+Restart=always
+RestartSec=30
+LimitNOFILE=500000
+LimitNPROC=500000
+
+[Install]
+WantedBy=multi-user.target
