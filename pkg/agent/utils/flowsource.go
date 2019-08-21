@@ -20,6 +20,7 @@ import (
 	"text/template"
 
 	"github.com/digitalocean/go-openvswitch/ovs"
+	"github.com/vishvananda/netlink"
 
 	"yunion.io/x/log"
 )
@@ -87,8 +88,6 @@ func (h *HostLocal) FlowsMap() (map[string][]*ovs.Flow, error) {
 	}
 	flows = append(flows,
 		F(0, 29310, "in_port=LOCAL,tcp,nw_dst=169.254.169.254,tp_dst=80", T("normal")),
-		F(0, 29300, "tcp,nw_dst=169.254.169.254,tp_dst=80",
-			T("mod_dl_dst:{{.MAC}},mod_nw_dst:{{.IP}},mod_tp_dst:{{.MetadataPort}},LOCAL")),
 		F(0, 27200, "in_port=LOCAL", "normal"),
 		F(0, 26900, T("in_port={{.PortNoPhy}},dl_dst={{.MAC}}"), "normal"),
 	)
@@ -107,6 +106,70 @@ func (h *HostLocal) FlowsMap() (map[string][]*ovs.Flow, error) {
 
 func (g *Guest) Who() string {
 	return g.Id
+}
+
+func (g *Guest) getMetadataInfo(nic *GuestNIC) (mdIP string, mdMAC string, mdPortNo int, useLOCAL bool, err error) {
+	useLOCAL = true
+	route, err := RouteLookup(nic.IP)
+	if err != nil {
+		return
+	}
+	if route.Dev == nic.Bridge {
+		return
+	}
+
+	link, err := netlink.LinkByName(route.Dev)
+	if err != nil {
+		return
+	}
+	vethLink, ok := link.(*netlink.Veth)
+	if !ok {
+		return
+	}
+	idx, err := netlink.VethPeerIndex(vethLink)
+	if err != nil {
+		return
+	}
+	linkPeer, err := netlink.LinkByIndex(idx)
+	if err != nil {
+		return
+	}
+
+	ofCli := ovs.New().OpenFlow
+	{
+		var (
+			p     *ovs.PortStats
+			addrs []netlink.Addr
+		)
+		{
+			attrs := linkPeer.Attrs()
+			p, err = ofCli.DumpPort(nic.Bridge, attrs.Name)
+			if err != nil {
+				var masterLink netlink.Link
+				masterLink, err = netlink.LinkByIndex(attrs.MasterIndex)
+				if err != nil {
+					return
+				}
+				p, err = ofCli.DumpPort(nic.Bridge, masterLink.Attrs().Name)
+				if err != nil {
+					return
+				}
+			}
+		}
+		addrs, err = netlink.AddrList(link, netlink.FAMILY_V4)
+		if err != nil {
+			return
+		}
+		if len(addrs) == 0 {
+			return
+		}
+		err = nil
+		useLOCAL = false
+		mdIP = addrs[0].IP.String()
+		mdMAC = link.Attrs().HardwareAddr.String()
+		mdPortNo = p.PortID
+	}
+	return
 }
 
 func (g *Guest) FlowsMap() (map[string][]*ovs.Flow, error) {
@@ -134,9 +197,38 @@ func (g *Guest) FlowsMap() (map[string][]*ovs.Flow, error) {
 		}
 		portNoPhy := ps.PortID
 		m := nic.Map()
-		m["MetadataPort"] = g.HostConfig.MetadataPort()
 		m["DHCPServerPort"] = g.HostConfig.DHCPServerPort
 		m["PortNoPhy"] = portNoPhy
+		{
+			var mdPortAction string
+			var mdInPort string
+			mdIP, mdMAC, mdPortNo, useLOCAL, err := g.getMetadataInfo(nic)
+			if useLOCAL {
+				if err != nil {
+					log.Warningf("find metadata: %v", err)
+				}
+				{
+					ip, mac, err := hcn.IPMAC()
+					if err != nil {
+						log.Warningf("host network find ip mac: %v", err)
+						continue
+					}
+					mdIP = ip.String()
+					mdMAC = mac.String()
+				}
+				mdPortNo = portNoPhy
+				mdInPort = "LOCAL"
+				mdPortAction = "LOCAL"
+			} else {
+				mdInPort = fmt.Sprintf("%d", mdPortNo)
+				mdPortAction = fmt.Sprintf("output:%d", mdPortNo)
+			}
+			m["MetadataServerPort"] = g.HostConfig.MetadataPort()
+			m["MetadataServerIP"] = mdIP
+			m["MetadataServerMAC"] = mdMAC
+			m["MetadataPortInPort"] = mdInPort
+			m["MetadataPortAction"] = mdPortAction
+		}
 		T := t(m)
 		if nic.VLAN > 1 {
 			m["_dl_vlan"] = T("dl_vlan={{.VLAN}}")
@@ -153,8 +245,10 @@ func (g *Guest) FlowsMap() (map[string][]*ovs.Flow, error) {
 		}
 		flows = append(flows,
 			F(0, 29200,
-				T("in_port=LOCAL,tcp,nw_dst={{.IP}},tp_src={{.MetadataPort}}"),
+				T("in_port={{.MetadataPortInPort}},tcp,nw_dst={{.IP}},tp_src={{.MetadataServerPort}}"),
 				T("mod_dl_dst:{{.MAC}},mod_nw_src:169.254.169.254,mod_tp_src:80,output:{{.PortNo}}")),
+			F(0, 29300, T("in_port={{.PortNo}},tcp,nw_dst=169.254.169.254,tp_dst=80"),
+				T("mod_dl_dst:{{.MetadataServerMAC}},mod_nw_dst:{{.MetadataServerIP}},mod_tp_dst:{{.MetadataServerPort}},{{.MetadataPortAction}}")),
 			F(0, 28400, T("in_port={{.PortNo}},udp,tp_src=68,tp_dst=67"), T("mod_tp_dst:{{.DHCPServerPort}},local")),
 			F(0, 28300, T("in_port=LOCAL,dl_dst={{.MAC}},udp,tp_src={{.DHCPServerPort}},tp_dst=68"), T("mod_tp_src:67,output:{{.PortNo}}")),
 			F(0, 26700, T("in_port={{.PortNoPhy}},dl_dst={{.MAC}},{{._dl_vlan}}"), "normal"),
