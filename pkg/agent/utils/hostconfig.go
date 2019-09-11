@@ -36,6 +36,19 @@ func (hcn *HostConfigNetwork) IPMAC() (net.IP, net.HardwareAddr, error) {
 		if err != nil {
 			return nil, nil, err
 		}
+		addrs, err := iface.Addrs()
+		if err != nil {
+			return nil, nil, err
+		}
+		for _, addr := range addrs {
+			if ipnet, ok := addr.(*net.IPNet); ok {
+				ip := ipnet.IP.To4()
+				if ip != nil {
+					hcn.IP = ip
+					break
+				}
+			}
+		}
 		hcn.mac = iface.HardwareAddr
 	}
 	if hcn.IP != nil && hcn.mac != nil {
