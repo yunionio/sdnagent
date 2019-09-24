@@ -254,9 +254,13 @@ func (g *Guest) FlowsMap() (map[string][]*ovs.Flow, error) {
 			F(0, 26700, T("in_port={{.PortNoPhy}},dl_dst={{.MAC}},{{._dl_vlan}}"), "normal"),
 		)
 		if g.HostConfig.AllowSwitchVMs {
-			flows = append(flows, F(0, 24600, T("in_port={{.PortNo}}"), "normal"))
+			flows = append(flows, F(0, 24670, T("in_port={{.PortNo}}"), "normal"))
 		} else {
-			flows = append(flows, F(0, 24500, T("in_port={{.PortNo}}"), "drop"))
+			flows = append(flows,
+				F(0, 25770, T("in_port={{.PortNo}},arp,dl_src={{.MAC}},arp_sha={{.MAC}},arp_spa={{.IP}}"), "normal"),
+				F(0, 25760, T("in_port={{.PortNo}},arp"), "drop"),
+				F(0, 24660, T("in_port={{.PortNo}}"), "drop"),
+			)
 		}
 		flows = append(flows, g.SecurityRules.Flows(g, m)...)
 		if fs, ok := r[nic.Bridge]; ok {
@@ -315,7 +319,7 @@ func (sr *SecurityRules) Flows(g *Guest, data map[string]interface{}) []*ovs.Flo
 		)
 	}
 	flows = append(flows,
-		F(0, 25700, T("in_port={{.PortNo}},dl_src={{.MAC}}"), "normal"),
+		F(0, 25600, T("in_port={{.PortNo}},dl_src={{.MAC}}"), "normal"),
 
 		// ct_state= flags order matters
 		F(1, 7900, "ip,ct_state=+inv+trk", "drop"),
@@ -402,17 +406,19 @@ func (sr *SecurityRules) Flows(g *Guest, data map[string]interface{}) []*ovs.Flo
 //
 // 26900 in_port=PORT_PHY,dl_dst=MAC_PHY,actions=normal
 // 26870 in_port=PORT_PHY,dl_dst=MAC_VM,dl_vlan=VLAN_VM,ip,{!allow_router_vms?nw_dst=IP_VM},actions=load_dst_VM_ZONE,ct(zone=dst_VM_ZONE,table=sec_CT)
-// 26860 in_port=PORT_PHY,dl_dst=MAC_VM,dl_vlan=VLAN_VM,ip,actions=drop             !allow_router_vms
+// 26860 in_port=PORT_PHY,dl_dst=MAC_VM,dl_vlan=VLAN_VM,ip,actions=drop                 !allow_router_vms
 // 26700 in_port=PORT_PHY,dl_dst=MAC_VM,dl_vlan=VLAN_VM,actions=normal
 //
 // 25870 in_port=PORT_VM,dl_src=MAC_VM,ip,{!allow_router_vms?nw_src=IP_VM},actions=load_src_VM_ZONE,load_VM_BIT,ct(zone=src_VM_ZONE,table=sec_CT)
-// 25860 in_port=PORT_VM,dl_src=MAC_VM,ip,actions=drop                              !allow_router_vms
-// 25700 in_port=PORT_VM,dl_src=MAC_VM,actions=normal
+// 25860 in_port=PORT_VM,dl_src=MAC_VM,ip,actions=drop                                  !allow_router_vms
+// 25770 in_port=PORT_VM,arp,dl_src=MAC_VM,arp_sha=MAC_VM,arp_spa=IP_VM,actions=normal  !allow_switch_vms
+// 25760 in_port=PORT_VM,arp,actions=drop                                               !allow_switch_vms
+// 25600 in_port=PORT_VM,dl_src=MAC_VM,actions=normal
 //
 // 24770 dl_dst=MAC_VM,ip,{!allow_router_vms?nw_dst=IP_VM},actions=load_dst_VM_ZONE,ct(zone=dst_VM_ZONE,table=sec_CT)
 // 24760 dl_dst=MAC_VM,ip,actions=drop                                              !allow_router_vms
-// 24600 in_port=PORT_VM,{ allow_switch_vms},actions=normal
-// 24500 in_port=PORT_VM,{!allow_switch_vms},actions=drop
+// 24670 in_port=PORT_VM,{ allow_switch_vms},actions=normal
+// 24660 in_port=PORT_VM,{!allow_switch_vms},actions=drop
 //
 // 23700 in_port=PORT_PHY,{ allow_switch_vms},actions=normal
 // 23600 in_port=PORT_PHY,{!allow_switch_vms},dl_dst=01:00:00:00:00:00/01:00:00:00:00:00,actions=normal
