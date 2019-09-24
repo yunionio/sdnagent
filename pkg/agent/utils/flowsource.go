@@ -258,7 +258,7 @@ func (g *Guest) FlowsMap() (map[string][]*ovs.Flow, error) {
 		} else {
 			flows = append(flows, F(0, 24500, T("in_port={{.PortNo}}"), "drop"))
 		}
-		flows = append(flows, g.SecurityRules.Flows(m)...)
+		flows = append(flows, g.SecurityRules.Flows(g, m)...)
 		if fs, ok := r[nic.Bridge]; ok {
 			flows = append(fs, flows...)
 		}
@@ -270,7 +270,7 @@ func (g *Guest) FlowsMap() (map[string][]*ovs.Flow, error) {
 	return r, nil
 }
 
-func (sr *SecurityRules) Flows(data map[string]interface{}) []*ovs.Flow {
+func (sr *SecurityRules) Flows(g *Guest, data map[string]interface{}) []*ovs.Flow {
 	T := t(data)
 	data["_in_port_vm"] = "reg0=0x10000/0x10000"
 	data["_in_port_not_vm"] = "reg0=0x0/0x10000"
@@ -291,13 +291,32 @@ func (sr *SecurityRules) Flows(data map[string]interface{}) []*ovs.Flow {
 	flows = append(flows,
 		F(0, 27300, T("in_port=LOCAL,dl_dst={{.MAC}},ip"),
 			loadZone+T(",ct(table=1,zone={{.CT_ZONE}})")),
-		F(0, 26800, T("in_port={{.PortNoPhy}},dl_dst={{.MAC}},{{._dl_vlan}},ip"),
-			loadZone+T(",ct(table=1,zone={{.CT_ZONE}})")),
-		F(0, 25800, T("in_port={{.PortNo}},dl_src={{.MAC}},ip"),
-			loadReg0BitVm+","+loadZone+T(",ct(table=1,zone={{.CT_ZONE}})")),
+	)
+	if g.HostConfig.AllowRouterVMs {
+		flows = append(flows,
+			F(0, 26870, T("in_port={{.PortNoPhy}},dl_dst={{.MAC}},{{._dl_vlan}},ip"),
+				loadZone+T(",ct(table=1,zone={{.CT_ZONE}})")),
+			F(0, 25870, T("in_port={{.PortNo}},dl_src={{.MAC}},ip"),
+				loadReg0BitVm+","+loadZone+T(",ct(table=1,zone={{.CT_ZONE}})")),
+			F(0, 24770, T("dl_dst={{.MAC}},ip"),
+				loadZone+T(",ct(table=1,zone={{.CT_ZONE}})")),
+		)
+	} else {
+		flows = append(flows,
+			F(0, 26870, T("in_port={{.PortNoPhy}},dl_dst={{.MAC}},{{._dl_vlan}},ip,nw_dst={{.IP}}"),
+				loadZone+T(",ct(table=1,zone={{.CT_ZONE}})")),
+			F(0, 26860, T("in_port={{.PortNoPhy}},dl_dst={{.MAC}},{{._dl_vlan}},ip"), "drop"),
+			F(0, 25870, T("in_port={{.PortNo}},dl_src={{.MAC}},ip,nw_src={{.IP}}"),
+				loadReg0BitVm+","+loadZone+T(",ct(table=1,zone={{.CT_ZONE}})")),
+			F(0, 25860, T("in_port={{.PortNo}},dl_src={{.MAC}},ip"), "drop"),
+			F(0, 24770, T("dl_dst={{.MAC}},ip,nw_dst={{.IP}}"),
+				loadZone+T(",ct(table=1,zone={{.CT_ZONE}})")),
+			F(0, 24760, T("dl_dst={{.MAC}},ip"), "drop"),
+		)
+	}
+	flows = append(flows,
 		F(0, 25700, T("in_port={{.PortNo}},dl_src={{.MAC}}"), "normal"),
-		F(0, 24700, T("dl_dst={{.MAC}},ip"),
-			loadZone+T(",ct(table=1,zone={{.CT_ZONE}})")),
+
 		// ct_state= flags order matters
 		F(1, 7900, "ip,ct_state=+inv+trk", "drop"),
 		F(1, 7800, T("ip,ct_state=+new+trk,{{._in_port_not_vm}}"), "resubmit(,3)"),
@@ -382,13 +401,16 @@ func (sr *SecurityRules) Flows(data map[string]interface{}) []*ovs.Flow {
 // 27200 in_port=LOCAL,actions=normal
 //
 // 26900 in_port=PORT_PHY,dl_dst=MAC_PHY,actions=normal
-// 26800 in_port=PORT_PHY,dl_dst=MAC_VM,dl_vlan=VLAN_VM,ip,actions=load_dst_VM_ZONE,ct(zone=dst_VM_ZONE,table=sec_CT)
+// 26870 in_port=PORT_PHY,dl_dst=MAC_VM,dl_vlan=VLAN_VM,ip,{!allow_router_vms?nw_dst=IP_VM},actions=load_dst_VM_ZONE,ct(zone=dst_VM_ZONE,table=sec_CT)
+// 26860 in_port=PORT_PHY,dl_dst=MAC_VM,dl_vlan=VLAN_VM,ip,actions=drop             !allow_router_vms
 // 26700 in_port=PORT_PHY,dl_dst=MAC_VM,dl_vlan=VLAN_VM,actions=normal
 //
-// 25800 in_port=PORT_VM,dl_src=MAC_VM,ip,actions=load_src_VM_ZONE,load_VM_BIT,ct(zone=src_VM_ZONE,table=sec_CT)
+// 25870 in_port=PORT_VM,dl_src=MAC_VM,ip,{!allow_router_vms?nw_src=IP_VM},actions=load_src_VM_ZONE,load_VM_BIT,ct(zone=src_VM_ZONE,table=sec_CT)
+// 25860 in_port=PORT_VM,dl_src=MAC_VM,ip,actions=drop                              !allow_router_vms
 // 25700 in_port=PORT_VM,dl_src=MAC_VM,actions=normal
 //
-// 24700 dl_dst=MAC_VM,ip,actions=load_dst_VM_ZONE,ct(zone=dst_VM_ZONE,table=sec_CT)
+// 24770 dl_dst=MAC_VM,ip,{!allow_router_vms?nw_dst=IP_VM},actions=load_dst_VM_ZONE,ct(zone=dst_VM_ZONE,table=sec_CT)
+// 24760 dl_dst=MAC_VM,ip,actions=drop                                              !allow_router_vms
 // 24600 in_port=PORT_VM,{ allow_switch_vms},actions=normal
 // 24500 in_port=PORT_VM,{!allow_switch_vms},actions=drop
 //
