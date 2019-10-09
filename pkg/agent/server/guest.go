@@ -25,6 +25,12 @@ import (
 	"yunion.io/x/sdnagent/pkg/agent/utils"
 )
 
+var (
+	errNotRunning   = fmt.Errorf("not running")
+	errPortNotReady = fmt.Errorf("port not ready") // no port is ready
+	errSlaveMachine = fmt.Errorf("slave machine")
+)
+
 type Guest struct {
 	*utils.Guest
 	watcher         *serversWatcher
@@ -124,16 +130,21 @@ func (g *Guest) refresh(ctx context.Context) (err error) {
 	if err != nil {
 		return
 	}
+	if g.IsSlave() {
+		err = errSlaveMachine
+		setPending = false
+		return
+	}
 	someOk := g.refreshPortNo(ctx)
 	if !someOk {
 		if g.IsVM() && !g.Running() {
 			// we will be notified when its pid is to be updated
 			// so there is no need to set pending for it now
-			err = fmt.Errorf("not running")
+			err = errNotRunning
 			setPending = false
 		} else {
 			// NOTE crashed container can make pending watcher busy
-			err = fmt.Errorf("port not ready")
+			err = errPortNotReady
 		}
 		// next we will clean flow rules for them
 	}
@@ -178,11 +189,13 @@ func (g *Guest) clearTc(ctx context.Context) {
 
 func (g *Guest) UpdateSettings(ctx context.Context) {
 	err := g.refresh(ctx)
-	if err == nil {
+	switch err {
+	case nil:
 		g.updateFlows(ctx)
 		g.updateTc(ctx)
+	case errNotRunning, errPortNotReady, errSlaveMachine:
+		g.ClearSettings(ctx)
 	}
-	return
 }
 
 func (g *Guest) ClearSettings(ctx context.Context) {
