@@ -29,6 +29,15 @@ type guestDesc struct {
 	AdminSecurityRules string      `json:"admin_security_rules"`
 	Secgroup           string
 	Name               string
+
+	IsMaster bool `json:"is_master"`
+}
+
+func newGuestDesc() *guestDesc {
+	desc := &guestDesc{
+		IsMaster: true,
+	}
+	return desc
 }
 
 type GuestNIC struct {
@@ -90,6 +99,8 @@ type Guest struct {
 	Name          string
 	SecurityRules *SecurityRules
 	NICs          []*GuestNIC
+
+	isSlave bool
 }
 
 func (g *Guest) IsVM() bool {
@@ -131,6 +142,10 @@ func (g *Guest) Running() bool {
 	return false
 }
 
+func (g *Guest) IsSlave() bool {
+	return g.isSlave
+}
+
 func (g *Guest) LoadDesc() error {
 	descPath := path.Join(g.Path, "desc")
 	descFile, err := os.Open(descPath)
@@ -139,13 +154,14 @@ func (g *Guest) LoadDesc() error {
 	}
 	defer descFile.Close()
 	dec := json.NewDecoder(descFile)
-	var desc guestDesc
+	desc := newGuestDesc()
 	err = dec.Decode(&desc)
 	if err != nil {
 		return err
 	}
 	g.Name = desc.Name
 	g.NICs = desc.NICs
+	g.isSlave = !desc.IsMaster
 	{
 		if len(desc.Secgroup) == 0 {
 			desc.SecurityRules = "out:allow any; in:allow any"
