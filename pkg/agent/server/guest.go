@@ -124,6 +124,11 @@ func (g *Guest) refresh(ctx context.Context) (err error) {
 	if err != nil {
 		return
 	}
+	if g.IsSlave() {
+		err = fmt.Errorf("slave machine")
+		setPending = false
+		return
+	}
 	someOk := g.refreshPortNo(ctx)
 	if !someOk {
 		if g.IsVM() && !g.Running() {
