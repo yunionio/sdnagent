@@ -33,9 +33,10 @@ func TestHostConfig(t *testing.T) {
 	_, defaultK8sCidr, _ := net.ParseCIDR("10.43.0.0/16")
 	_, nonDefaultK8sCidr, _ := net.ParseCIDR("10.44.0.0/17")
 	cases := []struct {
-		name string
-		data string
-		want *HostConfig
+		name     string
+		data     string
+		dataYaml string
+		want     *HostConfig
 	}{
 		{
 			name: "default",
@@ -53,6 +54,10 @@ func TestHostConfig(t *testing.T) {
 allow_switch_vms = False
 allow_router_vms = True
 			`,
+			dataYaml: `
+allow_switch_vms: false
+allow_router_vms: true
+`,
 			want: &HostConfig{
 				Port:           0,
 				ServersPath:    "/opt/cloud/workspace/servers",
@@ -68,6 +73,10 @@ allow_router_vms = True
 allow_switch_vms = True
 allow_router_vms = False
 			`,
+			dataYaml: `
+allow_switch_vms: true
+allow_router_vms: false
+`,
 			want: &HostConfig{
 				Port:           0,
 				ServersPath:    "/opt/cloud/workspace/servers",
@@ -87,6 +96,15 @@ k8s_cluster_cidr = '10.44.0.0/17'
 allow_switch_vms = True
 dhcp_server_port = 1067
 			`,
+			dataYaml: `
+port: 8885
+servers_path: '/opt/cloud/workspace/servers_owl'
+networks:
+- 'eth0/br0/10.168.222.136'
+k8s_cluster_cidr: '10.44.0.0/17'
+allow_switch_vms: true
+dhcp_server_port: 1067
+`,
 			want: &HostConfig{
 				Port: 8885,
 				Networks: []*HostConfigNetwork{
@@ -106,12 +124,14 @@ dhcp_server_port = 1067
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
-			hc, err := newHostConfigFromBytes([]byte(c.data))
-			if err != nil {
-				t.Errorf("loading config failed: %v\n%s", err, c.data)
-			}
-			if !reflect.DeepEqual(hc, c.want) {
-				t.Errorf("\ngot config\n  %#v\nwant\n  %#v", hc, c.want)
+			for i, data := range []string{c.data, c.dataYaml} {
+				hc, err := newHostConfigFromBytes([]byte(data))
+				if err != nil {
+					t.Fatalf("%d: load config: %v\n%s", i, err, c.data)
+				}
+				if !reflect.DeepEqual(hc, c.want) {
+					t.Fatalf("\n%d: got config\n  %#v\nwant\n  %#v", i, hc, c.want)
+				}
 			}
 		})
 	}

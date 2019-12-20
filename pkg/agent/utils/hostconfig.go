@@ -21,6 +21,8 @@ import (
 	"net"
 	"os/exec"
 	"strings"
+
+	"gopkg.in/yaml.v2"
 )
 
 type HostConfigNetwork struct {
@@ -71,33 +73,6 @@ func (hc *HostConfig) MetadataPort() int {
 	return hc.Port + 1000
 }
 
-var snippet_pre = []byte(`
-from __future__ import print_function
-port = None
-listen_interface = None
-networks = []
-servers_path = "/opt/cloud/workspace/servers"
-k8s_cluster_cidr = '10.43.0.0/16'
-allow_switch_vms = False
-allow_router_vms = False
-dhcp_server_port = 67
-
-`)
-var snippet_post = []byte(`
-
-import json
-print(json.dumps({
-	'port': port,
-	'networks': networks,
-	'listen_interface': listen_interface,
-	'servers_path': servers_path,
-	'k8s_cluster_cidr': k8s_cluster_cidr,
-	'allow_switch_vms': bool(allow_switch_vms),
-	'allow_router_vms': bool(allow_router_vms),
-	'dhcp_server_port': dhcp_server_port,
-}))
-`)
-
 func NewHostConfigNetwork(network string) (*HostConfigNetwork, error) {
 	chunks := strings.Split(network, "/")
 	if len(chunks) >= 3 {
@@ -120,28 +95,80 @@ func NewHostConfig(file string) (*HostConfig, error) {
 	return newHostConfigFromBytes(data)
 }
 
-func newHostConfigFromBytes(data []byte) (*HostConfig, error) {
+func unmarshalPythonConfig(data []byte, out interface{}) error {
+	var (
+		snippet_pre = []byte(`
+from __future__ import print_function
+port = None
+listen_interface = None
+networks = []
+servers_path = "/opt/cloud/workspace/servers"
+k8s_cluster_cidr = '10.43.0.0/16'
+allow_switch_vms = False
+allow_router_vms = False
+dhcp_server_port = 67
+
+`)
+		snippet_post = []byte(`
+
+import json
+print(json.dumps({
+	'port': port,
+	'networks': networks,
+	'listen_interface': listen_interface,
+	'servers_path': servers_path,
+	'k8s_cluster_cidr': k8s_cluster_cidr,
+	'allow_switch_vms': bool(allow_switch_vms),
+	'allow_router_vms': bool(allow_router_vms),
+	'dhcp_server_port': dhcp_server_port,
+}))
+`)
+	)
+
 	// NOTE python hack
 	data = append(snippet_pre, data...)
 	data = append(data, snippet_post...)
 	cmd := exec.Command("python", "-c", string(data))
 	jstr, err := cmd.Output()
 	if err != nil {
-		return nil, err
+		return err
 	}
+	return json.Unmarshal(jstr, out)
+}
+
+func newHostConfigFromBytes(data []byte) (*HostConfig, error) {
 	// parse json dump
 	v := struct {
 		Port           int
 		Networks       []string
-		ServersPath    string `json:"servers_path"`
-		K8sClusterCidr string `json:"k8s_cluster_cidr"`
-		AllowSwitchVMs bool   `json:"allow_switch_vms"`
-		AllowRouterVMs bool   `json:"allow_router_vms"`
-		DHCPServerPort int    `json:"dhcp_server_port"`
-	}{}
-	err = json.Unmarshal(jstr, &v)
-	if err != nil {
-		return nil, err
+		ServersPath    string `json:"servers_path" yaml:"servers_path"`
+		K8sClusterCidr string `json:"k8s_cluster_cidr" yaml:"k8s_cluster_cidr"`
+		AllowSwitchVMs bool   `json:"allow_switch_vms" yaml:"allow_switch_vms"`
+		AllowRouterVMs bool   `json:"allow_router_vms" yaml:"allow_router_vms"`
+		DHCPServerPort int    `json:"dhcp_server_port" yaml:"dhcp_server_port"`
+	}{
+		ServersPath:    "/opt/cloud/workspace/servers",
+		K8sClusterCidr: "10.43.0.0/16",
+		DHCPServerPort: 67,
+	}
+	{
+		type funcType func([]byte, interface{}) error
+		var (
+			funcs = []funcType{
+				unmarshalPythonConfig,
+				yaml.Unmarshal,
+			}
+			err error
+		)
+		for _, f := range funcs {
+			err = f(data, &v)
+			if err == nil {
+				break
+			}
+		}
+		if err != nil {
+			return nil, err
+		}
 	}
 	if v.AllowSwitchVMs && !v.AllowRouterVMs {
 		v.AllowRouterVMs = true
