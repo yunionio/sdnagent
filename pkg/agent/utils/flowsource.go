@@ -91,6 +91,9 @@ func (h *HostLocal) FlowsMap() (map[string][]*ovs.Flow, error) {
 		F(0, 27200, "in_port=LOCAL", "normal"),
 		F(0, 26900, T("in_port={{.PortNoPhy}},dl_dst={{.MAC}}"), "normal"),
 	)
+	// NOTE we do not do check of existence of a "switch" guest and
+	// silently "AllowSwitchVMs" here.  That could be deemed as unexpected
+	// compromise for other guests.  Intentions must be explicit
 	if h.HostConfig.AllowSwitchVMs {
 		flows = append(flows,
 			F(0, 23700, T("in_port={{.PortNoPhy}}"), "normal"),
@@ -253,7 +256,7 @@ func (g *Guest) FlowsMap() (map[string][]*ovs.Flow, error) {
 			F(0, 28300, T("in_port=LOCAL,dl_dst={{.MAC}},udp,tp_src={{.DHCPServerPort}},tp_dst=68"), T("mod_tp_src:67,output:{{.PortNo}}")),
 			F(0, 26700, T("in_port={{.PortNoPhy}},dl_dst={{.MAC}},{{._dl_vlan}}"), "normal"),
 		)
-		if g.HostConfig.AllowSwitchVMs {
+		if !g.SrcMacCheck() {
 			flows = append(flows, F(0, 24670, T("in_port={{.PortNo}}"), "normal"))
 		} else {
 			flows = append(flows,
@@ -296,7 +299,7 @@ func (sr *SecurityRules) Flows(g *Guest, data map[string]interface{}) []*ovs.Flo
 		F(0, 27300, T("in_port=LOCAL,dl_dst={{.MAC}},ip"),
 			loadZone+T(",ct(table=1,zone={{.CT_ZONE}})")),
 	)
-	if g.HostConfig.AllowRouterVMs {
+	if !g.SrcIpCheck() {
 		flows = append(flows,
 			F(0, 26870, T("in_port={{.PortNoPhy}},dl_dst={{.MAC}},{{._dl_vlan}},ip"),
 				loadZone+T(",ct(table=1,zone={{.CT_ZONE}})")),
