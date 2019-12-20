@@ -31,11 +31,16 @@ type guestDesc struct {
 	Name               string
 
 	IsMaster bool `json:"is_master"`
+
+	SrcIpCheck  bool `json:"src_ip_check"`
+	SrcMacCheck bool `json:"src_mac_check"`
 }
 
 func newGuestDesc() *guestDesc {
 	desc := &guestDesc{
-		IsMaster: true,
+		IsMaster:    true,
+		SrcIpCheck:  true,
+		SrcMacCheck: true,
 	}
 	return desc
 }
@@ -100,6 +105,9 @@ type Guest struct {
 	SecurityRules *SecurityRules
 	NICs          []*GuestNIC
 
+	srcIpCheck  bool
+	srcMacCheck bool
+
 	isSlave bool
 }
 
@@ -162,6 +170,13 @@ func (g *Guest) LoadDesc() error {
 	g.Name = desc.Name
 	g.NICs = desc.NICs
 	g.isSlave = !desc.IsMaster
+
+	g.srcIpCheck = desc.SrcIpCheck
+	g.srcMacCheck = desc.SrcMacCheck
+	if !g.srcMacCheck && g.srcIpCheck {
+		g.srcIpCheck = false
+	}
+
 	{
 		if len(desc.Secgroup) == 0 {
 			desc.SecurityRules = "out:allow any; in:allow any"
@@ -174,4 +189,18 @@ func (g *Guest) LoadDesc() error {
 		g.SecurityRules = rs
 	}
 	return nil
+}
+
+func (g *Guest) SrcIpCheck() bool {
+	if !g.HostConfig.AllowRouterVMs {
+		return true
+	}
+	return g.srcIpCheck
+}
+
+func (g *Guest) SrcMacCheck() bool {
+	if !g.HostConfig.AllowSwitchVMs {
+		return true
+	}
+	return g.srcMacCheck
 }
