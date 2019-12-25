@@ -105,7 +105,7 @@ networks = []
 servers_path = "/opt/cloud/workspace/servers"
 k8s_cluster_cidr = '10.43.0.0/16'
 allow_switch_vms = False
-allow_router_vms = False
+allow_router_vms = True
 dhcp_server_port = 67
 
 `)
@@ -150,6 +150,7 @@ func newHostConfigFromBytes(data []byte) (*HostConfig, error) {
 		ServersPath:    "/opt/cloud/workspace/servers",
 		K8sClusterCidr: "10.43.0.0/16",
 		DHCPServerPort: 67,
+		AllowRouterVMs: true,
 	}
 	{
 		type funcType func([]byte, interface{}) error
