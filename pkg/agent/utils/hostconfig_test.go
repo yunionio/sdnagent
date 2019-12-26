@@ -46,6 +46,7 @@ func TestHostConfig(t *testing.T) {
 				ServersPath:    "/opt/cloud/workspace/servers",
 				K8sClusterCidr: defaultK8sCidr,
 				DHCPServerPort: 67,
+				AllowRouterVMs: true,
 			},
 		},
 		{
