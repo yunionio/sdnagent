@@ -67,6 +67,8 @@ type HostConfig struct {
 	AllowSwitchVMs bool // allow virtual machines act as switches
 	AllowRouterVMs bool // allow virtual machines act as routers
 	DHCPServerPort int
+
+	OvnIntegrationBridge string
 }
 
 func (hc *HostConfig) MetadataPort() int {
@@ -108,6 +110,8 @@ allow_switch_vms = False
 allow_router_vms = True
 dhcp_server_port = 67
 
+ovn_integration_bridge = 'brvpc'
+
 `)
 		snippet_post = []byte(`
 
@@ -121,6 +125,8 @@ print(json.dumps({
 	'allow_switch_vms': bool(allow_switch_vms),
 	'allow_router_vms': bool(allow_router_vms),
 	'dhcp_server_port': dhcp_server_port,
+
+	'ovn_integration_bridge': ovn_integration_bridge,
 }))
 `)
 	)
@@ -146,11 +152,15 @@ func newHostConfigFromBytes(data []byte) (*HostConfig, error) {
 		AllowSwitchVMs bool   `json:"allow_switch_vms" yaml:"allow_switch_vms"`
 		AllowRouterVMs bool   `json:"allow_router_vms" yaml:"allow_router_vms"`
 		DHCPServerPort int    `json:"dhcp_server_port" yaml:"dhcp_server_port"`
+
+		OvnIntegrationBridge string `json:"ovn_integration_bridge"`
 	}{
 		ServersPath:    "/opt/cloud/workspace/servers",
 		K8sClusterCidr: "10.43.0.0/16",
 		DHCPServerPort: 67,
 		AllowRouterVMs: true,
+
+		OvnIntegrationBridge: "brvpc",
 	}
 	{
 		type funcType func([]byte, interface{}) error
@@ -181,6 +191,8 @@ func newHostConfigFromBytes(data []byte) (*HostConfig, error) {
 		AllowSwitchVMs: v.AllowSwitchVMs,
 		AllowRouterVMs: v.AllowRouterVMs,
 		DHCPServerPort: v.DHCPServerPort,
+
+		OvnIntegrationBridge: v.OvnIntegrationBridge,
 	}
 	_, k8sCidr, err := net.ParseCIDR(v.K8sClusterCidr)
 	if err == nil {
