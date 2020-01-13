@@ -31,6 +31,7 @@ type AgentServer struct {
 	rpcServer      *grpc.Server
 	ctx            context.Context
 	ctxCancel      context.CancelFunc
+	once           *sync.Once
 	wg             *sync.WaitGroup
 	serversWatcher *serversWatcher
 	flowMansLock   *sync.RWMutex
@@ -67,8 +68,12 @@ func (s *AgentServer) Start() error {
 }
 
 func (s *AgentServer) Stop() {
-	s.rpcServer.GracefulStop()
-	s.ctxCancel()
+	s.once.Do(func() {
+		if s.rpcServer != nil {
+			s.rpcServer.GracefulStop()
+		}
+		s.ctxCancel()
+	})
 }
 
 var theAgentServer *AgentServer
@@ -87,6 +92,7 @@ func init() {
 		flowMansLock:   &sync.RWMutex{},
 		serversWatcher: watcher,
 		ifaceJanitor:   ifaceJanitor,
+		once:           &sync.Once{},
 		wg:             wg,
 		ctx:            ctx,
 		ctxCancel:      cancelFunc,
