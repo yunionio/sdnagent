@@ -157,8 +157,8 @@ func (w *serversWatcher) Start(ctx context.Context, agent *AgentServer) {
 		return
 	}
 
-	go w.tcMan.Start(ctx)
 	wg.Add(1)
+	go w.tcMan.Start(ctx)
 
 	// init scan
 	w.hostLocal = NewHostLocal(w)
