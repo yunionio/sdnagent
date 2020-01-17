@@ -130,6 +130,8 @@ func (w *serversWatcher) hasRecentPending() bool {
 }
 
 func (w *serversWatcher) Start(ctx context.Context, agent *AgentServer) {
+	defer agent.Stop()
+
 	// workgroup
 	wg := ctx.Value("wg").(*sync.WaitGroup)
 	defer wg.Done()
@@ -153,12 +155,12 @@ func (w *serversWatcher) Start(ctx context.Context, agent *AgentServer) {
 	defer w.watcher.Close()
 	err = w.watcher.Add(w.hostConfig.ServersPath)
 	if err != nil {
-		log.Errorf("wathcing %s failed: %s", w.hostConfig.ServersPath, err)
+		log.Errorf("watching %s failed: %s", w.hostConfig.ServersPath, err)
 		return
 	}
 
-	go w.tcMan.Start(ctx)
 	wg.Add(1)
+	go w.tcMan.Start(ctx)
 
 	// init scan
 	w.hostLocal = NewHostLocal(w)
