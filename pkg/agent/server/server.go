@@ -31,6 +31,7 @@ type AgentServer struct {
 	rpcServer      *grpc.Server
 	ctx            context.Context
 	ctxCancel      context.CancelFunc
+	once           *sync.Once
 	wg             *sync.WaitGroup
 	serversWatcher *serversWatcher
 	flowMansLock   *sync.RWMutex
@@ -46,8 +47,8 @@ func (s *AgentServer) GetFlowMan(bridge string) *FlowMan {
 	}
 	flowman := NewFlowMan(bridge)
 	theAgentServer.flowMans[bridge] = flowman
-	go flowman.Start(s.ctx)
 	s.wg.Add(1)
+	go flowman.Start(s.ctx)
 	return flowman
 }
 
@@ -57,17 +58,22 @@ func (s *AgentServer) Start() error {
 		log.Fatalf("listen %s failed: %s", common.UnixSocketFile, err)
 	}
 	defer lis.Close()
+
 	defer s.wg.Wait()
+	s.wg.Add(2)
 	go s.serversWatcher.Start(s.ctx, s)
 	go s.ifaceJanitor.Start(s.ctx)
-	s.wg.Add(2)
 	err = s.rpcServer.Serve(lis)
 	return err
 }
 
 func (s *AgentServer) Stop() {
-	s.rpcServer.GracefulStop()
-	s.ctxCancel()
+	s.once.Do(func() {
+		if s.rpcServer != nil {
+			s.rpcServer.GracefulStop()
+		}
+		s.ctxCancel()
+	})
 }
 
 var theAgentServer *AgentServer
@@ -86,6 +92,7 @@ func init() {
 		flowMansLock:   &sync.RWMutex{},
 		serversWatcher: watcher,
 		ifaceJanitor:   ifaceJanitor,
+		once:           &sync.Once{},
 		wg:             wg,
 		ctx:            ctx,
 		ctxCancel:      cancelFunc,
