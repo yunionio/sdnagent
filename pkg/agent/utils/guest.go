@@ -62,11 +62,16 @@ type GuestNIC struct {
 	NetId      string `json:"net_id"`
 	Virtual    bool
 	VLAN       int
-	WireId     string `json:"wire_id"`
+	WireId     string      `json:"wire_id"`
+	Vpc        GuestNICVpc `json:"vpc"`
 
 	CtZoneId    uint16 `json:"-"`
 	CtZoneIdSet bool   `json:"-"`
 	PortNo      int    `json:"-"`
+}
+
+type GuestNICVpc struct {
+	Provider string `json:"provider"`
 }
 
 func (n *GuestNIC) TcData() *TcData {
@@ -104,6 +109,7 @@ type Guest struct {
 	Name          string
 	SecurityRules *SecurityRules
 	NICs          []*GuestNIC
+	vpcNICs       []*GuestNIC
 
 	srcIpCheck  bool
 	srcMacCheck bool
@@ -168,7 +174,14 @@ func (g *Guest) LoadDesc() error {
 		return err
 	}
 	g.Name = desc.Name
-	g.NICs = desc.NICs
+
+	for _, nic := range desc.NICs {
+		if nic.Vpc.Provider == "" {
+			g.NICs = append(g.NICs, nic)
+		} else {
+			g.vpcNICs = append(g.vpcNICs, nic)
+		}
+	}
 	g.isSlave = !desc.IsMaster
 
 	g.srcIpCheck = desc.SrcIpCheck
