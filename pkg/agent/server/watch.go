@@ -143,6 +143,12 @@ func (w *serversWatcher) Start(ctx context.Context, agent *AgentServer) {
 	}
 	w.hostConfig = hc
 
+	ctx, cancelFunc := context.WithCancel(ctx)
+	go w.hostConfig.WatchMtimeChange(ctx, func(mtime time.Time) {
+		log.Warningf("%s mtime changed, now %s", DefaultHostConfigPath, mtime)
+		cancelFunc()
+	})
+
 	// start watcher before scan
 	w.watcher, err = fsnotify.NewWatcher()
 	if err != nil {
