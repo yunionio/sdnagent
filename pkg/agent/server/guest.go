@@ -52,7 +52,7 @@ func (g *Guest) refreshPortNo(ctx context.Context) bool {
 	for _, nic := range g.NICs {
 		bridge := nic.Bridge
 		ifname := nic.IfnameHost
-		portStats, err := g.watcher.ofCli.DumpPort(bridge, ifname)
+		portStats, err := utils.DumpPort(bridge, ifname)
 		if err == nil {
 			someOk = true
 			nic.PortNo = portStats.PortID

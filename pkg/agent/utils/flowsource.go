@@ -25,7 +25,9 @@ import (
 	"yunion.io/x/log"
 )
 
-var disableFirewallRules = false
+var (
+	disableFirewallRules = false
+)
 
 type FlowSource interface {
 	Who() string
@@ -68,7 +70,7 @@ func (h *HostLocal) Who() string {
 }
 
 func (h *HostLocal) FlowsMap() (map[string][]*ovs.Flow, error) {
-	ps, err := ovs.New().OpenFlow.DumpPort(h.Bridge, h.Ifname)
+	ps, err := DumpPort(h.Bridge, h.Ifname)
 	if err != nil {
 		return nil, err
 	}
@@ -138,7 +140,6 @@ func (g *Guest) getMetadataInfo(nic *GuestNIC) (mdIP string, mdMAC string, mdPor
 		return
 	}
 
-	ofCli := ovs.New().OpenFlow
 	{
 		var (
 			p     *ovs.PortStats
@@ -146,14 +147,14 @@ func (g *Guest) getMetadataInfo(nic *GuestNIC) (mdIP string, mdMAC string, mdPor
 		)
 		{
 			attrs := linkPeer.Attrs()
-			p, err = ofCli.DumpPort(nic.Bridge, attrs.Name)
+			p, err = DumpPort(nic.Bridge, attrs.Name)
 			if err != nil {
 				var masterLink netlink.Link
 				masterLink, err = netlink.LinkByIndex(attrs.MasterIndex)
 				if err != nil {
 					return
 				}
-				p, err = ofCli.DumpPort(nic.Bridge, masterLink.Attrs().Name)
+				p, err = DumpPort(nic.Bridge, masterLink.Attrs().Name)
 				if err != nil {
 					return
 				}
@@ -183,7 +184,6 @@ func (g *Guest) FlowsMap() (map[string][]*ovs.Flow, error) {
 			allGood = false
 			continue
 		}
-		ofCli := ovs.New().OpenFlow
 		hcn := g.HostConfig.HostNetworkConfig(nic.Bridge)
 		if hcn == nil {
 			log.Warningf("guest %s port %s: no host network config for %s",
@@ -191,7 +191,7 @@ func (g *Guest) FlowsMap() (map[string][]*ovs.Flow, error) {
 			allGood = false
 			continue
 		}
-		ps, err := ofCli.DumpPort(nic.Bridge, hcn.Ifname)
+		ps, err := DumpPort(nic.Bridge, hcn.Ifname)
 		if err != nil {
 			log.Warningf("fetch phy port_no of %s,%s failed: %s",
 				nic.Bridge, hcn.Ifname, err)
