@@ -23,7 +23,6 @@ import (
 	"sync"
 	"time"
 
-	"github.com/digitalocean/go-openvswitch/ovs"
 	"github.com/fsnotify/fsnotify"
 
 	"yunion.io/x/log"
@@ -45,7 +44,6 @@ type serversWatcher struct {
 	hostLocal  *HostLocal
 	guests     map[string]*Guest
 	zoneMan    *utils.ZoneMan
-	ofCli      *ovs.OpenFlowService
 }
 
 func newServersWatcher() (*serversWatcher, error) {
@@ -53,7 +51,6 @@ func newServersWatcher() (*serversWatcher, error) {
 		guests:  map[string]*Guest{},
 		zoneMan: utils.NewZoneMan(GuestCtZoneBase),
 		tcMan:   NewTcMan(),
-		ofCli:   ovs.New().OpenFlow,
 	}
 	return w, nil
 }
@@ -145,6 +142,12 @@ func (w *serversWatcher) Start(ctx context.Context, agent *AgentServer) {
 		return
 	}
 	w.hostConfig = hc
+
+	ctx, cancelFunc := context.WithCancel(ctx)
+	go w.hostConfig.WatchMtimeChange(ctx, func(mtime time.Time) {
+		log.Warningf("%s mtime changed, now %s", DefaultHostConfigPath, mtime)
+		cancelFunc()
+	})
 
 	// start watcher before scan
 	w.watcher, err = fsnotify.NewWatcher()

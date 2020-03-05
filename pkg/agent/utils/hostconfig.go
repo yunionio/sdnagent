@@ -15,12 +15,15 @@
 package utils
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"io/ioutil"
 	"net"
+	"os"
 	"os/exec"
 	"strings"
+	"time"
 
 	"gopkg.in/yaml.v2"
 )
@@ -60,6 +63,9 @@ func (hcn *HostConfigNetwork) IPMAC() (net.IP, net.HardwareAddr, error) {
 }
 
 type HostConfig struct {
+	file  string
+	mtime time.Time
+
 	Port           int
 	Networks       []*HostConfigNetwork
 	ServersPath    string
@@ -90,11 +96,23 @@ func NewHostConfigNetwork(network string) (*HostConfigNetwork, error) {
 }
 
 func NewHostConfig(file string) (*HostConfig, error) {
+	fi, err := os.Stat(file)
+	if err != nil {
+		return nil, err
+	}
+
 	data, err := ioutil.ReadFile(file)
 	if err != nil {
 		return nil, err
 	}
-	return newHostConfigFromBytes(data)
+	hc, err := newHostConfigFromBytes(data)
+	if err != nil {
+		return nil, err
+	}
+
+	hc.file = file
+	hc.mtime = fi.ModTime()
+	return hc, nil
 }
 
 func unmarshalPythonConfig(data []byte, out interface{}) error {
@@ -217,4 +235,20 @@ func (hc *HostConfig) HostNetworkConfig(bridge string) *HostConfigNetwork {
 		}
 	}
 	return nil
+}
+
+func (hc *HostConfig) WatchMtimeChange(ctx context.Context, cb func(time.Time)) {
+	tick := time.NewTicker(13 * time.Second)
+	defer tick.Stop()
+	for {
+		select {
+		case <-tick.C:
+			fi, err := os.Stat(hc.file)
+			if mtime := fi.ModTime(); err == nil && !mtime.Equal(hc.mtime) {
+				cb(mtime)
+			}
+		case <-ctx.Done():
+			return
+		}
+	}
 }
