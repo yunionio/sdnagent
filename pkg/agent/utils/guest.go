@@ -174,12 +174,13 @@ func (g *Guest) LoadDesc() error {
 		return err
 	}
 	g.Name = desc.Name
+	g.NICs = desc.NICs
 
-	for _, nic := range desc.NICs {
-		if nic.Vpc.Provider == "" {
-			g.NICs = append(g.NICs, nic)
-		} else {
+	for i := len(g.NICs) - 1; i >= 0; i-- {
+		nic := g.NICs[i]
+		if nic.Vpc.Provider != "" {
 			g.vpcNICs = append(g.vpcNICs, nic)
+			g.NICs = append(g.NICs[:i], g.NICs[i+1:]...)
 		}
 	}
 	g.isSlave = !desc.IsMaster
