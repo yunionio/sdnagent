@@ -176,6 +176,7 @@ func newHostConfigFromBytes(data []byte) (*HostConfig, error) {
 		ServersPath:    "/opt/cloud/workspace/servers",
 		K8sClusterCidr: "10.43.0.0/16",
 		DHCPServerPort: 67,
+		AllowSwitchVMs: true,
 		AllowRouterVMs: true,
 
 		OvnIntegrationBridge: "brvpc",
