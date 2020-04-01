@@ -5,13 +5,15 @@ GO_BUILD:=go build $(GO_BUILD_FLAGS)
 GO_TEST:=go test $(GO_BUILD_FLAGS)
 export GO111MODULE:=on
 
-all: bins pkg/agent/proto/agent.pb.go
+all: bins
 
 bins:
 	mkdir -p $(BINDIR)
 	$(GO_BUILD) yunion.io/x/sdnagent/pkg/agent
 	$(GO_BUILD) -o $(BINDIR)/sdnagent yunion.io/x/sdnagent/cmd/sdnagent
 	$(GO_BUILD) -o $(BINDIR)/sdncli yunion.io/x/sdnagent/cmd/sdncli
+
+proto-gen: pkg/agent/proto/agent.pb.go
 
 pkg/agent/proto/agent.pb.go: pkg/agent/proto/agent.proto
 	protoc -I pkg/agent/proto pkg/agent/proto/agent.proto --go_out=plugins=grpc:pkg/agent/proto
