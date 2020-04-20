@@ -187,19 +187,40 @@ func (g *Guest) clearTc(ctx context.Context) {
 	g.watcher.tcMan.ClearIfaces(ctx, g.Who())
 }
 
-func (g *Guest) UpdateSettings(ctx context.Context) {
-	err := g.refresh(ctx)
-	switch err {
-	case nil:
-		g.updateFlows(ctx)
-		g.updateTc(ctx)
-	case errNotRunning, errPortNotReady, errSlaveMachine:
-		g.ClearSettings(ctx)
+func (g *Guest) updateOvn(ctx context.Context) {
+	if len(g.VpcNICs) > 0 {
+		ovnMan := g.watcher.ovnMan
+		ovnMan.SetHostId(ctx, g.HostId)
+		ovnMan.SetGuestNICs(ctx, g.Id, g.VpcNICs)
 	}
 }
 
-func (g *Guest) ClearSettings(ctx context.Context) {
+func (g *Guest) clearOvn(ctx context.Context) {
+	ovnMan := g.watcher.ovnMan
+	ovnMan.SetGuestNICs(ctx, g.Id, nil)
+}
+
+func (g *Guest) UpdateSettings(ctx context.Context) {
+	{
+		err := g.refresh(ctx)
+		switch err {
+		case nil:
+			g.updateFlows(ctx)
+			g.updateTc(ctx)
+		case errNotRunning, errPortNotReady, errSlaveMachine:
+			g.clearSettings(ctx)
+		}
+	}
+	g.updateOvn(ctx)
+}
+
+func (g *Guest) clearSettings(ctx context.Context) {
 	g.deleteFlows(ctx)
 	g.clearTc(ctx)
+}
+
+func (g *Guest) ClearSettings(ctx context.Context) {
+	g.clearSettings(ctx)
+	g.clearOvn(ctx)
 	return
 }

@@ -39,6 +39,7 @@ type pendingGuest struct {
 type serversWatcher struct {
 	agent      *AgentServer
 	tcMan      *TcMan
+	ovnMan     *ovnMan
 	hostConfig *utils.HostConfig
 	watcher    *fsnotify.Watcher
 	hostLocal  *HostLocal
@@ -52,6 +53,7 @@ func newServersWatcher() (*serversWatcher, error) {
 		zoneMan: utils.NewZoneMan(GuestCtZoneBase),
 		tcMan:   NewTcMan(),
 	}
+	w.ovnMan = newOvnMan(w)
 	return w, nil
 }
 
@@ -142,6 +144,10 @@ func (w *serversWatcher) Start(ctx context.Context, agent *AgentServer) {
 		return
 	}
 	w.hostConfig = hc
+	if err := w.hostConfig.Auth(ctx); err != nil {
+		log.Errorf("keystone auth: %v", err)
+		return
+	}
 
 	ctx, cancelFunc := context.WithCancel(ctx)
 	go w.hostConfig.WatchMtimeChange(ctx, func(mtime time.Time) {
@@ -164,6 +170,9 @@ func (w *serversWatcher) Start(ctx context.Context, agent *AgentServer) {
 
 	wg.Add(1)
 	go w.tcMan.Start(ctx)
+
+	wg.Add(1)
+	go w.ovnMan.Start(ctx)
 
 	// init scan
 	w.hostLocal = NewHostLocal(w)
