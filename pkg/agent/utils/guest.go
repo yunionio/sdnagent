@@ -30,7 +30,8 @@ type guestDesc struct {
 	Secgroup           string
 	Name               string
 
-	IsMaster bool `json:"is_master"`
+	IsMaster bool   `json:"is_master"`
+	HostId   string `json:"host_id"`
 
 	SrcIpCheck  bool `json:"src_ip_check"`
 	SrcMacCheck bool `json:"src_mac_check"`
@@ -63,6 +64,7 @@ type GuestNIC struct {
 	Virtual    bool
 	VLAN       int
 	WireId     string      `json:"wire_id"`
+	HostId     string      `json:"host_id"`
 	Vpc        GuestNICVpc `json:"vpc"`
 
 	CtZoneId    uint16 `json:"-"`
@@ -71,7 +73,9 @@ type GuestNIC struct {
 }
 
 type GuestNICVpc struct {
-	Provider string `json:"provider"`
+	Id           string
+	Provider     string `json:"provider"`
+	MappedIpAddr string `json:"mapped_ip_addr"`
 }
 
 func (n *GuestNIC) TcData() *TcData {
@@ -109,7 +113,8 @@ type Guest struct {
 	Name          string
 	SecurityRules *SecurityRules
 	NICs          []*GuestNIC
-	vpcNICs       []*GuestNIC
+	VpcNICs       []*GuestNIC
+	HostId        string
 
 	srcIpCheck  bool
 	srcMacCheck bool
@@ -174,13 +179,14 @@ func (g *Guest) LoadDesc() error {
 		return err
 	}
 	g.Name = desc.Name
+	g.HostId = desc.HostId
 	g.NICs = desc.NICs
 
 	g.VpcNICs = nil
 	for i := len(g.NICs) - 1; i >= 0; i-- {
 		nic := g.NICs[i]
 		if nic.Vpc.Provider != "" {
-			g.vpcNICs = append(g.vpcNICs, nic)
+			g.VpcNICs = append(g.VpcNICs, nic)
 			g.NICs = append(g.NICs[:i], g.NICs[i+1:]...)
 		}
 	}
