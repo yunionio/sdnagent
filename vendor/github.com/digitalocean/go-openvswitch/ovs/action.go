@@ -42,6 +42,10 @@ var (
 	// field set to empty strings.
 	errLoadSetFieldZero = errors.New("value and/or field for action load or set_field are empty")
 
+	// errMoveFieldZero is returned when Move is called with src and/or dest
+	// field set to empty strings.
+	errMoveFieldZero = errors.New("src and/or dest field for action move are empty")
+
 	// errResubmitPortInvalid is returned when ResubmitPort is given a port number that is
 	// invalid per the openflow spec.
 	errResubmitPortInvalid = errors.New("resubmit port must be between 0 and 65279 inclusive")
@@ -533,6 +537,41 @@ func (a *loadSetFieldAction) GoString() string {
 	}
 
 	return fmt.Sprintf("ovs.SetField(%q, %q)", a.value, a.field)
+}
+
+// Move loads the specified value into the specified field.
+// If either string is empty, an error is returned.
+func Move(src string, dest string) Action {
+	return &moveAction{
+		src:  src,
+		dest: dest,
+	}
+}
+
+// Specifies whether Move was called to construct a
+// moveAction.
+const (
+	actionMove = iota
+)
+
+// A moveAction is an Action which is used by Move.
+type moveAction struct {
+	src  string
+	dest string
+}
+
+// MarshalText implements Action.
+func (a *moveAction) MarshalText() ([]byte, error) {
+	if a.src == "" || a.dest == "" {
+		return nil, errMoveFieldZero
+	}
+
+	return bprintf("move:%s->%s", a.src, a.dest), nil
+}
+
+// GoString implements Action.
+func (a *moveAction) GoString() string {
+	return fmt.Sprintf("ovs.Move(%q, %q)", a.src, a.dest)
 }
 
 // SetTunnel sets the tunnel id, e.g. VNI if vxlan is the tunnel protocol.
