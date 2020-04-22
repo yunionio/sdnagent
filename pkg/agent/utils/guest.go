@@ -176,6 +176,7 @@ func (g *Guest) LoadDesc() error {
 	g.Name = desc.Name
 	g.NICs = desc.NICs
 
+	g.VpcNICs = nil
 	for i := len(g.NICs) - 1; i >= 0; i-- {
 		nic := g.NICs[i]
 		if nic.Vpc.Provider != "" {
