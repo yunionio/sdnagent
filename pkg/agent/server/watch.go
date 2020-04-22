@@ -192,7 +192,7 @@ func (w *serversWatcher) Start(ctx context.Context, agent *AgentServer) {
 			guestPath := wev.guestPath
 			switch wev.evType {
 			case watchEventTypeAddServerDir:
-				log.Errorf("received guest path add event: %s", guestPath)
+				log.Infof("received guest path add event: %s", guestPath)
 				g, err := w.addGuestWatch(guestId, guestPath)
 				if err != nil {
 					log.Errorf("watch guest failed: %s: %s", guestPath, err)
