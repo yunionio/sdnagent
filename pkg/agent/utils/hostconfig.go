@@ -91,6 +91,7 @@ type HostConfig struct {
 	DHCPServerPort int
 
 	OvnIntegrationBridge string
+	OvnMappedBridge      string
 }
 
 func (hc *HostConfig) MetadataPort() int {
@@ -145,6 +146,7 @@ allow_router_vms = True
 dhcp_server_port = 67
 
 ovn_integration_bridge = 'brvpc'
+ovn_mapped_bridge = 'brmapped'
 
 `)
 		snippet_post = []byte(`
@@ -161,6 +163,7 @@ print(json.dumps({
 	'dhcp_server_port': dhcp_server_port,
 
 	'ovn_integration_bridge': ovn_integration_bridge,
+	'ovn_mapped_bridge': ovn_mapped_bridge,
 }))
 `)
 	)
@@ -202,6 +205,7 @@ func newHostConfigFromBytes(data []byte) (*HostConfig, error) {
 		DHCPServerPort int    `json:"dhcp_server_port" yaml:"dhcp_server_port"`
 
 		OvnIntegrationBridge string `json:"ovn_integration_bridge"`
+		OvnMappedBridge      string `json:"ovn_mapped_bridge"`
 	}{
 		ServersPath:    "/opt/cloud/workspace/servers",
 		K8sClusterCidr: "10.43.0.0/16",
@@ -210,6 +214,7 @@ func newHostConfigFromBytes(data []byte) (*HostConfig, error) {
 		AllowRouterVMs: true,
 
 		OvnIntegrationBridge: "brvpc",
+		OvnMappedBridge:      "brmapped",
 	}
 	{
 		type funcType func([]byte, interface{}) error
@@ -256,6 +261,7 @@ func newHostConfigFromBytes(data []byte) (*HostConfig, error) {
 		DHCPServerPort: v.DHCPServerPort,
 
 		OvnIntegrationBridge: v.OvnIntegrationBridge,
+		OvnMappedBridge:      v.OvnMappedBridge,
 	}
 	_, k8sCidr, err := net.ParseCIDR(v.K8sClusterCidr)
 	if err == nil {
