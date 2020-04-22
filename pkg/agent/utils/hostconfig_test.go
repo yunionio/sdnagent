@@ -49,6 +49,7 @@ func TestHostConfig(t *testing.T) {
 				AllowSwitchVMs:       true,
 				AllowRouterVMs:       true,
 				OvnIntegrationBridge: "brvpc",
+				OvnMappedBridge:      "brmapped",
 			},
 		},
 		{
@@ -67,6 +68,7 @@ allow_router_vms: true
 				K8sClusterCidr:       defaultK8sCidr,
 				DHCPServerPort:       67,
 				OvnIntegrationBridge: "brvpc",
+				OvnMappedBridge:      "brmapped",
 				AllowSwitchVMs:       false,
 				AllowRouterVMs:       true,
 			},
@@ -87,6 +89,7 @@ allow_router_vms: false
 				K8sClusterCidr:       defaultK8sCidr,
 				DHCPServerPort:       67,
 				OvnIntegrationBridge: "brvpc",
+				OvnMappedBridge:      "brmapped",
 				AllowSwitchVMs:       true,
 				AllowRouterVMs:       true,
 			},
@@ -125,6 +128,7 @@ dhcp_server_port: 1067
 				AllowRouterVMs:       true,
 				DHCPServerPort:       1067,
 				OvnIntegrationBridge: "brvpc",
+				OvnMappedBridge:      "brmapped",
 			},
 		},
 	}
