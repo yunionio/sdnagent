@@ -189,7 +189,7 @@ func (g *Guest) clearTc(ctx context.Context) {
 }
 
 func (g *Guest) updateOvn(ctx context.Context) {
-	if len(g.VpcNICs) > 0 {
+	if len(g.VpcNICs) > 0 && g.HostId != "" {
 		ovnMan := g.watcher.ovnMan
 		ovnMan.SetHostId(ctx, g.HostId)
 		ovnMan.SetGuestNICs(ctx, g.Id, g.VpcNICs)
