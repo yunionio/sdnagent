@@ -212,6 +212,15 @@ func (g *Guest) LoadDesc() error {
 	return nil
 }
 
+func (g *Guest) NeedsSync() bool {
+	if g.HostId == "" {
+		if len(g.VpcNICs) > 0 {
+			return true
+		}
+	}
+	return false
+}
+
 func (g *Guest) SrcIpCheck() bool {
 	if !g.HostConfig.AllowRouterVMs {
 		return true
