@@ -152,7 +152,7 @@ func (g *Guest) refresh(ctx context.Context) (err error) {
 }
 
 // TODO log
-func (g *Guest) updateFlows(ctx context.Context) (err error) {
+func (g *Guest) updateClassicFlows(ctx context.Context) (err error) {
 	bfs, err := g.FlowsMap()
 	for bridge, flows := range bfs {
 		flowman := g.watcher.agent.GetFlowMan(bridge)
@@ -161,7 +161,7 @@ func (g *Guest) updateFlows(ctx context.Context) (err error) {
 	return
 }
 
-func (g *Guest) deleteFlows(ctx context.Context) {
+func (g *Guest) clearClassicFlows(ctx context.Context) {
 	bridges := map[string]bool{}
 	for _, nic := range g.NICs {
 		bridges[nic.Bridge] = true
@@ -205,7 +205,7 @@ func (g *Guest) UpdateSettings(ctx context.Context) {
 		err := g.refresh(ctx)
 		switch err {
 		case nil:
-			g.updateFlows(ctx)
+			g.updateClassicFlows(ctx)
 			g.updateTc(ctx)
 		case errNotRunning, errPortNotReady, errSlaveMachine:
 			g.clearSettings(ctx)
@@ -215,7 +215,7 @@ func (g *Guest) UpdateSettings(ctx context.Context) {
 }
 
 func (g *Guest) clearSettings(ctx context.Context) {
-	g.deleteFlows(ctx)
+	g.clearClassicFlows(ctx)
 	g.clearTc(ctx)
 }
 
