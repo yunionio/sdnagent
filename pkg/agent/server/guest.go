@@ -103,7 +103,7 @@ func (g *Guest) clearPending() {
 	g.lastSeenPending = nil
 }
 
-func (g *Guest) isPending() bool {
+func (g *Guest) IsPending() bool {
 	if g.lastSeenPending == nil {
 		return false
 	}
