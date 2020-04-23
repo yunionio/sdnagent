@@ -119,7 +119,7 @@ func (w *serversWatcher) withWait(ctx context.Context, f func(context.Context)) 
 
 func (w *serversWatcher) hasRecentPending() bool {
 	for _, g := range w.guests {
-		if g.isPending() {
+		if g.IsPending() {
 			return true
 		}
 	}
@@ -223,7 +223,7 @@ func (w *serversWatcher) Start(ctx context.Context, agent *AgentServer) {
 			log.Infof("watcher refresh pendings")
 			w.withWait(ctx, func(ctx context.Context) {
 				for _, g := range w.guests {
-					if g.isPending() {
+					if g.IsPending() {
 						g.UpdateSettings(ctx)
 					}
 				}
