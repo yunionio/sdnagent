@@ -23,6 +23,9 @@ import (
 
 	"yunion.io/x/log"
 	"yunion.io/x/sdnagent/pkg/agent/utils"
+
+	"yunion.io/x/onecloud/pkg/mcclient/auth"
+	mcclient_modules "yunion.io/x/onecloud/pkg/mcclient/modules"
 )
 
 var (
@@ -69,10 +72,25 @@ func (g *Guest) reloadDesc(ctx context.Context) error {
 			oldM[nic.MAC] = nic.CtZoneId
 		}
 	}
+
 	err := g.LoadDesc()
 	if err != nil {
 		return err
 	}
+	if g.NeedsSync() {
+		go func() {
+			// desc change will be picked up by watcher
+			log.Infof("guest sync %s", g.Id)
+			hc := g.watcher.hostConfig
+			apiVer := ""
+			s := auth.GetAdminSession(ctx, hc.Region, apiVer)
+			_, err := mcclient_modules.Servers.PerformAction(s, g.Id, "sync", nil)
+			if err != nil {
+				log.Errorf("guest sync %s: %v", g.Id, err)
+			}
+		}()
+	}
+
 	for _, nic := range g.NICs {
 		if i, ok := oldM[nic.MAC]; ok {
 			delete(oldM, nic.MAC)
