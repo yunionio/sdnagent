@@ -44,12 +44,12 @@ func NewGuest(guest *utils.Guest, watcher *serversWatcher) *Guest {
 	}
 }
 
-// refreshPortNo updates openflow port number for each guest's nic.  Returns
+// refreshNicPortNo updates openflow port number for guest's each nic.  Returns
 // true if all nics' port numbers are correctly updated, false otherwise, which
 // usually caused by nic port is not yet in the bridge
-func (g *Guest) refreshPortNo(ctx context.Context) bool {
+func (g *Guest) refreshNicPortNo(ctx context.Context, nics []*utils.GuestNIC) bool {
 	someOk := false
-	for _, nic := range g.NICs {
+	for _, nic := range nics {
 		bridge := nic.Bridge
 		ifname := nic.IfnameHost
 		portStats, err := utils.DumpPort(bridge, ifname)
@@ -135,8 +135,10 @@ func (g *Guest) refresh(ctx context.Context) (err error) {
 		setPending = false
 		return
 	}
-	someOk := g.refreshPortNo(ctx)
-	if !someOk {
+	// serve if any nics are ready
+	someOk0 := g.refreshNicPortNo(ctx, g.NICs)
+	someOk1 := g.refreshNicPortNo(ctx, g.VpcNICs)
+	if !someOk0 && !someOk1 {
 		if g.IsVM() && !g.Running() {
 			// we will be notified when its pid is to be updated
 			// so there is no need to set pending for it now
@@ -151,7 +153,6 @@ func (g *Guest) refresh(ctx context.Context) (err error) {
 	return
 }
 
-// TODO log
 func (g *Guest) updateClassicFlows(ctx context.Context) (err error) {
 	bfs, err := g.FlowsMap()
 	for bridge, flows := range bfs {
@@ -201,26 +202,19 @@ func (g *Guest) clearOvn(ctx context.Context) {
 }
 
 func (g *Guest) UpdateSettings(ctx context.Context) {
-	{
-		err := g.refresh(ctx)
-		switch err {
-		case nil:
-			g.updateClassicFlows(ctx)
-			g.updateTc(ctx)
-		case errNotRunning, errPortNotReady, errSlaveMachine:
-			g.clearSettings(ctx)
-		}
+	err := g.refresh(ctx)
+	switch err {
+	case nil:
+		g.updateClassicFlows(ctx)
+		g.updateTc(ctx)
+		g.updateOvn(ctx)
+	case errNotRunning, errPortNotReady, errSlaveMachine:
+		g.ClearSettings(ctx)
 	}
-	g.updateOvn(ctx)
-}
-
-func (g *Guest) clearSettings(ctx context.Context) {
-	g.clearClassicFlows(ctx)
-	g.clearTc(ctx)
 }
 
 func (g *Guest) ClearSettings(ctx context.Context) {
-	g.clearSettings(ctx)
+	g.clearClassicFlows(ctx)
+	g.clearTc(ctx)
 	g.clearOvn(ctx)
-	return
 }
