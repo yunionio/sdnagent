@@ -27,6 +27,8 @@ import (
 // parseMatch creates a Match function from the input string.
 func parseMatch(key string, value string) (Match, error) {
 	switch key {
+	case arpOp:
+		return parseIntMatch(key, value, 255)
 	case arpSHA, arpTHA, ndSLL, ndTLL:
 		return parseMACMatch(key, value)
 	case icmpType, nwProto:
@@ -141,6 +143,8 @@ func parseIntMatch(key string, value string, max int) (Match, error) {
 	}
 
 	switch key {
+	case arpOp:
+		return ARPOp(uint16(t)), nil
 	case icmpType:
 		return ICMPType(uint8(t)), nil
 	case nwProto:

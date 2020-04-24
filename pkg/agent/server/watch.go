@@ -39,6 +39,7 @@ type pendingGuest struct {
 type serversWatcher struct {
 	agent      *AgentServer
 	tcMan      *TcMan
+	ovnMan     *ovnMan
 	hostConfig *utils.HostConfig
 	watcher    *fsnotify.Watcher
 	hostLocal  *HostLocal
@@ -52,6 +53,7 @@ func newServersWatcher() (*serversWatcher, error) {
 		zoneMan: utils.NewZoneMan(GuestCtZoneBase),
 		tcMan:   NewTcMan(),
 	}
+	w.ovnMan = newOvnMan(w)
 	return w, nil
 }
 
@@ -119,7 +121,7 @@ func (w *serversWatcher) withWait(ctx context.Context, f func(context.Context)) 
 
 func (w *serversWatcher) hasRecentPending() bool {
 	for _, g := range w.guests {
-		if g.isPending() {
+		if g.IsPending() {
 			return true
 		}
 	}
@@ -142,6 +144,10 @@ func (w *serversWatcher) Start(ctx context.Context, agent *AgentServer) {
 		return
 	}
 	w.hostConfig = hc
+	if err := w.hostConfig.Auth(ctx); err != nil {
+		log.Errorf("keystone auth: %v", err)
+		return
+	}
 
 	ctx, cancelFunc := context.WithCancel(ctx)
 	go w.hostConfig.WatchMtimeChange(ctx, func(mtime time.Time) {
@@ -164,6 +170,9 @@ func (w *serversWatcher) Start(ctx context.Context, agent *AgentServer) {
 
 	wg.Add(1)
 	go w.tcMan.Start(ctx)
+
+	wg.Add(1)
+	go w.ovnMan.Start(ctx)
 
 	// init scan
 	w.hostLocal = NewHostLocal(w)
@@ -192,7 +201,7 @@ func (w *serversWatcher) Start(ctx context.Context, agent *AgentServer) {
 			guestPath := wev.guestPath
 			switch wev.evType {
 			case watchEventTypeAddServerDir:
-				log.Errorf("received guest path add event: %s", guestPath)
+				log.Infof("received guest path add event: %s", guestPath)
 				g, err := w.addGuestWatch(guestId, guestPath)
 				if err != nil {
 					log.Errorf("watch guest failed: %s: %s", guestPath, err)
@@ -223,7 +232,7 @@ func (w *serversWatcher) Start(ctx context.Context, agent *AgentServer) {
 			log.Infof("watcher refresh pendings")
 			w.withWait(ctx, func(ctx context.Context) {
 				for _, g := range w.guests {
-					if g.isPending() {
+					if g.IsPending() {
 						g.UpdateSettings(ctx)
 					}
 				}

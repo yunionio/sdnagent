@@ -26,6 +26,8 @@ import (
 	"time"
 
 	"gopkg.in/yaml.v2"
+
+	"yunion.io/x/onecloud/pkg/mcclient/auth"
 )
 
 type HostConfigNetwork struct {
@@ -66,6 +68,20 @@ type HostConfig struct {
 	file  string
 	mtime time.Time
 
+	AuthURL             string
+	Region              string
+	AdminDomain         string
+	AdminProject        string
+	AdminProjectDomain  string
+	AdminUser           string
+	AdminPassword       string
+	SessionEndpointType string
+
+	EnableSsl   bool
+	SslCaCerts  string
+	SslCertfile string
+	SslKeyfile  string
+
 	Port           int
 	Networks       []*HostConfigNetwork
 	ServersPath    string
@@ -75,6 +91,7 @@ type HostConfig struct {
 	DHCPServerPort int
 
 	OvnIntegrationBridge string
+	OvnMappedBridge      string
 }
 
 func (hc *HostConfig) MetadataPort() int {
@@ -129,6 +146,7 @@ allow_router_vms = True
 dhcp_server_port = 67
 
 ovn_integration_bridge = 'brvpc'
+ovn_mapped_bridge = 'brmapped'
 
 `)
 		snippet_post = []byte(`
@@ -145,6 +163,7 @@ print(json.dumps({
 	'dhcp_server_port': dhcp_server_port,
 
 	'ovn_integration_bridge': ovn_integration_bridge,
+	'ovn_mapped_bridge': ovn_mapped_bridge,
 }))
 `)
 	)
@@ -163,6 +182,20 @@ print(json.dumps({
 func newHostConfigFromBytes(data []byte) (*HostConfig, error) {
 	// parse json dump
 	v := struct {
+		AuthURL             string `json:"auth_url" yaml:"auth_url"`
+		Region              string `json:"region" yaml:"region"`
+		AdminDomain         string `json:"admin_domain" yaml:"admin_domain"`
+		AdminProject        string `json:"admin_project" yaml:"admin_project"`
+		AdminProjectDomain  string `json:"admin_project_domain" yaml:"admin_project_domain"`
+		AdminUser           string `json:"admin_user" yaml:"admin_user"`
+		AdminPassword       string `json:"admin_password" yaml:"admin_password"`
+		SessionEndpointType string `json:"session_endpoint_type" yaml:"session_endpoint_type"`
+
+		EnableSsl   bool   `json:"enable_ssl" yaml:"enable_ssl"`
+		SslCaCerts  string `json:"ssl_ca_certs" yaml:"ssl_ca_certs"`
+		SslCertfile string `json:"ssl_certfile" yaml:"ssl_certfile"`
+		SslKeyfile  string `json:"ssl_keyfile" yaml:"ssl_keyfile"`
+
 		Port           int
 		Networks       []string
 		ServersPath    string `json:"servers_path" yaml:"servers_path"`
@@ -172,6 +205,7 @@ func newHostConfigFromBytes(data []byte) (*HostConfig, error) {
 		DHCPServerPort int    `json:"dhcp_server_port" yaml:"dhcp_server_port"`
 
 		OvnIntegrationBridge string `json:"ovn_integration_bridge"`
+		OvnMappedBridge      string `json:"ovn_mapped_bridge"`
 	}{
 		ServersPath:    "/opt/cloud/workspace/servers",
 		K8sClusterCidr: "10.43.0.0/16",
@@ -180,6 +214,7 @@ func newHostConfigFromBytes(data []byte) (*HostConfig, error) {
 		AllowRouterVMs: true,
 
 		OvnIntegrationBridge: "brvpc",
+		OvnMappedBridge:      "brmapped",
 	}
 	{
 		type funcType func([]byte, interface{}) error
@@ -205,6 +240,20 @@ func newHostConfigFromBytes(data []byte) (*HostConfig, error) {
 	}
 
 	hc := &HostConfig{
+		AuthURL:             v.AuthURL,
+		Region:              v.Region,
+		AdminDomain:         v.AdminDomain,
+		AdminProject:        v.AdminProject,
+		AdminProjectDomain:  v.AdminProjectDomain,
+		AdminUser:           v.AdminUser,
+		AdminPassword:       v.AdminPassword,
+		SessionEndpointType: v.SessionEndpointType,
+
+		EnableSsl:   v.EnableSsl,
+		SslCaCerts:  v.SslCaCerts,
+		SslCertfile: v.SslCertfile,
+		SslKeyfile:  v.SslKeyfile,
+
 		Port:           v.Port,
 		ServersPath:    v.ServersPath,
 		AllowSwitchVMs: v.AllowSwitchVMs,
@@ -212,6 +261,7 @@ func newHostConfigFromBytes(data []byte) (*HostConfig, error) {
 		DHCPServerPort: v.DHCPServerPort,
 
 		OvnIntegrationBridge: v.OvnIntegrationBridge,
+		OvnMappedBridge:      v.OvnMappedBridge,
 	}
 	_, k8sCidr, err := net.ParseCIDR(v.K8sClusterCidr)
 	if err == nil {
@@ -252,4 +302,35 @@ func (hc *HostConfig) WatchMtimeChange(ctx context.Context, cb func(time.Time)) 
 			return
 		}
 	}
+}
+
+func (hc *HostConfig) Auth(ctx context.Context) error {
+	a := auth.NewAuthInfo(
+		hc.AuthURL,
+		hc.AdminDomain,
+		hc.AdminUser,
+		hc.AdminPassword,
+		hc.AdminProject,
+		hc.AdminProjectDomain,
+	)
+
+	if t := hc.SessionEndpointType; t != "" {
+		if t != auth.PublicEndpointType && t != auth.InternalEndpointType {
+			return fmt.Errorf("Invalid session endpoint type %q", t)
+		}
+		auth.SetEndpointType(t)
+	}
+
+	var (
+		debugClient = false
+		insecure    = true
+		certfile    = hc.SslCertfile
+		keyfile     = hc.SslKeyfile
+	)
+	if !hc.EnableSsl {
+		certfile = ""
+		keyfile = ""
+	}
+	auth.Init(a, debugClient, insecure, certfile, keyfile)
+	return nil
 }
