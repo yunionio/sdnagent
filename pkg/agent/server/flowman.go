@@ -109,7 +109,7 @@ func (fm *FlowMan) doCheck() {
 	fm.doCommitChange(flowsAdd, flowsDel)
 	if len(flowsAdd) > 0 || len(flowsDel) > 0 {
 		buf := &bytes.Buffer{}
-		buf.WriteString("\n")
+		buf.WriteString(fmt.Sprintf("flowman %s: commit:\n", fm.bridge))
 		//fm.bufWriteFlows(buf, "000-flow", fs0.Flows())
 		//fm.bufWriteFlows(buf, "111-flow", flows1)
 		fm.bufWriteFlows(buf, "add-flow", flowsAdd)

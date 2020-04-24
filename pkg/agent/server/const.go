@@ -23,6 +23,7 @@ const (
 	GuestCtZoneBase           uint16        = 60000
 	FlowManIdleCheckDuration  time.Duration = 13 * time.Second
 	TcManIdleCheckDuration    time.Duration = 17 * time.Second
+	OvnManRefreshRate         time.Duration = 43 * time.Second
 	WatcherRefreshRate        time.Duration = 31 * time.Second
 	WatcherRefreshRateOnError time.Duration = 3 * time.Second
 	WatcherRecentPendingTime  time.Duration = WatcherRefreshRateOnError * 5

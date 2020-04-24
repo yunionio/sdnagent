@@ -5,12 +5,23 @@ GO_BUILD:=go build $(GO_BUILD_FLAGS)
 GO_TEST:=go test $(GO_BUILD_FLAGS)
 export GO111MODULE:=on
 
-all: bins
+sdnagent:=$(BINDIR)/sdnagent
+sdncli:=$(BINDIR)/sdncli
+bins:= \
+	$(sdnagent) \
+	$(sdncli)
 
-bins:
+all: $(bins)
+
+$(bins): | $(BINDIR)
+
+$(BINDIR):
 	mkdir -p $(BINDIR)
-	$(GO_BUILD) yunion.io/x/sdnagent/pkg/agent
+
+$(sdncli):
 	$(GO_BUILD) -o $(BINDIR)/sdnagent yunion.io/x/sdnagent/cmd/sdnagent
+
+$(sdnagent):
 	$(GO_BUILD) -o $(BINDIR)/sdncli yunion.io/x/sdnagent/cmd/sdncli
 
 proto-gen: pkg/agent/proto/agent.pb.go
@@ -24,7 +35,7 @@ pkg/agent/proto/agent_pb2.py: pkg/agent/proto/agent.proto
 test:
 	$(GO_TEST)  -v ./...
 
-rpm: bins
+rpm: $(bins)
 	EXTRA_BINS=sdncli \
 		 $(CURDIR)/build/build.sh sdnagent
 
@@ -44,4 +55,4 @@ docker-image:
 docker-image-push:
 	docker image push $(IMAGE_NAME_TAG)
 
-.PHONY: all bins rpm test
+.PHONY: all $(bins) rpm test

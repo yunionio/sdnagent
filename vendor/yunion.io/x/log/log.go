@@ -1,11 +1,25 @@
+// Copyright 2019 Yunion
+//
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+//     http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
+
 // Just logrus wrapper, maybe replace in the future
 package log
 
 import (
+	"runtime"
 	"sync"
 
 	"github.com/sirupsen/logrus"
-
 	"yunion.io/x/log/hooks"
 )
 
@@ -83,16 +97,32 @@ func Debugf(format string, args ...interface{}) {
 	logrus.Debugf(format, args...)
 }
 
+func Debugln(args ...interface{}) {
+	logrus.Debugln(args...)
+}
+
 func Printf(format string, args ...interface{}) {
 	logrus.Printf(format, args...)
+}
+
+func Println(args ...interface{}) {
+	logrus.Println(args...)
 }
 
 func Infof(format string, args ...interface{}) {
 	logrus.Infof(format, args...)
 }
 
+func Infoln(args ...interface{}) {
+	logrus.Infoln(args...)
+}
+
 func Warningf(format string, args ...interface{}) {
 	logrus.Warnf(format, args...)
+}
+
+func Warningln(args ...interface{}) {
+	logrus.Warnln(args...)
 }
 
 func Errorf(format string, args ...interface{}) {
@@ -107,9 +137,31 @@ func Fatalf(format string, args ...interface{}) {
 	logrus.Fatalf(format, args...)
 }
 
-func AddHookFormatter(logger *logrus.Logger) {
-	logger.Hooks.Add(new(hooks.CallerHook))
+func Fatalln(args ...interface{}) {
+	logrus.Fatalln(args...)
+}
 
+func DisableColors() {
+	formatter, ok := logger.Formatter.(*TextFormatter)
+	if ok {
+		formatter.DisableColors = true
+	}
+}
+
+func AddHookFormatter(logger *logrus.Logger) {
+	pcs := make([]uintptr, 1)
+	npcs := runtime.Callers(1, pcs)
+	frames := runtime.CallersFrames(pcs[:npcs])
+	var myName string
+	for {
+		f, more := frames.Next()
+		myName = f.Function
+		if !more {
+			break
+		}
+	}
+	logrusPackage := hooks.GetPackageName(myName)
+	logger.Hooks.Add(&hooks.CallerHook{logrusPackage})
 	logger.Formatter = &TextFormatter{
 		TimestampFormat: "060102 15:04:05",
 		SpacePadding:    0,

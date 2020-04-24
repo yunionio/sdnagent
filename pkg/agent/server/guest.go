@@ -23,6 +23,9 @@ import (
 
 	"yunion.io/x/log"
 	"yunion.io/x/sdnagent/pkg/agent/utils"
+
+	"yunion.io/x/onecloud/pkg/mcclient/auth"
+	mcclient_modules "yunion.io/x/onecloud/pkg/mcclient/modules"
 )
 
 var (
@@ -44,12 +47,12 @@ func NewGuest(guest *utils.Guest, watcher *serversWatcher) *Guest {
 	}
 }
 
-// refreshPortNo updates openflow port number for each guest's nic.  Returns
+// refreshNicPortNo updates openflow port number for guest's each nic.  Returns
 // true if all nics' port numbers are correctly updated, false otherwise, which
 // usually caused by nic port is not yet in the bridge
-func (g *Guest) refreshPortNo(ctx context.Context) bool {
+func (g *Guest) refreshNicPortNo(ctx context.Context, nics []*utils.GuestNIC) bool {
 	someOk := false
-	for _, nic := range g.NICs {
+	for _, nic := range nics {
 		bridge := nic.Bridge
 		ifname := nic.IfnameHost
 		portStats, err := utils.DumpPort(bridge, ifname)
@@ -69,10 +72,25 @@ func (g *Guest) reloadDesc(ctx context.Context) error {
 			oldM[nic.MAC] = nic.CtZoneId
 		}
 	}
+
 	err := g.LoadDesc()
 	if err != nil {
 		return err
 	}
+	if g.NeedsSync() {
+		go func() {
+			// desc change will be picked up by watcher
+			log.Infof("guest sync %s", g.Id)
+			hc := g.watcher.hostConfig
+			apiVer := ""
+			s := auth.GetAdminSession(ctx, hc.Region, apiVer)
+			_, err := mcclient_modules.Servers.PerformAction(s, g.Id, "sync", nil)
+			if err != nil {
+				log.Errorf("guest sync %s: %v", g.Id, err)
+			}
+		}()
+	}
+
 	for _, nic := range g.NICs {
 		if i, ok := oldM[nic.MAC]; ok {
 			delete(oldM, nic.MAC)
@@ -103,7 +121,7 @@ func (g *Guest) clearPending() {
 	g.lastSeenPending = nil
 }
 
-func (g *Guest) isPending() bool {
+func (g *Guest) IsPending() bool {
 	if g.lastSeenPending == nil {
 		return false
 	}
@@ -135,8 +153,10 @@ func (g *Guest) refresh(ctx context.Context) (err error) {
 		setPending = false
 		return
 	}
-	someOk := g.refreshPortNo(ctx)
-	if !someOk {
+	// serve if any nics are ready
+	someOk0 := g.refreshNicPortNo(ctx, g.NICs)
+	someOk1 := g.refreshNicPortNo(ctx, g.VpcNICs)
+	if !someOk0 && !someOk1 {
 		if g.IsVM() && !g.Running() {
 			// we will be notified when its pid is to be updated
 			// so there is no need to set pending for it now
@@ -151,8 +171,7 @@ func (g *Guest) refresh(ctx context.Context) (err error) {
 	return
 }
 
-// TODO log
-func (g *Guest) updateFlows(ctx context.Context) (err error) {
+func (g *Guest) updateClassicFlows(ctx context.Context) (err error) {
 	bfs, err := g.FlowsMap()
 	for bridge, flows := range bfs {
 		flowman := g.watcher.agent.GetFlowMan(bridge)
@@ -161,7 +180,7 @@ func (g *Guest) updateFlows(ctx context.Context) (err error) {
 	return
 }
 
-func (g *Guest) deleteFlows(ctx context.Context) {
+func (g *Guest) clearClassicFlows(ctx context.Context) {
 	bridges := map[string]bool{}
 	for _, nic := range g.NICs {
 		bridges[nic.Bridge] = true
@@ -187,19 +206,33 @@ func (g *Guest) clearTc(ctx context.Context) {
 	g.watcher.tcMan.ClearIfaces(ctx, g.Who())
 }
 
+func (g *Guest) updateOvn(ctx context.Context) {
+	if len(g.VpcNICs) > 0 && g.HostId != "" {
+		ovnMan := g.watcher.ovnMan
+		ovnMan.SetHostId(ctx, g.HostId)
+		ovnMan.SetGuestNICs(ctx, g.Id, g.VpcNICs)
+	}
+}
+
+func (g *Guest) clearOvn(ctx context.Context) {
+	ovnMan := g.watcher.ovnMan
+	ovnMan.SetGuestNICs(ctx, g.Id, nil)
+}
+
 func (g *Guest) UpdateSettings(ctx context.Context) {
 	err := g.refresh(ctx)
 	switch err {
 	case nil:
-		g.updateFlows(ctx)
+		g.updateClassicFlows(ctx)
 		g.updateTc(ctx)
+		g.updateOvn(ctx)
 	case errNotRunning, errPortNotReady, errSlaveMachine:
 		g.ClearSettings(ctx)
 	}
 }
 
 func (g *Guest) ClearSettings(ctx context.Context) {
-	g.deleteFlows(ctx)
+	g.clearClassicFlows(ctx)
 	g.clearTc(ctx)
-	return
+	g.clearOvn(ctx)
 }
