@@ -138,7 +138,7 @@ func (w *serversWatcher) Start(ctx context.Context, agent *AgentServer) {
 	w.agent = agent
 
 	// hostConfig
-	hc, err := utils.NewHostConfig(DefaultHostConfigPath)
+	hc, err := utils.NewHostConfig()
 	if err != nil {
 		log.Errorf("getting host config failed: %s", err)
 		return
@@ -150,8 +150,8 @@ func (w *serversWatcher) Start(ctx context.Context, agent *AgentServer) {
 	}
 
 	ctx, cancelFunc := context.WithCancel(ctx)
-	go w.hostConfig.WatchMtimeChange(ctx, func(mtime time.Time) {
-		log.Warningf("%s mtime changed, now %s", DefaultHostConfigPath, mtime)
+	go w.hostConfig.WatchChange(ctx, func() {
+		log.Warningf("host config content changed")
 		cancelFunc()
 	})
 
