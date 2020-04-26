@@ -74,9 +74,10 @@ func (h *HostLocal) FlowsMap() (map[string][]*ovs.Flow, error) {
 	if err != nil {
 		return nil, err
 	}
+	k8sClusterCidr := h.HostConfig.GetK8sClusterCidr()
 	m := map[string]interface{}{
 		"MetadataPort": h.HostConfig.MetadataPort(),
-		"K8SCidr":      h.HostConfig.K8sClusterCidr,
+		"K8SCidr":      k8sClusterCidr,
 		"IP":           h.IP,
 		"MAC":          h.MAC,
 		"PortNoPhy":    ps.PortID,
@@ -85,7 +86,7 @@ func (h *HostLocal) FlowsMap() (map[string][]*ovs.Flow, error) {
 	flows := []*ovs.Flow{
 		F(0, 40000, "ipv6", "drop"),
 	}
-	if h.HostConfig.K8sClusterCidr != nil {
+	if k8sClusterCidr != nil {
 		flows = append(flows, F(0, 30050, T("ip,nw_dst={{.K8SCidr}}"), T("mod_dl_dst:{{.MAC}},LOCAL")))
 	}
 	flows = append(flows,
@@ -179,6 +180,7 @@ func (g *Guest) getMetadataInfo(nic *GuestNIC) (mdIP string, mdMAC string, mdPor
 func (g *Guest) FlowsMap() (map[string][]*ovs.Flow, error) {
 	r := map[string][]*ovs.Flow{}
 	allGood := true
+	k8sClusterCidr := g.HostConfig.GetK8sClusterCidr()
 	for _, nic := range g.NICs {
 		if nic.PortNo <= 0 {
 			allGood = false
@@ -200,7 +202,7 @@ func (g *Guest) FlowsMap() (map[string][]*ovs.Flow, error) {
 		}
 		portNoPhy := ps.PortID
 		m := nic.Map()
-		m["DHCPServerPort"] = g.HostConfig.DHCPServerPort
+		m["DHCPServerPort"] = g.HostConfig.DhcpServerPort
 		m["PortNoPhy"] = portNoPhy
 		{
 			var mdPortAction string
@@ -239,8 +241,8 @@ func (g *Guest) FlowsMap() (map[string][]*ovs.Flow, error) {
 			m["_dl_vlan"] = T("vlan_tci={{.VLANTci}}")
 		}
 		flows := []*ovs.Flow{}
-		if g.HostConfig.K8sClusterCidr != nil {
-			m["K8SCidr"] = g.HostConfig.K8sClusterCidr
+		if k8sClusterCidr != nil {
+			m["K8SCidr"] = k8sClusterCidr
 			flows = append(flows,
 				F(0, 30040, T("in_port=LOCAL,ip,nw_src={{.K8SCidr}},nw_dst={{.IP}}"),
 					T("mod_dl_dst:{{.MAC}},output:{{.PortNo}}")),
