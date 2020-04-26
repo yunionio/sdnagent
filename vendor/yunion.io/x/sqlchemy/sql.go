@@ -12,31 +12,44 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-package modules
+package sqlchemy
 
 import (
-	"yunion.io/x/onecloud/pkg/mcclient/modulebase"
+	"database/sql"
+
+	"yunion.io/x/log"
 )
 
-type ProxySettingManager struct {
-	modulebase.ResourceManager
+var _db *sql.DB
+
+func SetDB(db *sql.DB) {
+	_db = db
 }
 
-var (
-	ProxySettings ProxySettingManager
-)
+func GetDB() *sql.DB {
+	return _db
+}
 
-func init() {
-	ProxySettings = ProxySettingManager{NewComputeManager("proxysetting", "proxysettings",
-		[]string{
-			"ID",
-			"Name",
-			"http_proxy",
-			"https_proxy",
-			"no_proxy",
-			"is_public",
-			"public_scope",
-		},
-		[]string{})}
-	registerCompute(&ProxySettings)
+func CloseDB() {
+	_db.Close()
+	_db = nil
+}
+
+type tableName struct {
+	Name string
+}
+
+func GetTables() []string {
+	tables := make([]tableName, 0)
+	q := NewRawQuery("SHOW TABLES", "name")
+	err := q.All(&tables)
+	if err != nil {
+		log.Errorf("show tables fail %s", err)
+		return nil
+	}
+	ret := make([]string, len(tables))
+	for i, t := range tables {
+		ret[i] = t.Name
+	}
+	return ret
 }

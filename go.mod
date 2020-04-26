@@ -25,9 +25,9 @@ require (
 	google.golang.org/grpc v1.26.0
 	gopkg.in/airbrake/gobrake.v2 v2.0.9 // indirect
 	gopkg.in/gemnasium/logrus-airbrake-hook.v2 v2.1.2 // indirect
-	gopkg.in/yaml.v2 v2.2.8
+	gopkg.in/yaml.v2 v2.2.8 // indirect
 	yunion.io/x/log v0.0.0-20200313080802-57a4ce5966b3
-	yunion.io/x/onecloud v0.0.0-20200424130829-b75dcf610738
+	yunion.io/x/onecloud v0.0.0-20200426130606-bc12970351ac
 	yunion.io/x/pkg v0.0.0-20200416145704-22c189971435
 )
 

@@ -12,31 +12,11 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-package modules
+package atexit
 
-import (
-	"yunion.io/x/onecloud/pkg/mcclient/modulebase"
+type Prio int
+
+const (
+	PRIO_LOG_OTHER Prio = 20000
+	PRIO_LOG_CLOSE      = 40000
 )
-
-type ProxySettingManager struct {
-	modulebase.ResourceManager
-}
-
-var (
-	ProxySettings ProxySettingManager
-)
-
-func init() {
-	ProxySettings = ProxySettingManager{NewComputeManager("proxysetting", "proxysettings",
-		[]string{
-			"ID",
-			"Name",
-			"http_proxy",
-			"https_proxy",
-			"no_proxy",
-			"is_public",
-			"public_scope",
-		},
-		[]string{})}
-	registerCompute(&ProxySettings)
-}
