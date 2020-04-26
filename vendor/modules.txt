@@ -20,6 +20,8 @@ github.com/go-playground/locales
 github.com/go-playground/locales/currency
 # github.com/go-playground/universal-translator v0.16.0
 github.com/go-playground/universal-translator
+# github.com/go-sql-driver/mysql v1.4.1
+github.com/go-sql-driver/mysql
 # github.com/golang-plus/errors v1.0.0
 github.com/golang-plus/errors
 # github.com/golang-plus/uuid v1.0.0
@@ -100,6 +102,8 @@ github.com/spf13/jwalterweatherman
 github.com/spf13/pflag
 # github.com/spf13/viper v1.3.2
 github.com/spf13/viper
+# github.com/texttheater/golang-levenshtein v0.0.0-20180516184445-d188e65d659e
+github.com/texttheater/golang-levenshtein/levenshtein
 # github.com/tredoe/osutil v0.0.0-20161130133508-7d3ee1afa71c
 github.com/tredoe/osutil/user/crypt
 github.com/tredoe/osutil/user/crypt/common
@@ -144,6 +148,8 @@ golang.org/x/text/secure/bidirule
 golang.org/x/text/transform
 golang.org/x/text/unicode/bidi
 golang.org/x/text/unicode/norm
+# google.golang.org/appengine v1.6.5
+google.golang.org/appengine/cloudsql
 # google.golang.org/genproto v0.0.0-20191230161307-f3c370f40bfb
 google.golang.org/genproto/googleapis/rpc/status
 # google.golang.org/grpc v1.26.0
@@ -199,7 +205,7 @@ yunion.io/x/jsonutils
 # yunion.io/x/log v0.0.0-20200313080802-57a4ce5966b3
 yunion.io/x/log
 yunion.io/x/log/hooks
-# yunion.io/x/onecloud v0.0.0-20200424130829-b75dcf610738
+# yunion.io/x/onecloud v0.0.0-20200426130606-bc12970351ac
 yunion.io/x/onecloud/pkg/apis
 yunion.io/x/onecloud/pkg/apis/billing
 yunion.io/x/onecloud/pkg/apis/cloudcommon/proxy
@@ -209,8 +215,11 @@ yunion.io/x/onecloud/pkg/apis/identity
 yunion.io/x/onecloud/pkg/apis/scheduler
 yunion.io/x/onecloud/pkg/appctx
 yunion.io/x/onecloud/pkg/appsrv
+yunion.io/x/onecloud/pkg/cloudcommon/consts
+yunion.io/x/onecloud/pkg/cloudcommon/options
 yunion.io/x/onecloud/pkg/cloudcommon/types
 yunion.io/x/onecloud/pkg/cloudprovider
+yunion.io/x/onecloud/pkg/hostman/options
 yunion.io/x/onecloud/pkg/httperrors
 yunion.io/x/onecloud/pkg/mcclient
 yunion.io/x/onecloud/pkg/mcclient/auth
@@ -218,6 +227,7 @@ yunion.io/x/onecloud/pkg/mcclient/modulebase
 yunion.io/x/onecloud/pkg/mcclient/modules
 yunion.io/x/onecloud/pkg/proxy
 yunion.io/x/onecloud/pkg/util/ansible
+yunion.io/x/onecloud/pkg/util/atexit
 yunion.io/x/onecloud/pkg/util/billing
 yunion.io/x/onecloud/pkg/util/choices
 yunion.io/x/onecloud/pkg/util/cloudinit
@@ -252,3 +262,7 @@ yunion.io/x/pkg/util/version
 yunion.io/x/pkg/utils
 # yunion.io/x/s3cli v0.0.0-20190917004522-13ac36d8687e
 yunion.io/x/s3cli
+# yunion.io/x/sqlchemy v0.0.0-20200312002602-1177cd8fbc57
+yunion.io/x/sqlchemy
+# yunion.io/x/structarg v0.0.0-20200423163001-168d0687be7e
+yunion.io/x/structarg

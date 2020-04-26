@@ -12,31 +12,34 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-package modules
+package sqlchemy
 
-import (
-	"yunion.io/x/onecloud/pkg/mcclient/modulebase"
-)
-
-type ProxySettingManager struct {
-	modulebase.ResourceManager
+type SRawQueryField struct {
+	name string
 }
 
-var (
-	ProxySettings ProxySettingManager
-)
+func (rqf *SRawQueryField) Expression() string {
+	return rqf.name
+}
 
-func init() {
-	ProxySettings = ProxySettingManager{NewComputeManager("proxysetting", "proxysettings",
-		[]string{
-			"ID",
-			"Name",
-			"http_proxy",
-			"https_proxy",
-			"no_proxy",
-			"is_public",
-			"public_scope",
-		},
-		[]string{})}
-	registerCompute(&ProxySettings)
+func (rqf *SRawQueryField) Name() string {
+	return rqf.name
+}
+
+func (rqf *SRawQueryField) Reference() string {
+	return rqf.name
+}
+
+func (rqf *SRawQueryField) Label(label string) IQueryField {
+	return rqf
+}
+
+func NewRawQuery(sqlStr string, fields ...string) *SQuery {
+	qfs := make([]IQueryField, len(fields))
+	for i, f := range fields {
+		rqf := SRawQueryField{name: f}
+		qfs[i] = &rqf
+	}
+	q := SQuery{rawSql: sqlStr, fields: qfs}
+	return &q
 }

@@ -12,31 +12,21 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-package modules
+package sqlchemy
 
 import (
-	"yunion.io/x/onecloud/pkg/mcclient/modulebase"
+	"fmt"
+	"sync"
 )
-
-type ProxySettingManager struct {
-	modulebase.ResourceManager
-}
 
 var (
-	ProxySettings ProxySettingManager
+	tableID                 = 0
+	tableIDLock *sync.Mutex = &sync.Mutex{}
 )
 
-func init() {
-	ProxySettings = ProxySettingManager{NewComputeManager("proxysetting", "proxysettings",
-		[]string{
-			"ID",
-			"Name",
-			"http_proxy",
-			"https_proxy",
-			"no_proxy",
-			"is_public",
-			"public_scope",
-		},
-		[]string{})}
-	registerCompute(&ProxySettings)
+func getTableAliasName() string {
+	tableIDLock.Lock()
+	defer tableIDLock.Unlock()
+	tableID += 1
+	return fmt.Sprintf("t%d", tableID)
 }

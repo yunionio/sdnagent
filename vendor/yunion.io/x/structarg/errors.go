@@ -12,31 +12,16 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-package modules
+package structarg
 
 import (
-	"yunion.io/x/onecloud/pkg/mcclient/modulebase"
+	"fmt"
 )
 
-type ProxySettingManager struct {
-	modulebase.ResourceManager
+type NotEnoughArgumentsError struct {
+	argument Argument
 }
 
-var (
-	ProxySettings ProxySettingManager
-)
-
-func init() {
-	ProxySettings = ProxySettingManager{NewComputeManager("proxysetting", "proxysettings",
-		[]string{
-			"ID",
-			"Name",
-			"http_proxy",
-			"https_proxy",
-			"no_proxy",
-			"is_public",
-			"public_scope",
-		},
-		[]string{})}
-	registerCompute(&ProxySettings)
+func (e *NotEnoughArgumentsError) Error() string {
+	return fmt.Sprintf("Not enough arguments, missing %s", e.argument)
 }

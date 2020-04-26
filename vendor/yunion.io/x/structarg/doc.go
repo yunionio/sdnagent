@@ -12,31 +12,4 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-package modules
-
-import (
-	"yunion.io/x/onecloud/pkg/mcclient/modulebase"
-)
-
-type ProxySettingManager struct {
-	modulebase.ResourceManager
-}
-
-var (
-	ProxySettings ProxySettingManager
-)
-
-func init() {
-	ProxySettings = ProxySettingManager{NewComputeManager("proxysetting", "proxysettings",
-		[]string{
-			"ID",
-			"Name",
-			"http_proxy",
-			"https_proxy",
-			"no_proxy",
-			"is_public",
-			"public_scope",
-		},
-		[]string{})}
-	registerCompute(&ProxySettings)
-}
+package structarg // import "yunion.io/x/structarg"
