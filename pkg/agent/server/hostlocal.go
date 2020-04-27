@@ -32,7 +32,7 @@ func NewHostLocal(watcher *serversWatcher) *HostLocal {
 }
 
 func (hl *HostLocal) updateFlows(ctx context.Context) {
-	for _, hcn := range hl.watcher.hostConfig.Networks {
+	for _, hcn := range hl.watcher.hostConfig.HostNetworkConfigs() {
 		ip, mac, err := hcn.IPMAC()
 		if err != nil {
 			log.Errorf("get ip/mac for %s failed: %s", hcn.Bridge, err)
@@ -57,7 +57,7 @@ func (hl *HostLocal) updateFlows(ctx context.Context) {
 
 func (hl *HostLocal) updateTc(ctx context.Context) {
 	data := []*utils.TcData{}
-	for _, hcn := range hl.watcher.hostConfig.Networks {
+	for _, hcn := range hl.watcher.hostConfig.HostNetworkConfigs() {
 		td := &utils.TcData{
 			Type:   utils.TC_DATA_TYPE_HOSTLOCAL,
 			Ifname: hcn.Ifname,
