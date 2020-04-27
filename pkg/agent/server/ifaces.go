@@ -101,13 +101,13 @@ func (ij *ifaceJanitor) Start(ctx context.Context) {
 }
 
 func (ij *ifaceJanitor) scan(ctx context.Context) error {
-	hc, err := utils.NewHostConfig(DefaultHostConfigPath)
+	hc, err := utils.NewHostConfig()
 	if err != nil {
 		return err
 	}
 	infraMap := brIfaceMap{}
 	{
-		for _, n := range hc.Networks {
+		for _, n := range hc.HostNetworkConfigs() {
 			infraMap.add(n.Bridge, n.Ifname)
 		}
 	}
