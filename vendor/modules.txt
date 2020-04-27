@@ -205,7 +205,7 @@ yunion.io/x/jsonutils
 # yunion.io/x/log v0.0.0-20200313080802-57a4ce5966b3
 yunion.io/x/log
 yunion.io/x/log/hooks
-# yunion.io/x/onecloud v0.0.0-20200426130606-bc12970351ac
+# yunion.io/x/onecloud v0.0.0-20200426130622-3d0e84282510
 yunion.io/x/onecloud/pkg/apis
 yunion.io/x/onecloud/pkg/apis/billing
 yunion.io/x/onecloud/pkg/apis/cloudcommon/proxy

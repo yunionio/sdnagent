@@ -27,8 +27,9 @@ require (
 	gopkg.in/gemnasium/logrus-airbrake-hook.v2 v2.1.2 // indirect
 	gopkg.in/yaml.v2 v2.2.8 // indirect
 	yunion.io/x/log v0.0.0-20200313080802-57a4ce5966b3
-	yunion.io/x/onecloud v0.0.0-20200426130606-bc12970351ac
+	yunion.io/x/onecloud v0.0.0-20200426130622-3d0e84282510
 	yunion.io/x/pkg v0.0.0-20200416145704-22c189971435
+	yunion.io/x/structarg v0.0.0-20200423163001-168d0687be7e // indirect
 )
 
 replace github.com/digitalocean/go-openvswitch => github.com/yousong/go-openvswitch v0.0.0-20200422025222-6b2d502be872
