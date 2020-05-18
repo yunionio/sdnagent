@@ -28,14 +28,16 @@ import (
 )
 
 type AgentServer struct {
+	ctx       context.Context
+	ctxCancel context.CancelFunc
+	once      *sync.Once
+	wg        *sync.WaitGroup
+
+	flowMansLock *sync.RWMutex
+	flowMans     map[string]*FlowMan
+
 	rpcServer      *grpc.Server
-	ctx            context.Context
-	ctxCancel      context.CancelFunc
-	once           *sync.Once
-	wg             *sync.WaitGroup
 	serversWatcher *serversWatcher
-	flowMansLock   *sync.RWMutex
-	flowMans       map[string]*FlowMan
 	ifaceJanitor   *ifaceJanitor
 }
 
@@ -79,25 +81,28 @@ func (s *AgentServer) Stop() {
 var theAgentServer *AgentServer
 
 func init() {
+	wg := &sync.WaitGroup{}
+	ctx, cancelFunc := context.WithCancel(context.Background())
+	ctx = context.WithValue(ctx, "wg", wg)
+	theAgentServer = &AgentServer{
+		ctx:       ctx,
+		ctxCancel: cancelFunc,
+		once:      &sync.Once{},
+		wg:        wg,
+
+		flowMans:     map[string]*FlowMan{},
+		flowMansLock: &sync.RWMutex{},
+	}
+
 	watcher, err := newServersWatcher()
 	if err != nil {
 		panic("creating servers watcher failed: " + err.Error())
 	}
 	ifaceJanitor := newIfaceJanitor()
-	wg := &sync.WaitGroup{}
-	ctx, cancelFunc := context.WithCancel(context.Background())
-	ctx = context.WithValue(ctx, "wg", wg)
-	theAgentServer = &AgentServer{
-		flowMans:       map[string]*FlowMan{},
-		flowMansLock:   &sync.RWMutex{},
-		serversWatcher: watcher,
-		ifaceJanitor:   ifaceJanitor,
-		once:           &sync.Once{},
-		wg:             wg,
-		ctx:            ctx,
-		ctxCancel:      cancelFunc,
-	}
+	theAgentServer.serversWatcher = watcher
+	theAgentServer.ifaceJanitor = ifaceJanitor
 	watcher.agent = theAgentServer
+
 	vSwitchService := newVSwitchService(theAgentServer)
 	openflowService := newOpenflowService(theAgentServer)
 	s := grpc.NewServer()
