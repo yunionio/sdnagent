@@ -40,9 +40,7 @@ type AgentServer struct {
 
 	hostConfig *utils.HostConfig
 
-	rpcServer      *grpc.Server
-	serversWatcher *serversWatcher
-	ifaceJanitor   *ifaceJanitor
+	rpcServer *grpc.Server
 }
 
 func (s *AgentServer) GetFlowMan(bridge string) *FlowMan {
@@ -75,18 +73,42 @@ func (s *AgentServer) Start() error {
 		})
 	}
 
-	lis, err := net.Listen("unix", common.UnixSocketFile)
-	if err != nil {
-		log.Fatalf("listen %s failed: %s", common.UnixSocketFile, err)
-	}
-	defer lis.Close()
-
 	defer s.wg.Wait()
-	s.wg.Add(2)
-	go s.serversWatcher.Start(s.ctx, s)
-	go s.ifaceJanitor.Start(s.ctx)
-	err = s.rpcServer.Serve(lis)
-	return err
+
+	if hc.SdnEnableGuestMan {
+		watcher, err := newServersWatcher()
+		if err != nil {
+			panic("creating servers watcher failed: " + err.Error())
+		}
+		watcher.agent = s
+		ifaceJanitor := newIfaceJanitor()
+
+		vSwitchService := newVSwitchService(s)
+		openflowService := newOpenflowService(s)
+		rpcServer := grpc.NewServer()
+		pb.RegisterVSwitchServer(rpcServer, vSwitchService)
+		pb.RegisterOpenflowServer(rpcServer, openflowService)
+		reflection.Register(rpcServer)
+		s.rpcServer = rpcServer
+
+		lis, err := net.Listen("unix", common.UnixSocketFile)
+		if err != nil {
+			log.Fatalf("listen %s failed: %s", common.UnixSocketFile, err)
+		}
+		defer lis.Close()
+
+		s.wg.Add(2)
+		go watcher.Start(s.ctx, s)
+		go ifaceJanitor.Start(s.ctx)
+		go func() {
+			err := rpcServer.Serve(lis)
+			if err != nil {
+				log.Warningf("rpc server serve returned: %v", err)
+			}
+		}()
+	}
+
+	return nil
 }
 
 func (s *AgentServer) Stop() {
@@ -113,23 +135,6 @@ func init() {
 		flowMans:     map[string]*FlowMan{},
 		flowMansLock: &sync.RWMutex{},
 	}
-
-	watcher, err := newServersWatcher()
-	if err != nil {
-		panic("creating servers watcher failed: " + err.Error())
-	}
-	ifaceJanitor := newIfaceJanitor()
-	theAgentServer.serversWatcher = watcher
-	theAgentServer.ifaceJanitor = ifaceJanitor
-	watcher.agent = theAgentServer
-
-	vSwitchService := newVSwitchService(theAgentServer)
-	openflowService := newOpenflowService(theAgentServer)
-	s := grpc.NewServer()
-	pb.RegisterVSwitchServer(s, vSwitchService)
-	pb.RegisterOpenflowServer(s, openflowService)
-	reflection.Register(s)
-	theAgentServer.rpcServer = s
 }
 
 func Server() *AgentServer {
