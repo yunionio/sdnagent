@@ -99,6 +99,12 @@ func (s *AgentServer) Start(ctx context.Context) error {
 		}()
 	}
 
+	if s.hostConfig.SdnEnableEipMan {
+		eipMan := newEipMan(s)
+		s.wg.Add(1)
+		go eipMan.Start(s.ctx)
+	}
+
 	return nil
 }
 
