@@ -137,23 +137,9 @@ func (w *serversWatcher) Start(ctx context.Context, agent *AgentServer) {
 
 	w.agent = agent
 
-	// hostConfig
-	hc, err := utils.NewHostConfig()
-	if err != nil {
-		log.Errorf("getting host config failed: %s", err)
-		return
-	}
-	w.hostConfig = hc
-	if err := w.hostConfig.Auth(ctx); err != nil {
-		log.Errorf("keystone auth: %v", err)
-		return
-	}
+	w.hostConfig = w.agent.hostConfig
 
-	ctx, cancelFunc := context.WithCancel(ctx)
-	go w.hostConfig.WatchChange(ctx, func() {
-		log.Warningf("host config content changed")
-		cancelFunc()
-	})
+	var err error
 
 	// start watcher before scan
 	w.watcher, err = fsnotify.NewWatcher()

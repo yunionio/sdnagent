@@ -23,8 +23,10 @@ import (
 	"google.golang.org/grpc/reflection"
 
 	"yunion.io/x/log"
+	"yunion.io/x/pkg/errors"
 	"yunion.io/x/sdnagent/pkg/agent/common"
 	pb "yunion.io/x/sdnagent/pkg/agent/proto"
+	"yunion.io/x/sdnagent/pkg/agent/utils"
 )
 
 type AgentServer struct {
@@ -35,6 +37,8 @@ type AgentServer struct {
 
 	flowMansLock *sync.RWMutex
 	flowMans     map[string]*FlowMan
+
+	hostConfig *utils.HostConfig
 
 	rpcServer      *grpc.Server
 	serversWatcher *serversWatcher
@@ -55,6 +59,22 @@ func (s *AgentServer) GetFlowMan(bridge string) *FlowMan {
 }
 
 func (s *AgentServer) Start() error {
+	var (
+		hc  *utils.HostConfig
+		err error
+	)
+	if hc, err = utils.NewHostConfig(); err != nil {
+		return errors.Wrap(err, "host config")
+	} else if err = hc.Auth(s.ctx); err != nil {
+		return errors.Wrap(err, "keystone auth")
+	} else {
+		s.hostConfig = hc
+		go hc.WatchChange(s.ctx, func() {
+			log.Warningf("host config content changed")
+			s.Stop()
+		})
+	}
+
 	lis, err := net.Listen("unix", common.UnixSocketFile)
 	if err != nil {
 		log.Fatalf("listen %s failed: %s", common.UnixSocketFile, err)
