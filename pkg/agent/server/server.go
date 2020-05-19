@@ -23,21 +23,20 @@ import (
 	"google.golang.org/grpc/reflection"
 
 	"yunion.io/x/log"
-	"yunion.io/x/pkg/errors"
 	"yunion.io/x/sdnagent/pkg/agent/common"
 	pb "yunion.io/x/sdnagent/pkg/agent/proto"
 	"yunion.io/x/sdnagent/pkg/agent/utils"
 )
 
 type AgentServer struct {
-	ctx       context.Context
-	ctxCancel context.CancelFunc
-	once      *sync.Once
-	wg        *sync.WaitGroup
+	once *sync.Once
+	wg   *sync.WaitGroup
 
 	flowMansLock *sync.RWMutex
 	flowMans     map[string]*FlowMan
 
+	ctx        context.Context
+	ctxCancel  context.CancelFunc
 	hostConfig *utils.HostConfig
 
 	rpcServer *grpc.Server
@@ -56,26 +55,18 @@ func (s *AgentServer) GetFlowMan(bridge string) *FlowMan {
 	return flowman
 }
 
-func (s *AgentServer) Start() error {
-	var (
-		hc  *utils.HostConfig
-		err error
-	)
-	if hc, err = utils.NewHostConfig(); err != nil {
-		return errors.Wrap(err, "host config")
-	} else if err = hc.Auth(s.ctx); err != nil {
-		return errors.Wrap(err, "keystone auth")
-	} else {
-		s.hostConfig = hc
-		go hc.WatchChange(s.ctx, func() {
-			log.Warningf("host config content changed")
-			s.Stop()
-		})
-	}
+func (s *AgentServer) HostConfig(hostConfig *utils.HostConfig) *AgentServer {
+	s.hostConfig = hostConfig
+	return s
+}
+
+func (s *AgentServer) Start(ctx context.Context) error {
+	ctx = context.WithValue(ctx, "wg", s.wg)
+	s.ctx, s.ctxCancel = context.WithCancel(ctx)
 
 	defer s.wg.Wait()
 
-	if hc.SdnEnableGuestMan {
+	if s.hostConfig.SdnEnableGuestMan {
 		watcher, err := newServersWatcher()
 		if err != nil {
 			panic("creating servers watcher failed: " + err.Error())
@@ -123,14 +114,9 @@ func (s *AgentServer) Stop() {
 var theAgentServer *AgentServer
 
 func init() {
-	wg := &sync.WaitGroup{}
-	ctx, cancelFunc := context.WithCancel(context.Background())
-	ctx = context.WithValue(ctx, "wg", wg)
 	theAgentServer = &AgentServer{
-		ctx:       ctx,
-		ctxCancel: cancelFunc,
-		once:      &sync.Once{},
-		wg:        wg,
+		once: &sync.Once{},
+		wg:   &sync.WaitGroup{},
 
 		flowMans:     map[string]*FlowMan{},
 		flowMansLock: &sync.RWMutex{},

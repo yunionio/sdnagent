@@ -15,18 +15,18 @@
 package main
 
 import (
+	"context"
 	"fmt"
 	"os"
 	"os/signal"
 	"syscall"
 
+	"yunion.io/x/log"
+	"yunion.io/x/pkg/errors"
+
 	"yunion.io/x/sdnagent/pkg/agent/common"
 	"yunion.io/x/sdnagent/pkg/agent/server"
-	"yunion.io/x/log"
-)
-
-const (
-	PIDFILE = "/var/run/yunion-sdnagent.pid"
+	"yunion.io/x/sdnagent/pkg/agent/utils"
 )
 
 func LockPidFile(path string) (*os.File, error) {
@@ -52,10 +52,21 @@ func UnlockPidFile(f *os.File) error {
 }
 
 func main() {
+	var (
+		ctx = context.Background()
+		hc  *utils.HostConfig
+		err error
+	)
+	if hc, err = utils.NewHostConfig(); err != nil {
+		log.Errorln(errors.Wrap(err, "host config"))
+	} else if err = hc.Auth(ctx); err != nil {
+		log.Errorln(errors.Wrap(err, "keystone auth"))
+	}
+
 	{
-		f, err := LockPidFile(PIDFILE)
+		f, err := LockPidFile(hc.SdnPidFile)
 		if err != nil {
-			log.Errorf("create pid file %s failed: %s", PIDFILE, err)
+			log.Errorf("create pid file %s failed: %s", hc.SdnPidFile, err)
 			return
 		}
 		defer UnlockPidFile(f)
@@ -66,7 +77,11 @@ func main() {
 		}
 	}
 
-	s := server.Server()
+	s := server.Server().HostConfig(hc)
+	go hc.WatchChange(ctx, func() {
+		log.Warningf("host config content changed")
+		s.Stop()
+	})
 	go func() {
 		sigChan := make(chan os.Signal)
 		signal.Notify(sigChan, syscall.SIGINT)
@@ -75,8 +90,7 @@ func main() {
 		log.Infof("signal received: %s", sig)
 		s.Stop()
 	}()
-	err := s.Start()
-	if err != nil {
-		log.Fatalf("Start server error: %v", err)
+	if err := s.Start(ctx); err != nil {
+		log.Warningf("Start server error: %v", err)
 	}
 }
