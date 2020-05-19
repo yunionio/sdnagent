@@ -1,0 +1,24 @@
+# vi: ft=yaml
+all:
+  vars:
+    sdnagent_rpm: _output/rpms/x86_64/yunion-sdnagent-3.0.0-20051916.x86_64.rpm
+    sdnagent_conf: sdnagent.conf
+    oc_region: regionxxx
+    oc_auth_url: https://xx.xx.xx.xx:30357/v3
+    oc_admin_project: system
+    oc_admin_user: sysadmin
+    oc_admin_password: xxxxxx
+    vrrp_router_id: 52
+  hosts:
+    host03:
+      ansible_host: 192.168.2.3
+      ansible_user: root
+      vrrp_priority: 3
+      vrrp_interface: br0
+      vrrp_vip: "192.168.2.2/24 dev br0"
+    host04:
+      ansible_host: 192.168.2.4
+      ansible_user: root
+      vrrp_priority: 4
+      vrrp_interface: br0
+      vrrp_vip: "192.168.2.2/24 dev br0"
