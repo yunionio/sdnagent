@@ -12,14 +12,21 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-package compute
+package modules
 
-import "yunion.io/x/onecloud/pkg/apis"
+import "yunion.io/x/onecloud/pkg/mcclient/modulebase"
 
-type ElasticcacheBackupDetails struct {
-	apis.StatusStandaloneResourceDetails
-	apis.ProjectizedResourceInfo
-	ElasticcacheResourceInfo
+var (
+	Serversecgroups modulebase.JointResourceManager
+)
 
-	SElasticcacheBackup
+func init() {
+	Serversecgroups = NewJointComputeManager(
+		"guestsecgroup",
+		"guestsecgroups",
+		[]string{},
+		[]string{},
+		&Servers,
+		&SecGroups)
+	registerCompute(&Serversecgroups)
 }
