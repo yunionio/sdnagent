@@ -76,8 +76,7 @@ func (hcn *HostConfigNetwork) IPMAC() (net.IP, net.HardwareAddr, error) {
 type HostConfig struct {
 	options.SHostOptions
 
-	networks       []*HostConfigNetwork
-	k8sClusterCidr *net.IPNet
+	networks []*HostConfigNetwork
 }
 
 func (hc *HostConfig) MetadataPort() int {
@@ -94,11 +93,6 @@ func NewHostConfig() (*HostConfig, error) {
 		hc.AllowRouterVMs = true
 	}
 
-	_, k8sCidr, err := net.ParseCIDR(hc.K8sClusterCidr)
-	if err == nil {
-		// it's an optional argument
-		hc.k8sClusterCidr = k8sCidr
-	}
 	for _, network := range hc.Networks {
 		hcn, err := NewHostConfigNetwork(network)
 		if err != nil {
@@ -109,10 +103,6 @@ func NewHostConfig() (*HostConfig, error) {
 	}
 
 	return hc, nil
-}
-
-func (hc *HostConfig) GetK8sClusterCidr() *net.IPNet {
-	return hc.k8sClusterCidr
 }
 
 func (hc *HostConfig) HostNetworkConfigs() []*HostConfigNetwork {
