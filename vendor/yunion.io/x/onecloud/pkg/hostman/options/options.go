@@ -33,7 +33,7 @@ type SHostOptions struct {
 	Hostname        string   `help:"Customized host name"`
 
 	ServersPath    string `help:"Path for virtual server configuration files" default:"/opt/cloud/workspace/servers"`
-	ImageCachePath string `help:"Path for storing image caches" default:/opt/cloud/workspace/disks/image_cache"`
+	ImageCachePath string `help:"Path for storing image caches" default:"/opt/cloud/workspace/disks/image_cache"`
 	// ImageCacheLimit int    `help:"Maximal storage space for image caching, in GB" default:"20"`
 	AgentTempPath  string `help:"Path for ESXi agent"`
 	AgentTempLimit int    `help:"Maximal storage space for ESXi agent, in GB" default:"10"`
@@ -118,10 +118,16 @@ type SHostOptions struct {
 	AllowSwitchVMs bool `help:"allow machines run as switch (spoof mac)" default:"true"`
 	AllowRouterVMs bool `help:"allow machines run as router (spoof ip)" default:"true"`
 
+	SdnPidFile        string `help:"pid file for sdnagent" default:"$SDN_PID_FILE|/var/run/yunion-sdnagent.pid"`
+	SdnEnableGuestMan bool   `help:"enable guest network manager in sdnagent" default:"$SDN_ENABLE_GUEST_MAN|true"`
+	SdnEnableEipMan   bool   `help:"enable eip network manager in sdnagent" default:"$SDN_ENABLE_EIP_MAN|false"`
+
 	OvnSouthDatabase     string `help:"address for accessing ovn south database" default:"$HOST_OVN_SOUTH_DATABASE|unix:/var/run/openvswitch/ovnsb_db.sock"`
 	OvnEncapIp           string `help:"encap ip for ovn datapath.  Default to output src address of default route" default:"$HOST_OVN_ENCAP_IP"`
 	OvnIntegrationBridge string `help:"name of integration bridge for logical ports" default:"$HOST_OVN_INTEGRATION_BRIDGE|brvpc"`
 	OvnMappedBridge      string `help:"name of bridge for mapped traffic management" default:"$HOST_OVN_MAPPED_BRIDGE|brmapped"`
+	OvnEipBridge         string `help:"name of bridge for eip traffic management" default:"$HOST_OVN_EIP_BRIDGE|breip"`
+	OvnUnderlayMtu       int    `help:"mtu of ovn underlay network" default:"1500"`
 
 	EnableHealthChecker bool   `help:"enable host health checker" default:"true"`
 	HealthDriver        string `help:"Component save host health state" default:"etcd"`

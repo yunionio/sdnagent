@@ -17,8 +17,6 @@ package compute
 import (
 	"time"
 
-	"yunion.io/x/jsonutils"
-
 	"yunion.io/x/onecloud/pkg/apis"
 	"yunion.io/x/onecloud/pkg/apis/billing"
 )
@@ -158,7 +156,7 @@ type ServerDetails struct {
 	Disks string `json:"disks"`
 
 	// 磁盘详情
-	DisksInfo *jsonutils.JSONArray `json:"disks_info"`
+	DisksInfo []GuestDiskInfo `json:"disks_info"`
 	// 虚拟机Ip列表
 	VirtualIps string `json:"virtual_ips"`
 	// 安全组规则
@@ -171,7 +169,7 @@ type ServerDetails struct {
 	AdminSecurityRules string `json:"admin_security_rules"`
 
 	// list
-	AttachTime time.Time `attach_time`
+	AttachTime time.Time `json:"attach_time"`
 
 	// common
 	IsPrepaidRecycle bool `json:"is_prepaid_recycle"`
@@ -231,6 +229,26 @@ type ServerDetails struct {
 
 	// 伸缩组id
 	ScalingGroupId string `json:"scaling_group_id"`
+}
+
+// GuestDiskInfo describe the information of disk on the guest.
+type GuestDiskInfo struct {
+	Id          string `json:"id"`
+	Name        string `json:"name"`
+	FsFormat    string `json:"fs,omitempty"`
+	DiskType    string `json:"disk_type"`
+	Index       int8   `json:"index"`
+	SizeMb      int    `json:"size"`
+	DiskFormat  string `json:"disk_format"`
+	Driver      string `json:"driver"`
+	CacheMode   string `json:"cache_mode"`
+	AioMode     string `json:"aio_mode"`
+	MediumType  string `json:"medium_type"`
+	StorageType string `json:"storage_type"`
+	Iops        int    `json:"iops"`
+	Bps         int    `json:"bps"`
+	ImageId     string `json:"image_id,omitempty"`
+	Image       string `json:"image,omitemtpy"`
 }
 
 type GuestJointResourceDetails struct {
@@ -314,4 +332,9 @@ type ConvertEsxiToKvmInput struct {
 	TargetHypervisor string `json:"target_hypervisor"`
 	// 指定转换的宿主机
 	PreferHost string `json:"prefer_host"`
+}
+
+type GuestSaveToTemplateInput struct {
+	// The name of guest
+	Name string `json:"name"`
 }
