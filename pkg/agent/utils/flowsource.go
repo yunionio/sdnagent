@@ -74,10 +74,8 @@ func (h *HostLocal) FlowsMap() (map[string][]*ovs.Flow, error) {
 	if err != nil {
 		return nil, err
 	}
-	k8sClusterCidr := h.HostConfig.GetK8sClusterCidr()
 	m := map[string]interface{}{
 		"MetadataPort": h.HostConfig.MetadataPort(),
-		"K8SCidr":      k8sClusterCidr,
 		"IP":           h.IP,
 		"MAC":          h.MAC,
 		"PortNoPhy":    ps.PortID,
@@ -85,9 +83,6 @@ func (h *HostLocal) FlowsMap() (map[string][]*ovs.Flow, error) {
 	T := t(m)
 	flows := []*ovs.Flow{
 		F(0, 40000, "ipv6", "drop"),
-	}
-	if k8sClusterCidr != nil {
-		flows = append(flows, F(0, 30050, T("ip,nw_dst={{.K8SCidr}}"), T("mod_dl_dst:{{.MAC}},LOCAL")))
 	}
 	flows = append(flows,
 		F(0, 29310, "in_port=LOCAL,tcp,nw_dst=169.254.169.254,tp_dst=80", T("normal")),
@@ -180,7 +175,6 @@ func (g *Guest) getMetadataInfo(nic *GuestNIC) (mdIP string, mdMAC string, mdPor
 func (g *Guest) FlowsMap() (map[string][]*ovs.Flow, error) {
 	r := map[string][]*ovs.Flow{}
 	allGood := true
-	k8sClusterCidr := g.HostConfig.GetK8sClusterCidr()
 	for _, nic := range g.NICs {
 		if nic.PortNo <= 0 {
 			allGood = false
@@ -241,13 +235,6 @@ func (g *Guest) FlowsMap() (map[string][]*ovs.Flow, error) {
 			m["_dl_vlan"] = T("vlan_tci={{.VLANTci}}")
 		}
 		flows := []*ovs.Flow{}
-		if k8sClusterCidr != nil {
-			m["K8SCidr"] = k8sClusterCidr
-			flows = append(flows,
-				F(0, 30040, T("in_port=LOCAL,ip,nw_src={{.K8SCidr}},nw_dst={{.IP}}"),
-					T("mod_dl_dst:{{.MAC}},output:{{.PortNo}}")),
-			)
-		}
 		flows = append(flows,
 			F(0, 29200,
 				T("in_port={{.MetadataPortInPort}},tcp,nw_dst={{.IP}},tp_src={{.MetadataServerPort}}"),
@@ -398,8 +385,6 @@ func (sr *SecurityRules) Flows(g *Guest, data map[string]interface{}) []*ovs.Flo
 //
 // Table 0
 // 40000 ipv6,actions=drop
-// 30050 ip,nw_dst=K8S_CIDR,actions=mod_LOCAL
-// 30040 ip,nw_src=K8S_CIDR,nw_dst=IP_VM,in_port=LOCAL,actions=mod_dl_dst:MAC_VM,output:PORT_VM
 // 29310 in_port=LOCAL,metaserver_req,actions=normal
 // 29300 metaserver_req,actions=mod_metaserver
 // 29200 metaserver_resp_VM_IP,actions=mod_metaserver_PORT_VM
