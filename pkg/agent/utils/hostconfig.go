@@ -105,6 +105,15 @@ func NewHostConfig() (*HostConfig, error) {
 	return hc, nil
 }
 
+func (hc *HostConfig) GetOverlayMTU() int {
+	mtu := hc.OvnUnderlayMtu
+	if mtu < 576 {
+		mtu = 576
+	}
+	mtu -= 58
+	return mtu
+}
+
 func (hc *HostConfig) HostNetworkConfigs() []*HostConfigNetwork {
 	return hc.networks
 }
