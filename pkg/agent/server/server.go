@@ -25,18 +25,21 @@ import (
 	"yunion.io/x/log"
 	"yunion.io/x/sdnagent/pkg/agent/common"
 	pb "yunion.io/x/sdnagent/pkg/agent/proto"
+	"yunion.io/x/sdnagent/pkg/agent/utils"
 )
 
 type AgentServer struct {
-	rpcServer      *grpc.Server
-	ctx            context.Context
-	ctxCancel      context.CancelFunc
-	once           *sync.Once
-	wg             *sync.WaitGroup
-	serversWatcher *serversWatcher
-	flowMansLock   *sync.RWMutex
-	flowMans       map[string]*FlowMan
-	ifaceJanitor   *ifaceJanitor
+	once *sync.Once
+	wg   *sync.WaitGroup
+
+	flowMansLock *sync.RWMutex
+	flowMans     map[string]*FlowMan
+
+	ctx        context.Context
+	ctxCancel  context.CancelFunc
+	hostConfig *utils.HostConfig
+
+	rpcServer *grpc.Server
 }
 
 func (s *AgentServer) GetFlowMan(bridge string) *FlowMan {
@@ -52,19 +55,57 @@ func (s *AgentServer) GetFlowMan(bridge string) *FlowMan {
 	return flowman
 }
 
-func (s *AgentServer) Start() error {
-	lis, err := net.Listen("unix", common.UnixSocketFile)
-	if err != nil {
-		log.Fatalf("listen %s failed: %s", common.UnixSocketFile, err)
-	}
-	defer lis.Close()
+func (s *AgentServer) HostConfig(hostConfig *utils.HostConfig) *AgentServer {
+	s.hostConfig = hostConfig
+	return s
+}
+
+func (s *AgentServer) Start(ctx context.Context) error {
+	ctx = context.WithValue(ctx, "wg", s.wg)
+	s.ctx, s.ctxCancel = context.WithCancel(ctx)
 
 	defer s.wg.Wait()
-	s.wg.Add(2)
-	go s.serversWatcher.Start(s.ctx, s)
-	go s.ifaceJanitor.Start(s.ctx)
-	err = s.rpcServer.Serve(lis)
-	return err
+
+	if s.hostConfig.SdnEnableGuestMan {
+		watcher, err := newServersWatcher()
+		if err != nil {
+			panic("creating servers watcher failed: " + err.Error())
+		}
+		watcher.agent = s
+		ifaceJanitor := newIfaceJanitor()
+
+		vSwitchService := newVSwitchService(s)
+		openflowService := newOpenflowService(s)
+		rpcServer := grpc.NewServer()
+		pb.RegisterVSwitchServer(rpcServer, vSwitchService)
+		pb.RegisterOpenflowServer(rpcServer, openflowService)
+		reflection.Register(rpcServer)
+		s.rpcServer = rpcServer
+
+		lis, err := net.Listen("unix", common.UnixSocketFile)
+		if err != nil {
+			log.Fatalf("listen %s failed: %s", common.UnixSocketFile, err)
+		}
+		defer lis.Close()
+
+		s.wg.Add(2)
+		go watcher.Start(s.ctx, s)
+		go ifaceJanitor.Start(s.ctx)
+		go func() {
+			err := rpcServer.Serve(lis)
+			if err != nil {
+				log.Warningf("rpc server serve returned: %v", err)
+			}
+		}()
+	}
+
+	if s.hostConfig.SdnEnableEipMan {
+		eipMan := newEipMan(s)
+		s.wg.Add(1)
+		go eipMan.Start(s.ctx)
+	}
+
+	return nil
 }
 
 func (s *AgentServer) Stop() {
@@ -79,32 +120,13 @@ func (s *AgentServer) Stop() {
 var theAgentServer *AgentServer
 
 func init() {
-	watcher, err := newServersWatcher()
-	if err != nil {
-		panic("creating servers watcher failed: " + err.Error())
-	}
-	ifaceJanitor := newIfaceJanitor()
-	wg := &sync.WaitGroup{}
-	ctx, cancelFunc := context.WithCancel(context.Background())
-	ctx = context.WithValue(ctx, "wg", wg)
 	theAgentServer = &AgentServer{
-		flowMans:       map[string]*FlowMan{},
-		flowMansLock:   &sync.RWMutex{},
-		serversWatcher: watcher,
-		ifaceJanitor:   ifaceJanitor,
-		once:           &sync.Once{},
-		wg:             wg,
-		ctx:            ctx,
-		ctxCancel:      cancelFunc,
+		once: &sync.Once{},
+		wg:   &sync.WaitGroup{},
+
+		flowMans:     map[string]*FlowMan{},
+		flowMansLock: &sync.RWMutex{},
 	}
-	watcher.agent = theAgentServer
-	vSwitchService := newVSwitchService(theAgentServer)
-	openflowService := newOpenflowService(theAgentServer)
-	s := grpc.NewServer()
-	pb.RegisterVSwitchServer(s, vSwitchService)
-	pb.RegisterOpenflowServer(s, openflowService)
-	reflection.Register(s)
-	theAgentServer.rpcServer = s
 }
 
 func Server() *AgentServer {

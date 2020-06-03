@@ -22,8 +22,6 @@ import (
 	"sync"
 	"time"
 
-	"crypto/md5"
-
 	"github.com/coreos/go-iptables/iptables"
 	"github.com/digitalocean/go-openvswitch/ovs"
 	"github.com/vishvananda/netlink"
@@ -35,6 +33,7 @@ import (
 	"yunion.io/x/onecloud/pkg/mcclient/auth"
 	mcclient_modules "yunion.io/x/onecloud/pkg/mcclient/modules"
 	"yunion.io/x/onecloud/pkg/util/iproute2"
+	"yunion.io/x/onecloud/pkg/vpcagent/ovn/mac"
 
 	"yunion.io/x/sdnagent/pkg/agent/utils"
 )
@@ -43,23 +42,6 @@ const (
 	pnamePrefix = "v-"
 	pnameSuffix = "-p"
 )
-
-// TODO
-func hashMac(in ...string) string {
-	h := md5.New()
-	for _, s := range in {
-		h.Write([]byte(s))
-	}
-	sum := h.Sum(nil)
-	b := sum[0]
-	b &= 0xfe
-	b |= 0x02
-	mac := fmt.Sprintf("%02x", b)
-	for _, b := range sum[1:6] {
-		mac += fmt.Sprintf(":%02x", b)
-	}
-	return mac
-}
 
 type ovnReq struct {
 	ctx     context.Context
@@ -122,7 +104,7 @@ func (man *ovnMan) Start(ctx context.Context) {
 }
 
 func (man *ovnMan) setIpMac(ctx context.Context) error {
-	man.mac = hashMac(man.hostId)
+	man.mac = mac.HashVpcHostDistgwMac(man.hostId)
 	{
 		hc := man.watcher.hostConfig
 		apiVer := ""

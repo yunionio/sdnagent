@@ -1,0 +1,51 @@
+---
+- hosts: all
+  handlers:
+    - name: restart eipgw
+      service:
+        name: yunion-sdnagent-eipgw
+        state: restarted
+  tasks:
+    - name: copy sdnagent.rpm
+      copy:
+        src: "{{ sdnagent_rpm }}"
+        dest: /tmp/sdnagent.rpm
+    - name: install sdnagent.rpm
+      package:
+        name: /tmp/sdnagent.rpm
+        state: installed
+      notify: restart eipgw
+    - name: make sdnagent.conf
+      template:
+        src: sdnagent.conf.j2
+        dest: /etc/yunion/sdnagent.conf
+      notify: restart eipgw
+    - name: install keepalived
+      package:
+        name: keepalived
+        state: present
+    - name: mkdir /etc/keepalived
+      file:
+        name: /etc/keepalived
+        state: directory
+        owner: root
+        group: root
+    - name: make keepalived.conf
+      template:
+        src: keepalived-eipgw.conf.j2
+        dest: /etc/keepalived/eipgw.conf
+      vars:
+        vrrp_notify_script: /etc/keepalived/eipgw-notify.sh
+      notify: restart eipgw
+    - name: copy keepalived notify script
+      copy:
+        src: keepalived-eipgw-notify.sh
+        dest: /etc/keepalived/eipgw-notify.sh
+        owner: root
+        group: root
+        mode: 0700
+    - name: enable yunion-sdnagent-eipgw service
+      service:
+        name: yunion-sdnagent-eipgw
+        state: started
+        enabled: yes

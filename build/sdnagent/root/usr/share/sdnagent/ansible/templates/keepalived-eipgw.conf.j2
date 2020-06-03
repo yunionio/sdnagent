@@ -1,0 +1,30 @@
+global_defs {
+	script_user root
+	enable_script_security
+	dynamic_interfaces
+}
+
+vrrp_instance eipgw_128.3 {
+	# Interface for VRRP advertisements
+	interface {{ vrrp_interface }}
+
+	virtual_router_id {{ vrrp_router_id }}
+	priority {{ vrrp_priority }}
+	nopreempt
+
+	advert_int 1
+	authentication {
+		auth_type PASS
+		auth_pass yunion-sdnagent-eipgw
+	}
+
+	# Gateway address for external hosts
+	virtual_ipaddress {
+		{{ vrrp_vip }}
+	}
+
+	notify_backup "{{ vrrp_notify_script }} BACKUP"
+	notify_master "{{ vrrp_notify_script }} MASTER"
+	notify_fault  "{{ vrrp_notify_script }} FAULT"
+	notify_stop  "{{ vrrp_notify_script }} STOP"
+}
