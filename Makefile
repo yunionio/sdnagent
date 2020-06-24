@@ -50,15 +50,26 @@ VERSION ?= $(shell git describe --exact-match 2> /dev/null || \
 	   git describe --match=$(git rev-parse --short=8 HEAD) --always --dirty --abbrev=8)
 IMAGE_NAME_TAG := $(REGISTRY)/sdnagent:$(VERSION)
 
-docker-image:
+docker-alpine-build:
 	docker run --rm \
+		--name "docker-alpine-build-onecloud-sdnagent" \
 		-v $(CURDIR):/root/go/src/yunion.io/x/sdnagent \
 		-v $(CURDIR)/_output/alpine-build:/root/go/src/yunion.io/x/sdnagent/_output \
 		registry.cn-beijing.aliyuncs.com/yunionio/alpine-build:1.0-1 \
-		/bin/sh -c "set -ex; cd /root/go/src/yunion.io/x/sdnagent; make; chown -R $$(id -u):$$(id -g) _output"
+		/bin/sh -c "set -ex; cd /root/go/src/yunion.io/x/sdnagent; make $(F); chown -R $$(id -u):$$(id -g) _output"
+
+docker-alpine-build-stop:
+	docker stop --time 0 docker-alpine-build-onecloud-sdnagent || true
+.PHONY: docker-alpine-build
+.PHONY: docker-alpine-build-stop
+
+docker-image: docker-alpine-build
 	docker build -t $(IMAGE_NAME_TAG) -f $(CURDIR)/build/docker/Dockerfile $(CURDIR)
 
 docker-image-push:
 	docker image push $(IMAGE_NAME_TAG)
+
+.PHONY: docker-image
+.PHONY: docker-image-push
 
 .PHONY: all $(bins) rpm test
