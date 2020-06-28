@@ -346,6 +346,20 @@ func (man *ovnMan) cleanup(ctx context.Context) {
 
 	listPorts := func(br string) (map[string]utils.Empty, bool) {
 		cli := ovs.New().VSwitch
+		if brs, err := cli.ListBridges(); err != nil {
+			log.Errorf("list bridges: %v", err)
+			return nil, false
+		} else {
+			found := false
+			for _, got := range brs {
+				if got == br {
+					found = true
+				}
+			}
+			if !found {
+				return nil, true
+			}
+		}
 		ports, err := cli.ListPorts(br)
 		if err != nil {
 			log.Errorf("list bridge ports: %s: %v", br, err)
