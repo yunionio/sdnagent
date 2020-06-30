@@ -50,12 +50,13 @@ VERSION ?= $(shell git describe --exact-match 2> /dev/null || \
 	   git describe --match=$(git rev-parse --short=8 HEAD) --always --dirty --abbrev=8)
 IMAGE_NAME_TAG := $(REGISTRY)/sdnagent:$(VERSION)
 
+DOCKER_ALPINE_BUILD_IMAGE:=registry.cn-beijing.aliyuncs.com/yunionio/alpine-build:1.0-2
 docker-alpine-build:
 	docker run --rm \
 		--name "docker-alpine-build-onecloud-sdnagent" \
 		-v $(CURDIR):/root/go/src/yunion.io/x/sdnagent \
 		-v $(CURDIR)/_output/alpine-build:/root/go/src/yunion.io/x/sdnagent/_output \
-		registry.cn-beijing.aliyuncs.com/yunionio/alpine-build:1.0-1 \
+		$(DOCKER_ALPINE_BUILD_IMAGE) \
 		/bin/sh -c "set -ex; cd /root/go/src/yunion.io/x/sdnagent; make $(F); chown -R $$(id -u):$$(id -g) _output"
 
 docker-alpine-build-stop:
