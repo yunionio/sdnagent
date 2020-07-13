@@ -1,5 +1,5 @@
 ---
-- hosts: all
+- hosts: eips
   handlers:
     - name: restart eipgw
       service:
@@ -30,7 +30,7 @@
         state: directory
         owner: root
         group: root
-    - name: make keepalived.conf
+    - name: make keepalived eipgw.conf
       template:
         src: keepalived-eipgw.conf.j2
         dest: /etc/keepalived/eipgw.conf
