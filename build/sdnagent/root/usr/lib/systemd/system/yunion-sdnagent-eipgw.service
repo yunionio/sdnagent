@@ -8,6 +8,7 @@ Type=simple
 User=root
 Group=root
 ExecStart=/usr/sbin/keepalived -f /etc/keepalived/eipgw.conf --vrrp --dont-fork --log-detail
+ExecReload=/bin/kill -HUP $MAINPID
 WorkingDirectory=/
 KillMode=control-group
 Restart=always
