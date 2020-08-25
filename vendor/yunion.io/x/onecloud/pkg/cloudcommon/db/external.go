@@ -27,7 +27,7 @@ import (
 // +onecloud:model-api-gen
 type SExternalizedResourceBase struct {
 	// 外部Id, 对用公有云私有资源自身的Id
-	ExternalId string `width:"256" charset:"utf8" index:"true" list:"user" create:"admin_optional" update:"admin" json:"external_id"`
+	ExternalId string `width:"256" charset:"utf8" index:"true" list:"user" create:"domain_optional" update:"admin" json:"external_id"`
 }
 
 type SExternalizedResourceBaseManager struct{}
@@ -67,7 +67,14 @@ func SetExternalId(model IExternalizedModel, userCred mcclient.TokenCredential, 
 }
 
 func FetchByExternalId(manager IModelManager, idStr string) (IExternalizedModel, error) {
+	return FetchByExternalIdAndManagerId(manager, idStr, func(q *sqlchemy.SQuery) *sqlchemy.SQuery {
+		return q
+	})
+}
+
+func FetchByExternalIdAndManagerId(manager IModelManager, idStr string, filter func(q *sqlchemy.SQuery) *sqlchemy.SQuery) (IExternalizedModel, error) {
 	q := manager.Query().Equals("external_id", idStr)
+	q = filter(q)
 	count, err := q.CountWithError()
 	if err != nil {
 		return nil, err

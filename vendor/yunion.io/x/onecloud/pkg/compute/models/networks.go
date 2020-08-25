@@ -308,8 +308,18 @@ func (self *SNetwork) GetNetworkInterfacesCount() (int, error) {
 	return NetworkInterfaceManager.Query().In("id", sq).CountWithError()
 }
 
-func (manager *SNetworkManager) GetOrCreateClassicNetwork(wire *SWire) (*SNetwork, error) {
-	_network, err := db.FetchByExternalId(manager, wire.Id)
+func (manager *SNetworkManager) GetOrCreateClassicNetwork(ctx context.Context, wire *SWire) (*SNetwork, error) {
+	_network, err := db.FetchByExternalIdAndManagerId(manager, wire.Id, func(q *sqlchemy.SQuery) *sqlchemy.SQuery {
+		v := wire.GetVpc()
+		if v != nil {
+			wire := WireManager.Query().SubQuery()
+			vpc := VpcManager.Query().SubQuery()
+			return q.Join(wire, sqlchemy.Equals(wire.Field("id"), q.Field("wire_id"))).
+				Join(vpc, sqlchemy.Equals(vpc.Field("id"), wire.Field("vpc_id"))).
+				Filter(sqlchemy.Equals(vpc.Field("manager_id"), v.ManagerId))
+		}
+		return q
+	})
 	if err == nil {
 		return _network.(*SNetwork), nil
 	}
@@ -334,7 +344,7 @@ func (manager *SNetworkManager) GetOrCreateClassicNetwork(wire *SWire) (*SNetwor
 	network.DomainId = admin.GetProjectDomainId()
 	network.ProjectId = admin.GetProjectId()
 	network.Status = api.NETWORK_STATUS_UNAVAILABLE
-	err = manager.TableSpec().Insert(&network)
+	err = manager.TableSpec().Insert(ctx, &network)
 	if err != nil {
 		return nil, errors.Wrap(err, "Insert classic network")
 	}
@@ -428,6 +438,13 @@ func (self *SNetwork) getFreeIP(addrTable map[string]bool, recentUsedAddrTable m
 		}
 	}
 	return "", httperrors.NewInsufficientResourceError("Out of IP address")
+}
+
+func (self *SNetwork) GetFreeIPWithLock(ctx context.Context, userCred mcclient.TokenCredential, addrTable map[string]bool, recentUsedAddrTable map[string]bool, candidate string, allocDir api.IPAllocationDirection, reserved bool) (string, error) {
+	lockman.LockObject(ctx, self)
+	defer lockman.ReleaseObject(ctx, self)
+
+	return self.GetFreeIP(ctx, userCred, addrTable, recentUsedAddrTable, candidate, allocDir, reserved)
 }
 
 func (self *SNetwork) GetFreeIP(ctx context.Context, userCred mcclient.TokenCredential, addrTable map[string]bool, recentUsedAddrTable map[string]bool, candidate string, allocDir api.IPAllocationDirection, reserved bool) (string, error) {
@@ -631,7 +648,7 @@ func (manager *SNetworkManager) SyncNetworks(ctx context.Context, userCred mccli
 		if err != nil {
 			syncResult.UpdateError(err)
 		} else {
-			syncMetadata(ctx, userCred, &commondb[i], commonext[i])
+			syncVirtualResourceMetadata(ctx, userCred, &commondb[i], commonext[i])
 			localNets = append(localNets, commondb[i])
 			remoteNets = append(remoteNets, commonext[i])
 			syncResult.Update()
@@ -642,7 +659,7 @@ func (manager *SNetworkManager) SyncNetworks(ctx context.Context, userCred mccli
 		if err != nil {
 			syncResult.AddError(err)
 		} else {
-			syncMetadata(ctx, userCred, new, added[i])
+			syncVirtualResourceMetadata(ctx, userCred, new, added[i])
 			localNets = append(localNets, *new)
 			remoteNets = append(remoteNets, added[i])
 			syncResult.Add()
@@ -694,7 +711,14 @@ func (self *SNetwork) SyncWithCloudNetwork(ctx context.Context, userCred mcclien
 	SyncCloudProject(userCred, self, syncOwnerId, extNet, vpc.ManagerId)
 
 	if provider != nil {
-		self.SyncShareState(ctx, userCred, provider.getAccountShareInfo())
+		shareInfo := provider.getAccountShareInfo()
+		if utils.IsInStringArray(provider.Provider, api.PRIVATE_CLOUD_PROVIDERS) && extNet.GetPublicScope() == rbacutils.ScopeNone {
+			shareInfo = apis.SAccountShareInfo{
+				IsPublic:    false,
+				PublicScope: rbacutils.ScopeNone,
+			}
+		}
+		self.SyncShareState(ctx, userCred, shareInfo)
 	}
 
 	return nil
@@ -726,7 +750,7 @@ func (manager *SNetworkManager) newFromCloudNetwork(ctx context.Context, userCre
 
 	net.AllocTimoutSeconds = extNet.GetAllocTimeoutSeconds()
 
-	err = manager.TableSpec().Insert(&net)
+	err = manager.TableSpec().Insert(ctx, &net)
 	if err != nil {
 		log.Errorf("newFromCloudZone fail %s", err)
 		return nil, err
@@ -736,7 +760,14 @@ func (manager *SNetworkManager) newFromCloudNetwork(ctx context.Context, userCre
 	SyncCloudProject(userCred, &net, syncOwnerId, extNet, vpc.ManagerId)
 
 	if provider != nil {
-		net.SyncShareState(ctx, userCred, provider.getAccountShareInfo())
+		shareInfo := provider.getAccountShareInfo()
+		if utils.IsInStringArray(provider.Provider, api.PRIVATE_CLOUD_PROVIDERS) && extNet.GetPublicScope() == rbacutils.ScopeNone {
+			shareInfo = apis.SAccountShareInfo{
+				IsPublic:    false,
+				PublicScope: rbacutils.ScopeNone,
+			}
+		}
+		net.SyncShareState(ctx, userCred, shareInfo)
 	}
 
 	db.OpsLog.LogEvent(&net, db.ACT_CREATE, net.GetShortDesc(ctx), userCred)
@@ -798,16 +829,17 @@ func (manager *SNetworkManager) GetOnPremiseNetworkOfIP(ipAddr string, serverTyp
 
 func (manager *SNetworkManager) allNetworksQ(providers []string, brands []string, cloudEnv string, rangeObjs []db.IStandaloneModel) *sqlchemy.SQuery {
 	networks := manager.Query().SubQuery()
-	hostwires := HostwireManager.Query().SubQuery()
-	hosts := HostManager.Query().SubQuery()
+	wires := WireManager.Query().SubQuery()
+	vpcs := VpcManager.Query().SubQuery()
+
 	q := networks.Query(networks.Field("id"))
-	q = q.Join(hostwires, sqlchemy.Equals(hostwires.Field("wire_id"), networks.Field("wire_id")))
-	q = q.Join(hosts, sqlchemy.Equals(hosts.Field("id"), hostwires.Field("host_id")))
-	q = q.Filter(sqlchemy.IsTrue(hosts.Field("enabled")))
-	q = q.Filter(sqlchemy.OR(
-		sqlchemy.Equals(hosts.Field("host_type"), api.HOST_TYPE_BAREMETAL),
-		sqlchemy.Equals(hosts.Field("host_status"), api.HOST_ONLINE)))
-	return AttachUsageQuery(q, hosts, nil, nil, providers, brands, cloudEnv, rangeObjs)
+	q = q.Join(wires, sqlchemy.Equals(q.Field("wire_id"), wires.Field("id")))
+	q = q.Join(vpcs, sqlchemy.Equals(wires.Field("vpc_id"), vpcs.Field("id")))
+
+	q = CloudProviderFilter(q, vpcs.Field("manager_id"), providers, brands, cloudEnv)
+	q = RangeObjectsFilter(q, rangeObjs, vpcs.Field("cloudregion_id"), wires.Field("zone_id"), vpcs.Field("manager_id"), nil, nil)
+
+	return q
 }
 
 func (manager *SNetworkManager) totalPortCountQ(
@@ -1289,6 +1321,8 @@ func (manager *SNetworkManager) ValidateCreateData(ctx context.Context, userCred
 
 	var (
 		ipRange netutils.IPV4AddrRange
+		masklen int8
+		netAddr netutils.IPV4Addr
 	)
 	if len(input.GuestIpPrefix) > 0 {
 		prefix, err := netutils.NewIPV4Prefix(input.GuestIpPrefix)
@@ -1296,10 +1330,15 @@ func (manager *SNetworkManager) ValidateCreateData(ctx context.Context, userCred
 			return input, httperrors.NewInputParameterError("ip_prefix error: %s", err)
 		}
 		ipRange = prefix.ToIPRange()
+		masklen = prefix.MaskLen
+		netAddr = prefix.Address.NetAddr(masklen)
 		input.GuestIpMask = int64(prefix.MaskLen)
 		// 根据掩码得到合法的GuestIpPrefix
 		input.GuestIpPrefix = prefix.String()
 	} else {
+		if !isValidMaskLen(input.GuestIpMask) {
+			return input, httperrors.NewInputParameterError("Invalid masklen %d", input.GuestIpMask)
+		}
 		ipStart, err := netutils.NewIPV4Addr(input.GuestIpStart)
 		if err != nil {
 			return input, httperrors.NewInputParameterError("Invalid start ip: %s %s", input.GuestIpStart, err)
@@ -1309,28 +1348,43 @@ func (manager *SNetworkManager) ValidateCreateData(ctx context.Context, userCred
 			return input, httperrors.NewInputParameterError("invalid end ip: %s %s", input.GuestIpEnd, err)
 		}
 		ipRange = netutils.NewIPV4AddrRange(ipStart, ipEnd)
-	}
-
-	if !isValidMaskLen(input.GuestIpMask) {
-		return input, httperrors.NewInputParameterError("Invalid masklen %d", input.GuestIpMask)
+		masklen = int8(input.GuestIpMask)
+		netAddr = ipStart.NetAddr(masklen)
+		if ipEnd.NetAddr(masklen) != netAddr {
+			return input, httperrors.NewInputParameterError("start and end ip not in the same subnet")
+		}
 	}
 
 	if len(input.GuestDns) == 0 {
 		input.GuestDns = options.Options.DNSServer
 	}
 
-	for key, ipStr := range map[string]string{"guest_gateway": input.GuestGateway, "guest_dns": input.GuestDns, "guest_dhcp": input.GuestDHCP} {
-		if len(ipStr) > 0 {
-			if key == "guest_dhcp" {
-				ipList := strings.Split(ipStr, ",")
-				for _, ipstr := range ipList {
-					if !regutils.MatchIPAddr(ipstr) {
-						return input, httperrors.NewInputParameterError("%s: Invalid IP address %s", key, ipstr)
-					}
+	for key, ipStr := range map[string]string{
+		"guest_gateway": input.GuestGateway,
+		"guest_dns":     input.GuestDns,
+		"guest_dhcp":    input.GuestDHCP,
+	} {
+		if ipStr == "" {
+			continue
+		}
+		if key == "guest_dhcp" {
+			ipList := strings.Split(ipStr, ",")
+			for _, ipstr := range ipList {
+				if !regutils.MatchIPAddr(ipstr) {
+					return input, httperrors.NewInputParameterError("%s: Invalid IP address %s", key, ipstr)
 				}
-			} else if !regutils.MatchIPAddr(ipStr) {
-				return input, httperrors.NewInputParameterError("%s: Invalid IP address %s", key, ipStr)
 			}
+		} else if !regutils.MatchIPAddr(ipStr) {
+			return input, httperrors.NewInputParameterError("%s: Invalid IP address %s", key, ipStr)
+		}
+	}
+	if input.GuestGateway != "" {
+		addr, err := netutils.NewIPV4Addr(input.GuestGateway)
+		if err != nil {
+			return input, httperrors.NewInputParameterError("bad gateway ip: %v", err)
+		}
+		if addr.NetAddr(masklen) != netAddr {
+			return input, httperrors.NewInputParameterError("gateway ip must be in the same subnet as start, end ip")
 		}
 	}
 
@@ -1406,12 +1460,12 @@ func (manager *SNetworkManager) ValidateCreateData(ctx context.Context, userCred
 		}
 	}
 	{
-		nets := manager.getAllNetworks(wire.Id, "")
-		if nets == nil {
-			return input, httperrors.NewInternalServerError("query all networks fail")
+		nets, err := vpc.GetNetworks()
+		if err != nil {
+			return input, httperrors.NewInternalServerError("fail to GetNetworks of vpc: %v", err)
 		}
 		if isOverlapNetworks(nets, ipStart, ipEnd) {
-			return input, httperrors.NewInputParameterError("Conflict address space with existing networks")
+			return input, httperrors.NewInputParameterError("Conflict address space with existing networks in vpc %q", vpc.GetName())
 		}
 	}
 
@@ -1425,25 +1479,37 @@ func (manager *SNetworkManager) ValidateCreateData(ctx context.Context, userCred
 }
 
 func (self *SNetwork) validateUpdateData(ctx context.Context, userCred mcclient.TokenCredential, query jsonutils.JSONObject, input api.NetworkUpdateInput) (api.NetworkUpdateInput, error) {
-	var startIp, endIp netutils.IPV4Addr
-	var err error
+	var (
+		startIp netutils.IPV4Addr
+		endIp   netutils.IPV4Addr
+		netAddr netutils.IPV4Addr
+		masklen int8
+		err     error
+	)
 
-	ipStartStr := input.GuestIpStart
-	ipEndStr := input.GuestIpEnd
+	if input.GuestIpMask != nil {
+		maskLen64 := int64(*input.GuestIpMask)
+		if !isValidMaskLen(maskLen64) {
+			return input, httperrors.NewInputParameterError("Invalid masklen %d", maskLen64)
+		}
+		masklen = int8(maskLen64)
+	} else {
+		masklen = int8(self.GuestIpMask)
+	}
 
-	if len(ipStartStr) > 0 || len(ipEndStr) > 0 {
-		if len(ipStartStr) > 0 {
-			startIp, err = netutils.NewIPV4Addr(ipStartStr)
+	if input.GuestIpStart != "" || input.GuestIpEnd != "" {
+		if input.GuestIpStart != "" {
+			startIp, err = netutils.NewIPV4Addr(input.GuestIpStart)
 			if err != nil {
-				return input, httperrors.NewInputParameterError("Invalid start ip: %s %s", ipStartStr, err)
+				return input, httperrors.NewInputParameterError("Invalid start ip: %s %s", input.GuestIpStart, err)
 			}
 		} else {
 			startIp, _ = netutils.NewIPV4Addr(self.GuestIpStart)
 		}
-		if len(ipEndStr) > 0 {
-			endIp, err = netutils.NewIPV4Addr(ipEndStr)
+		if input.GuestIpEnd != "" {
+			endIp, err = netutils.NewIPV4Addr(input.GuestIpEnd)
 			if err != nil {
-				return input, httperrors.NewInputParameterError("invalid end ip: %s %s", ipEndStr, err)
+				return input, httperrors.NewInputParameterError("invalid end ip: %s %s", input.GuestIpEnd, err)
 			}
 		} else {
 			endIp, _ = netutils.NewIPV4Addr(self.GuestIpEnd)
@@ -1480,12 +1546,9 @@ func (self *SNetwork) validateUpdateData(ctx context.Context, userCred mcclient.
 
 		input.GuestIpStart = startIp.String()
 		input.GuestIpEnd = endIp.String()
-	}
-
-	if input.GuestIpMask != nil {
-		maskLen64 := int64(*input.GuestIpMask)
-		if !isValidMaskLen(maskLen64) {
-			return input, httperrors.NewInputParameterError("Invalid masklen %d", maskLen64)
+		netAddr = startIp.NetAddr(masklen)
+		if endIp.NetAddr(masklen) != netAddr {
+			return input, httperrors.NewInputParameterError("start, end ip must be in the same subnet")
 		}
 	}
 
@@ -1494,20 +1557,30 @@ func (self *SNetwork) validateUpdateData(ctx context.Context, userCred mcclient.
 		"guest_dns":     input.GuestDns,
 		"guest_dhcp":    input.GuestDhcp,
 	} {
-		if len(ipStr) > 0 {
-			if key == "guest_dhcp" {
-				ipList := strings.Split(ipStr, ",")
-				for _, ipstr := range ipList {
-					if !regutils.MatchIPAddr(ipstr) {
-						return input, httperrors.NewInputParameterError("%s: Invalid IP address %s", key, ipstr)
-					}
+		if ipStr == "" {
+			continue
+		}
+		if key == "guest_dhcp" {
+			ipList := strings.Split(ipStr, ",")
+			for _, ipstr := range ipList {
+				if !regutils.MatchIPAddr(ipstr) {
+					return input, httperrors.NewInputParameterError("%s: Invalid IP address %s", key, ipstr)
 				}
-			} else if !regutils.MatchIPAddr(ipStr) {
-				return input, httperrors.NewInputParameterError("%s: Invalid IP address %s", key, ipStr)
 			}
-
+		} else if !regutils.MatchIPAddr(ipStr) {
+			return input, httperrors.NewInputParameterError("%s: Invalid IP address %s", key, ipStr)
 		}
 	}
+	if input.GuestGateway != "" {
+		addr, err := netutils.NewIPV4Addr(input.GuestGateway)
+		if err != nil {
+			return input, httperrors.NewInputParameterError("bad gateway ip: %v", err)
+		}
+		if addr.NetAddr(masklen) != netAddr {
+			return input, httperrors.NewInputParameterError("gateway ip must be in the same subnet as start, end ip")
+		}
+	}
+
 	return input, nil
 }
 
@@ -1572,9 +1645,11 @@ func (self *SNetwork) IsManaged() bool {
 func (self *SNetwork) CustomizeCreate(ctx context.Context, userCred mcclient.TokenCredential, ownerId mcclient.IIdentityProvider, query jsonutils.JSONObject, data jsonutils.JSONObject) error {
 	if !data.Contains("public_scope") {
 		if self.ServerType == api.NETWORK_TYPE_GUEST && !self.IsManaged() {
-			if db.IsAdminAllowPerform(userCred, self, "public") && ownerId.GetProjectDomainId() == userCred.GetProjectDomainId() {
+			wire := self.GetWire()
+			if db.IsAdminAllowPerform(userCred, self, "public") && ownerId.GetProjectDomainId() == userCred.GetProjectDomainId() && wire != nil && wire.IsPublic && wire.PublicScope == string(rbacutils.ScopeSystem) {
 				self.SetShare(rbacutils.ScopeSystem)
-			} else if db.IsDomainAllowPerform(userCred, self, "public") && ownerId.GetProjectId() == userCred.GetProjectId() {
+			} else if db.IsDomainAllowPerform(userCred, self, "public") && ownerId.GetProjectId() == userCred.GetProjectId() && consts.GetNonDefaultDomainProjects() {
+				// only if non_default_domain_projects turned on, share to domain
 				self.SetShare(rbacutils.ScopeDomain)
 			} else {
 				self.SetShare(rbacutils.ScopeNone)
@@ -2159,7 +2234,7 @@ func (self *SNetwork) PerformSplit(ctx context.Context, userCred mcclient.TokenC
 	network.IsSystem = self.IsSystem
 	network.Description = self.Description
 
-	err = NetworkManager.TableSpec().Insert(network)
+	err = NetworkManager.TableSpec().Insert(ctx, network)
 	if err != nil {
 		return nil, err
 	}
@@ -2289,7 +2364,7 @@ func (manager *SNetworkManager) PerformTryCreateNetwork(ctx context.Context, use
 		}
 		newNetwork.Name = newName
 
-		err = NetworkManager.TableSpec().Insert(newNetwork)
+		err = NetworkManager.TableSpec().Insert(ctx, newNetwork)
 		if err != nil {
 			return nil, err
 		}

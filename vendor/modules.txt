@@ -173,7 +173,7 @@ golang.org/x/crypto/internal/subtle
 golang.org/x/crypto/poly1305
 golang.org/x/crypto/ssh
 golang.org/x/crypto/ssh/terminal
-# golang.org/x/net v0.0.0-20191209160850-c0dbc17a3553
+# golang.org/x/net v0.0.0-20200226121028-0de0cce0169b
 golang.org/x/net/context
 golang.org/x/net/http/httpguts
 golang.org/x/net/http/httpproxy
@@ -248,12 +248,12 @@ gopkg.in/yaml.v2
 # yunion.io/x/executor v0.0.0-20200227030256-a18417815e74
 yunion.io/x/executor/apis
 yunion.io/x/executor/client
-# yunion.io/x/jsonutils v0.0.0-20200415132054-2bf8a5e94501
+# yunion.io/x/jsonutils v0.0.0-20200814075449-927b118adbd8
 yunion.io/x/jsonutils
 # yunion.io/x/log v0.0.0-20200313080802-57a4ce5966b3
 yunion.io/x/log
 yunion.io/x/log/hooks
-# yunion.io/x/onecloud v0.0.0-20200603092502-73bcfb4bb731
+# yunion.io/x/onecloud v0.0.0-20200826020233-3a966df6597d
 yunion.io/x/onecloud/pkg/apis
 yunion.io/x/onecloud/pkg/apis/ansible
 yunion.io/x/onecloud/pkg/apis/billing
@@ -276,6 +276,7 @@ yunion.io/x/onecloud/pkg/cloudcommon/db/proxy
 yunion.io/x/onecloud/pkg/cloudcommon/db/quotas
 yunion.io/x/onecloud/pkg/cloudcommon/db/taskman
 yunion.io/x/onecloud/pkg/cloudcommon/etcd
+yunion.io/x/onecloud/pkg/cloudcommon/informer
 yunion.io/x/onecloud/pkg/cloudcommon/notifyclient
 yunion.io/x/onecloud/pkg/cloudcommon/object
 yunion.io/x/onecloud/pkg/cloudcommon/options
@@ -330,9 +331,10 @@ yunion.io/x/onecloud/pkg/util/validate
 yunion.io/x/onecloud/pkg/vpcagent/apihelper
 yunion.io/x/onecloud/pkg/vpcagent/models
 yunion.io/x/onecloud/pkg/vpcagent/ovn/mac
-# yunion.io/x/pkg v0.0.0-20200516092703-0a53bc9270aa
+# yunion.io/x/pkg v0.0.0-20200814072949-4f1b541857d6
 yunion.io/x/pkg/errors
 yunion.io/x/pkg/gotypes
+yunion.io/x/pkg/sortedmap
 yunion.io/x/pkg/trace
 yunion.io/x/pkg/tristate
 yunion.io/x/pkg/util/cache
@@ -355,7 +357,7 @@ yunion.io/x/pkg/util/version
 yunion.io/x/pkg/utils
 # yunion.io/x/s3cli v0.0.0-20190917004522-13ac36d8687e
 yunion.io/x/s3cli
-# yunion.io/x/sqlchemy v0.0.0-20200312002602-1177cd8fbc57
+# yunion.io/x/sqlchemy v0.0.0-20200814052348-164f1f20f8a6
 yunion.io/x/sqlchemy
-# yunion.io/x/structarg v0.0.0-20200423163001-168d0687be7e
+# yunion.io/x/structarg v0.0.0-20200720093445-9f850fa222ce
 yunion.io/x/structarg

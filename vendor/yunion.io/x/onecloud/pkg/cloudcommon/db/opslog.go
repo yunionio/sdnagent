@@ -374,24 +374,28 @@ func (manager *SOpsLogManager) LogEvent(model IModel, action string, notes inter
 			return
 		}
 	}
-	opslog := SOpsLog{}
-	opslog.ObjType = model.Keyword()
-	opslog.ObjId = model.GetId()
-	opslog.ObjName = model.GetName()
-	opslog.Action = action
-	opslog.Notes = stringutils.Interface2String(notes)
-	opslog.ProjectId = userCred.GetProjectId()
-	opslog.Project = userCred.GetProjectName()
-	opslog.ProjectDomainId = userCred.GetProjectDomainId()
-	opslog.ProjectDomain = userCred.GetProjectDomain()
-	opslog.UserId = userCred.GetUserId()
-	opslog.User = userCred.GetUserName()
-	opslog.DomainId = userCred.GetDomainId()
-	opslog.Domain = userCred.GetDomainName()
-	opslog.Roles = strings.Join(userCred.GetRoles(), ",")
-	opslog.OpsTime = time.Now().UTC()
+	opslog := &SOpsLog{
+		OpsTime: time.Now().UTC(),
+		ObjType: model.Keyword(),
+		ObjId:   model.GetId(),
+		ObjName: model.GetName(),
+		Action:  action,
+		Notes:   stringutils.Interface2String(notes),
 
-	if virtualModel, ok := model.(IVirtualModel); ok && virtualModel != nil {
+		ProjectId:       userCred.GetProjectId(),
+		Project:         userCred.GetProjectName(),
+		ProjectDomainId: userCred.GetProjectDomainId(),
+		ProjectDomain:   userCred.GetProjectDomain(),
+
+		UserId:   userCred.GetUserId(),
+		User:     userCred.GetUserName(),
+		DomainId: userCred.GetDomainId(),
+		Domain:   userCred.GetDomainName(),
+		Roles:    strings.Join(userCred.GetRoles(), ","),
+	}
+	opslog.SetModelManager(OpsLog, opslog)
+
+	if virtualModel, ok := model.(IVirtualModel); ok {
 		ownerId := virtualModel.GetOwnerId()
 		if ownerId != nil {
 			opslog.OwnerProjectId = ownerId.GetProjectId()
@@ -399,7 +403,7 @@ func (manager *SOpsLogManager) LogEvent(model IModel, action string, notes inter
 		}
 	}
 
-	err := manager.TableSpec().Insert(&opslog)
+	err := manager.TableSpec().Insert(context.Background(), opslog)
 	if err != nil {
 		log.Errorf("fail to insert opslog: %s", err)
 	}
@@ -461,28 +465,7 @@ func (manager *SOpsLogManager) ListItemFilter(
 	userCred mcclient.TokenCredential,
 	query jsonutils.JSONObject,
 ) (*sqlchemy.SQuery, error) {
-	userStrs := jsonutils.GetQueryStringArray(query, "user")
-	if len(userStrs) > 0 {
-		for i := range userStrs {
-			usrObj, err := UserCacheManager.FetchUserByIdOrName(ctx, userStrs[i])
-			if err != nil {
-				if err == sql.ErrNoRows {
-					return nil, httperrors.NewResourceNotFoundError2("user", userStrs[i])
-				} else if err == sqlchemy.ErrDuplicateEntry {
-					return nil, httperrors.NewDuplicateNameError("user", userStrs[i])
-				} else {
-					return nil, httperrors.NewGeneralError(err)
-				}
-			}
-			userStrs[i] = usrObj.GetId()
-		}
-		if len(userStrs) == 1 {
-			q = q.Filter(sqlchemy.Equals(q.Field("user_id"), userStrs[0]))
-		} else {
-			q = q.Filter(sqlchemy.In(q.Field("user_id"), userStrs))
-		}
-	}
-	projStrs := jsonutils.GetQueryStringArray(query, "project")
+	projStrs := jsonutils.GetQueryStringArray(query, "owner_project_ids")
 	if len(projStrs) > 0 {
 		for i := range projStrs {
 			projObj, err := DefaultProjectFetcher(ctx, projStrs[i])
@@ -495,11 +478,22 @@ func (manager *SOpsLogManager) ListItemFilter(
 			}
 			projStrs[i] = projObj.GetId()
 		}
-		if len(projStrs) == 1 {
-			q = q.Filter(sqlchemy.Equals(q.Field("owner_tenant_id"), projStrs[0]))
-		} else {
-			q = q.Filter(sqlchemy.In(q.Field("owner_tenant_id"), projStrs))
+		q = q.Filter(sqlchemy.In(q.Field("owner_tenant_id"), projStrs))
+	}
+	domainStrs := jsonutils.GetQueryStringArray(query, "owner_domain_ids")
+	if len(domainStrs) > 0 {
+		for i := range domainStrs {
+			domainObj, err := DefaultDomainFetcher(ctx, domainStrs[i])
+			if err != nil {
+				if err == sql.ErrNoRows {
+					return nil, httperrors.NewResourceNotFoundError2("domain", domainStrs[i])
+				} else {
+					return nil, httperrors.NewGeneralError(err)
+				}
+			}
+			domainStrs[i] = domainObj.GetId()
 		}
+		q = q.Filter(sqlchemy.In(q.Field("owner_domain_id"), domainStrs))
 	}
 	objTypes := jsonutils.GetQueryStringArray(query, "obj_type")
 	if len(objTypes) > 0 {
@@ -622,17 +616,11 @@ func (self *SOpsLogManager) FilterByOwner(q *sqlchemy.SQuery, ownerId mcclient.I
 			}
 		case rbacutils.ScopeProject:
 			if len(ownerId.GetProjectId()) > 0 {
-				q = q.Filter(sqlchemy.OR(
-					sqlchemy.Equals(q.Field("owner_tenant_id"), ownerId.GetProjectId()),
-					sqlchemy.Equals(q.Field("tenant_id"), ownerId.GetProjectId()),
-				))
+				q = q.Filter(sqlchemy.Equals(q.Field("tenant_id"), ownerId.GetProjectId()))
 			}
 		case rbacutils.ScopeDomain:
 			if len(ownerId.GetProjectDomainId()) > 0 {
-				q = q.Filter(sqlchemy.OR(
-					sqlchemy.Equals(q.Field("owner_domain_id"), ownerId.GetProjectDomainId()),
-					sqlchemy.Equals(q.Field("domain_id"), ownerId.GetProjectDomainId()),
-				))
+				q = q.Filter(sqlchemy.Equals(q.Field("domain_id"), ownerId.GetProjectDomainId()))
 			}
 		default:
 			// systemScope, no filter

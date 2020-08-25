@@ -12,26 +12,36 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-package modulebase
+package jsonutils
 
-import (
-	"io/ioutil"
+// Deprecated
+func (this *JSONString) Value() string {
+	return this.data
+}
 
-	"yunion.io/x/jsonutils"
+// Deprecated
+func (this *JSONInt) Value() int64 {
+	return this.data
+}
 
-	"yunion.io/x/onecloud/pkg/mcclient"
-)
+// Deprecated
+func (this *JSONFloat) Value() float64 {
+	return this.data
+}
 
-func GetProjectResources(s *mcclient.ClientSession, serviceType string) (jsonutils.JSONObject, error) {
-	man := &BaseManager{serviceType: serviceType}
-	resp, err := man.rawRequest(s, "GET", "/project-resources", nil, nil)
-	if err != nil {
-		return nil, err
-	}
-	defer resp.Body.Close()
-	body, err := ioutil.ReadAll(resp.Body)
-	if err != nil {
-		return nil, err
-	}
-	return jsonutils.Parse(body)
+// Deprecated
+func (this *JSONBool) Value() bool {
+	return this.data
+}
+
+// Deprecated
+func (this *JSONDict) Value() map[string]JSONObject {
+	mapJson, _ := this.GetMap()
+	return mapJson
+}
+
+// Deprecated
+func (this *JSONArray) Value() []JSONObject {
+	arrJson, _ := this.GetArray()
+	return arrJson
 }

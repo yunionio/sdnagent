@@ -84,7 +84,7 @@ func init() {
 type SHost struct {
 	db.SEnabledStatusInfrasResourceBase
 	db.SExternalizedResourceBase
-	SZoneResourceBase
+	SZoneResourceBase `update:""`
 	SManagedResourceBase
 	SBillingResourceBase
 
@@ -207,7 +207,6 @@ func (manager *SHostManager) ListItemFilter(
 	if err != nil {
 		return nil, errors.Wrap(err, "SManagedResourceBaseManager.ListItemFilter")
 	}
-
 	q, err = manager.SExternalizedResourceBaseManager.ListItemFilter(ctx, q, userCred, query.ExternalizedResourceBaseListInput)
 	if err != nil {
 		return nil, errors.Wrap(err, "SExternalizedResourceBaseManager.ListItemFilter")
@@ -430,6 +429,30 @@ func (manager *SHostManager) ListItemFilter(
 	}
 	if len(query.BootMode) > 0 {
 		q = q.In("boot_mode", query.BootMode)
+	}
+
+	// for provider onecloud
+	if len(query.ServerIdForNetwork) > 0 {
+		guest := GuestManager.FetchGuestById(query.ServerIdForNetwork)
+		if guest != nil && guest.GetHypervisor() == api.HYPERVISOR_KVM {
+			nets, _ := guest.GetNetworks("")
+			if len(nets) > 0 {
+				wires := []string{}
+				for i := 0; i < len(nets); i++ {
+					net := nets[i].GetNetwork()
+					if net.GetVpc().Id != api.DEFAULT_VPC_ID {
+						q = q.IsNotEmpty("ovn_version")
+					} else {
+						if !utils.IsInStringArray(net.WireId, wires) {
+							wires = append(wires, net.WireId)
+							hostwires := HostwireManager.Query().SubQuery()
+							scopeQuery := hostwires.Query(hostwires.Field("host_id")).Equals("wire_id", net.WireId).SubQuery()
+							q = q.In("id", scopeQuery)
+						}
+					}
+				}
+			}
+		}
 	}
 
 	return q, nil
@@ -698,7 +721,7 @@ func (self *SHost) GetHoststorages() []SHoststorage {
 	hoststorages := make([]SHoststorage, 0)
 	q := self.GetHoststoragesQuery()
 	err := db.FetchModelObjects(HoststorageManager, q, &hoststorages)
-	if err != nil {
+	if err != nil && errors.Cause(err) != sql.ErrNoRows {
 		log.Errorf("GetHoststorages error %s", err)
 		return nil
 	}
@@ -710,7 +733,9 @@ func (self *SHost) GetHoststorageOfId(storageId string) *SHoststorage {
 	hoststorage.SetModelManager(HoststorageManager, &hoststorage)
 	err := self.GetHoststoragesQuery().Equals("storage_id", storageId).First(&hoststorage)
 	if err != nil {
-		log.Errorf("GetHoststorageOfId fail %s", err)
+		if errors.Cause(err) != sql.ErrNoRows {
+			log.Errorf("GetHoststorageOfId fail %s", err)
+		}
 		return nil
 	}
 	return &hoststorage
@@ -729,7 +754,9 @@ func (self *SHost) GetHoststorageByExternalId(extId string) *SHoststorage {
 
 	err := q.First(&hoststorage)
 	if err != nil {
-		log.Errorf("GetHoststorageByExternalId fail %s", err)
+		if errors.Cause(err) != sql.ErrNoRows {
+			log.Errorf("GetHoststorageByExternalId fail %s", err)
+		}
 		return nil
 	}
 
@@ -830,7 +857,7 @@ func (self *SHost) PerformUpdateStorage(
 		storage.StoragecacheId = storageCacheId
 		storage.DomainId = self.DomainId
 		storage.DomainSrc = string(apis.OWNER_SOURCE_LOCAL)
-		err := StorageManager.TableSpec().Insert(&storage)
+		err := StorageManager.TableSpec().Insert(ctx, &storage)
 		if err != nil {
 			return nil, fmt.Errorf("Create baremetal storage error: %v", err)
 		}
@@ -842,7 +869,7 @@ func (self *SHost) PerformUpdateStorage(
 		bmStorage.StorageId = storage.Id
 		bmStorage.RealCapacity = capacity
 		bmStorage.MountPoint = ""
-		err = HoststorageManager.TableSpec().Insert(&bmStorage)
+		err = HoststorageManager.TableSpec().Insert(ctx, &bmStorage)
 		if err != nil {
 			return nil, fmt.Errorf("Create baremetal hostStorage error: %v", err)
 		}
@@ -1008,7 +1035,7 @@ func (self *SHostManager) ClearSchedDescCache(hostId string) error {
 
 func (self *SHostManager) ClearSchedDescSessionCache(hostId, sessionId string) error {
 	s := auth.GetAdminSession(context.Background(), options.Options.Region, "")
-	return modules.SchedManager.CleanCache(s, hostId, sessionId)
+	return modules.SchedManager.CleanCache(s, hostId, sessionId, false)
 }
 
 func (self *SHost) ClearSchedDescCache() error {
@@ -1017,6 +1044,20 @@ func (self *SHost) ClearSchedDescCache() error {
 
 func (self *SHost) ClearSchedDescSessionCache(sessionId string) error {
 	return HostManager.ClearSchedDescSessionCache(self.Id, sessionId)
+}
+
+// sync clear sched desc on scheduler side
+func (self *SHostManager) SyncClearSchedDescSessionCache(hostId, sessionId string) error {
+	s := auth.GetAdminSession(context.Background(), options.Options.Region, "")
+	return modules.SchedManager.CleanCache(s, hostId, sessionId, true)
+}
+
+func (self *SHost) SyncCleanSchedDescCache() error {
+	return self.SyncClearSchedDescSessionCache("")
+}
+
+func (self *SHost) SyncClearSchedDescSessionCache(sessionId string) error {
+	return HostManager.SyncClearSchedDescSessionCache(self.Id, sessionId)
 }
 
 func (self *SHost) AllowGetDetailsSpec(ctx context.Context, userCred mcclient.TokenCredential, query jsonutils.JSONObject) bool {
@@ -1368,6 +1409,28 @@ func (self *SHost) GetGuestsQuery() *sqlchemy.SQuery {
 
 func (self *SHost) GetGuests() []SGuest {
 	q := self.GetGuestsQuery()
+	guests := make([]SGuest, 0)
+	err := db.FetchModelObjects(GuestManager, q, &guests)
+	if err != nil {
+		log.Errorf("GetGuests %s", err)
+		return nil
+	}
+	return guests
+}
+
+func (self *SHost) GetGuestsMasterOnThisHost() []SGuest {
+	q := self.GetGuestsQuery().IsNotEmpty("backup_host_id")
+	guests := make([]SGuest, 0)
+	err := db.FetchModelObjects(GuestManager, q, &guests)
+	if err != nil {
+		log.Errorf("GetGuests %s", err)
+		return nil
+	}
+	return guests
+}
+
+func (self *SHost) GetGuestsBackupOnThisHost() []SGuest {
+	q := GuestManager.Query().Equals("backup_host_id", self.Id)
 	guests := make([]SGuest, 0)
 	err := db.FetchModelObjects(GuestManager, q, &guests)
 	if err != nil {
@@ -1747,7 +1810,7 @@ func (manager *SHostManager) newFromCloudHost(ctx context.Context, userCred mccl
 	host.IsPublic = false
 	host.PublicScope = string(rbacutils.ScopeNone)
 
-	err = manager.TableSpec().Insert(&host)
+	err = manager.TableSpec().Insert(ctx, &host)
 	if err != nil {
 		log.Errorf("newFromCloudHost fail %s", err)
 		return nil, err
@@ -1882,7 +1945,7 @@ func (self *SHost) Attach2Storage(ctx context.Context, userCred mcclient.TokenCr
 	hs.StorageId = storage.Id
 	hs.HostId = self.Id
 	hs.MountPoint = mountPoint
-	err := HoststorageManager.TableSpec().Insert(&hs)
+	err := HoststorageManager.TableSpec().Insert(ctx, &hs)
 	if err != nil {
 		return err
 	}
@@ -1893,7 +1956,9 @@ func (self *SHost) Attach2Storage(ctx context.Context, userCred mcclient.TokenCr
 }
 
 func (self *SHost) newCloudHostStorage(ctx context.Context, userCred mcclient.TokenCredential, extStorage cloudprovider.ICloudStorage, provider *SCloudprovider) (*SStorage, error) {
-	storageObj, err := db.FetchByExternalId(StorageManager, extStorage.GetGlobalId())
+	storageObj, err := db.FetchByExternalIdAndManagerId(StorageManager, extStorage.GetGlobalId(), func(q *sqlchemy.SQuery) *sqlchemy.SQuery {
+		return q.Equals("manager_id", provider.Id)
+	})
 	if err != nil {
 		if err == sql.ErrNoRows {
 			// no cloud storage found, this may happen for on-premise host
@@ -1999,7 +2064,7 @@ func (self *SHost) Attach2Wire(ctx context.Context, userCred mcclient.TokenCrede
 
 	hs.WireId = wire.Id
 	hs.HostId = self.Id
-	err := HostwireManager.TableSpec().Insert(&hs)
+	err := HostwireManager.TableSpec().Insert(ctx, &hs)
 	if err != nil {
 		return err
 	}
@@ -2008,7 +2073,10 @@ func (self *SHost) Attach2Wire(ctx context.Context, userCred mcclient.TokenCrede
 }
 
 func (self *SHost) newCloudHostWire(ctx context.Context, userCred mcclient.TokenCredential, extWire cloudprovider.ICloudWire) error {
-	wireObj, err := db.FetchByExternalId(WireManager, extWire.GetGlobalId())
+	wireObj, err := db.FetchByExternalIdAndManagerId(WireManager, extWire.GetGlobalId(), func(q *sqlchemy.SQuery) *sqlchemy.SQuery {
+		sq := VpcManager.Query().SubQuery()
+		return q.Join(sq, sqlchemy.Equals(sq.Field("id"), q.Field("vpc_id"))).Filter(sqlchemy.Equals(sq.Field("manager_id"), self.ManagerId))
+	})
 	if err != nil {
 		log.Errorf("%s", err)
 		return nil
@@ -2076,7 +2144,10 @@ func (self *SHost) SyncHostVMs(ctx context.Context, userCred mcclient.TokenCrede
 	}
 
 	for i := 0; i < len(added); i += 1 {
-		vm, err := db.FetchByExternalId(GuestManager, added[i].GetGlobalId())
+		vm, err := db.FetchByExternalIdAndManagerId(GuestManager, added[i].GetGlobalId(), func(q *sqlchemy.SQuery) *sqlchemy.SQuery {
+			sq := HostManager.Query().SubQuery()
+			return q.Join(sq, sqlchemy.Equals(sq.Field("id"), q.Field("host_id"))).Filter(sqlchemy.Equals(sq.Field("manager_id"), self.ManagerId))
+		})
 		if err != nil && err != sql.ErrNoRows {
 			log.Errorf("failed to found guest by externalId %s error: %v", added[i].GetGlobalId(), err)
 			continue
@@ -2088,7 +2159,9 @@ func (self *SHost) SyncHostVMs(ctx context.Context, userCred mcclient.TokenCrede
 				log.Errorf("failed to found ihost from vm %s", added[i].GetGlobalId())
 				continue
 			}
-			_host, err := db.FetchByExternalId(HostManager, ihost.GetGlobalId())
+			_host, err := db.FetchByExternalIdAndManagerId(HostManager, ihost.GetGlobalId(), func(q *sqlchemy.SQuery) *sqlchemy.SQuery {
+				return q.Equals("manager_id", self.ManagerId)
+			})
 			if err != nil {
 				log.Errorf("failed to found host by externalId %s", ihost.GetGlobalId())
 				continue
@@ -2521,6 +2594,7 @@ func (self *SHost) getMoreDetails(ctx context.Context, out api.HostDetails, show
 	if server != nil {
 		out.ServerId = server.Id
 		out.Server = server.Name
+		out.ServerPendingDeleted = server.PendingDeleted
 		if self.HostType == api.HOST_TYPE_BAREMETAL {
 			out.ServerIps = strings.Join(server.GetRealIPs(), ",")
 		}
@@ -2604,18 +2678,22 @@ func (self *SHost) getMoreDetails(ctx context.Context, out api.HostDetails, show
 	if self.EnableHealthCheck && hostHealthChecker != nil {
 		out.AllowHealthCheck = true
 	}
+	if self.GetMetadata("__auto_migrate_on_host_down", nil) == "enable" {
+		out.AutoMigrateOnHostDown = true
+	}
 
-	if rs := self.GetReservedResourceForIsolatedDevice(); rs != nil {
+	if count, rs := self.GetReservedResourceForIsolatedDevice(); rs != nil {
 		out.ReservedResourceForGpu = *rs
+		out.IsolatedDeviceCount = count
 	}
 	return out
 }
 
-func (self *SHost) GetReservedResourceForIsolatedDevice() *api.IsolatedDeviceReservedResourceInput {
+func (self *SHost) GetReservedResourceForIsolatedDevice() (int, *api.IsolatedDeviceReservedResourceInput) {
 	if devs := IsolatedDeviceManager.FindByHost(self.Id); len(devs) == 0 {
-		return nil
+		return -1, nil
 	} else {
-		return self.GetDevsReservedResource(devs)
+		return len(devs), self.GetDevsReservedResource(devs)
 	}
 }
 
@@ -3694,7 +3772,7 @@ func (self *SHost) PerformInitialize(
 	guest.Status = api.VM_RUNNING
 	guest.OsType = "Linux"
 	guest.SetModelManager(GuestManager, guest)
-	err = GuestManager.TableSpec().Insert(guest)
+	err = GuestManager.TableSpec().Insert(ctx, guest)
 	if err != nil {
 		return nil, httperrors.NewInternalServerError("Guest Insert error: %s", err)
 	}
@@ -3815,7 +3893,7 @@ func (self *SHost) addNetif(ctx context.Context, userCred mcclient.TokenCredenti
 			netif.LinkUp = linkUp.Bool()
 		}
 		netif.Mtu = mtu
-		err = NetInterfaceManager.TableSpec().Insert(netif)
+		err = NetInterfaceManager.TableSpec().Insert(ctx, netif)
 		if err != nil {
 			return err
 		}
@@ -3876,7 +3954,7 @@ func (self *SHost) addNetif(ctx context.Context, userCred mcclient.TokenCredenti
 				hw.WireId = sw.Id
 				hw.IsMaster = isMaster
 				hw.MacAddr = mac
-				err := HostwireManager.TableSpec().Insert(hw)
+				err := HostwireManager.TableSpec().Insert(ctx, hw)
 				if err != nil {
 					return err
 				}
@@ -3960,6 +4038,14 @@ func (self *SHost) EnableNetif(ctx context.Context, userCred mcclient.TokenCrede
 	wire := netif.GetWire()
 	if wire == nil {
 		return fmt.Errorf("No wire attached")
+	}
+	if self.ZoneId == "" {
+		if _, err := self.SaveUpdates(func() error {
+			self.ZoneId = wire.ZoneId
+			return nil
+		}); err != nil {
+			return errors.Wrapf(err, "set host zone_id %s by wire", wire.ZoneId)
+		}
 	}
 	hw, err := HostwireManager.FetchByHostIdAndMac(self.Id, netif.Mac)
 	if err != nil {
@@ -4074,7 +4160,7 @@ func (self *SHost) Attach2Network(ctx context.Context, userCred mcclient.TokenCr
 	bn.NetworkId = net.Id
 	bn.IpAddr = freeIp
 	bn.MacAddr = netif.Mac
-	err = HostnetworkManager.TableSpec().Insert(bn)
+	err = HostnetworkManager.TableSpec().Insert(ctx, bn)
 	if err != nil {
 		return nil, errors.Wrap(err, "HostnetworkManager.TableSpec().Insert")
 	}
@@ -4846,16 +4932,68 @@ func (host *SHost) PerformHostMaintenance(ctx context.Context, userCred mcclient
 func (host *SHost) OnHostDown(ctx context.Context, userCred mcclient.TokenCredential) {
 	log.Errorf("watched host down %s", host.Id)
 	db.OpsLog.LogEvent(host, db.ACT_HOST_DOWN, "", userCred)
+	if _, err := host.SaveCleanUpdates(func() error {
+		host.EnableHealthCheck = false
+		host.HostStatus = api.HOST_OFFLINE
+		return nil
+	}); err != nil {
+		log.Errorf("update host %s failed %s", host.Id, err)
+	}
+	host.SyncCleanSchedDescCache()
+	host.switchWithBackup(ctx, userCred)
+	host.migrateOnHostDown(ctx, userCred)
+}
+
+func (host *SHost) switchWithBackup(ctx context.Context, userCred mcclient.TokenCredential) {
+	guests := host.GetGuestsMasterOnThisHost()
+	for i := 0; i < len(guests); i++ {
+		if guests[i].isInReconcile(userCred) {
+			log.Warningf("guest %s is in reconcile", guests[i].GetName())
+			continue
+		}
+		data := jsonutils.NewDict()
+		data.Set("purge_backup", jsonutils.JSONTrue)
+		_, err := guests[i].PerformSwitchToBackup(ctx, userCred, nil, data)
+		if err != nil {
+			db.OpsLog.LogEvent(
+				&guests[i], db.ACT_SWITCH_FAILED, fmt.Sprintf("PerformSwitchToBackup on host down: %s", err), userCred,
+			)
+			logclient.AddSimpleActionLog(
+				&guests[i], logclient.ACT_SWITCH_TO_BACKUP,
+				fmt.Sprintf("PerformSwitchToBackup on host down: %s", err), userCred, false,
+			)
+		} else {
+			guests[i].SetMetadata(ctx, "origin_status", guests[i].Status, userCred)
+		}
+	}
+
+	guests2 := host.GetGuestsBackupOnThisHost()
+	for i := 0; i < len(guests2); i++ {
+		if guests2[i].isInReconcile(userCred) {
+			log.Warningf("guest %s is in reconcile", guests2[i].GetName())
+			continue
+		}
+		data := jsonutils.NewDict()
+		data.Set("purge", jsonutils.JSONTrue)
+		data.Set("create", jsonutils.JSONTrue)
+		_, err := guests2[i].PerformDeleteBackup(ctx, userCred, nil, data)
+		if err != nil {
+			db.OpsLog.LogEvent(
+				&guests2[i], db.ACT_DELETE_BACKUP_FAILED, fmt.Sprintf("PerformDeleteBackup on host down: %s", err), userCred,
+			)
+			logclient.AddSimpleActionLog(
+				&guests2[i], logclient.ACT_DELETE_BACKUP,
+				fmt.Sprintf("PerformDeleteBackup on host down: %s", err), userCred, false,
+			)
+		}
+	}
+}
+
+func (host *SHost) migrateOnHostDown(ctx context.Context, userCred mcclient.TokenCredential) {
 	if host.GetMetadata("__auto_migrate_on_host_down", nil) == "enable" {
 		if err := host.MigrateSharedStorageServers(ctx, userCred); err != nil {
 			db.OpsLog.LogEvent(host, db.ACT_HOST_DOWN, fmt.Sprintf("migrate servers failed %s", err), userCred)
 		}
-	}
-	if _, err := host.SaveUpdates(func() error {
-		host.EnableHealthCheck = false
-		return nil
-	}); err != nil {
-		log.Errorf("update host %s failed %s", host.Id, err)
 	}
 }
 
@@ -5137,6 +5275,15 @@ func (host *SHost) PerformChangeOwner(ctx context.Context, userCred mcclient.Tok
 	return ret, nil
 }
 
+func (host *SHost) GetChangeOwnerRequiredDomainIds() []string {
+	requires := stringutils2.SSortedStrings{}
+	guests := host.GetGuests()
+	for i := range guests {
+		requires = stringutils2.Append(requires, guests[i].DomainId)
+	}
+	return requires
+}
+
 func GetHostQuotaKeysFromCreateInput(input api.HostCreateInput) quotas.SDomainRegionalCloudResourceKeys {
 	ownerId := &db.SOwnerId{DomainId: input.ProjectDomain}
 	var zone *SZone
@@ -5205,7 +5352,7 @@ func (host *SHost) AllowPerformSetReservedResourceForIsolatedDevice(
 	return db.IsDomainAllowPerform(userCred, host, "set-reserved-resource-for-isolated-device")
 }
 
-func (host *SHost) PerfromSetReservedResourceForIsolatedDevice(
+func (host *SHost) PerformSetReservedResourceForIsolatedDevice(
 	ctx context.Context, userCred mcclient.TokenCredential,
 	query jsonutils.JSONObject, input api.IsolatedDeviceReservedResourceInput,
 ) (jsonutils.JSONObject, error) {

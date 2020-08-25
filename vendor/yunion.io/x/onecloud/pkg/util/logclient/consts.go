@@ -146,6 +146,8 @@ const (
 
 	ACT_AUTHENTICATE = "认证登录"
 
+	ACT_HEALTH_CHECK = "健康检查"
+
 	ACT_RECYCLE_PREPAID      = "池化预付费主机"
 	ACT_UNDO_RECYCLE_PREPAID = "取消池化预付费主机"
 
@@ -193,4 +195,13 @@ const (
 	ACT_DELETE_SCALING_POLICY = "删除伸缩策略"
 
 	ACT_SAVE_TO_TEMPLATE = "保存为模版"
+
+	ACT_SYNC_POLICIES = "同步权限"
+	ACT_ADD_USER      = "添加用户"
+	ACT_REMOVE_USER   = "移除用户"
+	ACT_ATTACH_POLICY = "绑定权限"
+	ACT_DETACH_POLICY = "移除权限"
+
+	ACT_UPDATE_BILLING_OPTIONS = "更新账单文件"
+	ACT_UPDATE_CREDENTIAL      = "更新账号密码"
 )

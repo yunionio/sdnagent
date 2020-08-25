@@ -50,16 +50,35 @@ type ProjectizedResourceListInput struct {
 	OrderByProject string `json:"order_by_project"`
 	// swagger:ignore
 	// Deprecated
-	OrderByTenant string `json:"order_by_tenant" "yunion:deprecated-by":"order_by_project"`
+	OrderByTenant string `json:"order_by_tenant" yunion-deprecated-by:"order_by_project"`
 }
 
-type UserResourceListInput struct {
+type StatusDomainLevelUserResourceListInput struct {
+	StatusDomainLevelResourceListInput
+
 	// 查询指定的用户（ID或名称）拥有的资源
 	User string `json:"user"`
 	// swagger:ignore
 	// Deprecated
 	// Filter by userId
-	UserId string `json:"user_id" "yunion:deprecated-by":"user"`
+	UserId string `json:"user_id" yunion-deprecated-by:"user"`
+}
+
+type UserResourceListInput struct {
+	StandaloneResourceListInput
+	ScopedResourceInput
+
+	// swagger:ignore
+	// Is an admin call? equivalent to scope=system
+	// Deprecated
+	Admin *bool `json:"admin"`
+
+	// 查询指定的用户（ID或名称）拥有的资源
+	User string `json:"user"`
+	// swagger:ignore
+	// Deprecated
+	// Filter by userId
+	UserId string `json:"user_id" yunion-deprecated-by:"user"`
 }
 
 type ModelBaseListInput struct {

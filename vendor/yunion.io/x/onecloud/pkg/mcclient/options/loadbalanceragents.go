@@ -150,7 +150,7 @@ type LoadbalancerAgentActionDeployOptions struct {
 	ID string `json:"-"`
 
 	Host         string `help:"name or id of the server in format '<[server:]id|host:id>|ipaddr var=val'" json:"-"`
-	DeployMethod string `help:"use yum repo or use file copy" choices:"yum|copy" default:"copy"`
+	DeployMethod string `help:"use yum repo or use file copy" choices:"yum|copy" default:"yum"`
 }
 
 func (opts *LoadbalancerAgentActionDeployOptions) Params() (*jsonutils.JSONDict, error) {
@@ -168,4 +168,8 @@ func (opts *LoadbalancerAgentActionDeployOptions) Params() (*jsonutils.JSONDict,
 
 type LoadbalancerAgentActionUndeployOptions struct {
 	ID string `json:"-"`
+}
+
+type LoadbalancerAgentDefaultParamsOptions struct {
+	Cluster string
 }

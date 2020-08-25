@@ -35,6 +35,8 @@ type (
 
 	Guestnetworks  map[string]*Guestnetwork  // key: guestId/ifname
 	Guestsecgroups map[string]*Guestsecgroup // key: guestId/secgroupId
+
+	DnsRecords map[string]*DnsRecord
 )
 
 func (set Vpcs) ModelManager() mcclient_modulebase.IBaseManager {
@@ -82,9 +84,11 @@ func (ms Vpcs) joinNetworks(subEntries Networks) bool {
 	for subId, subEntry := range subEntries {
 		wire := subEntry.Wire
 		if wire == nil {
-			// ensured by vpcs.joinWires
+			// let it go.  By the time the subnet has externalId or
+			// managerId set, we will not receive updates from them
+			// anymore
 			log.Warningf("network %s(%s) has no wire", subEntry.Name, subEntry.Id)
-			correct = false
+			delete(subEntries, subId)
 			continue
 		}
 		id := wire.VpcId
@@ -527,6 +531,27 @@ func (set Elasticips) AddModel(i db.IModel) {
 
 func (set Elasticips) Copy() apihelper.IModelSet {
 	setCopy := Elasticips{}
+	for id, el := range set {
+		setCopy[id] = el.Copy()
+	}
+	return setCopy
+}
+
+func (set DnsRecords) ModelManager() mcclient_modulebase.IBaseManager {
+	return &mcclient_modules.DNSRecords
+}
+
+func (set DnsRecords) NewModel() db.IModel {
+	return &DnsRecord{}
+}
+
+func (set DnsRecords) AddModel(i db.IModel) {
+	m := i.(*DnsRecord)
+	set[m.Id] = m
+}
+
+func (set DnsRecords) Copy() apihelper.IModelSet {
+	setCopy := DnsRecords{}
 	for id, el := range set {
 		setCopy[id] = el.Copy()
 	}

@@ -134,9 +134,15 @@ type ScalingGroupDetails struct {
 	// example: OneCloud
 	Brand string `json:"brand"`
 
-	// description: 网络ID
-	// example: net-12345
-	Networks []string `json:"networks"`
+	// description: 网络信息
+	Networks []ScalingGroupNetwork `json:"networks"`
+}
+
+type ScalingGroupNetwork struct {
+	Id           string `json:"id"`
+	Name         string `json:"name"`
+	GuestIpStart string `json:"guest_ip_start"`
+	GuestIpEnd   string `json:"guest_ip_end"`
 }
 
 type ScalingGroupResourceInfo struct {
@@ -150,7 +156,7 @@ type ScalingGroupResourceInfo struct {
 }
 
 type ScalingGroupFilterListInput struct {
-	// descirption: 伸缩组 Id or Name
+	// description: 伸缩组 Id or Name
 	// example: sg-1234
 	ScalingGroup string `json:"scaling_group"`
 }

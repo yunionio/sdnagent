@@ -373,6 +373,21 @@ func (sgm *SScalingGroupManager) FetchCustomizeColumns(
 		n, _ = sg.ScalingPolicyNumber()
 		rows[i].ScalingPolicyNumber = n
 		rows[i].Brand = Hypervisor2Brand(sg.Hypervisor)
+		nets, err := sg.Networks()
+		if err != nil {
+			log.Errorf("sg.Networks error: %s", err)
+			continue
+		}
+		sgNets := make([]api.ScalingGroupNetwork, 0, len(nets))
+		for i := range nets {
+			sgNets = append(sgNets, api.ScalingGroupNetwork{
+				Id:           nets[i].GetId(),
+				Name:         nets[i].GetName(),
+				GuestIpStart: nets[i].GuestIpStart,
+				GuestIpEnd:   nets[i].GuestIpEnd,
+			})
+		}
+		rows[i].Networks = sgNets
 	}
 	return rows
 }
@@ -510,7 +525,7 @@ func (sg *SScalingGroup) Scale(ctx context.Context, triggerDesc IScalingTriggerD
 	if sg.Enabled.IsFalse() {
 		return nil
 	}
-	scalingActivity, err := ScalingActivityManager.CreateScalingActivity(sg.Id, triggerDesc.TriggerDescription(), api.SA_STATUS_EXEC)
+	scalingActivity, err := ScalingActivityManager.CreateScalingActivity(ctx, sg.Id, triggerDesc.TriggerDescription(), api.SA_STATUS_EXEC)
 	if err != nil {
 		return errors.Wrapf(err, "create ScalingActivity whose ScalingGroup is %s error", sg.Id)
 	}
@@ -702,6 +717,18 @@ func (s *SGuest) PerformDetachScalingGroup(ctx context.Context, userCred mcclien
 	}
 	task.ScheduleRun(nil)
 	return nil, nil
+}
+
+func (sg *SScalingGroup) Networks() ([]SNetwork, error) {
+	nets := make([]SNetwork, 0, 1)
+	sgnQuery := ScalingGroupNetworkManager.Query("network_id").Equals("scaling_group_id", sg.Id).SubQuery()
+	netQuery := NetworkManager.Query().In("id", sgnQuery)
+
+	err := db.FetchModelObjects(NetworkManager, netQuery, &nets)
+	if err != nil {
+		return nil, errors.Wrap(err, "db.FetchModelObjects")
+	}
+	return nets, nil
 }
 
 func (sg *SScalingGroup) NetworkIds() ([]string, error) {

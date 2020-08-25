@@ -70,9 +70,9 @@ type LoadbalancerListenerCreateOptions struct {
 
 	Redirect       *string `choices:"off|raw"`
 	RedirectCode   *int    `choices:"301|302|307"`
-	RedirectScheme *string `choices:"http|https"`
-	RedirectHost   *string
-	RedirectPath   *string
+	RedirectScheme *string `choices:"http|https|" json:",allowempty"`
+	RedirectHost   *string `json:",allowempty"`
+	RedirectPath   *string `json:",allowempty"`
 }
 
 type LoadbalancerListenerListOptions struct {
@@ -119,7 +119,7 @@ type LoadbalancerListenerListOptions struct {
 	XForwardedFor string `choices:"true|false"`
 	Gzip          string `choices:"true|false"`
 
-	Certificate     string
+	Certificate     string `json:"certificate_id"`
 	TLSCipherPolicy string
 	EnableHttp2     string `choices:"true|false"`
 
@@ -128,9 +128,9 @@ type LoadbalancerListenerListOptions struct {
 
 	Redirect       *string `choices:"off|raw"`
 	RedirectCode   *int    `choices:"301|302|307"`
-	RedirectScheme *string `choices:"http|https"`
-	RedirectHost   *string
-	RedirectPath   *string
+	RedirectScheme *string `choices:"http|https|" json:",allowempty"`
+	RedirectHost   *string `json:",allowempty"`
+	RedirectPath   *string `json:",allowempty"`
 }
 
 type LoadbalancerListenerUpdateOptions struct {
@@ -184,9 +184,9 @@ type LoadbalancerListenerUpdateOptions struct {
 
 	Redirect       *string `choices:"off|raw"`
 	RedirectCode   *int    `choices:"301|302|307"`
-	RedirectScheme *string `choices:"http|https"`
-	RedirectHost   *string
-	RedirectPath   *string
+	RedirectScheme *string `choices:"http|https|" json:",allowempty"`
+	RedirectHost   *string `json:",allowempty"`
+	RedirectPath   *string `json:",allowempty"`
 }
 
 type LoadbalancerListenerGetOptions struct {

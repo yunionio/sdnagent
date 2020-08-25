@@ -1,3 +1,17 @@
+// Copyright 2019 Yunion
+//
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+//     http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
+
 package compute
 
 import (
@@ -17,6 +31,34 @@ var (
 		VPC_EXTERNAL_ACCESS_MODE_EIP,
 	}
 )
+
+const (
+	sVpcInterCidr    = "100.65.0.0/17"
+	sVpcInterExtCidr = "100.65.0.0/30"
+	VpcInterExtMask  = 30
+	sVpcInterExtIP1  = "100.65.0.1"
+	sVpcInterExtIP2  = "100.65.0.2"
+	VpcInterExtMac1  = "ee:ee:ee:ee:ee:f0"
+	VpcInterExtMac2  = "ee:ee:ee:ee:ee:f1"
+)
+
+var (
+	vpcInterCidr   netutils.IPV4Prefix
+	vpcInterExtIP1 netutils.IPV4Addr
+	vpcInterExtIP2 netutils.IPV4Addr
+)
+
+func VpcInterCidr() netutils.IPV4Prefix {
+	return vpcInterCidr
+}
+
+func VpcInterExtIP1() netutils.IPV4Addr {
+	return vpcInterExtIP1
+}
+
+func VpcInterExtIP2() netutils.IPV4Addr {
+	return vpcInterExtIP2
+}
 
 const (
 	sVpcMappedCidr      = "100.64.0.0/17"
@@ -77,6 +119,10 @@ func init() {
 		}
 		return v
 	}
+
+	vpcInterCidr = mp(netutils.NewIPV4Prefix(sVpcInterCidr))
+	vpcInterExtIP1 = mi(netutils.NewIPV4Addr(sVpcInterExtIP1))
+	vpcInterExtIP2 = mi(netutils.NewIPV4Addr(sVpcInterExtIP2))
 
 	vpcMappedCidr = mp(netutils.NewIPV4Prefix(sVpcMappedCidr))
 	vpcMappedGatewayIP = mi(netutils.NewIPV4Addr(sVpcMappedGatewayIP))
