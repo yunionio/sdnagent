@@ -46,6 +46,10 @@ type SManagedResourceBaseManager struct {
 	managerIdFieldName string
 }
 
+func (self *SManagedResourceBase) GetCloudproviderId() string {
+	return self.ManagerId
+}
+
 func ValidateCloudproviderResourceInput(userCred mcclient.TokenCredential, query api.CloudproviderResourceInput) (*SCloudprovider, api.CloudproviderResourceInput, error) {
 	managerObj, err := CloudproviderManager.FetchByIdOrName(userCred, query.Cloudprovider)
 	if err != nil {
@@ -510,16 +514,14 @@ func _managedResourceFilterByAccount(managerIdFieldName string, q *sqlchemy.SQue
 		}
 	}
 
-	cloudaccountStr := input.Cloudaccount
-	if len(cloudaccountStr) > 0 {
-		account, err := CloudaccountManager.FetchByIdOrName(nil, cloudaccountStr)
-		if err != nil {
-			if err == sql.ErrNoRows {
-				return nil, httperrors.NewResourceNotFoundError2(CloudaccountManager.Keyword(), cloudaccountStr)
-			}
-			return nil, httperrors.NewGeneralError(err)
-		}
-		subq := CloudproviderManager.Query("id").Equals("cloudaccount_id", account.GetId()).SubQuery()
+	cloudaccountArr := input.Cloudaccount
+	if len(cloudaccountArr) > 0 {
+		cpq := CloudaccountManager.Query().SubQuery()
+		subcpq := cpq.Query(cpq.Field("id")).Filter(sqlchemy.OR(
+			sqlchemy.In(cpq.Field("id"), cloudaccountArr),
+			sqlchemy.In(cpq.Field("name"), cloudaccountArr),
+		)).SubQuery()
+		subq := CloudproviderManager.Query("id").In("cloudaccount_id", subcpq).SubQuery()
 		if len(filterField) == 0 {
 			q = q.Filter(sqlchemy.In(q.Field(managerIdFieldName), subq))
 		} else {
@@ -557,7 +559,7 @@ func _managedResourceFilterByAccount(managerIdFieldName string, q *sqlchemy.SQue
 
 func managedResourceFilterByZone(q *sqlchemy.SQuery, query api.ZonalFilterListInput, filterField string, subqFunc func() *sqlchemy.SQuery) (*sqlchemy.SQuery, error) {
 	zoneList := query.ZoneList()
-	if len(zoneList) > 1 {
+	if len(query.Zones) >= 1 {
 		zoneQ := ZoneManager.Query("id")
 		zoneQ = zoneQ.Filter(sqlchemy.OR(
 			sqlchemy.In(zoneQ.Field("id"), zoneList),

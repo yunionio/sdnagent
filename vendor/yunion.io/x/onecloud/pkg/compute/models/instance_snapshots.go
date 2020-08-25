@@ -167,6 +167,7 @@ func (self *SInstanceSnapshot) getMoreDetails(userCred mcclient.TokenCredential,
 			Status:        snapshots[i].Status,
 			StorageType:   snapshots[i].GetStorageType(),
 		})
+		out.Size += snapshots[i].Size
 
 		if len(snapshots[i].StorageId) > 0 && out.StorageType == "" {
 			out.StorageType = snapshots[i].GetStorageType()
@@ -284,7 +285,7 @@ func (manager *SInstanceSnapshotManager) CreateInstanceSnapshot(
 	instanceSnapshot.OsType = guest.OsType
 	instanceSnapshot.ServerMetadata = serverMetadata
 	instanceSnapshot.InstanceType = guest.InstanceType
-	err := manager.TableSpec().Insert(instanceSnapshot)
+	err := manager.TableSpec().Insert(ctx, instanceSnapshot)
 	if err != nil {
 		return nil, err
 	}

@@ -147,15 +147,15 @@ type CloudproviderResourceInput struct {
 	// swagger:ignore
 	// Deprecated
 	// description: this param will be deprecate at 3.0
-	Manager string `json:"manager" "yunion:deprecated-by":"cloudprovider"`
+	Manager string `json:"manager" yunion-deprecated-by:"cloudprovider"`
 	// swagger:ignore
 	// Deprecated
 	// description: this param will be deprecate at 3.0
-	ManagerId string `json:"manager_id" "yunion:deprecated-by":"cloudprovider"`
+	ManagerId string `json:"manager_id" yunion-deprecated-by:"cloudprovider"`
 	// swagger:ignore
 	// Deprecated
 	// description: this param will be deprecate at 3.0
-	CloudproviderId string `json:"cloudprovider_id" "yunion:deprecated-by":"cloudprovider"`
+	CloudproviderId string `json:"cloudprovider_id" yunion-deprecated-by:"cloudprovider"`
 }
 
 type ManagedResourceListInput struct {
@@ -165,19 +165,19 @@ type ManagedResourceListInput struct {
 	CloudproviderResourceInput
 
 	// 列出关联指定云账号(ID或Name)的资源
-	Cloudaccount string `json:"cloudaccount"`
+	Cloudaccount []string `json:"cloudaccount"`
 	// swagger:ignore
 	// Deprecated
 	// description: this param will be deprecate at 3.0
-	CloudaccountId string `json:"cloudaccount_id" "yunion:deprecated-by":"cloudaccount"`
+	CloudaccountId string `json:"cloudaccount_id" yunion-deprecated-by:"cloudaccount"`
 	// swagger:ignore
 	// Deprecated
 	// description: this param will be deprecate at 3.0
-	Account string `json:"account" "yunion:deprecated-by":"cloudaccount"`
+	Account string `json:"account" yunion-deprecated-by:"cloudaccount"`
 	// swagger:ignore
 	// Deprecated
 	// description: this param will be deprecate at 3.0
-	AccountId string `json:"account_id" "yunion:deprecated-by":"cloudaccount"`
+	AccountId string `json:"account_id" yunion-deprecated-by:"cloudaccount"`
 
 	// 过滤资源，是否为非OneCloud内置私有云管理的资源
 	// default: false
@@ -250,4 +250,24 @@ type CloudproviderUpdateInput struct {
 }
 
 type CloudproviderCreateInput struct {
+}
+
+type CloudproviderGetStorageClassInput struct {
+	CloudregionResourceInput
+}
+
+type CloudproviderGetStorageClassOutput struct {
+	// 对象存储存储类型
+	StorageClasses []string `json:"storage_classes"`
+}
+
+type CloudproviderGetCannedAclInput struct {
+	CloudregionResourceInput
+}
+
+type CloudproviderGetCannedAclOutput struct {
+	// Bucket支持的预置ACL列表
+	BucketCannedAcls []string `json:"bucket_canned_acls"`
+	// Object支持的预置ACL列表
+	ObjectCannedAcls []string `json:"object_canned_acls"`
 }

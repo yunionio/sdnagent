@@ -46,6 +46,7 @@ import (
 	"yunion.io/x/onecloud/pkg/cloudcommon/db/quotas"
 	"yunion.io/x/onecloud/pkg/cloudcommon/db/taskman"
 	"yunion.io/x/onecloud/pkg/cloudcommon/notifyclient"
+	"yunion.io/x/onecloud/pkg/cloudcommon/policy"
 	"yunion.io/x/onecloud/pkg/cloudcommon/userdata"
 	"yunion.io/x/onecloud/pkg/cloudcommon/validators"
 	"yunion.io/x/onecloud/pkg/compute/options"
@@ -80,6 +81,27 @@ func (self *SGuest) GetDetailsVnc(ctx context.Context, userCred mcclient.TokenCr
 	} else {
 		return jsonutils.NewDict(), nil
 	}
+}
+
+func (self *SGuest) PreCheckPerformAction(
+	ctx context.Context, userCred mcclient.TokenCredential,
+	action string, query jsonutils.JSONObject, data jsonutils.JSONObject,
+) error {
+	if self.Hypervisor == api.HYPERVISOR_KVM {
+		host := self.GetHost()
+		if (host.HostStatus == api.HOST_OFFLINE || !host.Enabled.Bool()) &&
+			utils.IsInStringArray(action,
+				[]string{
+					"start", "restart", "stop", "reset", "rebuild-root",
+					"change-config", "instance-snapshot", "snapshot-and-clone",
+					"attach-isolated-device", "detach-isolated-deivce",
+					"insert-iso", "eject-iso", "deploy", "create-backup",
+				}) {
+			return httperrors.NewInvalidStatusError(
+				"host status %s and enabled %v, can't do server %s", host.HostStatus, host.Enabled.Bool(), action)
+		}
+	}
+	return nil
 }
 
 func (self *SGuest) AllowPerformMonitor(ctx context.Context,
@@ -317,35 +339,19 @@ func (self *SGuest) AllowPerformMigrate(ctx context.Context, userCred mcclient.T
 }
 
 func (self *SGuest) PerformMigrate(ctx context.Context, userCred mcclient.TokenCredential, query jsonutils.JSONObject, data jsonutils.JSONObject) (jsonutils.JSONObject, error) {
-	if self.GetHypervisor() != api.HYPERVISOR_KVM {
+	if !self.GetDriver().IsSupportMigrate() {
 		return nil, httperrors.NewNotAcceptableError("Not allow for hypervisor %s", self.GetHypervisor())
 	}
-	if len(self.BackupHostId) > 0 {
-		return nil, httperrors.NewBadRequestError("Guest have backup, can't migrate")
+	if err := self.GetDriver().CheckMigrate(self, userCred, data); err != nil {
+		return nil, err
 	}
-	isRescueMode := jsonutils.QueryBoolean(data, "rescue_mode", false)
-	if !isRescueMode && self.Status != api.VM_READY {
+	if self.Status != api.VM_READY {
 		return nil, httperrors.NewServerStatusError("Cannot normal migrate guest in status %s, try rescue mode or server-live-migrate?", self.Status)
 	}
-	if isRescueMode {
-		guestDisks := self.GetDisks()
-		for _, guestDisk := range guestDisks {
-			if utils.IsInStringArray(
-				guestDisk.GetDisk().GetStorage().StorageType, api.STORAGE_LOCAL_TYPES) {
-				return nil, httperrors.NewBadRequestError("Rescue mode requires all disk store in shared storages")
-			}
-		}
-	}
-	devices := self.GetIsolatedDevices()
-	if len(devices) > 0 {
-		return nil, httperrors.NewBadRequestError("Cannot migrate with isolated devices")
-	}
+	isRescueMode := jsonutils.QueryBoolean(data, "rescue_mode", false)
 	var preferHostId string
 	preferHost, _ := data.GetString("prefer_host")
 	if len(preferHost) > 0 {
-		if !db.IsAdminAllowPerform(userCred, self, "assign-host") {
-			return nil, httperrors.NewBadRequestError("Only system admin can assign host")
-		}
 		iHost, _ := HostManager.FetchByIdOrName(userCred, preferHost)
 		if iHost == nil {
 			return nil, httperrors.NewBadRequestError("Host %s not found", preferHost)
@@ -374,7 +380,11 @@ func (self *SGuest) StartMigrateTask(
 		data.Set("auto_start", jsonutils.JSONTrue)
 	}
 	data.Set("guest_status", jsonutils.NewString(guestStatus))
-	if task, err := taskman.TaskManager.NewTask(ctx, "GuestMigrateTask", self, userCred, data, parentTaskId, "", nil); err != nil {
+	dedicateMigrateTask := "GuestMigrateTask"
+	if self.GetHypervisor() != api.HYPERVISOR_KVM {
+		dedicateMigrateTask = "ManagedGuestMigrateTask" //托管私有云
+	}
+	if task, err := taskman.TaskManager.NewTask(ctx, dedicateMigrateTask, self, userCred, data, parentTaskId, "", nil); err != nil {
 		log.Errorln(err)
 		return err
 	} else {
@@ -388,30 +398,16 @@ func (self *SGuest) AllowPerformLiveMigrate(ctx context.Context, userCred mcclie
 }
 
 func (self *SGuest) PerformLiveMigrate(ctx context.Context, userCred mcclient.TokenCredential, query jsonutils.JSONObject, data jsonutils.JSONObject) (jsonutils.JSONObject, error) {
-	if self.GetHypervisor() != api.HYPERVISOR_KVM {
+	if !self.GetDriver().IsSupportLiveMigrate() {
 		return nil, httperrors.NewNotAcceptableError("Not allow for hypervisor %s", self.GetHypervisor())
 	}
-	if len(self.BackupHostId) > 0 {
-		return nil, httperrors.NewBadRequestError("Guest have backup, can't migrate")
+	if err := self.GetDriver().CheckLiveMigrate(self, userCred, data); err != nil {
+		return nil, err
 	}
 	if utils.IsInStringArray(self.Status, []string{api.VM_RUNNING, api.VM_SUSPEND}) {
-		cdrom := self.getCdrom(false)
-		if cdrom != nil && len(cdrom.ImageId) > 0 {
-			return nil, httperrors.NewBadRequestError("Cannot live migrate with cdrom")
-		}
-		devices := self.GetIsolatedDevices()
-		if devices != nil && len(devices) > 0 {
-			return nil, httperrors.NewBadRequestError("Cannot live migrate with isolated devices")
-		}
-		if !self.CheckQemuVersion(self.GetQemuVersion(userCred), "1.1.2") {
-			return nil, httperrors.NewBadRequestError("Cannot do live migrate, too low qemu version")
-		}
 		var preferHostId string
 		preferHost, _ := data.GetString("prefer_host")
 		if len(preferHost) > 0 {
-			if !db.IsAdminAllowPerform(userCred, self, "assign-host") {
-				return nil, httperrors.NewBadRequestError("Only system admin can assign host")
-			}
 			iHost, _ := HostManager.FetchByIdOrName(userCred, preferHost)
 			if iHost == nil {
 				return nil, httperrors.NewBadRequestError("Host %s not found", preferHost)
@@ -432,7 +428,11 @@ func (self *SGuest) StartGuestLiveMigrateTask(ctx context.Context, userCred mccl
 		data.Set("prefer_host_id", jsonutils.NewString(preferHostId))
 	}
 	data.Set("guest_status", jsonutils.NewString(guestStatus))
-	if task, err := taskman.TaskManager.NewTask(ctx, "GuestLiveMigrateTask", self, userCred, data, parentTaskId, "", nil); err != nil {
+	dedicateMigrateTask := "GuestLiveMigrateTask"
+	if self.GetHypervisor() != api.HYPERVISOR_KVM {
+		dedicateMigrateTask = "ManagedGuestLiveMigrateTask" //托管私有云
+	}
+	if task, err := taskman.TaskManager.NewTask(ctx, dedicateMigrateTask, self, userCred, data, parentTaskId, "", nil); err != nil {
 		log.Errorln(err)
 		return err
 	} else {
@@ -985,8 +985,11 @@ func (self *SGuest) StartInsertIsoTask(ctx context.Context, imageId string, boot
 	if boot {
 		data.Add(jsonutils.JSONTrue, "boot")
 	}
-
-	task, err := taskman.TaskManager.NewTask(ctx, "GuestInsertIsoTask", self, userCred, data, parentTaskId, "", nil)
+	taskName := "GuestInsertIsoTask"
+	if self.BackupHostId != "" {
+		taskName = "HaGuestInsertIsoTask"
+	}
+	task, err := taskman.TaskManager.NewTask(ctx, taskName, self, userCred, data, parentTaskId, "", nil)
 	if err != nil {
 		return err
 	}
@@ -1348,6 +1351,10 @@ func (self *SGuest) PerformRebuildRoot(ctx context.Context, userCred mcclient.To
 		img, err := CachedimageManager.getImageInfo(ctx, userCred, imageId, false)
 		if err != nil {
 			return nil, httperrors.NewNotFoundError("failed to find %s", imageId)
+		}
+		err = self.GetDriver().ValidateImage(ctx, img)
+		if err != nil {
+			return nil, err
 		}
 		diskCat := self.CategorizeDisks()
 		if img.MinDiskMB == 0 || img.Status != imageapi.IMAGE_STATUS_ACTIVE {
@@ -2901,6 +2908,11 @@ func (self *SGuest) PerformDissociateEip(ctx context.Context, userCred mcclient.
 		return nil, httperrors.NewInvalidStatusError("No eip to dissociate")
 	}
 
+	err = db.IsObjectRbacAllowed(eip, userCred, policy.PolicyActionGet)
+	if err != nil {
+		return nil, errors.Wrap(err, "eip is not accessible")
+	}
+
 	self.SetStatus(userCred, api.VM_DISSOCIATE_EIP, "associate eip")
 
 	autoDelete := jsonutils.QueryBoolean(data, "auto_delete", false)
@@ -3031,6 +3043,13 @@ func (self *SGuest) PerformSetQemuParams(ctx context.Context, userCred mcclient.
 	pvpanic, err := data.GetString("disable_pvpanic")
 	if err == nil {
 		err = self.SetMetadata(ctx, "disable_pvpanic", pvpanic, userCred)
+		if err != nil {
+			return nil, err
+		}
+	}
+	usbKbd, err := data.GetString("disable_usb_kbd")
+	if err == nil {
+		err = self.SetMetadata(ctx, "disable_usb_kbd", usbKbd, userCred)
 		if err != nil {
 			return nil, err
 		}
@@ -3335,7 +3354,10 @@ func (self *SGuest) guestDisksStorageTypeIsShared() bool {
 	return true
 }
 
-func (self *SGuest) PerformCreateBackup(ctx context.Context, userCred mcclient.TokenCredential, query jsonutils.JSONObject, data jsonutils.JSONObject) (jsonutils.JSONObject, error) {
+func (self *SGuest) PerformCreateBackup(
+	ctx context.Context, userCred mcclient.TokenCredential,
+	query jsonutils.JSONObject, data jsonutils.JSONObject,
+) (jsonutils.JSONObject, error) {
 	if len(self.BackupHostId) > 0 {
 		return nil, httperrors.NewBadRequestError("Already have backup server")
 	}
@@ -3355,7 +3377,12 @@ func (self *SGuest) PerformCreateBackup(ctx context.Context, userCred mcclient.T
 	if hasSnapshot {
 		return nil, httperrors.NewBadRequestError("Cannot create backup with snapshot")
 	}
+	return self.StartGuestCreateBackupTask(ctx, userCred, "", data)
+}
 
+func (self *SGuest) StartGuestCreateBackupTask(
+	ctx context.Context, userCred mcclient.TokenCredential, parentTaskId string, data jsonutils.JSONObject,
+) (jsonutils.JSONObject, error) {
 	req := self.getGuestBackupResourceRequirements(ctx, userCred)
 	keys, err := self.GetQuotaKeys()
 	if err != nil {
@@ -3369,7 +3396,7 @@ func (self *SGuest) PerformCreateBackup(ctx context.Context, userCred mcclient.T
 
 	params := data.(*jsonutils.JSONDict)
 	params.Set("guest_status", jsonutils.NewString(self.Status))
-	task, err := taskman.TaskManager.NewTask(ctx, "GuestCreateBackupTask", self, userCred, params, "", "", &req)
+	task, err := taskman.TaskManager.NewTask(ctx, "GuestCreateBackupTask", self, userCred, params, parentTaskId, "", &req)
 	if err != nil {
 		quotas.CancelPendingUsage(ctx, userCred, &req, &req, false)
 		log.Errorln(err)
@@ -3398,6 +3425,7 @@ func (self *SGuest) PerformDeleteBackup(ctx context.Context, userCred mcclient.T
 
 	taskData := jsonutils.NewDict()
 	taskData.Set("purge", jsonutils.NewBool(jsonutils.QueryBoolean(data, "purge", false)))
+	taskData.Set("create", jsonutils.NewBool(jsonutils.QueryBoolean(data, "create", false)))
 	self.SetStatus(userCred, api.VM_DELETING_BACKUP, "delete backup server")
 	if task, err := taskman.TaskManager.NewTask(
 		ctx, "GuestDeleteBackupTask", self, userCred, taskData, "", "", nil); err != nil {
@@ -3429,6 +3457,44 @@ func (self *SGuest) StartCreateBackup(ctx context.Context, userCred mcclient.Tok
 		return err
 	} else {
 		task.ScheduleRun(nil)
+	}
+	return nil
+}
+
+func (self *SGuest) AllowPerformReconcileBackup(ctx context.Context, userCred mcclient.TokenCredential, query jsonutils.JSONObject, data jsonutils.JSONObject) bool {
+	return db.IsAdminAllowPerform(userCred, self, "reconcile-backup")
+}
+
+func (self *SGuest) PerformReconcileBackup(ctx context.Context, userCred mcclient.TokenCredential, query jsonutils.JSONObject, data jsonutils.JSONObject) (jsonutils.JSONObject, error) {
+	switchBackup := self.GetMetadata("switch_backup", userCred)
+	createBackup := self.GetMetadata("create_backup", userCred)
+	if len(switchBackup) == 0 && len(createBackup) == 0 {
+		return nil, httperrors.NewBadRequestError("guest doesn't need reconcile backup")
+	}
+	if len(switchBackup) > 0 {
+		data := jsonutils.NewDict()
+		data.Set("purge_backup", jsonutils.JSONTrue)
+		return self.PerformSwitchToBackup(ctx, userCred, nil, data)
+	} else {
+		return nil, self.StartReconcileBackup(ctx, userCred)
+	}
+}
+
+func (self *SGuest) StartReconcileBackup(ctx context.Context, userCred mcclient.TokenCredential) error {
+	if len(self.BackupHostId) > 0 {
+		data := jsonutils.NewDict()
+		data.Set("purge", jsonutils.JSONTrue)
+		data.Set("create", jsonutils.JSONTrue)
+		_, err := self.PerformDeleteBackup(ctx, userCred, nil, data)
+		if err != nil {
+			return err
+		}
+	} else {
+		params := jsonutils.NewDict()
+		params.Set("reconcile_backup", jsonutils.JSONTrue)
+		if _, err := self.StartGuestCreateBackupTask(ctx, userCred, "", params); err != nil {
+			return err
+		}
 	}
 	return nil
 }
@@ -3716,7 +3782,7 @@ func (man *SGuestManager) createImportGuest(ctx context.Context, userCred mcclie
 	gst.VcpuCount = desc.Cpu
 	gst.BootOrder = desc.BootOrder
 	gst.Description = desc.Description
-	err = man.TableSpec().Insert(gst)
+	err = man.TableSpec().Insert(ctx, gst)
 	return gst, err
 }
 
@@ -4066,14 +4132,14 @@ func (self *SGuest) createConvertedServer(
 func (self *SGuest) AllowPerformSyncFixNics(ctx context.Context,
 	userCred mcclient.TokenCredential,
 	query jsonutils.JSONObject,
-	data jsonutils.JSONObject) bool {
+	input api.GuestSyncFixNicsInput) bool {
 	return db.IsAdminAllowPerform(userCred, self, "sync-fix-nics")
 }
 
 func (self *SGuest) PerformSyncFixNics(ctx context.Context,
 	userCred mcclient.TokenCredential,
 	query jsonutils.JSONObject,
-	data jsonutils.JSONObject) (jsonutils.JSONObject, error) {
+	input api.GuestSyncFixNicsInput) (jsonutils.JSONObject, error) {
 	iVM, err := self.GetIVM()
 	if err != nil {
 		return nil, httperrors.NewGeneralError(err)
@@ -4086,11 +4152,30 @@ func (self *SGuest) PerformSyncFixNics(ctx context.Context,
 	if host == nil {
 		return nil, httperrors.NewInternalServerError("host not found???")
 	}
-	iplistArray, err := data.Get("ip")
-	if err != nil {
-		return nil, httperrors.NewInputParameterError("missing field ip, list of ip")
+	iplist := input.Ip
+	// validate iplist
+	if len(iplist) == 0 {
+		return nil, httperrors.NewInputParameterError("empty ip list")
 	}
-	iplist := iplistArray.(*jsonutils.JSONArray).GetStringArray()
+	for _, ip := range iplist {
+		// ip is reachable on host
+		net, err := host.getNetworkOfIPOnHost(ip)
+		if err != nil {
+			return nil, httperrors.NewInputParameterError("Unreachable IP %s: %s", ip, err)
+		}
+		// check ip is reserved or free
+		rip := ReservedipManager.GetReservedIP(net, ip)
+		if rip == nil {
+			// check ip is free
+			nip, err := net.GetFreeIPWithLock(ctx, userCred, nil, nil, ip, "", false)
+			if err != nil {
+				return nil, httperrors.NewInputParameterError("Unavailable IP %s: occupied", ip)
+			}
+			if nip != ip {
+				return nil, httperrors.NewInputParameterError("Unavailable IP %s: occupied", ip)
+			}
+		}
+	}
 	errs := make([]error, 0)
 	for i := range vnics {
 		ip := vnics[i].GetIP()
@@ -4580,6 +4665,9 @@ func (self *SGuest) PerformSnapshotAndClone(
 		quotas.CancelPendingUsage(ctx, userCred, &pendingUsage, &pendingUsage, false)
 		quotas.CancelPendingUsage(ctx, userCred, &pendingRegionUsage, &pendingRegionUsage, false)
 		return nil, httperrors.NewInternalServerError("create instance snapshot failed: %s", err)
+	} else {
+		cancelRegionUsage := &SRegionQuota{Snapshot: snapshotUsage.Snapshot}
+		quotas.CancelPendingUsage(ctx, userCred, &pendingRegionUsage, cancelRegionUsage, true)
 	}
 
 	err = self.StartInstanceSnapshotAndCloneTask(

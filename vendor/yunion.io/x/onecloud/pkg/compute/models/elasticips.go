@@ -33,6 +33,7 @@ import (
 	"yunion.io/x/onecloud/pkg/cloudcommon/db/lockman"
 	"yunion.io/x/onecloud/pkg/cloudcommon/db/quotas"
 	"yunion.io/x/onecloud/pkg/cloudcommon/db/taskman"
+	"yunion.io/x/onecloud/pkg/cloudcommon/policy"
 	"yunion.io/x/onecloud/pkg/cloudprovider"
 	"yunion.io/x/onecloud/pkg/httperrors"
 	"yunion.io/x/onecloud/pkg/mcclient"
@@ -156,6 +157,8 @@ func (manager *SElasticipManager) ListItemFilter(
 				sq := networks.Query(networks.Field("id")).Join(wires, sqlchemy.Equals(wires.Field("id"), networks.Field("wire_id"))).
 					Filter(sqlchemy.Equals(wires.Field("zone_id"), zone.Id)).SubQuery()
 				q = q.Filter(sqlchemy.In(q.Field("network_id"), sq))
+				gns := GuestnetworkManager.Query("network_id").Equals("guest_id", guest.Id).SubQuery()
+				q = q.Filter(sqlchemy.NotIn(q.Field("network_id"), gns))
 			} else {
 				region := guest.getRegion()
 				q = q.Equals("cloudregion_id", region.Id)
@@ -362,7 +365,7 @@ func (manager *SElasticipManager) SyncEips(ctx context.Context, userCred mcclien
 		if err != nil {
 			syncResult.UpdateError(err)
 		} else {
-			syncMetadata(ctx, userCred, &commondb[i], commonext[i])
+			syncVirtualResourceMetadata(ctx, userCred, &commondb[i], commonext[i])
 			syncResult.Update()
 		}
 	}
@@ -371,7 +374,7 @@ func (manager *SElasticipManager) SyncEips(ctx context.Context, userCred mcclien
 		if err != nil {
 			syncResult.AddError(err)
 		} else {
-			syncMetadata(ctx, userCred, new, added[i])
+			syncVirtualResourceMetadata(ctx, userCred, new, added[i])
 			syncResult.Add()
 		}
 	}
@@ -418,7 +421,16 @@ func (self *SElasticip) SyncInstanceWithCloudEip(ctx context.Context, userCred m
 			return errors.Error("unsupported association type")
 		}
 
-		extRes, err := db.FetchByExternalId(manager, vmExtId)
+		extRes, err := db.FetchByExternalIdAndManagerId(manager, vmExtId, func(q *sqlchemy.SQuery) *sqlchemy.SQuery {
+			switch ext.GetAssociationType() {
+			case api.EIP_ASSOCIATE_TYPE_SERVER:
+				sq := HostManager.Query().SubQuery()
+				return q.Join(sq, sqlchemy.Equals(sq.Field("id"), q.Field("host_id"))).Filter(sqlchemy.Equals(sq.Field("manager_id"), self.ManagerId))
+			case api.EIP_ASSOCIATE_TYPE_NAT_GATEWAY, api.EIP_ASSOCIATE_TYPE_LOADBALANCER:
+				return q.Equals("manager_id", self.ManagerId)
+			}
+			return q
+		})
 		if err != nil {
 			log.Errorf("fail to find vm by external ID %s", vmExtId)
 			return err
@@ -505,7 +517,13 @@ func (manager *SElasticipManager) newFromCloudEip(ctx context.Context, userCred 
 	eip.CloudregionId = region.Id
 	eip.ChargeType = extEip.GetInternetChargeType()
 	if networkId := extEip.GetINetworkId(); len(networkId) > 0 {
-		network, err := db.FetchByExternalId(NetworkManager, networkId)
+		network, err := db.FetchByExternalIdAndManagerId(NetworkManager, networkId, func(q *sqlchemy.SQuery) *sqlchemy.SQuery {
+			wire := WireManager.Query().SubQuery()
+			vpc := VpcManager.Query().SubQuery()
+			return q.Join(wire, sqlchemy.Equals(wire.Field("id"), q.Field("wire_id"))).
+				Join(vpc, sqlchemy.Equals(vpc.Field("id"), wire.Field("vpc_id"))).
+				Filter(sqlchemy.Equals(vpc.Field("manager_id"), provider.Id))
+		})
 		if err != nil {
 			msg := fmt.Sprintf("failed to found network by externalId %s error: %v", networkId, err)
 			log.Errorf(msg)
@@ -514,7 +532,7 @@ func (manager *SElasticipManager) newFromCloudEip(ctx context.Context, userCred 
 		eip.NetworkId = network.GetId()
 	}
 
-	err = manager.TableSpec().Insert(&eip)
+	err = manager.TableSpec().Insert(ctx, &eip)
 	if err != nil {
 		log.Errorf("newFromCloudEip fail %s", err)
 		return nil, err
@@ -763,7 +781,9 @@ func (self *SElasticip) AssociateNatGateway(ctx context.Context, userCred mcclie
 }
 
 func (manager *SElasticipManager) getEipByExtEip(ctx context.Context, userCred mcclient.TokenCredential, extEip cloudprovider.ICloudEIP, provider *SCloudprovider, region *SCloudregion, syncOwnerId mcclient.IIdentityProvider) (*SElasticip, error) {
-	eipObj, err := db.FetchByExternalId(manager, extEip.GetGlobalId())
+	eipObj, err := db.FetchByExternalIdAndManagerId(manager, extEip.GetGlobalId(), func(q *sqlchemy.SQuery) *sqlchemy.SQuery {
+		return q.Equals("manager_id", provider.Id)
+	})
 	if err == nil {
 		return eipObj.(*SElasticip), nil
 	}
@@ -1059,8 +1079,14 @@ func (self *SElasticip) PerformDissociate(ctx context.Context, userCred mcclient
 	}
 
 	// associate with an invalid vm
-	if !self.IsAssociated() {
+	res := self.GetAssociateResource()
+	if res == nil {
 		return nil, self.Dissociate(ctx, userCred)
+	}
+
+	err := db.IsObjectRbacAllowed(res, userCred, policy.PolicyActionGet)
+	if err != nil {
+		return nil, errors.Wrap(err, "associated resource is not accessible")
 	}
 
 	if self.Status != api.EIP_STATUS_READY {
@@ -1101,7 +1127,7 @@ func (self *SElasticip) PerformDissociate(ctx context.Context, userCred mcclient
 
 	autoDelete := jsonutils.QueryBoolean(data, "auto_delete", false)
 
-	err := self.StartEipDissociateTask(ctx, userCred, autoDelete, "")
+	err = self.StartEipDissociateTask(ctx, userCred, autoDelete, "")
 	return nil, err
 }
 
@@ -1268,7 +1294,7 @@ func (manager *SElasticipManager) NewEipForVMOnHost(ctx context.Context, userCre
 		return nil, errors.Wrap(err, "db.GenerateName")
 	}
 
-	err = manager.TableSpec().Insert(&eip)
+	err = manager.TableSpec().Insert(ctx, &eip)
 	if err != nil {
 		log.Errorf("create EIP record fail %s", err)
 		return nil, err

@@ -1053,7 +1053,7 @@ func (manager *SCloudproviderManager) migrateVCenterInfo(vc *SVCenter) error {
 	cp.LastSync = vc.LastSync
 	cp.Provider = api.CLOUD_PROVIDER_VMWARE
 
-	return manager.TableSpec().Insert(&cp)
+	return manager.TableSpec().Insert(context.TODO(), &cp)
 }
 
 // 云订阅列表
@@ -1063,17 +1063,14 @@ func (manager *SCloudproviderManager) ListItemFilter(
 	userCred mcclient.TokenCredential,
 	query api.CloudproviderListInput,
 ) (*sqlchemy.SQuery, error) {
-	accountStr := query.Cloudaccount
-	if len(accountStr) > 0 {
-		accountObj, err := CloudaccountManager.FetchByIdOrName(userCred, accountStr)
-		if err != nil {
-			if err == sql.ErrNoRows {
-				return nil, httperrors.NewResourceNotFoundError2("cloudaccount", accountStr)
-			} else {
-				return nil, httperrors.NewGeneralError(err)
-			}
-		}
-		q = q.Equals("cloudaccount_id", accountObj.GetId())
+	accountArr := query.Cloudaccount
+	if len(accountArr) > 0 {
+		cpq := CloudaccountManager.Query().SubQuery()
+		subcpq := cpq.Query(cpq.Field("id")).Filter(sqlchemy.OR(
+			sqlchemy.In(cpq.Field("id"), accountArr),
+			sqlchemy.In(cpq.Field("name"), accountArr),
+		)).SubQuery()
+		q = q.In("cloudaccount_id", subcpq)
 	}
 
 	var zone *SZone
@@ -1128,7 +1125,8 @@ func (manager *SCloudproviderManager) ListItemFilter(
 			sqlchemy.Equals(vpcs.Field("manager_id"), providers.Field("id")),
 		))
 		if zone != nil {
-			sq = sq.Filter(sqlchemy.Equals(wires.Field("zone_id"), zone.GetId()))
+			zoneFilter := sqlchemy.OR(sqlchemy.Equals(wires.Field("zone_id"), zone.GetId()), sqlchemy.IsNullOrEmpty(wires.Field("zone_id")))
+			sq = sq.Filter(zoneFilter)
 		} else if region != nil {
 			sq = sq.Filter(sqlchemy.Equals(vpcs.Field("cloudregion_id"), region.GetId()))
 		}
@@ -1372,7 +1370,6 @@ func (self *SCloudprovider) RealDelete(ctx context.Context, userCred mcclient.To
 		ElasticipManager,
 		NetworkInterfaceManager,
 		CloudproviderRegionManager,
-		ExternalProjectManager,
 		CloudregionManager,
 		CloudproviderQuotaManager,
 	} {
@@ -1403,6 +1400,14 @@ func (self *SCloudprovider) StartCloudproviderDeleteTask(ctx context.Context, us
 	self.SetStatus(userCred, api.CLOUD_PROVIDER_START_DELETE, "StartCloudproviderDeleteTask")
 	task.ScheduleRun(nil)
 	return nil
+}
+
+func (self *SCloudprovider) GetRegionDriver() (IRegionDriver, error) {
+	driver := GetRegionDriver(self.Provider)
+	if driver == nil {
+		return nil, fmt.Errorf("failed to found region driver for %s", self.Provider)
+	}
+	return driver, nil
 }
 
 func (self *SCloudprovider) ClearSchedDescCache() error {
@@ -1555,33 +1560,56 @@ func (provider *SCloudprovider) AllowGetDetailsStorageClasses(
 func (provider *SCloudprovider) GetDetailsStorageClasses(
 	ctx context.Context,
 	userCred mcclient.TokenCredential,
-	query jsonutils.JSONObject,
-) (jsonutils.JSONObject, error) {
+	input api.CloudproviderGetStorageClassInput,
+) (api.CloudproviderGetStorageClassOutput, error) {
+	output := api.CloudproviderGetStorageClassOutput{}
 	driver, err := provider.GetProvider()
 	if err != nil {
-		return nil, httperrors.NewInternalServerError("fail to get provider driver %s", err)
+		return output, httperrors.NewInternalServerError("fail to get provider driver %s", err)
 	}
-	extId := ""
-	regionStr := jsonutils.GetAnyString(query, []string{"cloudregion", "cloudregion_id"})
-	if len(regionStr) > 0 {
-		regionObj, err := CloudregionManager.FetchByIdOrName(userCred, regionStr)
+	if len(input.Cloudregion) > 0 {
+		_, input.CloudregionResourceInput, err = ValidateCloudregionResourceInput(userCred, input.CloudregionResourceInput)
 		if err != nil {
-			if err == sql.ErrNoRows {
-				return nil, httperrors.NewResourceNotFoundError2(CloudregionManager.Keyword(), regionStr)
-			} else {
-				return nil, httperrors.NewGeneralError(err)
-			}
+			return output, errors.Wrap(err, "ValidateCloudregionResourceInput")
 		}
-		extId = regionObj.(*SCloudregion).GetExternalId()
 	}
 
-	sc := driver.GetStorageClasses(extId)
+	sc := driver.GetStorageClasses(input.Cloudregion)
 	if sc == nil {
-		return nil, httperrors.NewInternalServerError("storage classes not supported")
+		return output, httperrors.NewInternalServerError("storage classes not supported")
 	}
-	ret := jsonutils.NewDict()
-	ret.Add(jsonutils.NewStringArray(sc), "storage_classes")
-	return ret, nil
+	output.StorageClasses = sc
+	return output, nil
+}
+
+func (provider *SCloudprovider) AllowGetDetailsCannedAcls(
+	ctx context.Context,
+	userCred mcclient.TokenCredential,
+	query jsonutils.JSONObject,
+) bool {
+	return db.IsAdminAllowGetSpec(userCred, provider, "canned-acls")
+}
+
+func (provider *SCloudprovider) GetDetailsCannedAcls(
+	ctx context.Context,
+	userCred mcclient.TokenCredential,
+	input api.CloudproviderGetCannedAclInput,
+) (api.CloudproviderGetCannedAclOutput, error) {
+	output := api.CloudproviderGetCannedAclOutput{}
+	driver, err := provider.GetProvider()
+	if err != nil {
+		return output, httperrors.NewInternalServerError("fail to get provider driver %s", err)
+	}
+	if len(input.Cloudregion) > 0 {
+		_, input.CloudregionResourceInput, err = ValidateCloudregionResourceInput(userCred, input.CloudregionResourceInput)
+		if err != nil {
+			return output, errors.Wrap(err, "ValidateCloudregionResourceInput")
+		}
+	}
+
+	output.BucketCannedAcls = driver.GetBucketCannedAcls(input.Cloudregion)
+	output.ObjectCannedAcls = driver.GetObjectCannedAcls(input.Cloudregion)
+	return output, nil
 }
 
 func (provider *SCloudprovider) getAccountShareInfo() apis.SAccountShareInfo {
@@ -1620,51 +1648,10 @@ func (provider *SCloudprovider) GetChangeOwnerCandidateDomainIds() []string {
 	return []string{}
 }
 
-func (self *SCloudprovider) GetExternalProjects() ([]SExternalProject, error) {
-	q := ExternalProjectManager.Query().Equals("manager_id", self.Id)
-	projects := []SExternalProject{}
-	err := db.FetchModelObjects(ExternalProjectManager, q, &projects)
-	if err != nil {
-		return nil, errors.Wrap(err, "FetchModelObjects")
-	}
-	return projects, nil
-}
-
 func (self *SCloudprovider) SyncProject(ctx context.Context, userCred mcclient.TokenCredential, id string) (string, error) {
-	lockman.LockRawObject(ctx, self.Id, id)
-	defer lockman.ReleaseRawObject(ctx, self.Id, id)
-
-	projects, err := self.GetExternalProjects()
-	if err != nil {
-		return "", errors.Wrap(err, "GetExternalProjects")
+	account := self.GetCloudaccount()
+	if account == nil {
+		return "", fmt.Errorf("failed to get cloudprovider %s account", self.Name)
 	}
-	for _, project := range projects {
-		if project.ProjectId == id {
-			return project.ExternalId, nil
-		}
-	}
-
-	project, err := db.TenantCacheManager.FetchById(id)
-	if err != nil {
-		return "", errors.Wrap(err, "TenantCacheManager.FetchById")
-	}
-
-	for _, extProj := range projects {
-		if extProj.Name == project.GetName() {
-			return extProj.ExternalId, nil
-		}
-	}
-	provider, err := self.GetProvider()
-	if err != nil {
-		return "", errors.Wrap(err, "GetProvider")
-	}
-	iProject, err := provider.CreateIProject(project.GetName())
-	if err != nil {
-		return "", errors.Wrap(err, "CreateIProject")
-	}
-	extProj, err := ExternalProjectManager.newFromCloudProject(ctx, userCred, self, iProject)
-	if err != nil {
-		return "", errors.Wrap(err, "newFromCloudProject")
-	}
-	return extProj.ExternalId, nil
+	return account.SyncProject(ctx, userCred, id)
 }

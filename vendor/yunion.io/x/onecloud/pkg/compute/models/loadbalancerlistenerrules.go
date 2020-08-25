@@ -112,7 +112,7 @@ func ValidateListenerRuleConditions(condition string) error {
 		return httperrors.NewInputParameterError("condition values limit (5 per rule). %d given.", conditionArray.Length())
 	}
 
-	cs := conditionArray.Value()
+	cs, _ := conditionArray.GetArray()
 	for i := range cs {
 		err := validateListenerRuleCondition(cs[i], limitations)
 		if err != nil {
@@ -129,7 +129,7 @@ func validateListenerRuleCondition(condition jsonutils.JSONObject, limitations *
 		return fmt.Errorf("invalid condition fromat,required dict. %#v", condition)
 	}
 
-	dict := conditionDict.Value()
+	dict, _ := conditionDict.GetMap()
 	field, ok := dict["field"]
 	if !ok {
 		return fmt.Errorf("parseCondition invalid condition, missing field: %#v", condition)
@@ -315,7 +315,7 @@ func parseConditionStringArrayValues(values jsonutils.JSONObject, limitations *m
 		return fmt.Errorf("parseConditionStringArrayValues invalid values format, required array: %#v", values)
 	}
 
-	vs := objs.Value()
+	vs, _ := objs.GetArray()
 	for i := range vs {
 		(*limitations)["rules"] = (*limitations)["rules"] - 1
 		if (*limitations)["rules"] < 0 {
@@ -337,7 +337,7 @@ func parseConditionDictArrayValues(values jsonutils.JSONObject, limitations *map
 		return fmt.Errorf("parseConditionDictArrayValues invalid values format, required array: %#v", values)
 	}
 
-	vs := objs.Value()
+	vs, _ := objs.GetArray()
 	for i := range vs {
 		(*limitations)["rules"] = (*limitations)["rules"] - 1
 		if (*limitations)["rules"] < 0 {
@@ -854,7 +854,7 @@ func (man *SLoadbalancerListenerRuleManager) newFromCloudLoadbalancerListenerRul
 	}
 	lbr.Name = newName
 	lbr.constructFieldsFromCloudListenerRule(userCred, extRule)
-	err = man.TableSpec().Insert(lbr)
+	err = man.TableSpec().Insert(ctx, lbr)
 
 	if err != nil {
 		log.Errorf("newFromCloudLoadbalancerListenerRule fail %s", err)
@@ -941,7 +941,7 @@ func (lbr *SLoadbalancerListenerRule) SyncWithCloudLoadbalancerListenerRule(
 
 func (manager *SLoadbalancerListenerRuleManager) GetResourceCount() ([]db.SScopeResourceCount, error) {
 	virts := manager.Query().IsFalse("pending_deleted")
-	return db.CalculateProjectResourceCount(virts)
+	return db.CalculateResourceCount(virts, "tenant_id")
 }
 
 func (manager *SLoadbalancerListenerRuleManager) ListItemExportKeys(ctx context.Context,

@@ -44,6 +44,7 @@ func InitDB() error {
 		SecurityGroupManager,
 		SecurityGroupCacheManager,
 		NetworkManager,
+		GuestManager,
 		LoadbalancerCertificateManager,
 		LoadbalancerAclManager,
 		LoadbalancerManager,
@@ -56,6 +57,9 @@ func InitDB() error {
 		DynamicschedtagManager,
 		ServerSkuManager,
 		ElasticcacheSkuManager,
+
+		ScheduledTaskActivityManager,
+		ExternalProjectManager,
 	} {
 		err := manager.InitializeData()
 		if err != nil {

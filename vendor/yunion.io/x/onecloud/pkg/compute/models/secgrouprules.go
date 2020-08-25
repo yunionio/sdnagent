@@ -33,6 +33,7 @@ import (
 	"yunion.io/x/onecloud/pkg/cloudcommon/db"
 	"yunion.io/x/onecloud/pkg/cloudcommon/db/lockman"
 	"yunion.io/x/onecloud/pkg/cloudcommon/validators"
+	"yunion.io/x/onecloud/pkg/cloudprovider"
 	"yunion.io/x/onecloud/pkg/httperrors"
 	"yunion.io/x/onecloud/pkg/mcclient"
 	"yunion.io/x/onecloud/pkg/util/logclient"
@@ -122,12 +123,9 @@ func (manager *SSecurityGroupRuleManager) FetchOwnerId(ctx context.Context, data
 }
 
 func (manager *SSecurityGroupRuleManager) FilterByOwner(q *sqlchemy.SQuery, userCred mcclient.IIdentityProvider, scope rbacutils.TRbacScope) *sqlchemy.SQuery {
-	if userCred != nil {
-		sq := SecurityGroupManager.Query("id")
-		ssq := SecurityGroupManager.FilterByOwner(sq, userCred, scope)
-		return q.In("secgroup_id", ssq.SubQuery())
-	}
-	return q
+	sq := SecurityGroupManager.Query("id")
+	sq = db.SharableManagerFilterByOwner(SecurityGroupManager, sq, userCred, scope)
+	return q.In("secgroup_id", sq.SubQuery())
 }
 
 func (manager *SSecurityGroupRuleManager) AllowCreateItem(ctx context.Context, userCred mcclient.TokenCredential, query jsonutils.JSONObject, data jsonutils.JSONObject) bool {
@@ -178,13 +176,16 @@ func (manager *SSecurityGroupRuleManager) ListItemFilter(
 	if err != nil {
 		return nil, errors.Wrap(err, "SSecurityGroupResourceBaseManager.ListItemFilter")
 	}
-	/*if defsecgroup := query.Secgroup; len(defsecgroup) > 0 {
-		if secgroup, _ := SecurityGroupManager.FetchByIdOrName(userCred, defsecgroup); secgroup != nil {
-			sql = sql.Equals("secgroup_id", secgroup.GetId())
-		} else {
-			return nil, httperrors.NewNotFoundError("Security Group %s not found", defsecgroup)
-		}
-	}*/
+	if len(query.Projects) > 0 {
+		sq := SecurityGroupManager.Query("id")
+		tenants := db.TenantCacheManager.GetTenantQuery().SubQuery()
+		subq := tenants.Query(tenants.Field("id")).Filter(sqlchemy.OR(
+			sqlchemy.In(tenants.Field("id"), query.Projects),
+			sqlchemy.In(tenants.Field("name"), query.Projects),
+		)).SubQuery()
+		sq = sq.In("tenant_id", subq)
+		sql = sql.In("secgroup_id", sq.SubQuery())
+	}
 	if len(query.Direction) > 0 {
 		sql = sql.Equals("direction", query.Direction)
 	}
@@ -194,6 +195,13 @@ func (manager *SSecurityGroupRuleManager) ListItemFilter(
 	if len(query.Protocol) > 0 {
 		sql = sql.Equals("protocol", query.Protocol)
 	}
+	if len(query.Ports) > 0 {
+		sql = sql.Equals("ports", query.Ports)
+	}
+	if len(query.Ip) > 0 {
+		sql = sql.Like("cidr", "%"+query.Ip+"%")
+	}
+
 	return sql, nil
 }
 
@@ -454,13 +462,13 @@ func (manager *SSecurityGroupRuleManager) getRulesBySecurityGroup(secgroup *SSec
 	return rules, nil
 }
 
-func (manager *SSecurityGroupRuleManager) SyncRules(ctx context.Context, userCred mcclient.TokenCredential, secgroup *SSecurityGroup, rules secrules.SecurityRuleSet) compare.SyncResult {
+func (manager *SSecurityGroupRuleManager) SyncRules(ctx context.Context, userCred mcclient.TokenCredential, secgroup *SSecurityGroup, rules cloudprovider.SecurityRuleSet) compare.SyncResult {
 	syncResult := compare.SyncResult{}
-	priority, prePriority := 100, 0
+	priority, prePriority := 10, 0
 	for i := 0; i < len(rules); i++ {
 		// 这里避免了Rule规则优先级在 1-100之外的问题,ext.GetRules()不需要进行优先级转换
-		if prePriority != 0 && rules[i].Priority != prePriority && priority > 1 {
-			priority--
+		if prePriority != 0 && rules[i].Priority != prePriority && priority < 100 {
+			priority++
 		}
 		prePriority = rules[i].Priority
 		rules[i].Priority = priority
@@ -474,7 +482,7 @@ func (manager *SSecurityGroupRuleManager) SyncRules(ctx context.Context, userCre
 	return syncResult
 }
 
-func (manager *SSecurityGroupRuleManager) newFromCloudSecurityGroup(ctx context.Context, userCred mcclient.TokenCredential, rule secrules.SecurityRule, secgroup *SSecurityGroup) (*SSecurityGroupRule, error) {
+func (manager *SSecurityGroupRuleManager) newFromCloudSecurityGroup(ctx context.Context, userCred mcclient.TokenCredential, rule cloudprovider.SecurityRule, secgroup *SSecurityGroup) (*SSecurityGroupRule, error) {
 	lockman.LockClass(ctx, manager, db.GetLockClassKey(manager, userCred))
 	defer lockman.ReleaseClass(ctx, manager, db.GetLockClassKey(manager, userCred))
 
@@ -499,7 +507,7 @@ func (manager *SSecurityGroupRuleManager) newFromCloudSecurityGroup(ctx context.
 	}
 	secrule.SecgroupId = secgroup.Id
 
-	err := manager.TableSpec().Insert(secrule)
+	err := manager.TableSpec().Insert(ctx, secrule)
 	if err != nil {
 		return nil, err
 	}
@@ -516,4 +524,21 @@ func (self *SSecurityGroupRule) GetOwnerId() mcclient.IIdentityProvider {
 
 func (manager *SSecurityGroupRuleManager) ResourceScope() rbacutils.TRbacScope {
 	return rbacutils.ScopeProject
+}
+
+func (manager *SSecurityGroupRuleManager) ListItemExportKeys(ctx context.Context,
+	q *sqlchemy.SQuery,
+	userCred mcclient.TokenCredential,
+	keys stringutils2.SSortedStrings,
+) (*sqlchemy.SQuery, error) {
+	var err error
+	q, err = manager.SResourceBaseManager.ListItemExportKeys(ctx, q, userCred, keys)
+	if err != nil {
+		return nil, errors.Wrap(err, "SResourceBaseManager.ListItemExportKeys")
+	}
+	q, err = manager.SSecurityGroupResourceBaseManager.ListItemExportKeys(ctx, q, userCred, keys)
+	if err != nil {
+		return nil, errors.Wrap(err, "SSecurityGroupResourceBaseManager.ListItemExportKeys")
+	}
+	return q, nil
 }

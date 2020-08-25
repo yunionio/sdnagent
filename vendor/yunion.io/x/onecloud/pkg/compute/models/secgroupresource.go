@@ -114,6 +114,10 @@ func (manager *SSecurityGroupResourceBaseManager) ListItemFilter(
 		}
 		q = q.Equals("secgroup_id", secgrpObj.GetId())
 	}
+	if len(query.SecgroupName) > 0 {
+		sq := SecurityGroupManager.Query("id").Like("name", "%"+query.SecgroupName+"%")
+		q = q.In("secgroup_id", sq.SubQuery())
+	}
 	return q, nil
 }
 

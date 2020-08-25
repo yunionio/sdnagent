@@ -21,6 +21,6 @@ import (
 	"yunion.io/x/onecloud/pkg/mcclient/modulebase"
 )
 
-func GetProjectResources(s *mcclient.ClientSession, serviceType string) (jsonutils.JSONObject, error) {
-	return modulebase.GetProjectResources(s, serviceType)
+func GetScopeResources(s *mcclient.ClientSession, serviceType string) (jsonutils.JSONObject, error) {
+	return modulebase.GetScopeResources(s, serviceType)
 }

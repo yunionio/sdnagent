@@ -259,11 +259,16 @@ func (self *SDBInstanceBackup) PostCreate(ctx context.Context, userCred mcclient
 }
 
 func (self *SDBInstanceBackup) StartDBInstanceBackupCreateTask(ctx context.Context, userCred mcclient.TokenCredential, data *jsonutils.JSONDict, parentTaskId string) error {
-	self.SetStatus(userCred, api.DBINSTANCE_BACKUP_CREATING, "")
 	task, err := taskman.TaskManager.NewTask(ctx, "DBInstanceBackupCreateTask", self, userCred, data, parentTaskId, "", nil)
 	if err != nil {
-		return err
+		return errors.Wrap(err, "NewTask")
 	}
+	instance, err := self.GetDBInstance()
+	if err != nil {
+		return errors.Wrap(err, "GetDBInstance")
+	}
+	instance.SetStatus(userCred, api.DBINSTANCE_BACKING_UP, "")
+	self.SetStatus(userCred, api.DBINSTANCE_BACKUP_CREATING, "")
 	task.ScheduleRun(nil)
 	return nil
 }
@@ -437,7 +442,9 @@ func (self *SDBInstanceBackup) SyncWithCloudDBInstanceBackup(
 
 		if dbinstanceId := extBackup.GetDBInstanceId(); len(dbinstanceId) > 0 {
 			//有可能云上删除了实例，未删除备份
-			_instance, err := db.FetchByExternalId(DBInstanceManager, dbinstanceId)
+			_instance, err := db.FetchByExternalIdAndManagerId(DBInstanceManager, dbinstanceId, func(q *sqlchemy.SQuery) *sqlchemy.SQuery {
+				return q.Equals("manager_id", provider.Id)
+			})
 			if err == sql.ErrNoRows {
 				self.DBInstanceId = ""
 			}
@@ -493,7 +500,9 @@ func (manager *SDBInstanceBackupManager) newFromCloudDBInstanceBackup(
 	backup.ExternalId = extBackup.GetGlobalId()
 
 	if dbinstanceId := extBackup.GetDBInstanceId(); len(dbinstanceId) > 0 {
-		_dbinstance, err := db.FetchByExternalId(DBInstanceManager, dbinstanceId)
+		_dbinstance, err := db.FetchByExternalIdAndManagerId(DBInstanceManager, dbinstanceId, func(q *sqlchemy.SQuery) *sqlchemy.SQuery {
+			return q.Equals("manager_id", provider.Id)
+		})
 		if err != nil {
 			log.Warningf("failed to found dbinstance for backup %s by externalId: %s error: %v", backup.Name, dbinstanceId, err)
 		} else {
@@ -504,7 +513,7 @@ func (manager *SDBInstanceBackupManager) newFromCloudDBInstanceBackup(
 		}
 	}
 
-	err = manager.TableSpec().Insert(&backup)
+	err = manager.TableSpec().Insert(ctx, &backup)
 	if err != nil {
 		return errors.Wrapf(err, "newFromCloudDBInstanceBackup.Insert")
 	}

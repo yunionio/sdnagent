@@ -165,15 +165,20 @@ func (manager *SDBInstanceSkuManager) ListItemFilter(
 		q = q.In("engine_version", query.EngineVersion)
 	}
 
-	zones := ZoneManager.Query().SubQuery()
-	for k, v := range map[string][]string{"zone1": query.Zone1, "zone2": query.Zone2, "zone3": query.Zone3} {
-		if len(v) > 0 {
-			q = q.Join(zones, sqlchemy.Equals(zones.Field("id"), q.Field(k))).Filter(
-				sqlchemy.OR(
-					sqlchemy.In(zones.Field("name"), v),
-					sqlchemy.In(zones.Field("id"), v),
-				),
-			)
+	for k, zoneIds := range map[string][]string{"zone1": query.Zone1, "zone2": query.Zone2, "zone3": query.Zone3} {
+		ids := []string{}
+		for _, zoneId := range zoneIds {
+			zone, err := ZoneManager.FetchByIdOrName(userCred, zoneId)
+			if err != nil {
+				if errors.Cause(err) == sql.ErrNoRows {
+					return nil, httperrors.NewResourceNotFoundError2("zone", zoneId)
+				}
+				return nil, httperrors.NewGeneralError(err)
+			}
+			ids = append(ids, zone.GetId())
+		}
+		if len(ids) > 0 {
+			q = q.In(k, ids)
 		}
 	}
 
@@ -475,7 +480,7 @@ func (manager *SDBInstanceSkuManager) SyncDBInstanceSkus(ctx context.Context, us
 
 	syncResult := compare.SyncResult{}
 
-	iskus, err := meta.GetDBInstanceSkusByRegion(region.ExternalId)
+	iskus, err := meta.GetDBInstanceSkusByRegionExternalId(region.ExternalId)
 	if err != nil {
 		syncResult.Error(err)
 		return syncResult
@@ -540,53 +545,12 @@ func (sku *SDBInstanceSku) syncWithCloudSku(ctx context.Context, userCred mcclie
 	return err
 }
 
-func (manager *SDBInstanceSkuManager) getZoneBySuffix(region *SCloudregion, suffix string) (*SZone, error) {
-	q := ZoneManager.Query().Equals("cloudregion_id", region.Id).Endswith("external_id", suffix)
-	count, err := q.CountWithError()
-	if err != nil {
-		return nil, err
-	}
-	if count > 1 {
-		return nil, fmt.Errorf("duplicate zone with suffix %s in region %s", suffix, region.Name)
-	}
-	if count == 0 {
-		return nil, fmt.Errorf("failed to found zone with suffix %s in region %s", suffix, region.Name)
-	}
-	zone := &SZone{}
-	return zone, q.First(zone)
-}
-
 func (manager *SDBInstanceSkuManager) newFromCloudSku(ctx context.Context, userCred mcclient.TokenCredential, isku SDBInstanceSku, region *SCloudregion) error {
 	sku := &isku
 	sku.SetModelManager(manager, sku)
 	sku.Id = "" //避免使用yunion meta的id,导致出现duplicate entry问题
 	sku.CloudregionId = region.Id
-
-	if len(isku.Zone1) > 0 {
-		zone, err := manager.getZoneBySuffix(region, isku.Zone1)
-		if err != nil {
-			return errors.Wrapf(err, "failed to get zone1 info by %s", isku.Zone1)
-		}
-		sku.Zone1 = zone.Id
-	}
-
-	if len(isku.Zone2) > 0 {
-		zone, err := manager.getZoneBySuffix(region, isku.Zone2)
-		if err != nil {
-			return errors.Wrapf(err, "failed to get zone1 info by %s", isku.Zone2)
-		}
-		sku.Zone2 = zone.Id
-	}
-
-	if len(isku.Zone3) > 0 {
-		zone, err := manager.getZoneBySuffix(region, isku.Zone3)
-		if err != nil {
-			return errors.Wrapf(err, "failed to get zone1 info by %s", isku.Zone3)
-		}
-		sku.Zone3 = zone.Id
-	}
-
-	return manager.TableSpec().Insert(sku)
+	return manager.TableSpec().Insert(ctx, sku)
 }
 
 func SyncRegionDBInstanceSkus(ctx context.Context, userCred mcclient.TokenCredential, regionId string, isStart bool) {

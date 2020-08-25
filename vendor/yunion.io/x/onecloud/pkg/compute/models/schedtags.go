@@ -157,8 +157,8 @@ func (manager *SSchedtagManager) ListItemFilter(
 		return nil, errors.Wrap(err, "SScopedResourceBaseManager.ListItemFilter")
 	}
 
-	if resType := query.ResourceType; resType != "" {
-		q = q.Equals("resource_type", resType)
+	if len(query.ResourceType) > 0 {
+		q = q.In("resource_type", query.ResourceType)
 	}
 
 	if len(query.DefaultStrategy) > 0 {
@@ -405,6 +405,15 @@ func (self *SSchedtag) getMoreColumns(out api.SchedtagDetails) api.SchedtagDetai
 	}
 	out.DynamicSchedtagCount, _ = self.getDynamicSchedtagCount()
 	out.SchedpolicyCount, _ = self.getSchedPoliciesCount()
+
+	// resource_count = row.host_count || row.other_count || '0'
+	if out.HostCount > 0 {
+		out.ResourceCount = out.HostCount
+	} else if out.OtherCount > 0 {
+		out.ResourceCount = out.OtherCount
+	} else {
+		out.ResourceCount = 0
+	}
 	return out
 }
 
@@ -550,7 +559,7 @@ func PerformSetResourceSchedtag(obj IModelWithSchedtag, ctx context.Context, use
 				if err := createData.Unmarshal(newTagObj); err != nil {
 					return nil, httperrors.NewGeneralError(fmt.Errorf("Create %s joint schedtag error: %v", jointMan.Keyword(), err))
 				}
-				if err := newTagObj.GetModelManager().TableSpec().Insert(newTagObj); err != nil {
+				if err := newTagObj.GetModelManager().TableSpec().Insert(ctx, newTagObj); err != nil {
 					return nil, httperrors.NewGeneralError(err)
 				}
 			}
@@ -600,5 +609,5 @@ func (s *SSchedtag) AllowPerformSetScope(ctx context.Context, userCred mcclient.
 }
 
 func (s *SSchedtag) PerformSetScope(ctx context.Context, userCred mcclient.TokenCredential, query jsonutils.JSONObject, data jsonutils.JSONObject) (jsonutils.JSONObject, error) {
-	return SchedtagManager.PerformSetScope(ctx, s, userCred, data)
+	return db.PerformSetScope(ctx, s, userCred, data)
 }
