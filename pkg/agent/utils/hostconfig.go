@@ -21,6 +21,7 @@ import (
 	"strings"
 	"time"
 
+	"yunion.io/x/onecloud/pkg/apis/identity"
 	"yunion.io/x/onecloud/pkg/hostman/options"
 	"yunion.io/x/onecloud/pkg/mcclient/auth"
 )
@@ -151,7 +152,7 @@ func (hc *HostConfig) Auth(ctx context.Context) error {
 	)
 
 	if t := hc.SessionEndpointType; t != "" {
-		if t != auth.PublicEndpointType && t != auth.InternalEndpointType {
+		if t != identity.EndpointInterfacePublic && t != identity.EndpointInterfaceInternal {
 			return fmt.Errorf("Invalid session endpoint type %q", t)
 		}
 		auth.SetEndpointType(t)

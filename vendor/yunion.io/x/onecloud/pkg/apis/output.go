@@ -121,6 +121,20 @@ type MetadataResourceInfo struct {
 	Metadata map[string]string `json:"metadata"`
 }
 
+type StatusDomainLevelUserResourceDetails struct {
+	StatusDomainLevelResourceDetails
+
+	// 用户名称
+	OwnerName string `json:"owner_name"`
+}
+
+type UserResourceDetails struct {
+	StandaloneResourceDetails
+
+	// 用户名称
+	OwnerName string `json:"owner_name"`
+}
+
 type StandaloneResourceDetails struct {
 	ResourceBaseDetails
 
@@ -141,11 +155,11 @@ type ProjectizedResourceInfo struct {
 
 	// 资源归属项目的ID(向后兼容别名）
 	// Deprecated
-	TenantId string `json:"project_id" "yunion:deprecated-by":"tenant_id"`
+	TenantId string `json:"project_id" yunion-deprecated-by:"tenant_id"`
 
 	// 资源归属项目的名称（向后兼容别名）
 	// Deprecated
-	Tenant string `json:"project" "yunion:deprecated-by":"tenant"`
+	Tenant string `json:"project" yunion-deprecated-by:"tenant"`
 }
 
 type ScopedResourceBaseInfo struct {

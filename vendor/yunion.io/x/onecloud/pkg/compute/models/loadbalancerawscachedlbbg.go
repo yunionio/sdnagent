@@ -232,7 +232,9 @@ func (man *SAwsCachedLbbgManager) SyncLoadbalancerBackendgroups(ctx context.Cont
 		var elb *SLoadbalancer
 		elbId := commonext[i].GetLoadbalancerId()
 		if len(elbId) > 0 {
-			ielb, err := db.FetchByExternalId(LoadbalancerManager, elbId)
+			ielb, err := db.FetchByExternalIdAndManagerId(LoadbalancerManager, elbId, func(q *sqlchemy.SQuery) *sqlchemy.SQuery {
+				return q.Equals("manager_id", provider.Id)
+			})
 			if err == nil {
 				elb = ielb.(*SLoadbalancer)
 			}
@@ -422,7 +424,7 @@ func (man *SAwsCachedLbbgManager) newFromCloudLoadbalancerBackendgroup(ctx conte
 	lbbg.Name = newName
 	lbbg.Status = extLoadbalancerBackendgroup.GetStatus()
 
-	err = man.TableSpec().Insert(lbbg)
+	err = man.TableSpec().Insert(ctx, lbbg)
 	if err != nil {
 		return nil, err
 	}

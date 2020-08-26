@@ -68,7 +68,7 @@ func (sggm *SScalingGroupGuestManager) Attach(ctx context.Context, scaligGroupId
 	} else {
 		sgg.Manual = tristate.False
 	}
-	return sggm.TableSpec().Insert(sgg)
+	return sggm.TableSpec().Insert(ctx, sgg)
 }
 
 func (sgg *SScalingGroupGuest) Detach(ctx context.Context, userCred mcclient.TokenCredential) error {
@@ -100,6 +100,15 @@ func (sgg *SScalingGroupGuest) SetGuestStatus(status string) error {
 		return nil
 	})
 	return err
+}
+
+func (sgg *SScalingGroupGuest) Master() db.IStandaloneModel {
+	return sgg.getGuest()
+}
+
+func (sgg *SScalingGroupGuest) Slave() db.IStandaloneModel {
+	sg, _ := ScalingGroupManager.FetchById(sgg.ScalingGroupId)
+	return sg.(*SScalingGroup)
 }
 
 func (sggm *SScalingGroupGuestManager) Query(fields ...string) *sqlchemy.SQuery {

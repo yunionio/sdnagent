@@ -285,11 +285,11 @@ type ServerConfigs struct {
 	// swagger:ignore
 	// Deprecated
 	// alias for InstanceType
-	Sku string `json:"sku" "yunion:deprecated-by":"instance_type"`
+	Sku string `json:"sku" yunion-deprecated-by:"instance_type"`
 
 	// 虚拟机高可用(创建备机)
 	// default: false
-	// requried: false
+	// required: false
 	Backup bool `json:"backup"`
 
 	// 创建虚拟机数量
@@ -359,7 +359,7 @@ type ServerCreateInput struct {
 
 	// swagger:ignore
 	// Deprecated
-	KeypairId string `json:"keypair_id" "yunion:deprecated-by":"keypair"`
+	KeypairId string `json:"keypair_id" yunion-deprecated-by:"keypair"`
 
 	// 秘钥对Id
 	// required: false
@@ -471,7 +471,8 @@ type ServerCreateInput struct {
 
 	// swagger:ignore
 	OsType string `json:"os_type"`
-
+	// swagger:ignore
+	DisableUsbKbd bool `json:"disable_usb_kbd"`
 	// swagger:ignore
 	OsProfile jsonutils.JSONObject `json:"__os_profile__"`
 	// swagger:ignore

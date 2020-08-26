@@ -383,8 +383,7 @@ func (manager *SElasticcacheSkuManager) SyncElasticcacheSkus(ctx context.Context
 
 	syncResult := compare.SyncResult{}
 
-	extSkuMeta.SetRegionFilter(region)
-	extSkus, err := extSkuMeta.GetElasticCacheSkus()
+	extSkus, err := extSkuMeta.GetElasticCacheSkusByRegionExternalId(region.ExternalId)
 	if err != nil {
 		syncResult.Error(err)
 		return syncResult
@@ -448,13 +447,15 @@ func (self *SElasticcacheSku) syncWithCloudSku(ctx context.Context, userCred mcc
 	_, err := db.Update(self, func() error {
 		self.PrepaidStatus = extSku.PrepaidStatus
 		self.PostpaidStatus = extSku.PostpaidStatus
+		self.ZoneId = extSku.ZoneId
+		self.SlaveZoneId = extSku.SlaveZoneId
 		return nil
 	})
 	return err
 }
 
 func (manager *SElasticcacheSkuManager) newFromCloudSku(ctx context.Context, userCred mcclient.TokenCredential, extSku SElasticcacheSku) error {
-	return manager.TableSpec().Insert(&extSku)
+	return manager.TableSpec().Insert(ctx, &extSku)
 }
 
 func (manager *SElasticcacheSkuManager) AllowGetPropertyInstanceSpecs(ctx context.Context, userCred mcclient.TokenCredential, query jsonutils.JSONObject) bool {

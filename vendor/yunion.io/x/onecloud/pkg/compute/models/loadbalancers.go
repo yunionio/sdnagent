@@ -53,6 +53,8 @@ type SLoadbalancerManager struct {
 
 	SManagedResourceBaseManager
 	SCloudregionResourceBaseManager
+
+	SLoadbalancerClusterResourceBaseManager
 }
 
 var LoadbalancerManager *SLoadbalancerManager
@@ -107,8 +109,7 @@ type SLoadbalancer struct {
 	// 虚拟私有网络Id
 	// VpcId string `width:"36" charset:"ascii" nullable:"true" list:"user" create:"optional"`
 
-	// 负载均衡集群Id
-	ClusterId string `width:"36" charset:"ascii" nullable:"true" list:"user" create:"optional" json:"cluster_id"`
+	SLoadbalancerClusterResourceBase
 
 	// 计费类型
 	ChargeType string `list:"user" get:"user" create:"optional" update:"user" json:"charge_type"`
@@ -384,6 +385,10 @@ func (lb *SLoadbalancer) GetRegion() *SCloudregion {
 	return lb.SCloudregionResourceBase.GetRegion()
 }
 
+func (lb *SLoadbalancer) GetCloudproviderId() string {
+	return lb.SManagedResourceBase.GetCloudproviderId()
+}
+
 func (lb *SLoadbalancer) GetZone() *SZone {
 	return lb.SZoneResourceBase.GetZone()
 }
@@ -514,18 +519,44 @@ func (lb *SLoadbalancer) StartLoadBalancerCreateTask(ctx context.Context, userCr
 }
 
 func (lb *SLoadbalancer) ValidateUpdateData(ctx context.Context, userCred mcclient.TokenCredential, query jsonutils.JSONObject, data *jsonutils.JSONDict) (*jsonutils.JSONDict, error) {
-	backendGroupV := validators.NewModelIdOrNameValidator("backend_group", "loadbalancerbackendgroup", lb.GetOwnerId())
-	backendGroupV.Optional(true)
-	err := backendGroupV.Validate(data)
-	if err != nil {
-		return nil, err
+	var (
+		ownerId       = lb.GetOwnerId()
+		backendGroupV = validators.NewModelIdOrNameValidator("backend_group", "loadbalancerbackendgroup", ownerId)
+		clusterV      = validators.NewModelIdOrNameValidator("cluster", "loadbalancercluster", ownerId)
+		keyV          = map[string]validators.IValidator{
+			"backend_group": backendGroupV,
+			"cluster":       clusterV,
+		}
+	)
+	for _, v := range keyV {
+		v.Optional(true)
+		if err := v.Validate(data); err != nil {
+			return nil, err
+		}
 	}
 	if backendGroup, ok := backendGroupV.Model.(*SLoadbalancerBackendGroup); ok && backendGroup.LoadbalancerId != lb.Id {
 		return nil, httperrors.NewInputParameterError("backend group %s(%s) belongs to loadbalancer %s, not %s",
 			backendGroup.Name, backendGroup.Id, backendGroup.LoadbalancerId, lb.Id)
 	}
+	if clusterV.Model != nil {
+		var (
+			cluster = clusterV.Model.(*SLoadbalancerCluster)
+			network = lb.GetNetwork()
+			wire    = network.GetWire()
+			zone    = wire.GetZone()
+		)
+		if cluster.ZoneId != zone.Id {
+			return nil, httperrors.NewInputParameterError("cluster zone %s does not match network zone %s ",
+				cluster.ZoneId, zone.Id)
+		}
+		if cluster.WireId != "" && cluster.WireId != network.WireId {
+			return nil, httperrors.NewInputParameterError("cluster wire affiliation does not match network's: %s != %s",
+				cluster.WireId, network.WireId)
+		}
+	}
+
 	input := apis.VirtualResourceBaseUpdateInput{}
-	err = data.Unmarshal(&input)
+	err := data.Unmarshal(&input)
 	if err != nil {
 		return nil, errors.Wrap(err, "Unmarshal")
 	}
@@ -548,6 +579,7 @@ func (man *SLoadbalancerManager) FetchCustomizeColumns(
 ) []api.LoadbalancerDetails {
 	rows := make([]api.LoadbalancerDetails, len(objs))
 
+	clusterRows := man.SLoadbalancerClusterResourceBaseManager.FetchCustomizeColumns(ctx, userCred, query, objs, fields, isList)
 	virtRows := man.SVirtualResourceBaseManager.FetchCustomizeColumns(ctx, userCred, query, objs, fields, isList)
 	manRows := man.SManagedResourceBaseManager.FetchCustomizeColumns(ctx, userCred, query, objs, fields, isList)
 	regRows := man.SCloudregionResourceBaseManager.FetchCustomizeColumns(ctx, userCred, query, objs, fields, isList)
@@ -557,6 +589,8 @@ func (man *SLoadbalancerManager) FetchCustomizeColumns(
 
 	for i := range rows {
 		rows[i] = api.LoadbalancerDetails{
+			LoadbalancerClusterResourceInfo: clusterRows[i],
+
 			VirtualResourceDetails:  virtRows[i],
 			ManagedResourceInfo:     manRows[i],
 			CloudregionResourceInfo: regRows[i],
@@ -722,7 +756,7 @@ func (man *SLoadbalancerManager) SyncLoadbalancers(ctx context.Context, userCred
 		if err != nil {
 			syncResult.UpdateError(err)
 		} else {
-			syncMetadata(ctx, userCred, &commondb[i], commonext[i])
+			syncVirtualResourceMetadata(ctx, userCred, &commondb[i], commonext[i])
 			localLbs = append(localLbs, commondb[i])
 			remoteLbs = append(remoteLbs, commonext[i])
 			syncResult.Update()
@@ -733,7 +767,7 @@ func (man *SLoadbalancerManager) SyncLoadbalancers(ctx context.Context, userCred
 		if err != nil {
 			syncResult.AddError(err)
 		} else {
-			syncMetadata(ctx, userCred, new, added[i])
+			syncVirtualResourceMetadata(ctx, userCred, new, added[i])
 			localLbs = append(localLbs, *new)
 			remoteLbs = append(remoteLbs, added[i])
 			syncResult.Add()
@@ -742,11 +776,18 @@ func (man *SLoadbalancerManager) SyncLoadbalancers(ctx context.Context, userCred
 	return localLbs, remoteLbs, syncResult
 }
 
-func getExtLbNetworkIds(extLb cloudprovider.ICloudLoadbalancer) []string {
+func getExtLbNetworkIds(extLb cloudprovider.ICloudLoadbalancer, managerId string) []string {
 	extNetworkIds := extLb.GetNetworkIds()
 	lbNetworkIds := []string{}
 	for _, networkId := range extNetworkIds {
-		if network, err := db.FetchByExternalId(NetworkManager, networkId); err == nil && network != nil {
+		network, err := db.FetchByExternalIdAndManagerId(NetworkManager, networkId, func(q *sqlchemy.SQuery) *sqlchemy.SQuery {
+			wire := WireManager.Query().SubQuery()
+			vpc := VpcManager.Query().SubQuery()
+			return q.Join(wire, sqlchemy.Equals(wire.Field("id"), q.Field("wire_id"))).
+				Join(vpc, sqlchemy.Equals(vpc.Field("id"), wire.Field("vpc_id"))).
+				Filter(sqlchemy.Equals(vpc.Field("manager_id"), managerId))
+		})
+		if err == nil && network != nil {
 			lbNetworkIds = append(lbNetworkIds, network.GetId())
 		}
 	}
@@ -774,11 +815,13 @@ func (man *SLoadbalancerManager) newFromCloudLoadbalancer(ctx context.Context, u
 	lb.ChargeType = extLb.GetChargeType()
 	lb.EgressMbps = extLb.GetEgressMbps()
 	lb.ExternalId = extLb.GetGlobalId()
-	lbNetworkIds := getExtLbNetworkIds(extLb)
+	lbNetworkIds := getExtLbNetworkIds(extLb, lb.ManagerId)
 	lb.NetworkId = strings.Join(lbNetworkIds, ",")
 
 	if vpcId := extLb.GetVpcId(); len(vpcId) > 0 {
-		if vpc, err := db.FetchByExternalId(VpcManager, vpcId); err == nil && vpc != nil {
+		if vpc, err := db.FetchByExternalIdAndManagerId(VpcManager, vpcId, func(q *sqlchemy.SQuery) *sqlchemy.SQuery {
+			return q.Equals("manager_id", provider.Id)
+		}); err == nil && vpc != nil {
 			lb.VpcId = vpc.GetId()
 		}
 	}
@@ -792,7 +835,7 @@ func (man *SLoadbalancerManager) newFromCloudLoadbalancer(ctx context.Context, u
 		lb.LBInfo = extLb.GetMetadata()
 	}
 
-	if err := man.TableSpec().Insert(&lb); err != nil {
+	if err := man.TableSpec().Insert(ctx, &lb); err != nil {
 		log.Errorf("newFromCloudRegion fail %s", err)
 		return nil, err
 	}
@@ -950,14 +993,16 @@ func (lb *SLoadbalancer) SyncWithCloudLoadbalancer(ctx context.Context, userCred
 		lb.EgressMbps = extLb.GetEgressMbps()
 		lb.ChargeType = extLb.GetChargeType()
 		lb.ManagerId = provider.Id
-		lbNetworkIds := getExtLbNetworkIds(extLb)
+		lbNetworkIds := getExtLbNetworkIds(extLb, lb.ManagerId)
 		lb.NetworkId = strings.Join(lbNetworkIds, ",")
 		if extLb.GetMetadata() != nil {
 			lb.LBInfo = extLb.GetMetadata()
 		}
 
 		if vpcId := extLb.GetVpcId(); len(vpcId) > 0 {
-			if vpc, err := db.FetchByExternalId(VpcManager, vpcId); err == nil && vpc != nil {
+			if vpc, err := db.FetchByExternalIdAndManagerId(VpcManager, vpcId, func(q *sqlchemy.SQuery) *sqlchemy.SQuery {
+				return q.Equals("manager_id", provider.Id)
+			}); err == nil && vpc != nil {
 				lb.VpcId = vpc.GetId()
 			}
 		}
@@ -967,7 +1012,7 @@ func (lb *SLoadbalancer) SyncWithCloudLoadbalancer(ctx context.Context, userCred
 
 	db.OpsLog.LogSyncUpdate(lb, diff, userCred)
 
-	networkIds := getExtLbNetworkIds(extLb)
+	networkIds := getExtLbNetworkIds(extLb, lb.ManagerId)
 	SyncCloudProject(userCred, lb, syncOwnerId, extLb, provider.Id)
 	lb.syncLoadbalancerNetwork(ctx, userCred, networkIds)
 
@@ -1008,7 +1053,7 @@ func (man *SLoadbalancerManager) InitializeData() error {
 
 func (manager *SLoadbalancerManager) GetResourceCount() ([]db.SScopeResourceCount, error) {
 	virts := manager.Query().IsFalse("pending_deleted")
-	return db.CalculateProjectResourceCount(virts)
+	return db.CalculateResourceCount(virts, "tenant_id")
 }
 
 func (manager *SLoadbalancerManager) FetchByExternalId(providerId string, extId string) (*SLoadbalancer, error) {

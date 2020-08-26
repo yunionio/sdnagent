@@ -574,7 +574,7 @@ func (self *SSnapshotManager) CreateSnapshot(ctx context.Context, owner mcclient
 	if retentionDay > 0 {
 		snapshot.ExpiredAt = time.Now().AddDate(0, 0, retentionDay)
 	}
-	err = SnapshotManager.TableSpec().Insert(snapshot)
+	err = SnapshotManager.TableSpec().Insert(ctx, snapshot)
 	if err != nil {
 		return nil, err
 	}
@@ -610,7 +610,11 @@ func (self *SSnapshot) ValidateDeleteCondition(ctx context.Context) error {
 	if count > 0 {
 		return httperrors.NewBadRequestError("snapshot referenced by instance snapshot")
 	}
-	return self.GetRegionDriver().ValidateSnapshotDelete(ctx, self)
+	driver := self.GetRegionDriver()
+	if driver != nil {
+		return driver.ValidateSnapshotDelete(ctx, self)
+	}
+	return nil
 }
 
 func (self *SSnapshot) GetStorage() *SStorage {
@@ -625,7 +629,11 @@ func (self *SSnapshot) GetStorageType() string {
 }
 
 func (self *SSnapshot) GetRegionDriver() IRegionDriver {
-	return self.GetRegion().GetDriver()
+	cloudRegion := self.GetRegion()
+	if cloudRegion != nil {
+		return cloudRegion.GetDriver()
+	}
+	return nil
 }
 
 func (self *SSnapshot) CustomizeDelete(ctx context.Context, userCred mcclient.TokenCredential, query jsonutils.JSONObject, data jsonutils.JSONObject) error {
@@ -637,11 +645,14 @@ func (self *SSnapshot) AllowPerformDeleted(ctx context.Context, userCred mcclien
 }
 
 func (self *SSnapshot) PerformDeleted(ctx context.Context, userCred mcclient.TokenCredential, query jsonutils.JSONObject, data jsonutils.JSONObject) (jsonutils.JSONObject, error) {
-	db.Update(self, func() error {
+	_, err := db.Update(self, func() error {
 		self.OutOfChain = true
 		return nil
 	})
-	err := self.StartSnapshotDeleteTask(ctx, userCred, true, "")
+	if err != nil {
+		return nil, err
+	}
+	err = self.StartSnapshotDeleteTask(ctx, userCred, true, "")
 	return nil, err
 }
 
@@ -877,7 +888,10 @@ func (manager *SSnapshotManager) newFromCloudSnapshot(ctx context.Context, userC
 	snapshot.ExternalId = extSnapshot.GetGlobalId()
 	var localDisk *SDisk
 	if len(extSnapshot.GetDiskId()) > 0 {
-		disk, err := db.FetchByExternalId(DiskManager, extSnapshot.GetDiskId())
+		disk, err := db.FetchByExternalIdAndManagerId(DiskManager, extSnapshot.GetDiskId(), func(q *sqlchemy.SQuery) *sqlchemy.SQuery {
+			sq := StorageManager.Query().SubQuery()
+			return q.Join(sq, sqlchemy.Equals(q.Field("storage_id"), sq.Field("id"))).Filter(sqlchemy.Equals(sq.Field("manager_id"), provider.Id))
+		})
 		if err != nil {
 			log.Errorf("snapshot %s missing disk?", snapshot.Name)
 		} else {
@@ -891,7 +905,7 @@ func (manager *SSnapshotManager) newFromCloudSnapshot(ctx context.Context, userC
 	snapshot.ManagerId = provider.Id
 	snapshot.CloudregionId = region.Id
 
-	err = manager.TableSpec().Insert(&snapshot)
+	err = manager.TableSpec().Insert(ctx, &snapshot)
 	if err != nil {
 		log.Errorf("newFromCloudEip fail %s", err)
 		return nil, err
@@ -955,7 +969,7 @@ func (manager *SSnapshotManager) SyncSnapshots(ctx context.Context, userCred mcc
 		if err != nil {
 			syncResult.UpdateError(err)
 		} else {
-			syncMetadata(ctx, userCred, &commondb[i], commonext[i])
+			syncVirtualResourceMetadata(ctx, userCred, &commondb[i], commonext[i])
 			syncResult.Update()
 		}
 	}
@@ -964,7 +978,7 @@ func (manager *SSnapshotManager) SyncSnapshots(ctx context.Context, userCred mcc
 		if err != nil {
 			syncResult.AddError(err)
 		} else {
-			syncMetadata(ctx, userCred, local, added[i])
+			syncVirtualResourceMetadata(ctx, userCred, local, added[i])
 			syncResult.Add()
 		}
 	}
@@ -1015,7 +1029,7 @@ func (self *SSnapshot) getCloudProviderInfo() SCloudProviderInfo {
 
 func (manager *SSnapshotManager) GetResourceCount() ([]db.SScopeResourceCount, error) {
 	virts := manager.Query().IsFalse("fake_deleted")
-	return db.CalculateProjectResourceCount(virts)
+	return db.CalculateResourceCount(virts, "tenant_id")
 }
 
 func (manager *SSnapshotManager) CleanupSnapshots(ctx context.Context, userCred mcclient.TokenCredential, isStart bool) {
@@ -1084,20 +1098,7 @@ func (manager *SSnapshotManager) ListItemExportKeys(ctx context.Context,
 	var err error
 	q, err = manager.SVirtualResourceBaseManager.ListItemExportKeys(ctx, q, userCred, keys)
 	if err != nil {
-		return nil, errors.Wrap(err, "SVirtualResourceBaseManager.ListItemExportKeys")
-	}
-
-	if keys.ContainsAny(manager.SManagedResourceBaseManager.GetExportKeys()...) {
-		q, err = manager.SManagedResourceBaseManager.ListItemExportKeys(ctx, q, userCred, keys)
-		if err != nil {
-			return nil, errors.Wrap(err, "SManagedResourceBaseManager.ListItemExportKeys")
-		}
-	}
-	if keys.ContainsAny(manager.SCloudregionResourceBaseManager.GetExportKeys()...) {
-		q, err = manager.SCloudregionResourceBaseManager.ListItemExportKeys(ctx, q, userCred, keys)
-		if err != nil {
-			return nil, errors.Wrap(err, "SCloudregionResourceBaseManager.ListItemExportKeys")
-		}
+		return nil, err
 	}
 	if keys.Contains("disk") {
 		q, err = manager.SDiskResourceBaseManager.ListItemExportKeys(ctx, q, userCred, stringutils2.NewSortedStrings([]string{"disk"}))

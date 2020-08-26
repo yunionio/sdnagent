@@ -19,14 +19,17 @@ import (
 	"database/sql"
 	"fmt"
 	"net/url"
+	"sort"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"yunion.io/x/jsonutils"
 	"yunion.io/x/log"
 	"yunion.io/x/pkg/errors"
 	"yunion.io/x/pkg/tristate"
+	"yunion.io/x/pkg/util/netutils"
 	"yunion.io/x/pkg/util/timeutils"
 	"yunion.io/x/pkg/utils"
 	"yunion.io/x/sqlchemy"
@@ -34,7 +37,6 @@ import (
 	"yunion.io/x/onecloud/pkg/apis"
 	proxyapi "yunion.io/x/onecloud/pkg/apis/cloudcommon/proxy"
 	api "yunion.io/x/onecloud/pkg/apis/compute"
-	"yunion.io/x/onecloud/pkg/cloudcommon/consts"
 	"yunion.io/x/onecloud/pkg/cloudcommon/db"
 	"yunion.io/x/onecloud/pkg/cloudcommon/db/lockman"
 	"yunion.io/x/onecloud/pkg/cloudcommon/db/proxy"
@@ -46,7 +48,6 @@ import (
 	"yunion.io/x/onecloud/pkg/httperrors"
 	"yunion.io/x/onecloud/pkg/mcclient"
 	"yunion.io/x/onecloud/pkg/mcclient/auth"
-	"yunion.io/x/onecloud/pkg/mcclient/modules"
 	"yunion.io/x/onecloud/pkg/multicloud/esxi/vcenter"
 	"yunion.io/x/onecloud/pkg/util/choices"
 	"yunion.io/x/onecloud/pkg/util/httputils"
@@ -157,6 +158,9 @@ type SCloudaccount struct {
 
 	// 默认值proxyapi.ProxySettingId_DIRECT
 	ProxySettingId string `width:"36" charset:"ascii" nullable:"false" list:"domain" create:"optional" update:"domain" default:"DIRECT"`
+
+	// 公有云子账号登录地址
+	IamLoginUrl string `width:"512" charset:"ascii" nullable:"false" list:"domain" update:"domain"`
 }
 
 func (self *SCloudaccount) GetCloudproviders() []SCloudprovider {
@@ -328,6 +332,474 @@ func (self *SCloudaccount) ValidateUpdateData(
 	return input, nil
 }
 
+func (self *SCloudaccount) PostUpdate(ctx context.Context, userCred mcclient.TokenCredential, query jsonutils.JSONObject, data jsonutils.JSONObject) {
+	self.SEnabledStatusInfrasResourceBase.PostUpdate(ctx, userCred, query, data)
+	input := api.CloudaccountUpdateInput{}
+	data.Unmarshal(&input)
+	if input.Options != nil {
+		logclient.AddSimpleActionLog(self, logclient.ACT_UPDATE_BILLING_OPTIONS, input.Options, userCred, true)
+	}
+}
+
+func (scm *SCloudaccountManager) AllowPerformPrepareNets(_ context.Context, userCred mcclient.TokenCredential, _ jsonutils.JSONObject) bool {
+	return db.IsAdminAllowPerform(userCred, scm, "prepare-nets")
+}
+
+// Performpreparenets searches for suitable network facilities for physical and virtual machines under the cloud account or provides configuration recommendations for network facilities before importing a cloud account.
+func (scm *SCloudaccountManager) PerformPrepareNets(ctx context.Context, userCred mcclient.TokenCredential, query jsonutils.JSONObject, input api.CloudaccountPerformPrepareNetsInput) (api.CloudaccountPerformPrepareNetsOutput, error) {
+	var (
+		err    error
+		output api.CloudaccountPerformPrepareNetsOutput
+	)
+	if input.Provider != api.CLOUD_PROVIDER_VMWARE {
+		return output, httperrors.NewNotSupportedError("not support for cloudaccount with provider '%s'", input.Provider)
+	}
+	// validate first
+	input.CloudaccountCreateInput, err = scm.ValidateCreateData(ctx, userCred, userCred, query, input.CloudaccountCreateInput)
+	if err != nil {
+		return output, err
+	}
+	// validate domain
+	if len(input.ProjectDomain) > 0 {
+		_, input.DomainizedResourceInput, err = db.ValidateDomainizedResourceInput(ctx, input.DomainizedResourceInput)
+		if err != nil {
+			return output, err
+		}
+	}
+
+	domainId := input.ProjectDomain
+	if len(input.Project) > 0 {
+		var tenent *db.STenant
+		tenent, input.ProjectizedResourceInput, err = db.ValidateProjectizedResourceInput(ctx, input.ProjectizedResourceInput)
+		if err != nil {
+			return output, err
+		}
+		if len(domainId) == 0 {
+			domainId = tenent.DomainId
+		}
+	}
+
+	// Determine the zoneids according to esxiagent. If there is no esxiagent, zone0 is used by default. And the wires are filtered according to the specified domain and zoneids
+	// make sure zone
+	zoneids, err := scm.fetchEsxiZoneIds()
+	if err != nil {
+		return output, errors.Wrap(err, "unable to fetchEsxiZoneIds")
+	}
+	if len(zoneids) == 0 {
+		id, err := scm.defaultZoneId(userCred)
+		if err != nil {
+			return output, errors.Wrap(err, "unable to fetch defaultZoneId")
+		}
+		zoneids = append(zoneids, id)
+	}
+	// fetch all wire candidate
+	wires, err := scm.fetchWires(zoneids, domainId)
+	if err != nil {
+		return output, errors.Wrap(err, "unable to fetch wires")
+	}
+
+	// Find the appropriate wire from above wires according to the Host's IP. The logic for finding is that the networks in the wire can contain the Host as much as possible. If no suitable one is found, a new wire is used.
+	// fetch all Host
+	factory, err := cloudprovider.GetProviderFactory(input.Provider)
+	if err != nil {
+		return output, errors.Wrap(err, "cloudprovider.GetProviderFactory")
+	}
+	proxySetting, _, _ := proxy.ValidateProxySettingResourceInput(userCred, input.ProxySettingResourceInput)
+	proxyFunc := proxySetting.HttpTransportProxyFunc()
+	provider, err := factory.GetProvider(cloudprovider.ProviderConfig{
+		Vendor:    input.Provider,
+		URL:       input.AccessUrl,
+		Account:   input.Account,
+		Secret:    input.Secret,
+		ProxyFunc: proxyFunc,
+	})
+	iregion, err := provider.GetOnPremiseIRegion()
+	if err != nil {
+		return output, errors.Wrap(err, "provider.GetOnPremiseIRegion")
+	}
+	hosts, err := iregion.GetIHosts()
+	if err != nil {
+		return output, errors.Wrap(err, "unable to get hosts")
+	}
+	// fetch networks
+	networks := make([][]SNetwork, len(wires))
+	for i := range networks {
+		nets, err := wires[i].getNetworks(userCred, rbacutils.ScopeSystem)
+		if err != nil {
+			return output, errors.Wrap(err, "wire.getNetwork")
+		}
+		networks[i] = nets
+	}
+	// fetch host ips
+	// key of ipHosts is host's ip
+	ipHosts := make(map[netutils.IPV4Addr]cloudprovider.ICloudHost, len(hosts))
+	for i := range hosts {
+		ip := hosts[i].GetAccessIp()
+		if len(ip) == 0 {
+			log.Errorf("unable to get accessip of host %q", hosts[i].GetName())
+			continue
+		}
+		addr, err := netutils.NewIPV4Addr(ip)
+		if err != nil {
+			return output, err
+		}
+		ipHosts[addr] = hosts[i]
+	}
+	// Find suitable wire and the network containing the Host IP in suitable wire.
+	var (
+		tmpSocre         int
+		maxScore         = len(ipHosts)
+		suitableWire     *SWire
+		suitableNetworks map[netutils.IPV4Addr]*SNetwork
+	)
+	for i, nets := range networks {
+		score := 0
+		tmpSNs := make(map[netutils.IPV4Addr]*SNetwork)
+		ipRanges := make([]netutils.IPV4AddrRange, len(nets))
+		for i2 := range ipRanges {
+			ipRanges[i2] = nets[i2].GetIPRange()
+		}
+		for ip := range ipHosts {
+			for i := range ipRanges {
+				if !ipRanges[i].Contains(ip) {
+					continue
+				}
+				tmpSNs[ip] = &nets[i]
+				score += 1
+				break
+			}
+		}
+		if score > tmpSocre {
+			tmpSocre = score
+			suitableWire = &wires[i]
+			suitableNetworks = tmpSNs
+		}
+		if tmpSocre == maxScore {
+			break
+		}
+	}
+	if suitableWire != nil {
+		output.SuitableWire = suitableWire.GetId()
+	} else {
+		output.SuggestedWire = api.CAWireConf{
+			ZoneIds:     zoneids,
+			Name:        input.Name + "-wire",
+			Description: fmt.Sprintf("Auto created Wire for VMware account %q", input.Name),
+		}
+	}
+
+	// Give the suggested network configuration for the Host IP that does not have a corresponding suitable network.
+	noNetHostIP := make([]netutils.IPV4Addr, 0, len(ipHosts))
+	for hip, host := range ipHosts {
+		rnet := api.CAHostNet{
+			Name: host.GetName(),
+			IP:   host.GetAccessIp(),
+		}
+		if net, ok := suitableNetworks[hip]; ok {
+			rnet.SuitableNetwork = net.GetId()
+		} else {
+			noNetHostIP = append(noNetHostIP, hip)
+		}
+		output.Hosts = append(output.Hosts, rnet)
+	}
+
+	if len(noNetHostIP) > 0 {
+		sConfs := scm.suggestHostNetworks(noNetHostIP)
+		confs := make([]api.CANetConf, len(sConfs))
+		for i := range confs {
+			confs[i].CASimpleNetConf = sConfs[i]
+			confs[i].Name = fmt.Sprintf("%s-host-network-%d", input.Name, i+1)
+		}
+		output.HostSuggestedNetworks = confs
+	}
+
+	// Find the suitable network containing the VM IP in Project 'input.Project', and if not, give the corresponding suggested network configuration in this project.
+	project := input.Project
+	nets := []*SNetwork{}
+	var allNets []SNetwork
+	if suitableWire != nil {
+		allNets, err = suitableWire.getNetworks(userCred, rbacutils.ScopeSystem)
+		if err != nil {
+			return output, err
+		}
+		for i := range allNets {
+			if allNets[i].ProjectId == project {
+				nets = append(nets, &allNets[i])
+			}
+		}
+	}
+	// find suitable network
+	vms := make([]cloudprovider.ICloudVM, 0, len(hosts))
+	for _, host := range hosts {
+		vs, err := host.GetIVMs()
+		if err != nil {
+			return output, errors.Wrapf(err, "unable to get VMs of host %q", host.GetName())
+		}
+		vms = append(vms, vs...)
+	}
+	ipVMs := make(map[netutils.IPV4Addr]int, len(vms))
+	for i, vm := range vms {
+		nics, err := vm.GetINics()
+		if err != nil {
+			return output, errors.Wrapf(err, "unable get nics of vm %q", vm.GetName())
+		}
+		for _, nic := range nics {
+			ipStr := nic.GetIP()
+			if len(ipStr) == 0 {
+				continue
+			}
+			ip, err := netutils.NewIPV4Addr(ipStr)
+			if err != nil {
+				return output, errors.Wrapf(err, "unable to new IPV4Addr for ip %q", nic.GetIP())
+			}
+			ipVMs[ip] = i
+		}
+		output.Guests = append(output.Guests, api.CAGuestNet{
+			Name:   vm.GetName(),
+			IPNets: make([]api.CAIPNet, 0, 1),
+		})
+	}
+	suitableNetworks = make(map[netutils.IPV4Addr]*SNetwork)
+	if len(nets) != 0 {
+		for vip := range ipVMs {
+			for i := range nets {
+				ipRange := nets[i].GetIPRange()
+				if !ipRange.Contains(vip) {
+					continue
+				}
+				suitableNetworks[vip] = nets[i]
+				break
+			}
+		}
+	}
+
+	noNetVMIPs := make([]netutils.IPV4Addr, 0, len(ipVMs))
+	for vip, i := range ipVMs {
+		ipnet := api.CAIPNet{
+			IP: vip.String(),
+		}
+		if net, ok := suitableNetworks[vip]; ok {
+			ipnet.SuitableNetwork = net.GetId()
+		} else {
+			noNetVMIPs = append(noNetVMIPs, vip)
+		}
+		output.Guests[i].IPNets = append(output.Guests[ipVMs[vip]].IPNets, ipnet)
+	}
+
+	// excludedIRs is to prevent network conflicts
+	excludedIRs := make([]netutils.IPV4AddrRange, len(allNets))
+	for i := range excludedIRs {
+		excludedIRs[i] = allNets[i].GetIPRange()
+	}
+	for i := range output.HostSuggestedNetworks {
+		startIPStr := output.HostSuggestedNetworks[i].GuestIpStart
+		endIPStr := output.HostSuggestedNetworks[i].GuestIpEnd
+		startIP, _ := netutils.NewIPV4Addr(startIPStr)
+		endIP, _ := netutils.NewIPV4Addr(endIPStr)
+		excludedIRs = append(excludedIRs, netutils.NewIPV4AddrRange(startIP, endIP))
+	}
+	if len(noNetVMIPs) > 0 {
+		sConfs := scm.suggestVMNetwors(noNetVMIPs, excludedIRs)
+		confs := make([]api.CANetConf, len(sConfs))
+		for i := range confs {
+			confs[i].CASimpleNetConf = sConfs[i]
+			confs[i].Name = fmt.Sprintf("%s-guest-network-%d", input.Name, i+1)
+		}
+		output.GuestSuggestedNetworks = confs
+	}
+	return output, nil
+}
+
+func (manager *SCloudaccountManager) fetchWires(zoneIds []string, domainId string) ([]SWire, error) {
+	q := WireManager.Query().Equals("domain_id", domainId).In("zone_id", zoneIds)
+	wires := make([]SWire, 0, 1)
+	err := db.FetchModelObjects(WireManager, q, &wires)
+	return wires, err
+}
+
+func (manager *SCloudaccountManager) defaultZoneId(userCred mcclient.TokenCredential) (string, error) {
+	zone, err := ZoneManager.FetchByName(userCred, "zone0")
+	if err != nil {
+		return "", err
+	}
+	return zone.GetId(), nil
+}
+
+func (manager *SCloudaccountManager) fetchEsxiZoneIds() ([]string, error) {
+	q := BaremetalagentManager.Query().Equals("agent_type", "esxiagent").Asc("created_at")
+	agents := make([]SBaremetalagent, 0, 1)
+	err := db.FetchModelObjects(BaremetalagentManager, q, &agents)
+	if err != nil {
+		return nil, err
+	}
+	ids := make([]string, 0, len(agents))
+	for i := range agents {
+		if agents[i].Status == api.BAREMETAL_AGENT_ENABLED {
+			ids = append(ids, agents[i].ZoneId)
+		}
+	}
+	for i := range agents {
+		if agents[i].Status != api.BAREMETAL_AGENT_ENABLED {
+			ids = append(ids, agents[i].ZoneId)
+		}
+	}
+	return ids, nil
+}
+
+// The suggestHostNetworks give the suggest config of network contains the ip in 'ips'.
+// The suggested network mask is 24 and the gateway is x.x.x.1.
+// The suggests network is the smallest network segment that meets the above conditions.
+func (manager *SCloudaccountManager) suggestHostNetworks(ips []netutils.IPV4Addr) []api.CASimpleNetConf {
+	if len(ips) == 0 {
+		return nil
+	}
+	sort.Slice(ips, func(i, j int) bool {
+		return ips[i] < ips[j]
+	})
+	var (
+		mask        int8 = 24
+		lastnetAddr netutils.IPV4Addr
+		consequent  []netutils.IPV4Addr
+		ret         []api.CASimpleNetConf
+	)
+	lastnetAddr = ips[0].NetAddr(mask)
+	consequent = []netutils.IPV4Addr{ips[0]}
+	for i := 1; i < len(ips); i++ {
+		ip := ips[i]
+		netAddr := ip.NetAddr(mask)
+		if netAddr == lastnetAddr && consequent[len(consequent)-1]+1 == ip {
+			consequent = append(consequent, ip)
+			continue
+		}
+
+		if netAddr != lastnetAddr {
+			lastnetAddr = netAddr
+		}
+
+		gatewayIP := consequent[0].NetAddr(mask) + 1
+		ret = append(ret, api.CASimpleNetConf{
+			GuestIpStart: consequent[0].String(),
+			GuestIpEnd:   consequent[len(consequent)-1].String(),
+			GuestIpMask:  mask,
+			GuestGateway: gatewayIP.String(),
+		})
+		consequent = []netutils.IPV4Addr{ip}
+	}
+	gatewayIp := consequent[0].NetAddr(mask) + 1
+	ret = append(ret, api.CASimpleNetConf{
+		GuestIpStart: consequent[0].String(),
+		GuestIpEnd:   consequent[len(consequent)-1].String(),
+		GuestIpMask:  mask,
+		GuestGateway: gatewayIp.String(),
+	})
+	return ret
+}
+
+// The suggestVMNetworks give the suggest config of network that contain the IP in 'ips' and does not intersect with the network segment described in 'excludes'.
+// The suggested network mask is 24 and the gateway is x.x.x.1.
+// The suggests network is the largest network segment that meets the above conditions.
+func (manager *SCloudaccountManager) suggestVMNetwors(ips []netutils.IPV4Addr, excludes []netutils.IPV4AddrRange) []api.CASimpleNetConf {
+	var mask int8 = 24
+	netAddrMap := make(map[netutils.IPV4Addr][]netutils.IPV4AddrRange)
+	//
+	for _, ip := range ips {
+		netAddr := ip.NetAddr(mask)
+		if _, ok := netAddrMap[netAddr]; !ok {
+			netAddrMap[netAddr] = []netutils.IPV4AddrRange{}
+		}
+	}
+	for _, iprange := range excludes {
+		startNet := iprange.StartIp().NetAddr(mask)
+		endNet := iprange.EndIp().NetAddr(mask)
+		irs := make([]netutils.IPV4AddrRange, 0, 1)
+		for net := startNet; net <= endNet; net += 1 << (uint(32 - mask)) {
+			startip := net + 1
+			endip := net + 255
+			if net == startNet {
+				startip = iprange.StartIp()
+			}
+			if net == endNet {
+				endip = iprange.EndIp()
+			}
+			irs = append(irs, netutils.NewIPV4AddrRange(startip, endip))
+		}
+		for _, ir := range irs {
+			net := ir.StartIp().NetAddr(mask)
+			if _, ok := netAddrMap[net]; ok {
+				netAddrMap[net] = append(netAddrMap[net], ir)
+			}
+		}
+	}
+	// sort
+	for _, irs := range netAddrMap {
+		sort.Slice(irs, func(i, j int) bool {
+			if irs[i].StartIp() == irs[j].StartIp() {
+				return irs[i].EndIp() < irs[j].EndIp()
+			}
+			return irs[i].StartIp() < irs[j].StartIp()
+		})
+	}
+	// merge
+	for ip, irs := range netAddrMap {
+		newIrs := make([]netutils.IPV4AddrRange, 0, 1)
+		if len(irs) == 0 {
+			continue
+		}
+		tmp := &irs[0]
+		for i := 1; i < len(irs); i++ {
+			if newTmp, ok := tmp.Merge(irs[i]); ok {
+				tmp = newTmp
+				continue
+			}
+			newIrs = append(newIrs, *tmp)
+			tmp = &irs[i]
+		}
+		newIrs = append(newIrs, *tmp)
+		netAddrMap[ip] = newIrs
+	}
+	// reverse
+	for ip, irs := range netAddrMap {
+		if len(irs) == 0 {
+			netAddrMap[ip] = []netutils.IPV4AddrRange{netutils.NewIPV4AddrRange(ip+1, ip+254)}
+		}
+		newIrs := make([]netutils.IPV4AddrRange, 0, 1)
+		startIP := ip + 1
+		for _, ir := range irs {
+			if startIP == ir.StartIp() {
+				startIP = ir.EndIp() + 1
+				continue
+			}
+			newIrs = append(newIrs, netutils.NewIPV4AddrRange(startIP, ir.StartIp()-1))
+			startIP = ir.EndIp() + 1
+		}
+		if startIP != ip+255 {
+			newIrs = append(newIrs, netutils.NewIPV4AddrRange(startIP, ip+254))
+		}
+		netAddrMap[ip] = newIrs
+	}
+	lastIrs := make(map[netutils.IPV4Addr]netutils.IPV4AddrRange)
+	for _, ip := range ips {
+		net := ip.NetAddr(mask)
+		for _, ir := range netAddrMap[net] {
+			if ir.Contains(ip) {
+				lastIrs[ir.StartIp()] = ir
+				break
+			}
+		}
+	}
+	ret := make([]api.CASimpleNetConf, 0, len(lastIrs))
+	for _, ir := range lastIrs {
+		gateway := ir.StartIp().NetAddr(mask) + 1
+		ret = append(ret, api.CASimpleNetConf{
+			GuestIpStart: ir.StartIp().String(),
+			GuestIpEnd:   ir.EndIp().String(),
+			GuestIpMask:  mask,
+			GuestGateway: gateway.String(),
+		})
+	}
+	return ret
+}
+
 func (manager *SCloudaccountManager) ValidateCreateData(
 	ctx context.Context,
 	userCred mcclient.TokenCredential,
@@ -341,17 +813,37 @@ func (manager *SCloudaccountManager) ValidateCreateData(
 		return input, err
 	}
 
-	if len(input.Project) > 0 {
-		_, input.ProjectizedResourceInput, err = db.ValidateProjectizedResourceInput(ctx, input.ProjectizedResourceInput)
-		if err != nil {
-			return input, errors.Wrap(err, "db.ValidateProjectizedResourceInput")
-		}
-	}
-
 	if !cloudprovider.IsSupported(input.Provider) {
 		return input, httperrors.NewInputParameterError("Unsupported provider %s", input.Provider)
 	}
 	providerDriver, _ := cloudprovider.GetProviderFactory(input.Provider)
+
+	forceAutoCreateProject := providerDriver.IsNeedForceAutoCreateProject()
+	if forceAutoCreateProject {
+		input.AutoCreateProject = &forceAutoCreateProject
+	}
+
+	if len(input.Project) > 0 {
+		var proj *db.STenant
+		proj, input.ProjectizedResourceInput, err = db.ValidateProjectizedResourceInput(ctx, input.ProjectizedResourceInput)
+		if err != nil {
+			return input, errors.Wrap(err, "db.ValidateProjectizedResourceInput")
+		}
+		if proj.DomainId != ownerId.GetProjectDomainId() {
+			return input, httperrors.NewInputParameterError("Project %s(%s) not belong to domain %s(%s)", proj.Name, proj.Id, ownerId.GetProjectDomain(), ownerId.GetProjectDomainId())
+		}
+		if input.AutoCreateProject != nil && *input.AutoCreateProject {
+			log.Warningf("project_id and auto_create_project should not be turned on at the same time")
+		}
+		if !forceAutoCreateProject {
+			input.AutoCreateProject = nil
+		}
+	} else if input.AutoCreateProject == nil || !*input.AutoCreateProject {
+		log.Warningf("auto_create_project is off while no project_id specified")
+		createProject := true
+		input.AutoCreateProject = &createProject
+	}
+
 	input.SCloudaccount, err = providerDriver.ValidateCreateCloudaccountData(ctx, userCred, input.SCloudaccountCredential)
 	if err != nil {
 		return input, err
@@ -427,20 +919,6 @@ func (manager *SCloudaccountManager) ValidateCreateData(
 		input.SyncIntervalSeconds = options.Options.DefaultSyncIntervalSeconds
 	} else if input.SyncIntervalSeconds < options.Options.MinimalSyncIntervalSeconds {
 		input.SyncIntervalSeconds = options.Options.MinimalSyncIntervalSeconds
-	}
-
-	if !input.AutoCreateProject {
-		if userCred.GetProjectDomainId() != ownerId.GetProjectDomainId() {
-			s := auth.GetAdminSession(ctx, consts.GetRegion(), "v1")
-			params := jsonutils.Marshal(map[string]string{"domain_id": ownerId.GetProjectDomainId()})
-			tenants, err := modules.Projects.List(s, params)
-			if err != nil {
-				return input, err
-			}
-			if tenants.Total == 0 {
-				return input, httperrors.NewInputParameterError("There is no projects under the domain %s", ownerId.GetProjectDomainId())
-			}
-		}
 	}
 
 	input.EnabledStatusInfrasResourceBaseCreateInput, err = manager.SEnabledStatusInfrasResourceBaseManager.ValidateCreateData(ctx, userCred, ownerId, query, input.EnabledStatusInfrasResourceBaseCreateInput)
@@ -674,7 +1152,7 @@ func (self *SCloudaccount) PerformUpdateCredential(ctx context.Context, userCred
 
 	if changed {
 		db.OpsLog.LogEvent(self, db.ACT_UPDATE, account.Account, userCred)
-		logclient.AddActionLogWithContext(ctx, self, logclient.ACT_UPDATE, account.Account, userCred, true)
+		logclient.AddActionLogWithContext(ctx, self, logclient.ACT_UPDATE_CREDENTIAL, account.Account, userCred, true)
 
 		self.SetStatus(userCred, api.CLOUD_PROVIDER_INIT, "Change credential")
 		self.StartSyncCloudProviderInfoTask(ctx, userCred, nil, "")
@@ -739,9 +1217,9 @@ func (self *SCloudaccount) MarkEndSyncWithLock(ctx context.Context, userCred mcc
 	lockman.LockObject(ctx, self)
 	defer lockman.ReleaseObject(ctx, self)
 
-	if self.SyncStatus == api.CLOUD_PROVIDER_SYNC_STATUS_IDLE {
-		return nil
-	}
+	// if self.SyncStatus == api.CLOUD_PROVIDER_SYNC_STATUS_IDLE {
+	// 	return nil
+	// }
 
 	providers := self.GetCloudproviders()
 	for i := range providers {
@@ -906,7 +1384,7 @@ func (self *SCloudaccount) importSubAccount(ctx context.Context, userCred mcclie
 
 		newCloudprovider.SetModelManager(CloudproviderManager, &newCloudprovider)
 
-		err = CloudproviderManager.TableSpec().Insert(&newCloudprovider)
+		err = CloudproviderManager.TableSpec().Insert(ctx, &newCloudprovider)
 		if err != nil {
 			return nil, err
 		} else {
@@ -1173,7 +1651,7 @@ func migrateCloudprovider(cloudprovider *SCloudprovider) error {
 		account.Name = providerName
 		account.Status = cloudprovider.Status
 
-		err := CloudaccountManager.TableSpec().Insert(&account)
+		err := CloudaccountManager.TableSpec().Insert(context.Background(), &account)
 		if err != nil {
 			log.Errorf("Insert Account error: %v", err)
 			return err
@@ -1485,17 +1963,12 @@ func (manager *SCloudaccountManager) ListItemFilter(
 	userCred mcclient.TokenCredential,
 	query api.CloudaccountListInput,
 ) (*sqlchemy.SQuery, error) {
-	accountStr := query.Cloudaccount
-	if len(accountStr) > 0 {
-		accountObj, err := manager.FetchByIdOrName(userCred, accountStr)
-		if err != nil {
-			if err == sql.ErrNoRows {
-				return nil, httperrors.NewResourceNotFoundError2(manager.Keyword(), accountStr)
-			} else {
-				return nil, httperrors.NewGeneralError(err)
-			}
-		}
-		q = q.Equals("id", accountObj.GetId())
+	accountArr := query.Cloudaccount
+	if len(accountArr) > 0 {
+		q = q.Filter(sqlchemy.OR(
+			sqlchemy.In(q.Field("id"), accountArr),
+			sqlchemy.In(q.Field("name"), accountArr),
+		))
 	}
 
 	q, err := manager.SEnabledStatusInfrasResourceBaseManager.ListItemFilter(ctx, q, userCred, query.EnabledStatusInfrasResourceBaseListInput)
@@ -1753,6 +2226,18 @@ func (manager *SCloudaccountManager) initAllRecords() {
 	}
 }
 
+func (self *SCloudaccount) CanSync() bool {
+	if self.SyncStatus == api.CLOUD_PROVIDER_SYNC_STATUS_QUEUED || self.SyncStatus == api.CLOUD_PROVIDER_SYNC_STATUS_SYNCING || self.getSyncStatus2() == api.CLOUD_PROVIDER_SYNC_STATUS_SYNCING {
+		if self.LastSync.IsZero() || time.Now().Sub(self.LastSync) > 1800*time.Second {
+			return true
+		} else {
+			return false
+		}
+	} else {
+		return true
+	}
+}
+
 func (manager *SCloudaccountManager) AutoSyncCloudaccountTask(ctx context.Context, userCred mcclient.TokenCredential, isStart bool) {
 	if isStart && !options.Options.IsSlaveNode {
 		// mark all the records to be idle
@@ -1788,7 +2273,7 @@ func (account *SCloudaccount) probeAccountStatus(ctx context.Context, userCred m
 	manager, err := account.getProviderInternal()
 	if err != nil {
 		log.Errorf("account.GetProvider failed: %s", err)
-		return nil, err
+		return nil, errors.Wrap(err, "account.getProviderInternal")
 	}
 	balance, status, err := manager.GetBalance()
 	if err != nil {
@@ -1806,8 +2291,9 @@ func (account *SCloudaccount) probeAccountStatus(ctx context.Context, userCred m
 	sysInfo, err := manager.GetSysInfo()
 	if err != nil {
 		log.Errorf("manager.GetSysInfo fail %s", err)
-		return nil, err
+		return nil, errors.Wrap(err, "manager.GetSysInfo")
 	}
+	iamLoginUrl := manager.GetIamLoginUrl()
 	factory := manager.GetFactory()
 	diff, err := db.Update(account, func() error {
 		isPublic := factory.IsPublicCloud()
@@ -1821,6 +2307,7 @@ func (account *SCloudaccount) probeAccountStatus(ctx context.Context, userCred m
 		account.ProbeAt = timeutils.UtcNow()
 		account.Version = version
 		account.Sysinfo = sysInfo
+		account.IamLoginUrl = iamLoginUrl
 		return nil
 	})
 	if err != nil {
@@ -1859,7 +2346,7 @@ func (account *SCloudaccount) syncAccountStatus(ctx context.Context, userCred mc
 	if err != nil {
 		account.markAllProvidersDicconnected(ctx, userCred)
 		account.markAccountDiscconected(ctx, userCred)
-		return err
+		return errors.Wrap(err, "account.probeAccountStatus")
 	}
 	account.markAccountConnected(ctx, userCred)
 	providers := account.importAllSubaccounts(ctx, userCred, subaccounts)
@@ -1868,7 +2355,7 @@ func (account *SCloudaccount) syncAccountStatus(ctx context.Context, userCred mc
 			_, err := providers[i].prepareCloudproviderRegions(ctx, userCred)
 			if err != nil {
 				log.Errorf("syncCloudproviderRegion fail %s", err)
-				return err
+				return errors.Wrap(err, "providers[i].prepareCloudproviderRegions")
 			}
 		}
 	}
@@ -1887,13 +2374,39 @@ func (account *SCloudaccount) markAutoSync(userCred mcclient.TokenCredential) er
 	return nil
 }
 
+var (
+	cloudaccountPendingSyncs      = map[string]struct{}{}
+	cloudaccountPendingSyncsMutex = &sync.Mutex{}
+)
+
 func (account *SCloudaccount) SubmitSyncAccountTask(ctx context.Context, userCred mcclient.TokenCredential, waitChan chan error, autoSync bool) {
+	cloudaccountPendingSyncsMutex.Lock()
+	defer cloudaccountPendingSyncsMutex.Unlock()
+	if _, ok := cloudaccountPendingSyncs[account.Id]; ok {
+		if waitChan != nil {
+			go func() {
+				// an active cloudaccount sync task is running, return with conflict error
+				log.Errorf("an active cloudaccount sync task is running, early return with conflict error")
+				waitChan <- errors.Wrap(httperrors.ErrConflict, "cloudaccountPendingSyncs")
+			}()
+		}
+		return
+	}
+	cloudaccountPendingSyncs[account.Id] = struct{}{}
+
 	RunSyncCloudAccountTask(func() {
+		func() {
+			cloudaccountPendingSyncsMutex.Lock()
+			defer cloudaccountPendingSyncsMutex.Unlock()
+			delete(cloudaccountPendingSyncs, account.Id)
+		}()
+
 		log.Debugf("syncAccountStatus %s %s", account.Id, account.Name)
 		err := account.syncAccountStatus(ctx, userCred)
 		if waitChan != nil {
 			if err != nil {
 				account.markEndSync(userCred)
+				err = errors.Wrap(err, "account.syncAccountStatus")
 			}
 			waitChan <- err
 		} else {
@@ -1903,7 +2416,8 @@ func (account *SCloudaccount) SubmitSyncAccountTask(ctx context.Context, userCre
 				account.markAutoSync(userCred)
 				providers := account.GetEnabledCloudproviders()
 				for i := range providers {
-					providers[i].syncCloudproviderRegions(ctx, userCred, syncRange, nil, autoSync)
+					provider := &providers[i]
+					provider.syncCloudproviderRegions(ctx, userCred, syncRange, nil, autoSync)
 					syncCnt += 1
 				}
 			}
@@ -1929,6 +2443,16 @@ func (self *SCloudaccount) Delete(ctx context.Context, userCred mcclient.TokenCr
 
 func (self *SCloudaccount) RealDelete(ctx context.Context, userCred mcclient.TokenCredential) error {
 	self.SetStatus(userCred, api.CLOUD_PROVIDER_DELETED, "real delete")
+	projects, err := self.GetExternalProjects()
+	if err != nil {
+		return errors.Wrap(err, "GetExternalProjects")
+	}
+	for i := range projects {
+		err = projects[i].Delete(ctx, userCred)
+		if err != nil {
+			return errors.Wrapf(err, "project %s Delete", projects[i].Id)
+		}
+	}
 	return self.SEnabledStatusInfrasResourceBase.Delete(ctx, userCred)
 }
 
@@ -2259,6 +2783,32 @@ func (account *SCloudaccount) PerformSyncSkus(ctx context.Context, userCred mccl
 	return nil, nil
 }
 
+func (self *SCloudaccount) GetExternalProjects() ([]SExternalProject, error) {
+	projects := []SExternalProject{}
+	q := ExternalProjectManager.Query().Equals("cloudaccount_id", self.Id)
+	err := db.FetchModelObjects(ExternalProjectManager, q, &projects)
+	if err != nil {
+		return nil, errors.Wrap(err, "db.FetchModelObjects")
+	}
+	return projects, nil
+}
+
+func (self *SCloudaccount) GetExternalProjectsByProjectIdOrName(projectId, name string) ([]SExternalProject, error) {
+	projects := []SExternalProject{}
+	q := ExternalProjectManager.Query().Equals("cloudaccount_id", self.Id)
+	q = q.Filter(
+		sqlchemy.OR(
+			sqlchemy.Equals(q.Field("name"), name),
+			sqlchemy.Equals(q.Field("tenant_id"), projectId),
+		),
+	)
+	err := db.FetchModelObjects(ExternalProjectManager, q, &projects)
+	if err != nil {
+		return nil, errors.Wrap(err, "db.FetchModelObjects")
+	}
+	return projects, nil
+}
+
 func (manager *SCloudaccountManager) queryCloudAccountByCapability(region *SCloudregion, zone *SZone, domainId string, enabled tristate.TriState, capability string) *sqlchemy.SQuery {
 	providers := CloudproviderManager.Query().SubQuery()
 	q := manager.Query()
@@ -2349,4 +2899,79 @@ func (account *SCloudaccount) GetUsages() []db.IUsage {
 	return []db.IUsage{
 		&usage,
 	}
+}
+
+func (self *SCloudaccount) GetAvailableExternalProject(local *db.STenant, projects []SExternalProject) *SExternalProject {
+	var ret *SExternalProject = nil
+	for i := 0; i < len(projects); i++ {
+		if projects[i].Status == api.EXTERNAL_PROJECT_STATUS_AVAILABLE {
+			if projects[i].ProjectId == local.Id {
+				return &projects[i]
+			}
+			if projects[i].Name == local.Name {
+				ret = &projects[i]
+			}
+		}
+	}
+	return ret
+}
+
+// 若本地项目映射了多个云上项目，则在云上随机找一个项目
+// 若本地项目没有映射云上任何项目，则在云上新建一个同名项目
+// 若本地项目a映射云上项目b，但b项目不可用,则看云上是否有a项目，有则直接使用,若没有则在云上创建a-1, a-2类似项目
+func (self *SCloudaccount) SyncProject(ctx context.Context, userCred mcclient.TokenCredential, projectId string) (string, error) {
+	lockman.LockRawObject(ctx, self.Id, projectId)
+	defer lockman.ReleaseRawObject(ctx, self.Id, projectId)
+
+	provider, err := self.GetProvider()
+	if err != nil {
+		return "", errors.Wrap(err, "GetProvider")
+	}
+
+	if !cloudprovider.IsSupportProject(provider) {
+		return "", nil
+	}
+
+	project, err := db.TenantCacheManager.FetchTenantById(ctx, projectId)
+	if err != nil {
+		return "", errors.Wrapf(err, "FetchTenantById(%s)", projectId)
+	}
+
+	projects, err := self.GetExternalProjectsByProjectIdOrName(projectId, project.Name)
+	if err != nil {
+		return "", errors.Wrapf(err, "GetExternalProjectsByProjectIdOrName(%s,%s)", projectId, project.Name)
+	}
+
+	extProj := self.GetAvailableExternalProject(project, projects)
+	if extProj != nil {
+		return extProj.ExternalId, nil
+	}
+
+	retry := 1
+	if len(projects) > 0 {
+		retry = 10
+	}
+
+	var iProject cloudprovider.ICloudProject = nil
+	projectName := project.Name
+	for i := 0; i < retry; i++ {
+		iProject, err = provider.CreateIProject(projectName)
+		if err == nil {
+			break
+		}
+		projectName = fmt.Sprintf("%s-%d", project.Name, i)
+	}
+	if err != nil {
+		if errors.Cause(err) != cloudprovider.ErrNotImplemented && errors.Cause(err) != cloudprovider.ErrNotSupported {
+			logclient.AddSimpleActionLog(self, logclient.ACT_CREATE, err, userCred, false)
+		}
+		return "", errors.Wrapf(err, "CreateIProject(%s)", projectName)
+	}
+
+	extProj, err = ExternalProjectManager.newFromCloudProject(ctx, userCred, self, project, iProject)
+	if err != nil {
+		return "", errors.Wrap(err, "newFromCloudProject")
+	}
+
+	return extProj.ExternalId, nil
 }
