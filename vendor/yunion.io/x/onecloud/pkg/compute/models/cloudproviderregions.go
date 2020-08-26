@@ -122,7 +122,7 @@ func (self *SCloudproviderregion) GetAccount() *SCloudaccount {
 func (self *SCloudproviderregion) GetRegion() *SCloudregion {
 	regionObj, err := CloudregionManager.FetchById(self.CloudregionId)
 	if err != nil {
-		log.Errorf("CloudproviderManager.FetchById fail %s", err)
+		log.Errorf("CloudregionManager.FetchById(%s) fail %s", self.CloudregionId, err)
 		return nil
 	}
 	return regionObj.(*SCloudregion)
@@ -207,17 +207,22 @@ func (self *SCloudproviderregion) Detach(ctx context.Context, userCred mcclient.
 /*
 过滤出指定cloudAccountId || providerIds || cloudAccountId+providerIds关联的region id
 */
-func (manager *SCloudproviderregionManager) QueryRelatedRegionIds(cloudAccountId string, providerIds ...string) *sqlchemy.SSubQuery {
+func (manager *SCloudproviderregionManager) QueryRelatedRegionIds(cloudAccounts []string, providerIds ...string) *sqlchemy.SSubQuery {
 	q := manager.Query("cloudregion_id")
 
 	if len(providerIds) > 0 {
 		q = q.Filter(sqlchemy.In(q.Field("cloudprovider_id"), providerIds))
 	}
 
-	if len(cloudAccountId) > 0 {
+	if len(cloudAccounts) > 0 {
+		cpq := CloudaccountManager.Query().SubQuery()
+		subcpq := cpq.Query(cpq.Field("id")).Filter(sqlchemy.OR(
+			sqlchemy.In(cpq.Field("id"), cloudAccounts),
+			sqlchemy.In(cpq.Field("name"), cloudAccounts),
+		)).SubQuery()
 		providers := CloudproviderManager.Query().SubQuery()
 		q = q.Join(providers, sqlchemy.Equals(providers.Field("id"), q.Field("cloudprovider_id")))
-		q.Filter(sqlchemy.Equals(providers.Field("cloudaccount_id"), cloudAccountId))
+		q.Filter(sqlchemy.In(providers.Field("cloudaccount_id"), subcpq))
 	}
 
 	return q.Distinct().SubQuery()
@@ -253,7 +258,7 @@ func (manager *SCloudproviderregionManager) FetchByIdsOrCreate(providerId string
 	cpr.Enabled = true
 	cpr.SyncStatus = api.CLOUD_PROVIDER_SYNC_STATUS_IDLE
 
-	err := manager.TableSpec().Insert(cpr)
+	err := manager.TableSpec().Insert(context.Background(), cpr)
 	if err != nil {
 		log.Errorf("insert fail %s", err)
 		return nil

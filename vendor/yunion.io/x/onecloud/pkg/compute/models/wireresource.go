@@ -63,6 +63,14 @@ func (self *SWireResourceBase) GetWire() *SWire {
 	return nil
 }
 
+func (self *SWireResourceBase) GetCloudproviderId() string {
+	vpc := self.GetVpc()
+	if vpc != nil {
+		return vpc.ManagerId
+	}
+	return ""
+}
+
 func (self *SWireResourceBase) GetVpc() *SVpc {
 	wire := self.GetWire()
 	if wire != nil {
@@ -166,21 +174,22 @@ func (manager *SWireResourceBaseManager) ListItemFilter(
 		return nil, errors.Wrap(err, "SVpcResourceBaseManager.ListItemFilter")
 	}
 
-	if len(query.Zone) > 0 {
+	if len(query.ZoneList()) > 0 {
+		region := &SCloudregion{}
+		firstZone := query.FirstZone()
 		sq := ZoneManager.Query().SubQuery()
 		q := CloudregionManager.Query()
 		q = q.Join(sq, sqlchemy.Equals(sq.Field("cloudregion_id"), q.Field("id"))).Filter(sqlchemy.OR(
-			sqlchemy.Equals(sq.Field("id"), query.Zone),
-			sqlchemy.Equals(sq.Field("name"), query.Zone),
+			sqlchemy.Equals(sq.Field("id"), firstZone),
+			sqlchemy.Equals(sq.Field("name"), firstZone),
 		))
 		count, err := q.CountWithError()
 		if err != nil {
 			return nil, errors.Wrap(err, "CountWithError")
 		}
 		if count < 1 {
-			return nil, httperrors.NewResourceNotFoundError2("zone", query.Zone)
+			return nil, httperrors.NewResourceNotFoundError2("zone", firstZone)
 		}
-		region := &SCloudregion{}
 		err = q.First(region)
 		if err != nil {
 			return nil, errors.Wrap(err, "q.First")

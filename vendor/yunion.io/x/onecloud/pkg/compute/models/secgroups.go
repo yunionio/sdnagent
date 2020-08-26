@@ -17,7 +17,6 @@ package models
 import (
 	"context"
 	"database/sql"
-	"sort"
 	"strings"
 	"time"
 
@@ -145,12 +144,18 @@ func (manager *SSecurityGroupManager) ListItemFilter(
 		q = q.Filter(sqlchemy.OR(filters...))
 	}
 
-	if input.IsDirty != nil {
-		if *input.IsDirty {
-			q = q.IsTrue("is_dirty")
-		} else {
-			q = q.IsFalse("is_dirty")
+	if len(input.Ip) > 0 || len(input.Ports) > 0 {
+		sq := SecurityGroupRuleManager.Query("secgroup_id")
+		if len(input.Ip) > 0 {
+			sq = sq.Like("cidr", input.Ip+"%")
 		}
+		if len(input.Ports) > 0 {
+			sq = sq.Equals("ports", input.Ports)
+		}
+		if utils.IsInStringArray(input.Direction, []string{"in", "out"}) {
+			sq = sq.Equals("direction", input.Direction)
+		}
+		q = q.In("id", sq.SubQuery())
 	}
 
 	return q, nil
@@ -276,19 +281,140 @@ func (manager *SSecurityGroupManager) FetchCustomizeColumns(
 	rows := make([]api.SecgroupDetails, len(objs))
 
 	virtRows := manager.SSharableVirtualResourceBaseManager.FetchCustomizeColumns(ctx, userCred, query, objs, fields, isList)
-
+	secgroupIds := make([]string, len(objs))
 	for i := range rows {
 		rows[i] = api.SecgroupDetails{
 			SharableVirtualResourceDetails: virtRows[i],
 		}
-		sg := objs[i].(*SSecurityGroup)
-		rows[i].GuestCnt = len(sg.GetGuests())
-		rows[i].CacheCnt, _ = sg.GetSecgroupCacheCount()
-		if !isList {
-			rows[i].Rules = sg.getSecurityRuleString("")
-			rows[i].InRules = sg.getSecurityRuleString("in")
-			rows[i].OutRules = sg.getSecurityRuleString("out")
+		secgroup := objs[i].(*SSecurityGroup)
+		secgroupIds[i] = secgroup.Id
+	}
+
+	caches := []SSecurityGroupCache{}
+	q := SecurityGroupCacheManager.Query().In("secgroup_id", secgroupIds)
+	err := db.FetchModelObjects(SecurityGroupCacheManager, q, &caches)
+	if err != nil {
+		log.Errorf("db.FetchModelObjects error: %v", err)
+		return rows
+	}
+
+	cacheMaps := map[string]int{}
+	for i := range caches {
+		if _, ok := cacheMaps[caches[i].SecgroupId]; !ok {
+			cacheMaps[caches[i].SecgroupId] = 0
 		}
+		cacheMaps[caches[i].SecgroupId]++
+	}
+
+	guests := []SGuest{}
+	q = GuestManager.Query()
+	q = q.Filter(sqlchemy.OR(
+		sqlchemy.In(q.Field("secgrp_id"), secgroupIds),
+		sqlchemy.In(q.Field("admin_secgrp_id"), secgroupIds),
+	))
+
+	ownerId, queryScope, err := db.FetchCheckQueryOwnerScope(ctx, userCred, query, GuestManager, policy.PolicyActionList, true)
+	if err != nil {
+		log.Errorf("FetchCheckQueryOwnerScope error: %v", err)
+		return rows
+	}
+
+	q = GuestManager.FilterByOwner(q, ownerId, queryScope)
+	err = db.FetchModelObjects(GuestManager, q, &guests)
+	if err != nil {
+		log.Errorf("db.FetchModelObjects error: %v", err)
+		return rows
+	}
+
+	adminGuestMaps := map[string]int{}
+	systemGuestMaps := map[string]int{}
+	normalGuestMaps := map[string]int{}
+	for i := range guests {
+		if guests[i].IsSystem {
+			if _, ok := systemGuestMaps[guests[i].SecgrpId]; !ok {
+				systemGuestMaps[guests[i].SecgrpId] = 0
+			}
+			systemGuestMaps[guests[i].SecgrpId]++
+		} else {
+			if _, ok := normalGuestMaps[guests[i].SecgrpId]; !ok {
+				normalGuestMaps[guests[i].SecgrpId] = 0
+			}
+			normalGuestMaps[guests[i].SecgrpId]++
+		}
+		if len(guests[i].AdminSecgrpId) > 0 {
+			if _, ok := adminGuestMaps[guests[i].AdminSecgrpId]; !ok {
+				adminGuestMaps[guests[i].AdminSecgrpId] = 0
+			}
+			adminGuestMaps[guests[i].AdminSecgrpId]++
+		}
+	}
+
+	sq := GuestManager.Query("id")
+	sq = GuestManager.FilterByOwner(sq, ownerId, queryScope)
+
+	guestSecgroups := []SGuestsecgroup{}
+	q = GuestsecgroupManager.Query().In("secgroup_id", secgroupIds).In("guest_id", sq.SubQuery())
+	err = db.FetchModelObjects(GuestsecgroupManager, q, &guestSecgroups)
+	if err != nil {
+		log.Errorf("db.FetchModelObjects error: %v", err)
+		return rows
+	}
+
+	for i := range guestSecgroups {
+		if _, ok := normalGuestMaps[guestSecgroups[i].SecgroupId]; !ok {
+			normalGuestMaps[guestSecgroups[i].SecgroupId] = 0
+		}
+		normalGuestMaps[guestSecgroups[i].SecgroupId]++
+	}
+
+	rules := []SSecurityGroupRule{}
+	q = SecurityGroupRuleManager.Query().In("secgroup_id", secgroupIds)
+	err = db.FetchModelObjects(SecurityGroupRuleManager, q, &rules)
+	if err != nil {
+		log.Errorf("db.FetchModelObjects error: %v", err)
+		return rows
+	}
+	ruleMaps := map[string][]SSecurityGroupRule{}
+	for i := range rules {
+		if _, ok := ruleMaps[rules[i].SecgroupId]; !ok {
+			ruleMaps[rules[i].SecgroupId] = []SSecurityGroupRule{}
+		}
+		ruleMaps[rules[i].SecgroupId] = append(ruleMaps[rules[i].SecgroupId], rules[i])
+	}
+	for i := range rows {
+		rules, ok := ruleMaps[secgroupIds[i]]
+		if !ok {
+			continue
+		}
+		_rules := []api.SSecurityGroupRule{}
+		_inRules := []api.SSecurityGroupRule{}
+		_outRules := []api.SSecurityGroupRule{}
+		for j := range rules {
+			rule := api.SSecurityGroupRule{
+				Id:          rules[j].Id,
+				Priority:    rules[j].Priority,
+				Protocol:    rules[j].Protocol,
+				Ports:       rules[j].Ports,
+				Direction:   rules[j].Direction,
+				CIDR:        rules[j].CIDR,
+				Action:      rules[j].Action,
+				Description: rules[j].Description,
+			}
+			_rules = append(_rules, rule)
+			switch rule.Direction {
+			case secrules.DIR_IN:
+				_inRules = append(_inRules, rule)
+			case secrules.DIR_OUT:
+				_outRules = append(_outRules, rule)
+			}
+		}
+		rows[i].Rules = _rules
+		rows[i].InRules = _inRules
+		rows[i].OutRules = _outRules
+		rows[i].CacheCnt, _ = cacheMaps[secgroupIds[i]]
+		rows[i].GuestCnt, _ = normalGuestMaps[secgroupIds[i]]
+		rows[i].AdminGuestCnt, _ = adminGuestMaps[secgroupIds[i]]
+		rows[i].SystemGuestCnt, _ = systemGuestMaps[secgroupIds[i]]
 	}
 
 	return rows
@@ -348,7 +474,7 @@ func (self *SSecurityGroup) PostCreate(ctx context.Context, userCred mcclient.To
 		}
 		rule.SecgroupId = self.Id
 
-		SecurityGroupRuleManager.TableSpec().Insert(rule)
+		SecurityGroupRuleManager.TableSpec().Insert(ctx, rule)
 	}
 }
 
@@ -499,7 +625,7 @@ func (self *SSecurityGroup) PerformAddRule(ctx context.Context, userCred mcclien
 	if err := rule.ValidateRule(); err != nil {
 		return nil, httperrors.NewInputParameterError(err.Error())
 	}
-	if err := SecurityGroupRuleManager.TableSpec().Insert(secgrouprule); err != nil {
+	if err := SecurityGroupRuleManager.TableSpec().Insert(ctx, secgrouprule); err != nil {
 		return nil, httperrors.NewInputParameterError(err.Error())
 	}
 	self.DoSync(ctx, userCred)
@@ -532,7 +658,7 @@ func (self *SSecurityGroup) PerformClone(ctx context.Context, userCred mcclient.
 	secgroup.ProjectId = userCred.GetProjectId()
 	secgroup.DomainId = userCred.GetProjectDomainId()
 
-	err = SecurityGroupManager.TableSpec().Insert(secgroup)
+	err = SecurityGroupManager.TableSpec().Insert(ctx, secgroup)
 	if err != nil {
 		return nil, err
 		//db.OpsLog.LogCloneEvent(self, secgroup, userCred, nil)
@@ -551,7 +677,7 @@ func (self *SSecurityGroup) PerformClone(ctx context.Context, userCred mcclient.
 		secgrouprule.Action = rule.Action
 		secgrouprule.Description = rule.Description
 		secgrouprule.SecgroupId = secgroup.Id
-		if err := SecurityGroupRuleManager.TableSpec().Insert(secgrouprule); err != nil {
+		if err := SecurityGroupRuleManager.TableSpec().Insert(ctx, secgrouprule); err != nil {
 			return nil, err
 		}
 	}
@@ -696,35 +822,46 @@ func (manager *SSecurityGroupManager) getSecurityGroups() ([]SSecurityGroup, err
 }
 
 func (manager *SSecurityGroupManager) newFromCloudSecgroup(ctx context.Context, userCred mcclient.TokenCredential, provider *SCloudprovider, extSec cloudprovider.ICloudSecurityGroup) (*SSecurityGroup, error) {
+	regionDriver, err := provider.GetRegionDriver()
+	if err != nil {
+		return nil, errors.Wrap(err, "provider.GetRegionDriver")
+	}
+
 	rules, err := extSec.GetRules()
 	if err != nil {
-		return nil, err
+		return nil, errors.Wrap(err, "extSec.GetRules")
 	}
-	inRules := secrules.SecurityRuleSet{}
-	outRules := secrules.SecurityRuleSet{}
-	for i := 0; i < len(rules); i++ {
+
+	inRules := []cloudprovider.SecurityRule{}
+	outRules := []cloudprovider.SecurityRule{}
+	for i := range rules {
 		if rules[i].Direction == secrules.DIR_IN {
 			inRules = append(inRules, rules[i])
 		} else {
 			outRules = append(outRules, rules[i])
 		}
 	}
-	sort.Sort(inRules)
-	sort.Sort(outRules)
-	inAllowList := inRules.AllowList()
-	outAllowList := outRules.AllowList()
+
+	maxPriority := regionDriver.GetSecurityGroupRuleMaxPriority()
+	minPriority := regionDriver.GetSecurityGroupRuleMinPriority()
+
+	defaultInRule := regionDriver.GetDefaultSecurityGroupInRule()
+	defaultOutRule := regionDriver.GetDefaultSecurityGroupOutRule()
+	order := regionDriver.GetSecurityGroupRuleOrder()
+	onlyAllowRules := regionDriver.IsOnlySupportAllowRules()
 
 	// 查询与provider在同域的安全组，比对寻找一个与云上安全组规则相同的安全组
 	secgroups := []SSecurityGroup{}
 	q := manager.Query().Equals("domain_id", provider.DomainId)
-	if err := db.FetchModelObjects(manager, q, &secgroups); err != nil {
-		log.Errorf("failed to fetch secgroups %v", err)
+	err = db.FetchModelObjects(manager, q, &secgroups)
+	if err != nil {
+		return nil, errors.Wrap(err, "db.FetchModelObjects")
 	}
-	for _, secgroup := range secgroups {
-		_inAllowList := secgroup.GetInAllowList()
-		_outAllowList := secgroup.GetOutAllowList()
-		if outAllowList.Equals(_outAllowList) && inAllowList.Equals(_inAllowList) {
-			return &secgroup, nil
+	for i := range secgroups {
+		localRules := secrules.SecurityRuleSet(secgroups[i].GetSecRules(""))
+		_, inAdds, outAdds, inDels, outDels := cloudprovider.CompareRules(minPriority, maxPriority, order, localRules, rules, defaultInRule, defaultOutRule, onlyAllowRules, false)
+		if len(inAdds) == 0 && len(outAdds) == 0 && len(inDels) == 0 && len(outDels) == 0 {
+			return &secgroups[i], nil
 		}
 	}
 
@@ -737,16 +874,22 @@ func (manager *SSecurityGroupManager) newFromCloudSecgroup(ctx context.Context, 
 	if err != nil {
 		return nil, err
 	}
+
 	secgroup.Name = newName
 	secgroup.Description = extSec.GetDescription()
 	secgroup.ProjectId = provider.ProjectId
 	secgroup.DomainId = provider.DomainId
 
-	if err := manager.TableSpec().Insert(&secgroup); err != nil {
+	if err := manager.TableSpec().Insert(ctx, &secgroup); err != nil {
 		return nil, err
 	}
 
 	//这里必须先同步下规则,不然下次对比此安全组规则为空
+	inRules = cloudprovider.AddDefaultRule(inRules, defaultInRule, "in:deny any", order, minPriority, maxPriority, onlyAllowRules)
+	cloudprovider.SortSecurityRule(inRules, order, onlyAllowRules)
+	outRules = cloudprovider.AddDefaultRule(outRules, defaultOutRule, "out:allow any", order, minPriority, maxPriority, onlyAllowRules)
+	cloudprovider.SortSecurityRule(outRules, order, onlyAllowRules)
+
 	SecurityGroupRuleManager.SyncRules(ctx, userCred, &secgroup, inRules)
 	SecurityGroupRuleManager.SyncRules(ctx, userCred, &secgroup, outRules)
 
@@ -814,7 +957,7 @@ func (manager *SSecurityGroupManager) InitializeData() error {
 		// secGrp.IsEmulated = false
 		secGrp.IsPublic = true
 		secGrp.PublicScope = string(rbacutils.ScopeSystem)
-		err = manager.TableSpec().Insert(secGrp)
+		err = manager.TableSpec().Insert(context.TODO(), secGrp)
 		if err != nil {
 			log.Errorf("Insert default secgroup failed!!! %s", err)
 			return err
@@ -828,7 +971,7 @@ func (manager *SSecurityGroupManager) InitializeData() error {
 		defRule.CIDR = "0.0.0.0/0"
 		defRule.Action = string(secrules.SecurityRuleAllow)
 		defRule.SecgroupId = "default"
-		err = SecurityGroupRuleManager.TableSpec().Insert(&defRule)
+		err = SecurityGroupRuleManager.TableSpec().Insert(context.TODO(), &defRule)
 		if err != nil {
 			log.Errorf("Insert default secgroup rule fail %s", err)
 			return err

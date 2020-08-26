@@ -65,8 +65,8 @@ type SWire struct {
 	db.SInfrasResourceBase
 	db.SExternalizedResourceBase
 
-	SVpcResourceBase  `wdith:"36" charset:"ascii" nullable:"false" list:"domain" create:"domain_required"`
-	SZoneResourceBase `width:"36" charset:"ascii" nullable:"true" list:"domain" create:"domain_required"`
+	SVpcResourceBase  `wdith:"36" charset:"ascii" nullable:"false" list:"domain" create:"domain_required" update:""`
+	SZoneResourceBase `width:"36" charset:"ascii" nullable:"true" list:"domain" create:"domain_required" update:""`
 
 	// 带宽大小, 单位Mbps
 	// example: 1000
@@ -183,7 +183,7 @@ func (manager *SWireManager) getWireExternalIdForClassicNetwork(provider string,
 	return vpcId
 }
 
-func (manager *SWireManager) GetOrCreateWireForClassicNetwork(vpc *SVpc, zone *SZone) (*SWire, error) {
+func (manager *SWireManager) GetOrCreateWireForClassicNetwork(ctx context.Context, vpc *SVpc, zone *SZone) (*SWire, error) {
 	cloudprovider := vpc.GetCloudprovider()
 	if cloudprovider == nil {
 		return nil, fmt.Errorf("failed to found cloudprovider for vpc %s(%s)", vpc.Id, vpc.Id)
@@ -196,7 +196,10 @@ func (manager *SWireManager) GetOrCreateWireForClassicNetwork(vpc *SVpc, zone *S
 	} else {
 		name = fmt.Sprintf("emulate for zone %s vpc %s classic network", zone.Name, vpc.Id)
 	}
-	_wire, err := db.FetchByExternalId(manager, externalId)
+	_wire, err := db.FetchByExternalIdAndManagerId(manager, externalId, func(q *sqlchemy.SQuery) *sqlchemy.SQuery {
+		sq := VpcManager.Query().SubQuery()
+		return q.Join(sq, sqlchemy.Equals(sq.Field("id"), q.Field("id"))).Filter(sqlchemy.Equals(sq.Field("manager_id"), vpc.ManagerId))
+	})
 	if err == nil {
 		return _wire.(*SWire), nil
 	}
@@ -210,7 +213,7 @@ func (manager *SWireManager) GetOrCreateWireForClassicNetwork(vpc *SVpc, zone *S
 	wire.ExternalId = externalId
 	wire.IsEmulated = true
 	wire.Name = name
-	err = manager.TableSpec().Insert(wire)
+	err = manager.TableSpec().Insert(ctx, wire)
 	if err != nil {
 		return nil, errors.Wrap(err, "Insert wire for classic network")
 	}
@@ -306,7 +309,7 @@ func (manager *SWireManager) SyncWires(ctx context.Context, userCred mcclient.To
 		}
 	}
 	for i := 0; i < len(commondb); i += 1 {
-		err = commondb[i].syncWithCloudWire(ctx, userCred, commonext[i], provider)
+		err = commondb[i].syncWithCloudWire(ctx, userCred, commonext[i], vpc, provider)
 		if err != nil {
 			syncResult.UpdateError(err)
 		} else {
@@ -350,12 +353,18 @@ func (self *SWire) syncRemoveCloudWire(ctx context.Context, userCred mcclient.To
 	return err
 }
 
-func (self *SWire) syncWithCloudWire(ctx context.Context, userCred mcclient.TokenCredential, extWire cloudprovider.ICloudWire, provider *SCloudprovider) error {
+func (self *SWire) syncWithCloudWire(ctx context.Context, userCred mcclient.TokenCredential, extWire cloudprovider.ICloudWire, vpc *SVpc, provider *SCloudprovider) error {
 	diff, err := db.UpdateWithLock(ctx, self, func() error {
 		// self.Name = extWire.GetName()
 		self.Bandwidth = extWire.GetBandwidth() // 10G
 
 		self.IsEmulated = extWire.IsEmulated()
+
+		if self.IsEmulated {
+			self.DomainId = vpc.DomainId
+			self.IsPublic = vpc.IsPublic
+			self.PublicScope = vpc.PublicScope
+		}
 
 		return nil
 	})
@@ -363,7 +372,7 @@ func (self *SWire) syncWithCloudWire(ctx context.Context, userCred mcclient.Toke
 		log.Errorf("syncWithCloudWire error %s", err)
 	}
 
-	if provider != nil {
+	if provider != nil && !self.IsEmulated {
 		SyncCloudDomain(userCred, self, provider.GetOwnerId())
 		self.SyncShareState(ctx, userCred, provider.getAccountShareInfo())
 	}
@@ -406,13 +415,17 @@ func (manager *SWireManager) newFromCloudWire(ctx context.Context, userCred mccl
 
 	wire.IsEmulated = extWire.IsEmulated()
 
-	err = manager.TableSpec().Insert(&wire)
+	wire.DomainId = vpc.DomainId
+	wire.IsPublic = vpc.IsPublic
+	wire.PublicScope = vpc.PublicScope
+
+	err = manager.TableSpec().Insert(ctx, &wire)
 	if err != nil {
 		log.Errorf("newFromCloudWire fail %s", err)
 		return nil, err
 	}
 
-	if provider != nil {
+	if provider != nil && !wire.IsEmulated {
 		SyncCloudDomain(userCred, &wire, provider.GetOwnerId())
 		wire.SyncShareState(ctx, userCred, provider.getAccountShareInfo())
 	}
@@ -1007,6 +1020,15 @@ func (self *SWire) IsManaged() bool {
 }
 
 func (model *SWire) CustomizeCreate(ctx context.Context, userCred mcclient.TokenCredential, ownerId mcclient.IIdentityProvider, query jsonutils.JSONObject, data jsonutils.JSONObject) error {
+	if !data.Contains("public_scope") {
+		vpc := model.GetVpc()
+		if !model.IsManaged() && db.IsAdminAllowPerform(userCred, model, "public") && ownerId.GetProjectDomainId() == userCred.GetProjectDomainId() && vpc != nil && vpc.IsPublic && vpc.PublicScope == string(rbacutils.ScopeSystem) {
+			model.SetShare(rbacutils.ScopeSystem)
+		} else {
+			model.SetShare(rbacutils.ScopeNone)
+		}
+		data.(*jsonutils.JSONDict).Set("public_scope", jsonutils.NewString(model.PublicScope))
+	}
 	return model.SInfrasResourceBase.CustomizeCreate(ctx, userCred, ownerId, query, data)
 }
 
@@ -1019,6 +1041,15 @@ func (wire *SWire) GetChangeOwnerCandidateDomainIds() []string {
 			db.ISharableChangeOwnerCandidateDomainIds(vpc))
 	}
 	return db.ISharableMergeChangeOwnerCandidateDomainIds(wire, candidates...)
+}
+
+func (wire *SWire) GetChangeOwnerRequiredDomainIds() []string {
+	requires := stringutils2.SSortedStrings{}
+	networks, _ := wire.getNetworks(nil, rbacutils.ScopeNone)
+	for i := range networks {
+		requires = stringutils2.Append(requires, networks[i].DomainId)
+	}
+	return requires
 }
 
 func (wire *SWire) GetRequiredSharedDomainIds() []string {

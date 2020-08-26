@@ -162,8 +162,14 @@ func SharableManagerValidateCreateData(
 			input.IsPublic = &isPublic
 			reqScope = rbacutils.ScopeSystem
 		} else if input.PublicScope == string(rbacutils.ScopeDomain) {
-			input.IsPublic = &isPublic
-			reqScope = rbacutils.ScopeDomain
+			if consts.GetNonDefaultDomainProjects() {
+				// only if non_default_domain_projects turned on, allow sharing to domain
+				input.IsPublic = &isPublic
+				reqScope = rbacutils.ScopeDomain
+			} else {
+				input.IsPublic = &isPublic
+				reqScope = rbacutils.ScopeSystem
+			}
 		} else if input.IsPublic != nil && *input.IsPublic && len(input.PublicScope) == 0 {
 			// backward compatible, if only is_public is true, make it share to system
 			input.IsPublic = &isPublic
@@ -171,20 +177,28 @@ func SharableManagerValidateCreateData(
 			reqScope = rbacutils.ScopeSystem
 		} else {
 			input.IsPublic = nil
-			input.PublicScope = string(rbacutils.ScopeNone)
+			input.PublicScope = "" // string(rbacutils.ScopeNone)
 		}
 	case rbacutils.ScopeDomain:
-		if input.PublicScope == string(rbacutils.ScopeSystem) {
-			input.IsPublic = &isPublic
-			reqScope = rbacutils.ScopeSystem
-		} else if input.IsPublic != nil && *input.IsPublic && len(input.PublicScope) == 0 {
-			// backward compatible, if only is_public is true, make it share to system
+		if consts.GetNonDefaultDomainProjects() {
+			// only if non_default_domain_projects turned on, allow sharing domain resources
+			if input.PublicScope == string(rbacutils.ScopeSystem) {
+				input.IsPublic = &isPublic
+				reqScope = rbacutils.ScopeSystem
+			} else if input.IsPublic != nil && *input.IsPublic && len(input.PublicScope) == 0 {
+				// backward compatible, if only is_public is true, make it share to system
+				input.IsPublic = &isPublic
+				input.PublicScope = string(rbacutils.ScopeSystem)
+				reqScope = rbacutils.ScopeSystem
+			} else {
+				input.IsPublic = nil
+				input.PublicScope = "" // string(rbacutils.ScopeNone)
+			}
+		} else {
+			// if non_default_domain_projects turned off, all domain resources shared to system
 			input.IsPublic = &isPublic
 			input.PublicScope = string(rbacutils.ScopeSystem)
 			reqScope = rbacutils.ScopeSystem
-		} else {
-			input.IsPublic = nil
-			input.PublicScope = string(rbacutils.ScopeNone)
 		}
 	default:
 		return input, errors.Wrap(httperrors.ErrInputParameter, "the resource is not sharable")
@@ -423,6 +437,9 @@ func SharablePerformPublic(model ISharableBaseModel, ctx context.Context, userCr
 			targetScope = rbacutils.ScopeNone
 		}
 	case rbacutils.ScopeDomain:
+		if !consts.GetNonDefaultDomainProjects() {
+			return errors.Wrap(httperrors.ErrForbidden, "not allow to share to domain when non_default_domain_projects turned off")
+		}
 		if len(requireIds) == 0 {
 			return errors.Wrap(httperrors.ErrForbidden, "require to be shared to system")
 		}
@@ -477,6 +494,11 @@ func SharablePerformPublic(model ISharableBaseModel, ctx context.Context, userCr
 func SharablePerformPrivate(model ISharableBaseModel, ctx context.Context, userCred mcclient.TokenCredential) error {
 	if !model.GetIsPublic() && model.GetPublicScope() == rbacutils.ScopeNone {
 		return nil
+	}
+
+	resourceScope := model.GetModelManager().ResourceScope()
+	if resourceScope == rbacutils.ScopeDomain && !consts.GetNonDefaultDomainProjects() {
+		return errors.Wrap(httperrors.ErrForbidden, "not allow to private domain resource")
 	}
 
 	requireIds := model.GetRequiredSharedDomainIds()
@@ -555,7 +577,8 @@ func SharableModelIsShared(model ISharableBaseModel) bool {
 func SharableModelCustomizeCreate(model ISharableBaseModel, ctx context.Context, userCred mcclient.TokenCredential, ownerId mcclient.IIdentityProvider, query jsonutils.JSONObject, data jsonutils.JSONObject) error {
 	if !data.Contains("public_scope") {
 		resScope := model.GetModelManager().ResourceScope()
-		if resScope == rbacutils.ScopeDomain {
+		if resScope == rbacutils.ScopeDomain && consts.GetNonDefaultDomainProjects() {
+			// only if non_default_domain_projects turned on, do the following
 			isManaged := false
 			if managedModel, ok := model.(IManagedResourceBase); ok {
 				isManaged = managedModel.IsManaged()

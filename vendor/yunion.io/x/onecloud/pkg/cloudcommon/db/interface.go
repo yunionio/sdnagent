@@ -40,7 +40,7 @@ type IModelManager interface {
 	GetIModelManager() IModelManager
 
 	// Table() *sqlchemy.STable
-	TableSpec() *sqlchemy.STableSpec
+	TableSpec() ITableSpec
 
 	// Keyword() string
 	KeywordPlural() string
@@ -162,6 +162,7 @@ type IModel interface {
 	// allow perform action
 	AllowPerformAction(ctx context.Context, userCred mcclient.TokenCredential, action string, query jsonutils.JSONObject, data jsonutils.JSONObject) bool
 	PerformAction(ctx context.Context, userCred mcclient.TokenCredential, action string, query jsonutils.JSONObject, data jsonutils.JSONObject) (jsonutils.JSONObject, error)
+	PreCheckPerformAction(ctx context.Context, userCred mcclient.TokenCredential, action string, query jsonutils.JSONObject, data jsonutils.JSONObject) error
 
 	// update hooks
 	ValidateUpdateCondition(ctx context.Context) error
@@ -320,6 +321,13 @@ type IVirtualModelManager interface {
 	IStandaloneModelManager
 
 	GetIVirtualModelManager() IVirtualModelManager
+	GetResourceCount() ([]SScopeResourceCount, error)
+}
+
+type IUserModelManager interface {
+	IStandaloneModelManager
+
+	GetIUserModelManager() IUserModelManager
 	GetResourceCount() ([]SScopeResourceCount, error)
 }
 

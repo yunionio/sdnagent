@@ -172,28 +172,6 @@ func syncRegionSkus(ctx context.Context, userCred mcclient.TokenCredential, loca
 	}
 }
 
-func syncProjects(ctx context.Context, userCred mcclient.TokenCredential, syncResults SSyncResultSet, driver cloudprovider.ICloudProvider, provider *SCloudprovider) {
-	projects, err := driver.GetIProjects()
-	if err != nil {
-		msg := fmt.Sprintf("GetIProjects for provider %s failed %s", provider.GetName(), err)
-		log.Errorf(msg)
-		// logSyncFailed(provider, task, msg)
-		return
-	}
-
-	result := ExternalProjectManager.SyncProjects(ctx, userCred, provider, projects)
-
-	syncResults.Add(ExternalProjectManager, result)
-
-	msg := result.Result()
-	log.Infof("SyncProjects for provider %s result: %s", provider.Name, msg)
-	if result.IsError() {
-		// logSyncFailed(provider, task, msg)
-		return
-	}
-	// db.OpsLog.LogEvent(provider, db.ACT_SYNC_PROJECT_COMPLETE, msg, task.UserCred)
-}
-
 func syncRegionEips(ctx context.Context, userCred mcclient.TokenCredential, syncResults SSyncResultSet, provider *SCloudprovider, localRegion *SCloudregion, remoteRegion cloudprovider.ICloudRegion, syncRange *SSyncRange) {
 	eips, err := remoteRegion.GetIEips()
 	if err != nil {
@@ -261,6 +239,10 @@ func syncRegionVPCs(ctx context.Context, userCred mcclient.TokenCredential, sync
 			// lock vpc
 			lockman.LockObject(ctx, &localVpcs[j])
 			defer lockman.ReleaseObject(ctx, &localVpcs[j])
+
+			if localVpcs[j].Deleted {
+				return
+			}
 
 			syncVpcWires(ctx, userCred, syncResults, provider, &localVpcs[j], remoteVpcs[j], syncRange)
 			if localRegion.GetDriver().IsSecurityGroupBelongVpc() || localRegion.GetDriver().IsSupportClassicSecurityGroup() || j == 0 { //有vpc属性的每次都同步,支持classic的vpc也同步，否则仅同步一次
@@ -332,6 +314,10 @@ func syncVpcNatgateways(ctx context.Context, userCred mcclient.TokenCredential, 
 		func() {
 			lockman.LockObject(ctx, &localNatGateways[i])
 			defer lockman.ReleaseObject(ctx, &localNatGateways[i])
+
+			if localNatGateways[i].Deleted {
+				return
+			}
 
 			syncNatGatewayEips(ctx, userCred, provider, &localNatGateways[i], remoteNatGateways[i])
 			syncNatDTable(ctx, userCred, provider, &localNatGateways[i], remoteNatGateways[i])
@@ -414,6 +400,9 @@ func syncVpcWires(ctx context.Context, userCred mcclient.TokenCredential, syncRe
 			lockman.LockObject(ctx, &localWires[i])
 			defer lockman.ReleaseObject(ctx, &localWires[i])
 
+			if localWires[i].Deleted {
+				return
+			}
 			syncWireNetworks(ctx, userCred, syncResults, provider, &localWires[i], remoteWires[i], syncRange)
 		}()
 	}
@@ -467,6 +456,10 @@ func syncZoneStorages(ctx context.Context, userCred mcclient.TokenCredential, sy
 		func() {
 			lockman.LockObject(ctx, &localStorages[i])
 			defer lockman.ReleaseObject(ctx, &localStorages[i])
+
+			if localStorages[i].Deleted {
+				return
+			}
 
 			if !isInCache(storageCachePairs, localStorages[i].StoragecacheId) && !isInCache(newCacheIds, localStorages[i].StoragecacheId) {
 				cachePair := syncStorageCaches(ctx, userCred, provider, &localStorages[i], remoteStorages[i])
@@ -552,6 +545,10 @@ func syncZoneHosts(ctx context.Context, userCred mcclient.TokenCredential, syncR
 		func() {
 			lockman.LockObject(ctx, &localHosts[i])
 			defer lockman.ReleaseObject(ctx, &localHosts[i])
+
+			if localHosts[i].Deleted {
+				return
+			}
 
 			syncMetadata(ctx, userCred, &localHosts[i], remoteHosts[i])
 			newCachePairs = syncHostStorages(ctx, userCred, syncResults, provider, &localHosts[i], remoteHosts[i], storageCachePairs)
@@ -646,6 +643,10 @@ func syncHostVMs(ctx context.Context, userCred mcclient.TokenCredential, syncRes
 			lockman.LockObject(ctx, syncVMPairs[i].Local)
 			defer lockman.ReleaseObject(ctx, syncVMPairs[i].Local)
 
+			if syncVMPairs[i].Local.Deleted || syncVMPairs[i].Local.PendingDeleted {
+				return
+			}
+
 			syncVMPeripherals(ctx, userCred, syncVMPairs[i].Local, syncVMPairs[i].Remote, localHost, provider, driver)
 			// syncMetadata(ctx, userCred, syncVMPairs[i].Local, syncVMPairs[i].Remote)
 			// syncVMNics(ctx, userCred, provider, localHost, syncVMPairs[i].Local, syncVMPairs[i].Remote)
@@ -658,7 +659,7 @@ func syncHostVMs(ctx context.Context, userCred mcclient.TokenCredential, syncRes
 }
 
 func syncVMPeripherals(ctx context.Context, userCred mcclient.TokenCredential, local *SGuest, remote cloudprovider.ICloudVM, host *SHost, provider *SCloudprovider, driver cloudprovider.ICloudProvider) {
-	syncMetadata(ctx, userCred, local, remote)
+	syncVirtualResourceMetadata(ctx, userCred, local, remote)
 	err := syncVMNics(ctx, userCred, provider, host, local, remote)
 	if err != nil {
 		log.Errorf("syncVMNics error %s", err)
@@ -795,6 +796,10 @@ func syncRegionDBInstances(ctx context.Context, userCred mcclient.TokenCredentia
 			lockman.LockObject(ctx, &localInstances[i])
 			defer lockman.ReleaseObject(ctx, &localInstances[i])
 
+			if localInstances[i].Deleted || localInstances[i].PendingDeleted {
+				return
+			}
+
 			syncDBInstanceNetwork(ctx, userCred, syncResults, &localInstances[i], remoteInstances[i])
 			syncDBInstanceParameters(ctx, userCred, syncResults, &localInstances[i], remoteInstances[i])
 			syncDBInstanceDatabases(ctx, userCred, syncResults, &localInstances[i], remoteInstances[i])
@@ -902,6 +907,10 @@ func syncDBInstanceAccounts(ctx context.Context, userCred mcclient.TokenCredenti
 			lockman.LockObject(ctx, &localAccounts[i])
 			defer lockman.ReleaseObject(ctx, &localAccounts[i])
 
+			if localAccounts[i].Deleted {
+				return
+			}
+
 			syncDBInstanceAccountPrivileges(ctx, userCred, syncResults, &localAccounts[i], remoteAccounts[i])
 
 		}()
@@ -985,6 +994,10 @@ func syncRegionNetworkInterfaces(ctx context.Context, userCred mcclient.TokenCre
 			lockman.LockObject(ctx, &localInterfaces[i])
 			defer lockman.ReleaseObject(ctx, &localInterfaces[i])
 
+			if localInterfaces[i].Deleted {
+				return
+			}
+
 			syncInterfaceAddresses(ctx, userCred, &localInterfaces[i], remoteInterfaces[i])
 		}()
 	}
@@ -1026,10 +1039,6 @@ func syncPublicCloudProviderInfo(
 		provider.Name, provider.Provider, remoteRegion.GetName(), remoteRegion.GetId())
 
 	storageCachePairs := make([]sStoragecacheSyncPair, 0)
-
-	if cloudprovider.IsSupportProject(driver) {
-		syncProjects(ctx, userCred, syncResults, driver, provider)
-	}
 
 	syncRegionQuotas(ctx, userCred, syncResults, driver, provider, localRegion, remoteRegion)
 
@@ -1124,10 +1133,6 @@ func syncOnPremiseCloudProviderInfo(
 ) error {
 	log.Debugf("Start sync on-premise provider %s(%s)", provider.Name, provider.Provider)
 
-	if cloudprovider.IsSupportProject(driver) {
-		syncProjects(ctx, userCred, syncResults, driver, provider)
-	}
-
 	iregion, err := driver.GetOnPremiseIRegion()
 	if err != nil {
 		msg := fmt.Sprintf("GetOnPremiseIRegion for provider %s failed %s", provider.GetName(), err)
@@ -1171,15 +1176,17 @@ func syncOnPremiseCloudProviderInfo(
 		}
 	}
 
-	log.Debugf("storageCachePairs count %d", len(storageCachePairs))
-	for i := range storageCachePairs {
-		// alway sync on-premise cached images
-		// if storageCachePairs[i].isNew || syncRange.DeepSync {
-		result := storageCachePairs[i].syncCloudImages(ctx, userCred)
-		syncResults.Add(StoragecachedimageManager, result)
-		msg := result.Result()
-		log.Infof("syncCloudImages result: %s", msg)
-		// }
+	if cloudprovider.IsSupportCompute(driver) {
+		log.Debugf("storageCachePairs count %d", len(storageCachePairs))
+		for i := range storageCachePairs {
+			// alway sync on-premise cached images
+			// if storageCachePairs[i].isNew || syncRange.DeepSync {
+			result := storageCachePairs[i].syncCloudImages(ctx, userCred)
+			syncResults.Add(StoragecachedimageManager, result)
+			msg := result.Result()
+			log.Infof("syncCloudImages result: %s", msg)
+			// }
+		}
 	}
 
 	return nil
@@ -1221,8 +1228,8 @@ func SyncCloudProject(userCred mcclient.TokenCredential, model db.IVirtualModel,
 	if extProjectId := extModel.GetProjectId(); len(extProjectId) > 0 {
 		extProject, err := ExternalProjectManager.GetProject(extProjectId, managerId)
 		if err != nil {
-			log.Errorln(err)
-		} else {
+			log.Errorf("sync project for %s %s error: %v", model.Keyword(), model.GetName(), err)
+		} else if len(extProject.ProjectId) > 0 {
 			newOwnerId = extProject.GetOwnerId()
 		}
 	}

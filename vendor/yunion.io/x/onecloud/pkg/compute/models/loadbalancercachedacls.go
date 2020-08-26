@@ -324,7 +324,10 @@ func (acl *SCachedLoadbalancerAcl) SyncWithCloudLoadbalancerAcl(ctx context.Cont
 		} else {
 			ext_listener_id := extAcl.GetAclListenerID()
 			if len(ext_listener_id) > 0 {
-				ilistener, err := db.FetchByExternalId(LoadbalancerListenerManager, ext_listener_id)
+				ilistener, err := db.FetchByExternalIdAndManagerId(LoadbalancerListenerManager, ext_listener_id, func(q *sqlchemy.SQuery) *sqlchemy.SQuery {
+					sq := LoadbalancerManager.Query().SubQuery()
+					return q.Join(sq, sqlchemy.Equals(sq.Field("id"), q.Field("loadbalancer_id"))).Filter(sqlchemy.Equals(sq.Field("manager_id"), acl.ManagerId))
+				})
 				if err != nil {
 					return errors.Wrap(err, "cacheLoadbalancerAcl.sync.FetchByExternalId")
 				}
@@ -363,7 +366,7 @@ func (man *SCachedLoadbalancerAclManager) GetOrCreateCachedAcl(ctx context.Conte
 	lbacl, err := man.getLoadbalancerAclByRegion(provider, region.Id, acl.Id, listenerId)
 	if err == nil {
 		if lbacl.Id != acl.Id {
-			_, err := man.TableSpec().Update(&lbacl, func() error {
+			_, err := man.TableSpec().Update(ctx, &lbacl, func() error {
 				lbacl.Name = acl.Name
 				lbacl.AclId = acl.Id
 				return nil
@@ -389,7 +392,7 @@ func (man *SCachedLoadbalancerAclManager) GetOrCreateCachedAcl(ctx context.Conte
 	lbacl.AclId = acl.Id
 	lbacl.ListenerId = listenerId
 
-	err = man.TableSpec().Insert(&lbacl)
+	err = man.TableSpec().Insert(ctx, &lbacl)
 	if err != nil {
 		return nil, err
 	}
@@ -514,7 +517,7 @@ func (man *SCachedLoadbalancerAclManager) newFromCloudLoadbalancerAcl(ctx contex
 		localAcl.DomainId = userCred.GetProjectDomainId()
 		localAcl.ProjectId = userCred.GetProjectId()
 		localAcl.ProjectSrc = string(apis.OWNER_SOURCE_CLOUD)
-		err := LoadbalancerAclManager.TableSpec().Insert(&localAcl)
+		err := LoadbalancerAclManager.TableSpec().Insert(ctx, &localAcl)
 		if err != nil {
 			return nil, errors.Wrap(err, "cachedLoadbalancerAclManager.new.InsertAcl")
 		}
@@ -529,7 +532,7 @@ func (man *SCachedLoadbalancerAclManager) newFromCloudLoadbalancerAcl(ctx contex
 		acl.AclId = localAcl.GetId()
 	}
 
-	err = man.TableSpec().Insert(&acl)
+	err = man.TableSpec().Insert(ctx, &acl)
 	if err != nil {
 		log.Errorf("newFromCloudLoadbalancerAcl fail %s", err)
 		return nil, errors.Wrap(err, "cachedLoadbalancerAclManager.new.InsertCachedAcl")

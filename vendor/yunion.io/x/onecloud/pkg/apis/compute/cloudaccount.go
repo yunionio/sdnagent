@@ -66,7 +66,7 @@ type CloudenvResourceListInput struct {
 	Providers []string `json:"providers"`
 	// swagger:ignore
 	// Deprecated
-	Provider []string `json:"provider" "yunion:deprecated-by":"providers"`
+	Provider []string `json:"provider" yunion-deprecated-by:"providers"`
 
 	// 列出指定云平台品牌的资源，一般来说brand和provider相同，除了以上支持的provider之外，还支持以下band
 	//
@@ -77,7 +77,7 @@ type CloudenvResourceListInput struct {
 	Brands []string `json:"brands"`
 	// swagger:ignore
 	// Deprecated
-	Brand []string `json:"brand" "yunion:deprecated-by":"brands"`
+	Brand []string `json:"brand" yunion-deprecated-by:"brands"`
 
 	// 列出指定云环境的资源，支持云环境如下：
 	//
@@ -180,9 +180,9 @@ type CloudaccountCreateInput struct {
 	// 自动同步间隔时间
 	SyncIntervalSeconds int `json:"sync_interval_seconds"`
 
-	// 自动根据云上项目或订阅创建本地项目
+	// 自动根据云上项目或订阅创建本地项目, OpenStack此参数为true
 	// default: false
-	AutoCreateProject bool `json:"auto_create_project"`
+	AutoCreateProject *bool `json:"auto_create_project"`
 
 	// 额外信息,例如账单的access key
 	Options *jsonutils.JSONDict `json:"options"`
@@ -227,7 +227,7 @@ type CloudaccountListInput struct {
 	// 代理
 	ProxySetting string `json:"proxy_setting"`
 	// swagger:ignore
-	ProxySettingId string `json:"proxy_setting_id" "yunion:deprecated-by":"proxy_setting"`
+	ProxySettingId string `json:"proxy_setting_id" yunion-deprecated-by:"proxy_setting"`
 }
 
 type ProviderProject struct {
@@ -324,4 +324,63 @@ type CloudaccountPerformPublicInput struct {
 	// 共享模式，可能值为provider_domain, system
 	// example: provider_domain
 	ShareMode string `json:"share_mode"`
+}
+
+type CloudaccountPerformPrepareNetsInput struct {
+	CloudaccountCreateInput
+}
+
+type CloudaccountPerformPrepareNetsOutput struct {
+	SuggestedWire CAWireConf  `json:"suggested_wire"`
+	SuitableWire  string      `json:"suitable_wire,allowempty"`
+	Hosts         []CAHostNet `json:"hosts"`
+	// description: 没有合适的已有网络，推荐的网络配置
+	HostSuggestedNetworks []CANetConf  `json:"host_suggested_networks"`
+	Guests                []CAGuestNet `json:"guests"`
+	// description: 没有合适的已有网络，推荐的网络配置
+	GuestSuggestedNetworks []CANetConf `json:"guest_suggested_networks"`
+}
+
+type CAWireConf struct {
+	// Zoneids to be selected
+	ZoneIds []string `json:"zone_ids"`
+	// description: wire name
+	Name string `json:"name"`
+	// description: wire description
+	Description string `json:"description"`
+}
+
+type CAHostNet struct {
+	// description: Host 的 Name
+	Name string `json:"name"`
+	// description: IP
+	IP string `json:"ip"`
+	// description: 合适的已有网络
+	SuitableNetwork string `json:"suitable_network,allowempty"`
+}
+
+type CAGuestNet struct {
+	// description: Host 的 Name
+	Name   string    `json:"name"`
+	IPNets []CAIPNet `json:"ip_nets"`
+}
+
+type CAIPNet struct {
+	// description: IP
+	IP string `json:"ip"`
+	// description: 合适的已有网络
+	SuitableNetwork string `json:"suitable_network,allowempty"`
+}
+
+type CASimpleNetConf struct {
+	GuestIpStart string `json:"guest_ip_start"`
+	GuestIpEnd   string `json:"guest_ip_end"`
+	GuestIpMask  int8   `json:"guest_ip_mask"`
+	GuestGateway string `json:"guest_gateway"`
+}
+
+type CANetConf struct {
+	Name        string `json:"name"`
+	Description string `json:"description"`
+	CASimpleNetConf
 }

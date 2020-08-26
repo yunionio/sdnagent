@@ -266,7 +266,6 @@ func listItemQueryFiltersRaw(manager IModelManager,
 		q = manager.FilterBySystemAttributes(q, userCred, query, queryScope)
 		q = manager.FilterByHiddenSystemAttributes(q, userCred, query, queryScope)
 	}
-
 	q, err = ListItemFilter(manager, ctx, q, userCred, query)
 	if err != nil {
 		return nil, err
@@ -415,7 +414,6 @@ func Query2List(manager IModelManager, ctx context.Context, userCred mcclient.To
 			sortedListFields = stringutils2.NewSortedStrings(fieldFilter)
 		}
 		extraRows, err := FetchCustomizeColumns(manager, ctx, userCred, query, items, sortedListFields, true)
-
 		if err != nil {
 			return nil, errors.Wrap(err, "FetchCustomizeColumns")
 		}
@@ -565,7 +563,7 @@ func ListItems(manager IModelManager, ctx context.Context, userCred mcclient.Tok
 		if err != nil {
 			return nil, err
 		}
-		// log.Debugf("total count %d", totalCnt)
+		//log.Debugf("total count %d", totalCnt)
 		if totalCnt == 0 {
 			emptyList := modulebase.ListResult{Data: []jsonutils.JSONObject{}}
 			return &emptyList, nil
@@ -859,6 +857,11 @@ func (dispatcher *DBModelDispatcher) tryGetModelProperty(ctx context.Context, pr
 	modelValue := reflect.ValueOf(dispatcher.modelManager)
 	params := []interface{}{ctx, userCred, query}
 
+	funcValue := modelValue.MethodByName(funcName)
+	if !funcValue.IsValid() || funcValue.IsNil() {
+		return nil, nil
+	}
+
 	if consts.IsRbacEnabled() {
 		ownerId, err := fetchOwnerId(ctx, dispatcher.modelManager, userCred, query)
 		if err != nil {
@@ -885,10 +888,6 @@ func (dispatcher *DBModelDispatcher) tryGetModelProperty(ctx context.Context, pr
 		}
 	}
 
-	funcValue := modelValue.MethodByName(funcName)
-	if !funcValue.IsValid() || funcValue.IsNil() {
-		return nil, nil
-	}
 	outs, err := callFunc(funcValue, funcName, params...)
 	if err != nil {
 		return nil, httperrors.NewInternalServerError("reflect call %s fail %s", funcName, err)
@@ -1181,7 +1180,7 @@ func _doCreateItem(
 	if err != nil {
 		return nil, httperrors.NewGeneralError(err)
 	}
-	err = manager.TableSpec().InsertOrUpdate(model)
+	err = manager.TableSpec().InsertOrUpdate(ctx, model)
 	if err != nil {
 		return nil, httperrors.NewGeneralError(err)
 	}
@@ -1485,6 +1484,9 @@ func (dispatcher *DBModelDispatcher) PerformAction(ctx context.Context, idStr st
 	lockman.LockObject(ctx, model)
 	defer lockman.ReleaseObject(ctx, model)
 
+	if err := model.PreCheckPerformAction(ctx, userCred, action, query, data); err != nil {
+		return nil, err
+	}
 	return objectPerformAction(dispatcher, model, reflect.ValueOf(model), ctx, userCred, action, query, data)
 }
 

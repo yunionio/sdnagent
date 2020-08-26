@@ -476,7 +476,7 @@ func (manager *SElasticcacheManager) SyncElasticcaches(ctx context.Context, user
 			syncResult.UpdateError(err)
 			continue
 		}
-		syncMetadata(ctx, userCred, &commondb[i], commonext[i])
+		syncVirtualResourceMetadata(ctx, userCred, &commondb[i], commonext[i])
 		localElasticcaches = append(localElasticcaches, commondb[i])
 		remoteElasticcaches = append(remoteElasticcaches, commonext[i])
 		syncResult.Update()
@@ -488,7 +488,7 @@ func (manager *SElasticcacheManager) SyncElasticcaches(ctx context.Context, user
 			syncResult.AddError(err)
 			continue
 		}
-		syncMetadata(ctx, userCred, instance, added[i])
+		syncVirtualResourceMetadata(ctx, userCred, instance, added[i])
 		localElasticcaches = append(localElasticcaches, *instance)
 		remoteElasticcaches = append(remoteElasticcaches, added[i])
 		syncResult.Add()
@@ -500,9 +500,12 @@ func (self *SElasticcache) syncRemoveCloudElasticcache(ctx context.Context, user
 	lockman.LockObject(ctx, self)
 	defer lockman.ReleaseObject(ctx, self)
 
+	self.SetDisableDelete(userCred, false)
+
 	err := self.ValidateDeleteCondition(ctx)
 	if err != nil {
-		return self.SetStatus(userCred, api.ELASTIC_CACHE_STATUS_ERROR, "sync to delete")
+		self.SetStatus(userCred, api.ELASTIC_CACHE_STATUS_ERROR, "sync to delete")
+		return errors.Wrap(err, "ValidateDeleteCondition")
 	}
 	return self.SVirtualResourceBase.Delete(ctx, userCred)
 }
@@ -563,7 +566,6 @@ func (manager *SElasticcacheManager) newFromCloudElasticcache(ctx context.Contex
 	instance.Engine = extInstance.GetEngine()
 	instance.EngineVersion = extInstance.GetEngineVersion()
 
-	instance.NetworkType = extInstance.GetNetworkType()
 	instance.PrivateDNS = extInstance.GetPrivateDNS()
 	instance.PrivateIpAddr = extInstance.GetPrivateIpAddr()
 	instance.PrivateConnectPort = extInstance.GetPrivateConnectPort()
@@ -574,28 +576,57 @@ func (manager *SElasticcacheManager) newFromCloudElasticcache(ctx context.Contex
 	instance.MaintainEndTime = extInstance.GetMaintainEndTime()
 	instance.AuthMode = extInstance.GetAuthMode()
 
+	var zone *SZone
 	if zoneId := extInstance.GetZoneId(); len(zoneId) > 0 {
-		zone, err := db.FetchByExternalId(ZoneManager, zoneId)
+		_zone, err := db.FetchByExternalId(ZoneManager, zoneId)
 		if err != nil {
 			return nil, errors.Wrapf(err, "newFromCloudElasticcache.FetchZoneId")
 		}
-		instance.ZoneId = zone.GetId()
+		instance.ZoneId = _zone.GetId()
+		zone = _zone.(*SZone)
 	}
 
-	if vpcId := extInstance.GetVpcId(); len(vpcId) > 0 {
-		vpc, err := db.FetchByExternalId(VpcManager, vpcId)
+	instance.NetworkType = extInstance.GetNetworkType()
+	if instance.NetworkType == api.LB_NETWORK_TYPE_CLASSIC {
+		vpc, err := VpcManager.GetOrCreateVpcForClassicNetwork(ctx, provider, region)
 		if err != nil {
-			return nil, errors.Wrapf(err, "newFromCloudElasticcache.FetchVpcId")
+			return nil, errors.Wrap(err, "NewVpcForClassicNetwork")
 		}
 		instance.VpcId = vpc.GetId()
-	}
 
-	if networkId := extInstance.GetNetworkId(); len(networkId) > 0 {
-		network, err := db.FetchByExternalId(NetworkManager, networkId)
+		wire, err := WireManager.GetOrCreateWireForClassicNetwork(ctx, vpc, zone)
 		if err != nil {
-			return nil, errors.Wrapf(err, "newFromCloudElasticcache.FetchNetworkId")
+			return nil, errors.Wrap(err, "NewWireForClassicNetwork")
+		}
+		network, err := NetworkManager.GetOrCreateClassicNetwork(ctx, wire)
+		if err != nil {
+			return nil, errors.Wrap(err, "GetOrCreateClassicNetwork")
 		}
 		instance.NetworkId = network.GetId()
+	} else {
+		if vpcId := extInstance.GetVpcId(); len(vpcId) > 0 {
+			vpc, err := db.FetchByExternalIdAndManagerId(VpcManager, vpcId, func(q *sqlchemy.SQuery) *sqlchemy.SQuery {
+				return q.Equals("manager_id", provider.Id)
+			})
+			if err != nil {
+				return nil, errors.Wrapf(err, "newFromCloudElasticcache.FetchVpcId")
+			}
+			instance.VpcId = vpc.GetId()
+		}
+
+		if networkId := extInstance.GetNetworkId(); len(networkId) > 0 {
+			network, err := db.FetchByExternalIdAndManagerId(NetworkManager, networkId, func(q *sqlchemy.SQuery) *sqlchemy.SQuery {
+				wire := WireManager.Query().SubQuery()
+				vpc := VpcManager.Query().SubQuery()
+				return q.Join(wire, sqlchemy.Equals(wire.Field("id"), q.Field("wire_id"))).
+					Join(vpc, sqlchemy.Equals(vpc.Field("id"), wire.Field("vpc_id"))).
+					Filter(sqlchemy.Equals(vpc.Field("manager_id"), provider.Id))
+			})
+			if err != nil {
+				return nil, errors.Wrapf(err, "newFromCloudElasticcache.FetchNetworkId")
+			}
+			instance.NetworkId = network.GetId()
+		}
 	}
 
 	if createdAt := extInstance.GetCreatedAt(); !createdAt.IsZero() {
@@ -613,7 +644,7 @@ func (manager *SElasticcacheManager) newFromCloudElasticcache(ctx context.Contex
 		instance.AutoRenew = extInstance.IsAutoRenew()
 	}
 
-	err = manager.TableSpec().Insert(&instance)
+	err = manager.TableSpec().Insert(ctx, &instance)
 	if err != nil {
 		return nil, errors.Wrapf(err, "newFromCloudElasticcache.Insert")
 	}
@@ -890,7 +921,7 @@ func (self *SElasticcache) GetCreateHuaweiElasticcacheParams(data *jsonutils.JSO
 
 	// fill security group here
 	if len(self.SecurityGroupId) > 0 {
-		sgCache, err := SecurityGroupCacheManager.GetSecgroupCache(context.Background(), nil, self.SecurityGroupId, self.VpcId, self.GetRegion().Id, self.GetCloudprovider().Id)
+		sgCache, err := SecurityGroupCacheManager.GetSecgroupCache(context.Background(), nil, self.SecurityGroupId, self.VpcId, self.GetRegion().Id, self.GetCloudprovider().Id, "")
 		if err != nil {
 			return nil, errors.Wrap(err, "elasticcache.GetCreateHuaweiElasticcacheParams.SecurityGroup")
 		}
@@ -1640,4 +1671,34 @@ func (self *SElasticcache) PerformPostpaidExpire(ctx context.Context, userCred m
 
 	err = self.SaveRenewInfo(ctx, userCred, bc, nil, billing_api.BILLING_TYPE_POSTPAID)
 	return nil, err
+}
+
+func (self *SElasticcache) AllowPerformCancelExpire(ctx context.Context, userCred mcclient.TokenCredential, query jsonutils.JSONObject, data jsonutils.JSONObject) bool {
+	return self.IsOwner(userCred) || db.IsAdminAllowPerform(userCred, self, "cancel-expire")
+}
+
+func (self *SElasticcache) PerformCancelExpire(ctx context.Context, userCred mcclient.TokenCredential, query jsonutils.JSONObject, data jsonutils.JSONObject) (jsonutils.JSONObject, error) {
+	if err := self.CancelExpireTime(ctx, userCred); err != nil {
+		return nil, err
+	}
+
+	return nil, nil
+}
+
+func (self *SElasticcache) CancelExpireTime(ctx context.Context, userCred mcclient.TokenCredential) error {
+	if self.BillingType != billing_api.BILLING_TYPE_POSTPAID {
+		return httperrors.NewBadRequestError("elasticcache billing type %s not support cancel expire", self.BillingType)
+	}
+
+	_, err := sqlchemy.GetDB().Exec(
+		fmt.Sprintf(
+			"update %s set expired_at = NULL and billing_cycle = NULL where id = ?",
+			ElasticcacheManager.TableSpec().Name(),
+		), self.Id,
+	)
+	if err != nil {
+		return errors.Wrap(err, "elasticcache cancel expire time")
+	}
+	db.OpsLog.LogEvent(self, db.ACT_RENEW, "elasticcache cancel expire time", userCred)
+	return nil
 }

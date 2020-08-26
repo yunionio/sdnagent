@@ -516,6 +516,10 @@ func (tq *SQuery) findField(name string) IQueryField {
 func (tq *SQuery) internalFindField(name string) IQueryField {
 	for _, f := range tq.fields {
 		if f.Name() == name {
+			// switch f.(type) {
+			// case *SFunctionFieldBase:
+			// 	log.Warningf("cannot directly reference a function alias, should use Subquery() to enclose the query")
+			// }
 			return f
 		}
 	}
@@ -609,7 +613,7 @@ func mapString2Struct(mapResult map[string]string, destValue reflect.Value) erro
 			if ok {
 				err = setValueBySQLString(fieldValue, v)
 				if err != nil {
-					log.Errorf("Set value error %s", err)
+					log.Errorf("Set field %q value error %s", k, err)
 				}
 			}
 		}

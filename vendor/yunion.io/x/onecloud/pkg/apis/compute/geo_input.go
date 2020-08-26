@@ -24,15 +24,15 @@ type CloudregionResourceInput struct {
 	// swagger:ignore
 	// Deprecated
 	// description: this param will be deprecate at 3.0
-	CloudregionId string `json:"cloudregion_id" "yunion:deprecated-by":"cloudregion"`
+	CloudregionId string `json:"cloudregion_id" yunion-deprecated-by:"cloudregion"`
 	// swagger:ignore
 	// Deprecated
 	// description: this param will be deprecate at 3.0
-	Region string `json:"region" "yunion:deprecated-by":"cloudregion"`
+	Region string `json:"region" yunion-deprecated-by:"cloudregion"`
 	// swagger:ignore
 	// Deprecated
 	// description: this param will be deprecate at 3.0
-	RegionId string `json:"region_id" "yunion:deprecated-by":"cloudregion"`
+	RegionId string `json:"region_id" yunion-deprecated-by:"cloudregion"`
 }
 
 type RegionalFilterListInput struct {
@@ -64,6 +64,23 @@ type ZonalFilterListBase struct {
 	OrderByZone string `json:"order_by_zone"`
 }
 
+func (input ZonalFilterListBase) ZoneList() []string {
+	zoneStr := input.Zone
+	if len(zoneStr) > 0 {
+		input.Zones = append(input.Zones, zoneStr)
+	}
+	return input.Zones
+}
+
+func (input ZonalFilterListBase) FirstZone() string {
+	if len(input.Zone) > 0 {
+		return input.Zone
+	}
+	if len(input.Zones) > 0 {
+		return input.Zones[0]
+	}
+	return ""
+}
 func (input ZonalFilterListInput) ZoneList() []string {
 	zoneStr := input.Zone
 	if len(zoneStr) > 0 {
@@ -117,5 +134,5 @@ type ZoneResourceInput struct {
 
 	// swagger:ignore
 	// Deprecated
-	ZoneId string `json:"zone_id" "yunion:deprecated-by":"zone"`
+	ZoneId string `json:"zone_id" yunion-deprecated-by:"zone"`
 }
