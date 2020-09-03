@@ -4,6 +4,11 @@ global_defs {
 	dynamic_interfaces
 }
 
+vrrp_script monitor {
+	script "{{ vrrp_notify_script }} monitor"
+	interval 5
+}
+
 vrrp_instance eipgw_128.3 {
 	# Interface for VRRP advertisements
 	interface {{ vrrp_interface }}
@@ -23,8 +28,12 @@ vrrp_instance eipgw_128.3 {
 		{{ vrrp_vip }}
 	}
 
-	notify_backup "{{ vrrp_notify_script }} BACKUP"
-	notify_master "{{ vrrp_notify_script }} MASTER"
-	notify_fault  "{{ vrrp_notify_script }} FAULT"
-	notify_stop  "{{ vrrp_notify_script }} STOP"
+	track_script {
+		monitor
+	}
+
+	notify_backup "{{ vrrp_notify_script }} notify BACKUP"
+	notify_master "{{ vrrp_notify_script }} notify MASTER"
+	notify_fault  "{{ vrrp_notify_script }} notify FAULT"
+	notify_stop  "{{ vrrp_notify_script }} notify STOP"
 }
