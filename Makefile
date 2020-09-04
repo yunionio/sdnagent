@@ -64,11 +64,11 @@ docker-alpine-build-stop:
 .PHONY: docker-alpine-build
 .PHONY: docker-alpine-build-stop
 
-docker-image: docker-alpine-build
-	docker build -t $(IMAGE_NAME_TAG) -f $(CURDIR)/build/docker/Dockerfile $(CURDIR)
+docker-image:
+	DEBUG=${DEBUG} REGISTRY=${REGISTRY} TAG=${VERSION} ARCH=${ARCH} ${CURDIR}/scripts/docker_push.sh
 
 docker-image-push:
-	docker image push $(IMAGE_NAME_TAG)
+	PUSH=true DEBUG=${DEBUG} REGISTRY=${REGISTRY} TAG=${VERSION} ARCH=${ARCH} ${CURDIR}/scripts/docker_push.sh
 
 .PHONY: docker-image
 .PHONY: docker-image-push
