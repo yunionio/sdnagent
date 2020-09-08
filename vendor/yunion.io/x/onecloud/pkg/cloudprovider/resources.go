@@ -156,7 +156,7 @@ type ICloudZone interface {
 }
 
 type ICloudImage interface {
-	ICloudResource
+	IVirtualResource
 
 	Delete(ctx context.Context) error
 	GetIStoragecache() ICloudStoragecache
@@ -173,6 +173,7 @@ type ICloudImage interface {
 	GetImageFormat() string
 	GetCreatedAt() time.Time
 	UEFI() bool
+	GetPublicScope() rbacutils.TRbacScope
 }
 
 type ICloudStoragecache interface {
@@ -487,6 +488,7 @@ type ICloudHostNetInterface interface {
 	GetIpAddr() string
 	GetMtu() int32
 	GetNicType() string
+	GetBridge() string
 }
 
 type ICloudLoadbalancer interface {
