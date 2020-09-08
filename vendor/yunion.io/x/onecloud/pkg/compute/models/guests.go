@@ -2773,7 +2773,7 @@ func getCloudNicNetwork(ctx context.Context, vnic cloudprovider.ICloudNic, host 
 	if vnet == nil {
 		if vnic.InClassicNetwork() {
 			region := host.GetRegion()
-			cloudprovider := region.GetCloudprovider()
+			cloudprovider := host.GetCloudprovider()
 			vpc, err := VpcManager.GetOrCreateVpcForClassicNetwork(ctx, cloudprovider, region)
 			if err != nil {
 				return nil, errors.Wrap(err, "NewVpcForClassicNetwork")
@@ -3631,7 +3631,7 @@ func (self *SGuest) DeleteAllDisksInDB(ctx context.Context, userCred mcclient.To
 		disk := guestdisk.GetDisk()
 		err := guestdisk.Detach(ctx, userCred)
 		if err != nil {
-			return err
+			return errors.Wrapf(err, "guestdisk.Detach guest_id: %s disk_id: %s", guestdisk.GuestId, guestdisk.DiskId)
 		}
 
 		if disk != nil {
@@ -4232,6 +4232,14 @@ func (self *SGuest) GetShortDesc(ctx context.Context) *jsonutils.JSONDict {
 		desc.Set("host", jsonutils.NewString(host.Name))
 		desc.Set("host_id", jsonutils.NewString(host.Id))
 		billingInfo.SCloudProviderInfo = host.getCloudProviderInfo()
+	}
+
+	if len(self.BackupHostId) > 0 {
+		backupHost := HostManager.FetchHostById(self.BackupHostId)
+		if backupHost != nil {
+			desc.Set("backup_host", jsonutils.NewString(backupHost.Name))
+			desc.Set("backup_host_id", jsonutils.NewString(backupHost.Id))
+		}
 	}
 
 	if priceKey := self.GetMetadata("ext:price_key", nil); len(priceKey) > 0 {
