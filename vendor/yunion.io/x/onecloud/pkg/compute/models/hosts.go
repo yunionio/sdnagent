@@ -674,7 +674,7 @@ func (self *SHost) RealDelete(ctx context.Context, userCred mcclient.TokenCreden
 		if storage != nil && storage.IsLocal() {
 			cnt, err := storage.GetDiskCount()
 			if err != nil {
-				return err
+				return errors.Wrapf(err, "GetDiskCount")
 			}
 			if cnt > 0 {
 				return httperrors.NewNotEmptyError("Inconsistent: local storage is not empty???")
@@ -1409,6 +1409,17 @@ func (self *SHost) GetGuestsQuery() *sqlchemy.SQuery {
 
 func (self *SHost) GetGuests() []SGuest {
 	q := self.GetGuestsQuery()
+	guests := make([]SGuest, 0)
+	err := db.FetchModelObjects(GuestManager, q, &guests)
+	if err != nil {
+		log.Errorf("GetGuests %s", err)
+		return nil
+	}
+	return guests
+}
+
+func (self *SHost) GetKvmGuests() []SGuest {
+	q := GuestManager.Query().Equals("host_id", self.Id).Equals("hypervisor", api.HYPERVISOR_KVM)
 	guests := make([]SGuest, 0)
 	err := db.FetchModelObjects(GuestManager, q, &guests)
 	if err != nil {
@@ -3519,6 +3530,9 @@ func (self *SHost) PerformOffline(ctx context.Context, userCred mcclient.TokenCr
 			if jsonutils.QueryBoolean(data, "update_health_status", false) {
 				self.EnableHealthCheck = false
 			}
+			// Note: update host status to unknown on host offline
+			// we did not have host status after host offline
+			self.Status = api.BAREMETAL_UNKNOWN
 			return nil
 		})
 		if err != nil {
@@ -4612,7 +4626,15 @@ func (host *SHost) SyncHostExternalNics(ctx context.Context, userCred mcclient.T
 						enables = append(enables, extNics[i])
 					}
 				} else {
-					// do nothing, in sync
+					// in sync, sync interface and bridge
+					hw := host.getHostwireOfIdAndMac(netIfs[i].WireId, netIfs[i].Mac)
+					if hw != nil && (hw.Bridge != extNics[i].GetBridge() || hw.Interface != extNics[i].GetDevice()) {
+						db.Update(hw, func() error {
+							hw.Interface = extNics[i].GetDevice()
+							hw.Bridge = extNics[i].GetBridge()
+							return nil
+						})
+					}
 				}
 			} else {
 				reserveIp := false
@@ -4663,7 +4685,7 @@ func (host *SHost) SyncHostExternalNics(ctx context.Context, userCred mcclient.T
 		// always try reserved pool
 		extNic := adds[i].netif
 		err = host.addNetif(ctx, userCred, extNic.GetMac(), "", extNic.GetIpAddr(), 0, extNic.GetNicType(), extNic.GetIndex(),
-			extNic.IsLinkUp(), int16(extNic.GetMtu()), false, "", "", true, true)
+			extNic.IsLinkUp(), int16(extNic.GetMtu()), false, extNic.GetDevice(), extNic.GetBridge(), true, true)
 		if err != nil {
 			result.AddError(err)
 		} else {
@@ -4896,7 +4918,7 @@ func (host *SHost) PerformHostMaintenance(ctx context.Context, userCred mcclient
 		preferHostId = host.Id
 	}
 
-	guests := host.GetGuests()
+	guests := host.GetKvmGuests()
 	for i := 0; i < len(guests); i++ {
 		lockman.LockObject(ctx, &guests[i])
 		defer lockman.ReleaseObject(ctx, &guests[i])
