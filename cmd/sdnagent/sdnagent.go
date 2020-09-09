@@ -30,7 +30,7 @@ import (
 )
 
 func LockPidFile(path string) (*os.File, error) {
-	f, err := os.Create(path)
+	f, err := os.OpenFile(path, os.O_WRONLY|os.O_CREATE, os.FileMode(0644))
 	if err != nil {
 		return nil, err
 	}
