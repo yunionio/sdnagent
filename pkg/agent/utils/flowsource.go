@@ -244,9 +244,11 @@ func (g *Guest) FlowsMap() (map[string][]*ovs.Flow, error) {
 					F(0, 25770, T("in_port={{.PortNo}},arp,dl_src={{.MAC}},arp_sha={{.MAC}}"), "normal"),
 				)
 			} else {
-				flows = append(flows,
-					F(0, 25770, T("in_port={{.PortNo}},arp,dl_src={{.MAC}},arp_sha={{.MAC}},arp_spa={{.IP}}"), "normal"),
-				)
+				g.eachIP(m, func(T2 func(string) string) {
+					flows = append(flows,
+						F(0, 25770, T2("in_port={{.PortNo}},arp,dl_src={{.MAC}},arp_sha={{.MAC}},arp_spa={{.IP}}"), "normal"),
+					)
+				})
 			}
 			flows = append(flows,
 				F(0, 25760, T("in_port={{.PortNo}},arp"), "drop"),
@@ -263,6 +265,20 @@ func (g *Guest) FlowsMap() (map[string][]*ovs.Flow, error) {
 		return r, fmt.Errorf("not all nics ready")
 	}
 	return r, nil
+}
+
+func (g *Guest) eachIP(data map[string]interface{}, cb func(func(string) string)) {
+	data2 := map[string]interface{}{}
+	for k, v := range data {
+		data2[k] = v
+	}
+	var ipAddrs = data2["SubIPs"].([]string)
+	ipAddrs = append(ipAddrs, data2["IP"].(string))
+	for _, ipAddr := range ipAddrs {
+		data2["IP"] = ipAddr
+		T2 := t(data2)
+		cb(T2)
+	}
 }
 
 func (sr *SecurityRules) Flows(g *Guest, data map[string]interface{}) []*ovs.Flow {
@@ -297,15 +313,19 @@ func (sr *SecurityRules) Flows(g *Guest, data map[string]interface{}) []*ovs.Flo
 				loadZone+T(",ct(table=1,zone={{.CT_ZONE}})")),
 		)
 	} else {
+		g.eachIP(data, func(T2 func(string) string) {
+			flows = append(flows,
+				F(0, 26870, T2("in_port={{.PortNoPhy}},dl_dst={{.MAC}},{{._dl_vlan}},ip,nw_dst={{.IP}}"),
+					loadZone+T2(",ct(table=1,zone={{.CT_ZONE}})")),
+				F(0, 25870, T2("in_port={{.PortNo}},dl_src={{.MAC}},ip,nw_src={{.IP}}"),
+					loadReg0BitVm+","+loadZone+T2(",ct(table=1,zone={{.CT_ZONE}})")),
+				F(0, 24770, T2("dl_dst={{.MAC}},ip,nw_dst={{.IP}}"),
+					loadZone+T2(",ct(table=1,zone={{.CT_ZONE}})")),
+			)
+		})
 		flows = append(flows,
-			F(0, 26870, T("in_port={{.PortNoPhy}},dl_dst={{.MAC}},{{._dl_vlan}},ip,nw_dst={{.IP}}"),
-				loadZone+T(",ct(table=1,zone={{.CT_ZONE}})")),
 			F(0, 26860, T("in_port={{.PortNoPhy}},dl_dst={{.MAC}},{{._dl_vlan}},ip"), "drop"),
-			F(0, 25870, T("in_port={{.PortNo}},dl_src={{.MAC}},ip,nw_src={{.IP}}"),
-				loadReg0BitVm+","+loadZone+T(",ct(table=1,zone={{.CT_ZONE}})")),
 			F(0, 25860, T("in_port={{.PortNo}},dl_src={{.MAC}},ip"), "drop"),
-			F(0, 24770, T("dl_dst={{.MAC}},ip,nw_dst={{.IP}}"),
-				loadZone+T(",ct(table=1,zone={{.CT_ZONE}})")),
 			F(0, 24760, T("dl_dst={{.MAC}},ip"), "drop"),
 		)
 	}
