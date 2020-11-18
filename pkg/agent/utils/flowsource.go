@@ -25,19 +25,12 @@ import (
 	"yunion.io/x/log"
 )
 
-var disableFirewallRules = false
-
 type FlowSource interface {
 	Who() string
 	FlowsMap() (map[string][]*ovs.Flow, error)
 }
 
 func F(table, priority int, matches, actions string) *ovs.Flow {
-	if disableFirewallRules {
-		if table == 0 && priority > 0 && priority < 28300 {
-			table = 100
-		}
-	}
 	txt := fmt.Sprintf("table=%d,priority=%d,%s,actions=%s", table, priority, matches, actions)
 	of := &ovs.Flow{}
 	err := of.UnmarshalText([]byte(txt))
