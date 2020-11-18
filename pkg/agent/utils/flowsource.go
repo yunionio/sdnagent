@@ -379,7 +379,7 @@ func (sr *SecurityRules) Flows(g *Guest, data map[string]interface{}) []*ovs.Flo
 //
 // Assumptions
 //
-//  - MAC is unique, this can be an issue when allow_switch_vms
+//  - MAC is unique, this can be an issue when !SrcMacCheck
 //  - We try to not depend on IP uniqueness, but this is also requirement for LOCAL-vm communication
 //  - We are the only user of ct_zone other than 0
 //
@@ -405,18 +405,18 @@ func (sr *SecurityRules) Flows(g *Guest, data map[string]interface{}) []*ovs.Flo
 //
 // 25870 in_port=PORT_VM,dl_src=MAC_VM,ip,{SrcIpCheck?nw_src=IP_VM},actions=load_src_VM_ZONE,load_VM_BIT,ct(zone=src_VM_ZONE,table=sec_CT)
 // 25860 in_port=PORT_VM,dl_src=MAC_VM,ip,actions=drop                                  SrcIpCheck
-// 25770 in_port=PORT_VM,arp,dl_src=MAC_VM,arp_sha=MAC_VM,arp_spa=IP_VM,actions=normal  !allow_switch_vms
-// 25760 in_port=PORT_VM,arp,actions=drop                                               !allow_switch_vms
+// 25770 in_port=PORT_VM,arp,dl_src=MAC_VM,arp_sha=MAC_VM,arp_spa=IP_VM,actions=normal  SrcMacCheck
+// 25760 in_port=PORT_VM,arp,actions=drop                                               SrcMacCheck
 // 25600 in_port=PORT_VM,dl_src=MAC_VM,actions=normal
 //
 // 24770 dl_dst=MAC_VM,ip,{SrcIpCheck?nw_dst=IP_VM},actions=load_dst_VM_ZONE,ct(zone=dst_VM_ZONE,table=sec_CT)
-// 24760 dl_dst=MAC_VM,ip,actions=drop                                              SrcIpCheck
-// 24670 in_port=PORT_VM,{ allow_switch_vms},actions=normal
-// 24660 in_port=PORT_VM,{!allow_switch_vms},actions=drop
+// 24760 dl_dst=MAC_VM,ip,actions=drop                                              	SrcIpCheck
+// 24670 in_port=PORT_VM,{!SrcMacCheck},actions=normal
+// 24660 in_port=PORT_VM,{ SrcMacCheck},actions=drop
 //
-// 23700 in_port=PORT_PHY,{ allow_switch_vms},actions=normal
-// 23600 in_port=PORT_PHY,{!allow_switch_vms},dl_dst=01:00:00:00:00:00/01:00:00:00:00:00,actions=normal
-// 23500 in_port=PORT_PHY,{!allow_switch_vms},actions=drop
+// 23700 in_port=PORT_PHY,{!SrcMacCheck},actions=normal
+// 23600 in_port=PORT_PHY,{ SrcMacCheck},dl_dst=01:00:00:00:00:00/01:00:00:00:00:00,actions=normal
+// 23500 in_port=PORT_PHY,{ SrcMacCheck},actions=drop
 //
 // Table 1 sec_CT
 //  7900 ip,ct_state=+trk+inv,actions=drop
