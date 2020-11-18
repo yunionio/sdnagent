@@ -250,8 +250,16 @@ func (g *Guest) FlowsMap() (map[string][]*ovs.Flow, error) {
 		if !g.SrcMacCheck() {
 			flows = append(flows, F(0, 24670, T("in_port={{.PortNo}}"), "normal"))
 		} else {
+			if !g.SrcIpCheck() {
+				flows = append(flows,
+					F(0, 25770, T("in_port={{.PortNo}},arp,dl_src={{.MAC}},arp_sha={{.MAC}}"), "normal"),
+				)
+			} else {
+				flows = append(flows,
+					F(0, 25770, T("in_port={{.PortNo}},arp,dl_src={{.MAC}},arp_sha={{.MAC}},arp_spa={{.IP}}"), "normal"),
+				)
+			}
 			flows = append(flows,
-				F(0, 25770, T("in_port={{.PortNo}},arp,dl_src={{.MAC}},arp_sha={{.MAC}},arp_spa={{.IP}}"), "normal"),
 				F(0, 25760, T("in_port={{.PortNo}},arp"), "drop"),
 				F(0, 24660, T("in_port={{.PortNo}}"), "drop"),
 			)
@@ -404,9 +412,9 @@ func (sr *SecurityRules) Flows(g *Guest, data map[string]interface{}) []*ovs.Flo
 // 26700 in_port=PORT_PHY,dl_dst=MAC_VM,dl_vlan=VLAN_VM,actions=normal
 //
 // 25870 in_port=PORT_VM,dl_src=MAC_VM,ip,{SrcIpCheck?nw_src=IP_VM},actions=load_src_VM_ZONE,load_VM_BIT,ct(zone=src_VM_ZONE,table=sec_CT)
-// 25860 in_port=PORT_VM,dl_src=MAC_VM,ip,actions=drop                                  SrcIpCheck
-// 25770 in_port=PORT_VM,arp,dl_src=MAC_VM,arp_sha=MAC_VM,arp_spa=IP_VM,actions=normal  SrcMacCheck
-// 25760 in_port=PORT_VM,arp,actions=drop                                               SrcMacCheck
+// 25860 in_port=PORT_VM,dl_src=MAC_VM,ip,actions=drop                                  		SrcIpCheck
+// 25770 in_port=PORT_VM,arp,dl_src=MAC_VM,arp_sha=MAC_VM,{SrcIpCheck?arp_spa=IP_VM},actions=normal	SrcMacCheck
+// 25760 in_port=PORT_VM,arp,actions=drop                                               		SrcMacCheck
 // 25600 in_port=PORT_VM,dl_src=MAC_VM,actions=normal
 //
 // 24770 dl_dst=MAC_VM,ip,{SrcIpCheck?nw_dst=IP_VM},actions=load_dst_VM_ZONE,ct(zone=dst_VM_ZONE,table=sec_CT)
