@@ -401,18 +401,18 @@ func (sr *SecurityRules) Flows(g *Guest, data map[string]interface{}) []*ovs.Flo
 // 27200 in_port=LOCAL,actions=normal
 //
 // 26900 in_port=PORT_PHY,dl_dst=MAC_PHY,actions=normal
-// 26870 in_port=PORT_PHY,dl_dst=MAC_VM,dl_vlan=VLAN_VM,ip,{!allow_router_vms?nw_dst=IP_VM},actions=load_dst_VM_ZONE,ct(zone=dst_VM_ZONE,table=sec_CT)
-// 26860 in_port=PORT_PHY,dl_dst=MAC_VM,dl_vlan=VLAN_VM,ip,actions=drop                 !allow_router_vms
+// 26870 in_port=PORT_PHY,dl_dst=MAC_VM,dl_vlan=VLAN_VM,ip,{SrcIpCheck?nw_dst=IP_VM},actions=load_dst_VM_ZONE,ct(zone=dst_VM_ZONE,table=sec_CT)
+// 26860 in_port=PORT_PHY,dl_dst=MAC_VM,dl_vlan=VLAN_VM,ip,actions=drop                 SrcIpCheck
 // 26700 in_port=PORT_PHY,dl_dst=MAC_VM,dl_vlan=VLAN_VM,actions=normal
 //
-// 25870 in_port=PORT_VM,dl_src=MAC_VM,ip,{!allow_router_vms?nw_src=IP_VM},actions=load_src_VM_ZONE,load_VM_BIT,ct(zone=src_VM_ZONE,table=sec_CT)
-// 25860 in_port=PORT_VM,dl_src=MAC_VM,ip,actions=drop                                  !allow_router_vms
+// 25870 in_port=PORT_VM,dl_src=MAC_VM,ip,{SrcIpCheck?nw_src=IP_VM},actions=load_src_VM_ZONE,load_VM_BIT,ct(zone=src_VM_ZONE,table=sec_CT)
+// 25860 in_port=PORT_VM,dl_src=MAC_VM,ip,actions=drop                                  SrcIpCheck
 // 25770 in_port=PORT_VM,arp,dl_src=MAC_VM,arp_sha=MAC_VM,arp_spa=IP_VM,actions=normal  !allow_switch_vms
 // 25760 in_port=PORT_VM,arp,actions=drop                                               !allow_switch_vms
 // 25600 in_port=PORT_VM,dl_src=MAC_VM,actions=normal
 //
-// 24770 dl_dst=MAC_VM,ip,{!allow_router_vms?nw_dst=IP_VM},actions=load_dst_VM_ZONE,ct(zone=dst_VM_ZONE,table=sec_CT)
-// 24760 dl_dst=MAC_VM,ip,actions=drop                                              !allow_router_vms
+// 24770 dl_dst=MAC_VM,ip,{SrcIpCheck?nw_dst=IP_VM},actions=load_dst_VM_ZONE,ct(zone=dst_VM_ZONE,table=sec_CT)
+// 24760 dl_dst=MAC_VM,ip,actions=drop                                              SrcIpCheck
 // 24670 in_port=PORT_VM,{ allow_switch_vms},actions=normal
 // 24660 in_port=PORT_VM,{!allow_switch_vms},actions=drop
 //
