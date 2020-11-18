@@ -25,21 +25,12 @@ import (
 	"yunion.io/x/log"
 )
 
-var (
-	disableFirewallRules = false
-)
-
 type FlowSource interface {
 	Who() string
 	FlowsMap() (map[string][]*ovs.Flow, error)
 }
 
 func F(table, priority int, matches, actions string) *ovs.Flow {
-	if disableFirewallRules {
-		if table == 0 && priority > 0 && priority < 28300 {
-			table = 100
-		}
-	}
 	txt := fmt.Sprintf("table=%d,priority=%d,%s,actions=%s", table, priority, matches, actions)
 	of := &ovs.Flow{}
 	err := of.UnmarshalText([]byte(txt))
@@ -259,8 +250,16 @@ func (g *Guest) FlowsMap() (map[string][]*ovs.Flow, error) {
 		if !g.SrcMacCheck() {
 			flows = append(flows, F(0, 24670, T("in_port={{.PortNo}}"), "normal"))
 		} else {
+			if !g.SrcIpCheck() {
+				flows = append(flows,
+					F(0, 25770, T("in_port={{.PortNo}},arp,dl_src={{.MAC}},arp_sha={{.MAC}}"), "normal"),
+				)
+			} else {
+				flows = append(flows,
+					F(0, 25770, T("in_port={{.PortNo}},arp,dl_src={{.MAC}},arp_sha={{.MAC}},arp_spa={{.IP}}"), "normal"),
+				)
+			}
 			flows = append(flows,
-				F(0, 25770, T("in_port={{.PortNo}},arp,dl_src={{.MAC}},arp_sha={{.MAC}},arp_spa={{.IP}}"), "normal"),
 				F(0, 25760, T("in_port={{.PortNo}},arp"), "drop"),
 				F(0, 24660, T("in_port={{.PortNo}}"), "drop"),
 			)
@@ -388,7 +387,7 @@ func (sr *SecurityRules) Flows(g *Guest, data map[string]interface{}) []*ovs.Flo
 //
 // Assumptions
 //
-//  - MAC is unique, this can be an issue when allow_switch_vms
+//  - MAC is unique, this can be an issue when !SrcMacCheck
 //  - We try to not depend on IP uniqueness, but this is also requirement for LOCAL-vm communication
 //  - We are the only user of ct_zone other than 0
 //
@@ -408,24 +407,24 @@ func (sr *SecurityRules) Flows(g *Guest, data map[string]interface{}) []*ovs.Flo
 // 27200 in_port=LOCAL,actions=normal
 //
 // 26900 in_port=PORT_PHY,dl_dst=MAC_PHY,actions=normal
-// 26870 in_port=PORT_PHY,dl_dst=MAC_VM,dl_vlan=VLAN_VM,ip,{!allow_router_vms?nw_dst=IP_VM},actions=load_dst_VM_ZONE,ct(zone=dst_VM_ZONE,table=sec_CT)
-// 26860 in_port=PORT_PHY,dl_dst=MAC_VM,dl_vlan=VLAN_VM,ip,actions=drop                 !allow_router_vms
+// 26870 in_port=PORT_PHY,dl_dst=MAC_VM,dl_vlan=VLAN_VM,ip,{SrcIpCheck?nw_dst=IP_VM},actions=load_dst_VM_ZONE,ct(zone=dst_VM_ZONE,table=sec_CT)
+// 26860 in_port=PORT_PHY,dl_dst=MAC_VM,dl_vlan=VLAN_VM,ip,actions=drop                 SrcIpCheck
 // 26700 in_port=PORT_PHY,dl_dst=MAC_VM,dl_vlan=VLAN_VM,actions=normal
 //
-// 25870 in_port=PORT_VM,dl_src=MAC_VM,ip,{!allow_router_vms?nw_src=IP_VM},actions=load_src_VM_ZONE,load_VM_BIT,ct(zone=src_VM_ZONE,table=sec_CT)
-// 25860 in_port=PORT_VM,dl_src=MAC_VM,ip,actions=drop                                  !allow_router_vms
-// 25770 in_port=PORT_VM,arp,dl_src=MAC_VM,arp_sha=MAC_VM,arp_spa=IP_VM,actions=normal  !allow_switch_vms
-// 25760 in_port=PORT_VM,arp,actions=drop                                               !allow_switch_vms
+// 25870 in_port=PORT_VM,dl_src=MAC_VM,ip,{SrcIpCheck?nw_src=IP_VM},actions=load_src_VM_ZONE,load_VM_BIT,ct(zone=src_VM_ZONE,table=sec_CT)
+// 25860 in_port=PORT_VM,dl_src=MAC_VM,ip,actions=drop                                  		SrcIpCheck
+// 25770 in_port=PORT_VM,arp,dl_src=MAC_VM,arp_sha=MAC_VM,{SrcIpCheck?arp_spa=IP_VM},actions=normal	SrcMacCheck
+// 25760 in_port=PORT_VM,arp,actions=drop                                               		SrcMacCheck
 // 25600 in_port=PORT_VM,dl_src=MAC_VM,actions=normal
 //
-// 24770 dl_dst=MAC_VM,ip,{!allow_router_vms?nw_dst=IP_VM},actions=load_dst_VM_ZONE,ct(zone=dst_VM_ZONE,table=sec_CT)
-// 24760 dl_dst=MAC_VM,ip,actions=drop                                              !allow_router_vms
-// 24670 in_port=PORT_VM,{ allow_switch_vms},actions=normal
-// 24660 in_port=PORT_VM,{!allow_switch_vms},actions=drop
+// 24770 dl_dst=MAC_VM,ip,{SrcIpCheck?nw_dst=IP_VM},actions=load_dst_VM_ZONE,ct(zone=dst_VM_ZONE,table=sec_CT)
+// 24760 dl_dst=MAC_VM,ip,actions=drop                                              	SrcIpCheck
+// 24670 in_port=PORT_VM,{!SrcMacCheck},actions=normal
+// 24660 in_port=PORT_VM,{ SrcMacCheck},actions=drop
 //
-// 23700 in_port=PORT_PHY,{ allow_switch_vms},actions=normal
-// 23600 in_port=PORT_PHY,{!allow_switch_vms},dl_dst=01:00:00:00:00:00/01:00:00:00:00:00,actions=normal
-// 23500 in_port=PORT_PHY,{!allow_switch_vms},actions=drop
+// 23700 in_port=PORT_PHY,{!SrcMacCheck},actions=normal
+// 23600 in_port=PORT_PHY,{ SrcMacCheck},dl_dst=01:00:00:00:00:00/01:00:00:00:00:00,actions=normal
+// 23500 in_port=PORT_PHY,{ SrcMacCheck},actions=drop
 //
 // Table 1 sec_CT
 //  7900 ip,ct_state=+trk+inv,actions=drop
