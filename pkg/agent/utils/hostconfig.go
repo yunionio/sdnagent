@@ -18,8 +18,11 @@ import (
 	"context"
 	"fmt"
 	"net"
+	"reflect"
 	"strings"
 	"time"
+
+	"yunion.io/x/log"
 
 	"yunion.io/x/onecloud/pkg/apis/identity"
 	"yunion.io/x/onecloud/pkg/hostman/options"
@@ -128,13 +131,26 @@ func (hc *HostConfig) HostNetworkConfig(bridge string) *HostConfigNetwork {
 	return nil
 }
 
+func (hc *HostConfig) Equals(hc1 *HostConfig) bool {
+	return reflect.DeepEqual(hc.SHostOptions, hc1.SHostOptions)
+}
+
 func (hc *HostConfig) WatchChange(ctx context.Context, cb func()) {
 	tick := time.NewTicker(13 * time.Second)
 	defer tick.Stop()
 	for {
 		select {
 		case <-tick.C:
-			NewHostConfig()
+			hc1, err := NewHostConfig()
+			if err != nil {
+				log.Errorf("watch host config: NewHostConfig: %v", err)
+				cb()
+				return
+			}
+			if !hc.Equals(hc1) {
+				cb()
+				return
+			}
 		case <-ctx.Done():
 			return
 		}
