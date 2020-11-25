@@ -140,10 +140,14 @@ type ComputeOptions struct {
 
 	ReconcileGuestBackupIntervalSeconds int `help:"interval reconcile guest bakcups" default:"30"`
 
+	EnableAutoRenameProject bool `help:"when it set true, auto create project will rename when cloud project name changed" default:"false"`
+
 	SCapabilityOptions
 	SASControllerOptions
 	common_options.CommonOptions
 	common_options.DBOptions
+
+	EnableAutoMergeSecurityGroup bool `help:"Enable auto merge secgroup when sync security group from cloud, default False" default:"false"`
 }
 
 type SCapabilityOptions struct {
