@@ -2023,6 +2023,12 @@ func (self *SGuest) PerformChangeIpaddr(ctx context.Context, userCred mcclient.T
 			}
 			return nil, httperrors.NewBadRequestError(err.Error())
 		}
+		if _, err := db.Update(&ngn[0], func() error {
+			ngn[0].EipId = gn.EipId
+			return nil
+		}); err != nil {
+			return nil, err
+		}
 
 		return ngn, nil
 	}()
@@ -2587,9 +2593,12 @@ func (model *SGuest) AllowPerformCancelDelete(ctx context.Context, userCred mccl
 }
 
 func (self *SGuest) PerformCancelDelete(ctx context.Context, userCred mcclient.TokenCredential, query jsonutils.JSONObject, data jsonutils.JSONObject) (jsonutils.JSONObject, error) {
-	if self.PendingDeleted {
+	if self.PendingDeleted && !self.Deleted {
 		err := self.DoCancelPendingDelete(ctx, userCred)
-		return nil, err
+		if err != nil {
+			return nil, errors.Wrap(err, "DoCancelPendingDelete")
+		}
+		self.RecoverUsages(ctx, userCred)
 	}
 	return nil, nil
 }
@@ -3635,9 +3644,11 @@ func (self *SGuest) SaveRenewInfo(
 	guestdisks := self.GetDisks()
 	for i := 0; i < len(guestdisks); i += 1 {
 		disk := guestdisks[i].GetDisk()
-		err = disk.SaveRenewInfo(ctx, userCred, bc, expireAt, billingType)
-		if err != nil {
-			return err
+		if disk.AutoDelete {
+			err = disk.SaveRenewInfo(ctx, userCred, bc, expireAt, billingType)
+			if err != nil {
+				return err
+			}
 		}
 	}
 	return nil
