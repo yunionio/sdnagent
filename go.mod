@@ -16,7 +16,7 @@ require (
 	golang.org/x/net v0.0.0-20200226121028-0de0cce0169b
 	google.golang.org/grpc v1.26.0
 	yunion.io/x/log v0.0.0-20200313080802-57a4ce5966b3
-	yunion.io/x/onecloud v0.0.0-20200908020751-dc5eb6c09e8e
+	yunion.io/x/onecloud v0.0.0-20201125012830-6c3c023a7f18
 	yunion.io/x/pkg v0.0.0-20200814072949-4f1b541857d6
 )
 

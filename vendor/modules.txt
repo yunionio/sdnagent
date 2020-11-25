@@ -129,6 +129,24 @@ github.com/vishvananda/netlink
 github.com/vishvananda/netlink/nl
 # github.com/vishvananda/netns v0.0.0-20191106174202-0a2b9b5464df
 github.com/vishvananda/netns
+# github.com/vmware/govmomi v0.20.1
+github.com/vmware/govmomi
+github.com/vmware/govmomi/nfc
+github.com/vmware/govmomi/object
+github.com/vmware/govmomi/ovf
+github.com/vmware/govmomi/performance
+github.com/vmware/govmomi/property
+github.com/vmware/govmomi/session
+github.com/vmware/govmomi/task
+github.com/vmware/govmomi/view
+github.com/vmware/govmomi/vim25
+github.com/vmware/govmomi/vim25/debug
+github.com/vmware/govmomi/vim25/methods
+github.com/vmware/govmomi/vim25/mo
+github.com/vmware/govmomi/vim25/progress
+github.com/vmware/govmomi/vim25/soap
+github.com/vmware/govmomi/vim25/types
+github.com/vmware/govmomi/vim25/xml
 # go.etcd.io/etcd v0.5.0-alpha.5.0.20191023171146-3cf2f69b5738
 go.etcd.io/etcd/auth/authpb
 go.etcd.io/etcd/clientv3
@@ -248,12 +266,12 @@ gopkg.in/yaml.v2
 # yunion.io/x/executor v0.0.0-20200227030256-a18417815e74
 yunion.io/x/executor/apis
 yunion.io/x/executor/client
-# yunion.io/x/jsonutils v0.0.0-20200814075449-927b118adbd8
+# yunion.io/x/jsonutils v0.0.0-20201110084044-3e4e1cb49769
 yunion.io/x/jsonutils
 # yunion.io/x/log v0.0.0-20200313080802-57a4ce5966b3
 yunion.io/x/log
 yunion.io/x/log/hooks
-# yunion.io/x/onecloud v0.0.0-20200908020751-dc5eb6c09e8e
+# yunion.io/x/onecloud v0.0.0-20201125012830-6c3c023a7f18
 yunion.io/x/onecloud/pkg/apis
 yunion.io/x/onecloud/pkg/apis/ansible
 yunion.io/x/onecloud/pkg/apis/billing
@@ -303,6 +321,8 @@ yunion.io/x/onecloud/pkg/mcclient/options
 yunion.io/x/onecloud/pkg/mcclient/utils
 yunion.io/x/onecloud/pkg/monitor/options
 yunion.io/x/onecloud/pkg/monitor/tsdb
+yunion.io/x/onecloud/pkg/multicloud
+yunion.io/x/onecloud/pkg/multicloud/esxi
 yunion.io/x/onecloud/pkg/multicloud/esxi/vcenter
 yunion.io/x/onecloud/pkg/proxy
 yunion.io/x/onecloud/pkg/util/ansible
@@ -328,6 +348,8 @@ yunion.io/x/onecloud/pkg/util/seclib2
 yunion.io/x/onecloud/pkg/util/streamutils
 yunion.io/x/onecloud/pkg/util/stringutils2
 yunion.io/x/onecloud/pkg/util/validate
+yunion.io/x/onecloud/pkg/util/version
+yunion.io/x/onecloud/pkg/util/vmdkutils
 yunion.io/x/onecloud/pkg/vpcagent/apihelper
 yunion.io/x/onecloud/pkg/vpcagent/models
 yunion.io/x/onecloud/pkg/vpcagent/ovn/mac
@@ -357,7 +379,7 @@ yunion.io/x/pkg/util/version
 yunion.io/x/pkg/utils
 # yunion.io/x/s3cli v0.0.0-20190917004522-13ac36d8687e
 yunion.io/x/s3cli
-# yunion.io/x/sqlchemy v0.0.0-20200814052348-164f1f20f8a6
+# yunion.io/x/sqlchemy v0.0.0-20201014101037-8fe75542e6d8
 yunion.io/x/sqlchemy
 # yunion.io/x/structarg v0.0.0-20200720093445-9f850fa222ce
 yunion.io/x/structarg

@@ -331,7 +331,7 @@ func (self *SStoragecachedimage) markDeleting(ctx context.Context, userCred mccl
 	}
 
 	if !isForce && !utils.IsInStringArray(self.Status,
-		[]string{api.CACHED_IMAGE_STATUS_READY, api.CACHED_IMAGE_STATUS_DELETING, api.CACHED_IMAGE_STATUS_CACHE_FAILED}) {
+		[]string{api.CACHED_IMAGE_STATUS_ACTIVE, api.CACHED_IMAGE_STATUS_DELETING, api.CACHED_IMAGE_STATUS_CACHE_FAILED}) {
 		return httperrors.NewInvalidStatusError("Cannot uncache in status %s", self.Status)
 	}
 	_, err = db.Update(self, func() error {
@@ -552,4 +552,23 @@ func (manager *SStoragecachedimageManager) OrderByExtraFields(
 	}
 
 	return q, nil
+}
+
+func (manager *SStoragecachedimageManager) InitializeData() error {
+	images := []SStoragecachedimage{}
+	q := manager.Query().Equals("status", "ready")
+	err := db.FetchModelObjects(manager, q, &images)
+	if err != nil {
+		return errors.Wrapf(err, "db.FetchModelObjects")
+	}
+	for i := range images {
+		_, err := db.Update(&images[i], func() error {
+			images[i].Status = api.CACHED_IMAGE_STATUS_ACTIVE
+			return nil
+		})
+		if err != nil {
+			return errors.Wrapf(err, "db.Update(%d)", images[i].RowId)
+		}
+	}
+	return nil
 }

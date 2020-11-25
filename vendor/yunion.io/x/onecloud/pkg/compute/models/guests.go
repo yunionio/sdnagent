@@ -2016,8 +2016,10 @@ func (self *SGuest) getNetworksDetails() string {
 func (self *SGuest) getDisksDetails() string {
 	var buf bytes.Buffer
 	for _, disk := range self.GetDisks() {
-		buf.WriteString(disk.GetDetailedString())
-		buf.WriteString("\n")
+		if details := disk.GetDetailedString(); len(details) > 0 {
+			buf.WriteString(details)
+			buf.WriteString("\n")
+		}
 	}
 	return buf.String()
 }
@@ -2537,7 +2539,9 @@ func (manager *SGuestManager) newCloudVM(ctx context.Context, userCred mcclient.
 
 	if provider.GetFactory().IsSupportPrepaidResources() {
 		guest.BillingType = extVM.GetBillingType()
-		guest.ExpiredAt = extVM.GetExpiredAt()
+		if expired := extVM.GetExpiredAt(); !expired.IsZero() {
+			guest.ExpiredAt = expired
+		}
 		if guest.GetDriver().IsSupportSetAutoRenew() {
 			guest.AutoRenew = extVM.IsAutoRenew()
 		}
@@ -2979,8 +2983,8 @@ func (self *SGuest) attach2Disk(ctx context.Context, disk *SDisk, userCred mccli
 	guestdisk.DiskId = disk.Id
 	guestdisk.GuestId = self.Id
 
-	defer lockman.ReleaseObject(ctx, self)
 	lockman.LockObject(ctx, self)
+	defer lockman.ReleaseObject(ctx, self)
 
 	guestdisk.Index = self.getDiskIndex()
 	err = guestdisk.DoSave(ctx, driver, cache, mountpoint)
@@ -4265,40 +4269,49 @@ func (self *SGuest) saveOsType(userCred mcclient.TokenCredential, osType string)
 	return err
 }
 
+type sDeployInfo struct {
+	Os       string
+	Account  string
+	Key      string
+	Distro   string
+	Version  string
+	Arch     string
+	Language string
+}
+
 func (self *SGuest) SaveDeployInfo(ctx context.Context, userCred mcclient.TokenCredential, data jsonutils.JSONObject) {
+	deployInfo := sDeployInfo{}
+	data.Unmarshal(&deployInfo)
 	info := make(map[string]interface{})
-	if data.Contains("os") {
-		osName, _ := data.GetString("os")
-		self.saveOsType(userCred, osName)
-		info["os_name"] = osName
+	if len(deployInfo.Os) > 0 {
+		self.saveOsType(userCred, deployInfo.Os)
+		info["os_name"] = deployInfo.Os
 	}
-	if data.Contains("account") {
-		account, _ := data.GetString("account")
-		info["login_account"] = account
-		if data.Contains("key") {
-			key, _ := data.GetString("key")
-			info["login_key"] = key
+	driver := self.GetDriver()
+	if len(deployInfo.Account) > 0 {
+		info["login_account"] = deployInfo.Account
+		if len(deployInfo.Key) > 0 {
+			info["login_key"] = deployInfo.Key
+			if len(self.KeypairId) > 0 && !driver.IsSupportdDcryptPasswordFromSecretKey() { // Tencent Cloud does not support simultaneous setting of secret keys and passwords
+				info["login_key"], _ = seclib2.EncryptBase64(self.GetKeypairPublicKey(), "")
+			}
 			info["login_key_timestamp"] = timeutils.UtcNow()
 		} else {
 			info["login_key"] = "none"
 			info["login_key_timestamp"] = "none"
 		}
 	}
-	if data.Contains("distro") {
-		dist, _ := data.GetString("distro")
-		info["os_distribution"] = dist
+	if len(deployInfo.Distro) > 0 {
+		info["os_distribution"] = deployInfo.Distro
 	}
-	if data.Contains("version") {
-		ver, _ := data.GetString("version")
-		info["os_version"] = ver
+	if len(deployInfo.Version) > 0 {
+		info["os_version"] = deployInfo.Version
 	}
-	if data.Contains("arch") {
-		arch, _ := data.GetString("arch")
-		info["os_arch"] = arch
+	if len(deployInfo.Arch) > 0 {
+		info["os_arch"] = deployInfo.Arch
 	}
-	if data.Contains("language") {
-		lang, _ := data.GetString("language")
-		info["os_language"] = lang
+	if len(deployInfo.Language) > 0 {
+		info["os_language"] = deployInfo.Language
 	}
 	self.SetAllMetadata(ctx, info, userCred)
 	self.saveOldPassword(ctx, userCred)
