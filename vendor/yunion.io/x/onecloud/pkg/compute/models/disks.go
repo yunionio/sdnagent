@@ -1537,7 +1537,9 @@ func (manager *SDiskManager) newFromCloudDisk(ctx context.Context, userCred mccl
 
 	if provider.GetFactory().IsSupportPrepaidResources() {
 		disk.BillingType = extDisk.GetBillingType()
-		disk.ExpiredAt = extDisk.GetExpiredAt()
+		if expired := extDisk.GetExpiredAt(); !expired.IsZero() {
+			disk.ExpiredAt = expired
+		}
 		disk.AutoRenew = extDisk.IsAutoRenew()
 	}
 
@@ -2142,9 +2144,12 @@ func (self *SDisk) AllowPerformCancelDelete(ctx context.Context, userCred mcclie
 }
 
 func (self *SDisk) PerformCancelDelete(ctx context.Context, userCred mcclient.TokenCredential, query jsonutils.JSONObject, data jsonutils.JSONObject) (jsonutils.JSONObject, error) {
-	if self.PendingDeleted {
+	if self.PendingDeleted && !self.Deleted {
 		err := self.DoCancelPendingDelete(ctx, userCred)
-		return nil, err
+		if err != nil {
+			return nil, err
+		}
+		self.RecoverUsages(ctx, userCred)
 	}
 	return nil, nil
 }
@@ -2563,13 +2568,18 @@ func (self *SDisk) PerformChangeOwner(ctx context.Context, userCred mcclient.Tok
 	}
 	for i := range snapshots {
 		snapshot := snapshots[i]
-		lockman.LockObject(ctx, &snapshot)
-		_, err := snapshot.PerformChangeOwner(ctx, userCred, query, input)
+		err := func() error {
+			lockman.LockObject(ctx, &snapshot)
+			defer lockman.ReleaseObject(ctx, &snapshot)
+			_, err := snapshot.PerformChangeOwner(ctx, userCred, query, input)
+			if err != nil {
+				return err
+			}
+			return nil
+		}()
 		if err != nil {
-			lockman.ReleaseObject(ctx, &snapshot)
 			return nil, errors.Wrapf(err, "fail to change owner of this disk(%s)'s snapshot %s", self.Id, snapshot.Id)
 		}
-		lockman.ReleaseObject(ctx, &snapshot)
 	}
 	return nil, nil
 }

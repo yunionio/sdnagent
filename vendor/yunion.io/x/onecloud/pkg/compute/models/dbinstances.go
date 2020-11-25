@@ -1351,17 +1351,7 @@ func (manager *SDBInstanceManager) SyncDBInstances(ctx context.Context, userCred
 }
 
 func (self *SDBInstance) syncRemoveCloudDBInstance(ctx context.Context, userCred mcclient.TokenCredential) error {
-	lockman.LockObject(ctx, self)
-	defer lockman.ReleaseObject(ctx, self)
-
-	self.SetDisableDelete(userCred, false)
-
-	err := self.ValidateDeleteCondition(ctx)
-	if err != nil { // cannot delete
-		self.SetStatus(userCred, api.VPC_STATUS_UNKNOWN, "sync to delete")
-		return errors.Wrap(err, "ValidateDeleteCondition")
-	}
-	return self.RealDelete(ctx, userCred)
+	return self.Purge(ctx, userCred)
 }
 
 func (self *SDBInstance) ValidateDeleteCondition(ctx context.Context) error {
@@ -1546,7 +1536,9 @@ func (self *SDBInstance) SyncWithCloudDBInstance(ctx context.Context, userCred m
 
 		if factory.IsSupportPrepaidResources() {
 			self.BillingType = extInstance.GetBillingType()
-			self.ExpiredAt = extInstance.GetExpiredAt()
+			if expired := extInstance.GetExpiredAt(); !expired.IsZero() {
+				self.ExpiredAt = expired
+			}
 			self.AutoRenew = extInstance.IsAutoRenew()
 		}
 
@@ -1636,7 +1628,9 @@ func (manager *SDBInstanceManager) newFromCloudDBInstance(ctx context.Context, u
 
 	if factory.IsSupportPrepaidResources() {
 		instance.BillingType = extInstance.GetBillingType()
-		instance.ExpiredAt = extInstance.GetExpiredAt()
+		if expired := extInstance.GetExpiredAt(); !expired.IsZero() {
+			instance.ExpiredAt = expired
+		}
 		instance.AutoRenew = extInstance.IsAutoRenew()
 	}
 
@@ -1652,17 +1646,31 @@ func (manager *SDBInstanceManager) newFromCloudDBInstance(ctx context.Context, u
 	return &instance, nil
 }
 
+type SRdsCountStat struct {
+	TotalRdsCount  int
+	TotalCpuCount  int
+	TotalMemSizeMb int
+}
+
 func (man *SDBInstanceManager) TotalCount(
 	scope rbacutils.TRbacScope,
 	ownerId mcclient.IIdentityProvider,
 	rangeObjs []db.IStandaloneModel,
 	providers []string, brands []string, cloudEnv string,
-) (int, error) {
-	q := man.Query()
+) (SRdsCountStat, error) {
+	sq := man.Query().SubQuery()
+	q := sq.Query(sqlchemy.COUNT("total_rds_count"),
+		sqlchemy.SUM("total_cpu_count", sq.Field("vcpu_count")),
+		sqlchemy.SUM("total_mem_size_mb", sq.Field("vmem_size_mb")))
+
 	q = scopeOwnerIdFilter(q, scope, ownerId)
 	q = CloudProviderFilter(q, q.Field("manager_id"), providers, brands, cloudEnv)
 	q = RangeObjectsFilter(q, rangeObjs, q.Field("cloudregion_id"), nil, q.Field("manager_id"), nil, nil)
-	return q.CountWithError()
+
+	stat := SRdsCountStat{}
+	row := q.Row()
+	err := q.Row2Struct(row, &stat)
+	return stat, err
 }
 
 func (dbinstance *SDBInstance) GetQuotaKeys() quotas.IQuotaKeys {
