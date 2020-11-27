@@ -655,6 +655,7 @@ github.com/vishvananda/netns v0.0.0-20171111001504-be1fbeda1936/go.mod h1:ZjcWmF
 github.com/vishvananda/netns v0.0.0-20191106174202-0a2b9b5464df h1:OviZH7qLw/7ZovXvuNyL3XQl8UFofeikI1NW1Gypu7k=
 github.com/vishvananda/netns v0.0.0-20191106174202-0a2b9b5464df/go.mod h1:JP3t17pCcGlemwknint6hfoeCVQrEMVwxRLRjXpq+BU=
 github.com/vmihailenco/msgpack v4.0.4+incompatible/go.mod h1:fy3FlTQTDXWkZ7Bh6AcGMlsjHatGryHQYUTf1ShIgkk=
+github.com/vmware/govmomi v0.20.1 h1:7b/SeTUB3tER8ZLGLLLH3xcnB2xeuLULXmfPFqPSRZA=
 github.com/vmware/govmomi v0.20.1/go.mod h1:URlwyTFZX72RmxtxuaFL2Uj3fD1JTvZdx59bHWk6aFU=
 github.com/willf/bitset v1.1.3/go.mod h1:RjeCKbqT1RxIR/KWY6phxZiaY1IyutSBfGjNPySAYV4=
 github.com/willf/bitset v1.1.9/go.mod h1:RjeCKbqT1RxIR/KWY6phxZiaY1IyutSBfGjNPySAYV4=
@@ -1011,6 +1012,8 @@ yunion.io/x/executor v0.0.0-20200227030256-a18417815e74/go.mod h1:Uxuou9WQIeJXNp
 yunion.io/x/jsonutils v0.0.0-20190625054549-a964e1e8a051/go.mod h1:4N0/RVzsYL3kH3WE/H1BjUQdFiWu50JGCFQuuy+Z634=
 yunion.io/x/jsonutils v0.0.0-20200814075449-927b118adbd8 h1:KQVw5EmohJCqBDMdZ3fAcOQNNMIYgVuNCNWNwg4EM3A=
 yunion.io/x/jsonutils v0.0.0-20200814075449-927b118adbd8/go.mod h1:p0nyMqGA/apTxxyLIU/o1k4V7Vujl2O6ey30L594sYE=
+yunion.io/x/jsonutils v0.0.0-20201110084044-3e4e1cb49769 h1:LIQ4hhLGQuQK+XxlV+8JrKBuL37WUT+5ZTVxBwHOTD4=
+yunion.io/x/jsonutils v0.0.0-20201110084044-3e4e1cb49769/go.mod h1:p0nyMqGA/apTxxyLIU/o1k4V7Vujl2O6ey30L594sYE=
 yunion.io/x/log v0.0.0-20190514041436-04ce53b17c6b/go.mod h1:+gauLs73omeJAPlsXcevLsJLKixV+sR/E7WSYTSx1fE=
 yunion.io/x/log v0.0.0-20190629062853-9f6483a7103d h1:59zrDL7Ft+hDukguJRmLr/Gdu/9V75x+yX99ovZwfaA=
 yunion.io/x/log v0.0.0-20190629062853-9f6483a7103d/go.mod h1:LC6f/4FozL0iaAbnFt2eDX9jlsyo3WiOUPm03d7+U4U=
@@ -1020,6 +1023,8 @@ yunion.io/x/onecloud v0.0.0-20200826020233-3a966df6597d h1:OcWsFhx0xuw50cMXGsJWy
 yunion.io/x/onecloud v0.0.0-20200826020233-3a966df6597d/go.mod h1:NzGBEbOaV6vzUb7fOFcJQqDGgFF74tFIM0kbeJSgyAo=
 yunion.io/x/onecloud v0.0.0-20200908020751-dc5eb6c09e8e h1:kjJT0EgUzKbxisAk5jl549wFtBHwaaoLjmknp1i+9TA=
 yunion.io/x/onecloud v0.0.0-20200908020751-dc5eb6c09e8e/go.mod h1:NzGBEbOaV6vzUb7fOFcJQqDGgFF74tFIM0kbeJSgyAo=
+yunion.io/x/onecloud v0.0.0-20201125012830-6c3c023a7f18 h1:kQWmzMgJv+g0z72GATSkl/XoqvuGr1S+djDA/YQtIn4=
+yunion.io/x/onecloud v0.0.0-20201125012830-6c3c023a7f18/go.mod h1:vK6HuZaYC8llyHY4tX0NGg4yBwxXwdwr62Gn2UGGp7s=
 yunion.io/x/ovsdb v0.0.0-20200526071744-27bf0940cbc7/go.mod h1:0vLkNEhlmA64HViPBAnSTUMrx5QP1CLsxXmxDKQ80tc=
 yunion.io/x/pkg v0.0.0-20190620104149-945c25821dbf/go.mod h1:t6rEGG2sQ4J7DhFxSZVOTjNd0YO/KlfWQyK1W4tog+E=
 yunion.io/x/pkg v0.0.0-20190628082551-f4033ba2ea30/go.mod h1:t6rEGG2sQ4J7DhFxSZVOTjNd0YO/KlfWQyK1W4tog+E=
@@ -1029,5 +1034,7 @@ yunion.io/x/s3cli v0.0.0-20190917004522-13ac36d8687e h1:v+EzIadodSwkdZ/7bremd7J8
 yunion.io/x/s3cli v0.0.0-20190917004522-13ac36d8687e/go.mod h1:0iFKpOs1y4lbCxeOmq3Xx/0AcQoewVPwj62eRluioEo=
 yunion.io/x/sqlchemy v0.0.0-20200814052348-164f1f20f8a6 h1:k7E8Zjwzyk/lo1dDO0jtLbODwYRNv+w/zsUJrKWCXvo=
 yunion.io/x/sqlchemy v0.0.0-20200814052348-164f1f20f8a6/go.mod h1:FTdwPdGhMgh4E+UFXc9klI1Ok34fMuybTT+jLhOaIjI=
+yunion.io/x/sqlchemy v0.0.0-20201014101037-8fe75542e6d8 h1:AkPrqO37Yi3aICys9qDjTlSdVVGh2pWQ8ET+dSJmhoI=
+yunion.io/x/sqlchemy v0.0.0-20201014101037-8fe75542e6d8/go.mod h1:FTdwPdGhMgh4E+UFXc9klI1Ok34fMuybTT+jLhOaIjI=
 yunion.io/x/structarg v0.0.0-20200720093445-9f850fa222ce h1:kU8xE7O5uZ1GSJVMZHoJ+jrNL7csUQHYGyAPW9QfNpE=
 yunion.io/x/structarg v0.0.0-20200720093445-9f850fa222ce/go.mod h1:EP6NSv2C0zzqBDTKumv8hPWLb3XvgMZDHQRfyuOrQng=

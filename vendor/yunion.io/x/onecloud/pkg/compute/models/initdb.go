@@ -52,6 +52,7 @@ func InitDB() error {
 		LoadbalancerListenerRuleManager,
 		LoadbalancerBackendGroupManager,
 		LoadbalancerBackendManager,
+		AwsCachedLbbgManager,
 		LoadbalancerClusterManager,
 		SchedtagManager,
 		DynamicschedtagManager,
@@ -61,6 +62,11 @@ func InitDB() error {
 		ScheduledTaskActivityManager,
 		ExternalProjectManager,
 		CachedimageManager,
+		StoragecachedimageManager,
+		NetworkinterfacenetworkManager,
+		DBInstanceNetworkManager,
+		DBInstanceAccountManager,
+		DBInstanceDatabaseManager,
 	} {
 		err := manager.InitializeData()
 		if err != nil {
