@@ -2519,11 +2519,7 @@ func (self *SHost) GetIHostAndProvider() (cloudprovider.ICloudHost, cloudprovide
 	}
 	ihost, err := iregion.GetIHostById(self.ExternalId)
 	if err != nil {
-		if err == cloudprovider.ErrNotFound {
-			return nil, nil, cloudprovider.ErrNotFound
-		}
-		log.Errorf("fail to find ihost by id %s %s", self.ExternalId, err)
-		return nil, nil, fmt.Errorf("fail to find ihost by id %s", err)
+		return nil, nil, errors.Wrapf(err, "iregion.GetIHostById(%s)", self.ExternalId)
 	}
 	return ihost, provider, nil
 }
@@ -4835,10 +4831,12 @@ func (manager *SHostManager) PingDetectionTask(ctx context.Context, userCred mcc
 		var host = new(SHost)
 		q.Row2Struct(rows, host)
 		host.SetModelManager(manager, host)
-		lockman.LockObject(ctx, host)
-		host.PerformOffline(ctx, userCred, nil, data)
-		host.MarkGuestUnknown(userCred)
-		lockman.ReleaseObject(ctx, host)
+		func() {
+			lockman.LockObject(ctx, host)
+			defer lockman.ReleaseObject(ctx, host)
+			host.PerformOffline(ctx, userCred, nil, data)
+			host.MarkGuestUnknown(userCred)
+		}()
 	}
 }
 
@@ -5449,4 +5447,16 @@ func (manager *SHostManager) ListItemExportKeys(ctx context.Context,
 		}
 	}
 	return q, nil
+}
+
+func (manager *SHostManager) FetchHostByExtId(extid string) *SHost {
+	host := SHost{}
+	host.SetModelManager(manager, &host)
+	err := manager.Query().Equals("external_id", extid).First(&host)
+	if err != nil {
+		log.Errorf("fetchHostByExtId fail %s", err)
+		return nil
+	} else {
+		return &host
+	}
 }

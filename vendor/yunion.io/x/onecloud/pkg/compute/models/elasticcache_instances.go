@@ -509,6 +509,8 @@ func (self *SElasticcache) syncRemoveCloudElasticcache(ctx context.Context, user
 
 	self.SetDisableDelete(userCred, false)
 
+	self.DeleteSubResources(ctx, userCred)
+
 	err := self.ValidateDeleteCondition(ctx)
 	if err != nil {
 		self.SetStatus(userCred, api.ELASTIC_CACHE_STATUS_ERROR, "sync to delete")
@@ -647,7 +649,9 @@ func (manager *SElasticcacheManager) newFromCloudElasticcache(ctx context.Contex
 
 	if factory.IsSupportPrepaidResources() {
 		instance.BillingType = extInstance.GetBillingType()
-		instance.ExpiredAt = extInstance.GetExpiredAt()
+		if expired := extInstance.GetExpiredAt(); !expired.IsZero() {
+			instance.ExpiredAt = expired
+		}
 		instance.AutoRenew = extInstance.IsAutoRenew()
 	}
 
