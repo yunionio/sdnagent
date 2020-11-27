@@ -70,6 +70,15 @@ type GuestNIC struct {
 	CtZoneId    uint16 `json:"-"`
 	CtZoneIdSet bool   `json:"-"`
 	PortNo      int    `json:"-"`
+
+	NetworkAddresses []GuestNICNetworkAddress `json:"networkaddresses"`
+}
+
+type GuestNICNetworkAddress struct {
+	Type    string `json:"type"`
+	IpAddr  string `json:"ip_addr"`
+	Masklen int    `json:"masklen"`
+	Gateway string `json:"gateway"`
 }
 
 type GuestNICVpc struct {
@@ -89,6 +98,7 @@ func (n *GuestNIC) TcData() *TcData {
 func (n *GuestNIC) Map() map[string]interface{} {
 	m := map[string]interface{}{
 		"IP":      n.IP,
+		"SubIPs":  n.SubIPs(),
 		"MAC":     n.MAC,
 		"VLAN":    n.VLAN & 0xfff,
 		"CT_ZONE": n.CtZoneId,
@@ -103,6 +113,20 @@ func (n *GuestNIC) Map() map[string]interface{} {
 	}
 	m["VLANTci"] = fmt.Sprintf("0x%04x/0x1fff", vlanTci)
 	return m
+}
+
+func (n *GuestNIC) SubIPs() []string {
+	var (
+		ipAddrs []string
+		nas     = n.NetworkAddresses
+	)
+	for i := range nas {
+		na := &nas[i]
+		if na.Type == "sub_ip" {
+			ipAddrs = append(ipAddrs, na.IpAddr)
+		}
+	}
+	return ipAddrs
 }
 
 type Guest struct {
