@@ -29,6 +29,7 @@ import (
 
 	"yunion.io/x/onecloud/pkg/apis"
 	api "yunion.io/x/onecloud/pkg/apis/compute"
+	"yunion.io/x/onecloud/pkg/cloudcommon/consts"
 	"yunion.io/x/onecloud/pkg/cloudcommon/db"
 	"yunion.io/x/onecloud/pkg/cloudcommon/db/lockman"
 	"yunion.io/x/onecloud/pkg/cloudcommon/db/quotas"
@@ -247,19 +248,6 @@ func (manager *SElasticipManager) QueryDistinctExtraField(q *sqlchemy.SQuery, fi
 	return q, httperrors.ErrNotFound
 }
 
-func (manager *SElasticipManager) getEipsByRegion(region *SCloudregion, provider *SCloudprovider) ([]SElasticip, error) {
-	eips := make([]SElasticip, 0)
-	q := manager.Query().Equals("cloudregion_id", region.Id)
-	if provider != nil {
-		q = q.Equals("manager_id", provider.Id)
-	}
-	err := db.FetchModelObjects(manager, q, &eips)
-	if err != nil {
-		return nil, err
-	}
-	return eips, nil
-}
-
 func (self *SElasticip) GetRegion() *SCloudregion {
 	return CloudregionManager.FetchRegionById(self.CloudregionId)
 }
@@ -328,7 +316,7 @@ func (manager *SElasticipManager) SyncEips(ctx context.Context, userCred mcclien
 	// remoteEips := make([]cloudprovider.ICloudEIP, 0)
 	syncResult := compare.SyncResult{}
 
-	dbEips, err := manager.getEipsByRegion(region, provider)
+	dbEips, err := region.GetElasticIps(provider.Id, api.EIP_MODE_STANDALONE_EIP)
 	if err != nil {
 		syncResult.Error(err)
 		return syncResult
@@ -426,8 +414,11 @@ func (self *SElasticip) SyncInstanceWithCloudEip(ctx context.Context, userCred m
 			case api.EIP_ASSOCIATE_TYPE_SERVER:
 				sq := HostManager.Query().SubQuery()
 				return q.Join(sq, sqlchemy.Equals(sq.Field("id"), q.Field("host_id"))).Filter(sqlchemy.Equals(sq.Field("manager_id"), self.ManagerId))
-			case api.EIP_ASSOCIATE_TYPE_NAT_GATEWAY, api.EIP_ASSOCIATE_TYPE_LOADBALANCER:
+			case api.EIP_ASSOCIATE_TYPE_LOADBALANCER:
 				return q.Equals("manager_id", self.ManagerId)
+			case api.EIP_ASSOCIATE_TYPE_NAT_GATEWAY:
+				sq := VpcManager.Query("id").Equals("manager_id", self.ManagerId)
+				return q.In("vpc_id", sq.SubQuery())
 			}
 			return q
 		})
@@ -474,7 +465,9 @@ func (self *SElasticip) SyncWithCloudEip(ctx context.Context, userCred mcclient.
 		factory, _ := provider.GetProviderFactory()
 		if factory != nil && factory.IsSupportPrepaidResources() {
 			self.BillingType = ext.GetBillingType()
-			self.ExpiredAt = ext.GetExpiredAt()
+			if expired := ext.GetExpiredAt(); !expired.IsZero() {
+				self.ExpiredAt = expired
+			}
 			self.AutoRenew = ext.IsAutoRenew()
 		}
 
@@ -795,50 +788,19 @@ func (manager *SElasticipManager) getEipByExtEip(ctx context.Context, userCred m
 	return manager.newFromCloudEip(ctx, userCred, extEip, provider, region, syncOwnerId)
 }
 
-func (manager *SElasticipManager) ValidateCreateData(ctx context.Context, userCred mcclient.TokenCredential, ownerId mcclient.IIdentityProvider, query jsonutils.JSONObject, input api.SElasticipCreateInput) (*jsonutils.JSONDict, error) {
-	var (
-		region   *SCloudregion
-		provider *SCloudprovider
-		err      error
-	)
-	for _, cloudregion := range []string{input.Cloudregion, input.Region, input.RegionId} {
-		if len(cloudregion) > 0 {
-			input.Cloudregion = cloudregion
-			break
-		}
+func (manager *SElasticipManager) ValidateCreateData(ctx context.Context, userCred mcclient.TokenCredential, ownerId mcclient.IIdentityProvider, query jsonutils.JSONObject, input api.SElasticipCreateInput) (api.SElasticipCreateInput, error) {
+	if input.CloudregionId == "" {
+		input.CloudregionId = api.DEFAULT_REGION_ID
 	}
-	if input.Cloudregion == "" {
-		input.Cloudregion = api.DEFAULT_REGION_ID
-	}
-	if obj, err := CloudregionManager.FetchByIdOrName(nil, input.Cloudregion); err != nil {
+	obj, err := CloudregionManager.FetchByIdOrName(nil, input.CloudregionId)
+	if err != nil {
 		if err != sql.ErrNoRows {
-			return nil, httperrors.NewGeneralError(err)
-		} else {
-			return nil, httperrors.NewResourceNotFoundError("Region %s not found", input.Cloudregion)
+			return input, httperrors.NewGeneralError(err)
 		}
-	} else {
-		region = obj.(*SCloudregion)
+		return input, httperrors.NewResourceNotFoundError2("cloudregion", input.CloudregionId)
 	}
+	region := obj.(*SCloudregion)
 	input.CloudregionId = region.GetId()
-
-	for _, cloudprovider := range []string{input.Cloudprovider, input.Manager, input.ManagerId} {
-		if len(cloudprovider) > 0 {
-			input.Cloudprovider = cloudprovider
-			break
-		}
-	}
-	if input.Cloudprovider != "" {
-		providerObj, err := CloudproviderManager.FetchByIdOrName(nil, input.Cloudprovider)
-		if err != nil {
-			if err != sql.ErrNoRows {
-				return nil, httperrors.NewGeneralError(err)
-			} else {
-				return nil, httperrors.NewResourceNotFoundError("Cloud provider %s not found", input.Cloudprovider)
-			}
-		}
-		provider = providerObj.(*SCloudprovider)
-		input.ManagerId = provider.Id
-	}
 
 	// publicIp cannot be created standalone
 	input.Mode = api.EIP_MODE_STANDALONE_EIP
@@ -848,15 +810,30 @@ func (manager *SElasticipManager) ValidateCreateData(ctx context.Context, userCr
 	}
 
 	if !utils.IsInStringArray(input.ChargeType, []string{api.EIP_CHARGE_TYPE_BY_BANDWIDTH, api.EIP_CHARGE_TYPE_BY_TRAFFIC}) {
-		return nil, httperrors.NewInputParameterError("charge type %s not supported", input.ChargeType)
+		return input, httperrors.NewInputParameterError("charge type %s not supported", input.ChargeType)
 	}
 
-	if input.VirtualResourceCreateInput, err = manager.SVirtualResourceBaseManager.ValidateCreateData(ctx, userCred, ownerId, query, input.VirtualResourceCreateInput); err != nil {
-		return nil, err
+	input.VirtualResourceCreateInput, err = manager.SVirtualResourceBaseManager.ValidateCreateData(ctx, userCred, ownerId, query, input.VirtualResourceCreateInput)
+	if err != nil {
+		return input, err
 	}
 
-	if err = region.GetDriver().ValidateCreateEipData(ctx, userCred, &input); err != nil {
-		return nil, err
+	err = region.GetDriver().ValidateCreateEipData(ctx, userCred, &input)
+	if err != nil {
+		return input, err
+	}
+
+	var provider *SCloudprovider = nil
+	if input.ManagerId != "" {
+		providerObj, err := CloudproviderManager.FetchByIdOrName(nil, input.ManagerId)
+		if err != nil {
+			if err != sql.ErrNoRows {
+				return input, httperrors.NewGeneralError(err)
+			}
+			return input, httperrors.NewResourceNotFoundError2("cloudprovider", input.ManagerId)
+		}
+		provider = providerObj.(*SCloudprovider)
+		input.ManagerId = provider.Id
 	}
 
 	//避免参数重名后还有pending.eip残留
@@ -864,10 +841,10 @@ func (manager *SElasticipManager) ValidateCreateData(ctx context.Context, userCr
 	quotaKeys := fetchRegionalQuotaKeys(rbacutils.ScopeProject, ownerId, region, provider)
 	eipPendingUsage.SetKeys(quotaKeys)
 	if err = quotas.CheckSetPendingQuota(ctx, userCred, eipPendingUsage); err != nil {
-		return nil, err
+		return input, err
 	}
 
-	return input.JSON(input), nil
+	return input, nil
 }
 
 func (eip *SElasticip) GetQuotaKeys() (quotas.IQuotaKeys, error) {
@@ -1246,8 +1223,8 @@ func (manager *SElasticipManager) NewEipForVMOnHost(ctx context.Context, userCre
 		chargeType = api.EIP_CHARGE_TYPE_BY_TRAFFIC
 	}
 
-	eip := SElasticip{}
-	eip.SetModelManager(manager, &eip)
+	eip := &SElasticip{}
+	eip.SetModelManager(manager, eip)
 
 	eip.Mode = api.EIP_MODE_STANDALONE_EIP
 	// do not implicitly auto dellocate EIP, should be set by user explicitly
@@ -1265,7 +1242,9 @@ func (manager *SElasticipManager) NewEipForVMOnHost(ctx context.Context, userCre
 		hostq := HostManager.Query().SubQuery()
 		wireq := WireManager.Query().SubQuery()
 		hostwireq := HostwireManager.Query().SubQuery()
+		scope := policy.PolicyManager.AllowScope(userCred, consts.GetServiceType(), NetworkManager.KeywordPlural(), policy.PolicyActionList)
 		q := NetworkManager.Query()
+		q = NetworkManager.FilterByOwner(q, userCred, scope)
 		q = q.Join(wireq, sqlchemy.Equals(wireq.Field("id"), q.Field("wire_id")))
 		q = q.Join(hostwireq, sqlchemy.Equals(hostwireq.Field("wire_id"), wireq.Field("id")))
 		q = q.Join(hostq, sqlchemy.Equals(hostq.Field("id"), host.Id))
@@ -1275,17 +1254,21 @@ func (manager *SElasticipManager) NewEipForVMOnHost(ctx context.Context, userCre
 			return nil, errors.Wrapf(err, "fetch eip networks usable in host %s(%s)",
 				host.Name, host.Id)
 		}
+		var net *SNetwork
 		for i := range nets {
-			net := &nets[i]
+			net = &nets[i]
 			cnt, err := net.GetFreeAddressCount()
 			if err != nil {
 				continue
 			}
 			if cnt > 0 {
-				eip.NetworkId = net.Id
 				break
 			}
 		}
+		if net == nil {
+			return nil, errors.Error("no usable eip network")
+		}
+		eip.NetworkId = net.Id
 	}
 
 	var err error
@@ -1294,11 +1277,12 @@ func (manager *SElasticipManager) NewEipForVMOnHost(ctx context.Context, userCre
 		return nil, errors.Wrap(err, "db.GenerateName")
 	}
 
-	err = manager.TableSpec().Insert(ctx, &eip)
+	err = manager.TableSpec().Insert(ctx, eip)
 	if err != nil {
 		log.Errorf("create EIP record fail %s", err)
 		return nil, err
 	}
+	db.OpsLog.LogEvent(eip, db.ACT_CREATE, eip.GetShortDesc(ctx), userCred)
 
 	eipPendingUsage := &SRegionQuota{Eip: 1}
 	keys := fetchRegionalQuotaKeys(
@@ -1310,7 +1294,7 @@ func (manager *SElasticipManager) NewEipForVMOnHost(ctx context.Context, userCre
 	eipPendingUsage.SetKeys(keys)
 	quotas.CancelPendingUsage(ctx, userCred, pendingUsage, eipPendingUsage, true)
 
-	return &eip, nil
+	return eip, nil
 }
 
 func (eip *SElasticip) AllocateAndAssociateVM(ctx context.Context, userCred mcclient.TokenCredential, vm *SGuest, parentTaskId string) error {
