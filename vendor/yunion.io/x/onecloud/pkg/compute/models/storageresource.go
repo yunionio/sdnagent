@@ -41,15 +41,15 @@ type SStorageResourceBaseManager struct {
 }
 
 func ValidateStorageResourceInput(userCred mcclient.TokenCredential, query api.StorageResourceInput) (*SStorage, api.StorageResourceInput, error) {
-	storageObj, err := StorageManager.FetchByIdOrName(userCred, query.Storage)
+	storageObj, err := StorageManager.FetchByIdOrName(userCred, query.StorageId)
 	if err != nil {
 		if err == sql.ErrNoRows {
-			return nil, query, errors.Wrapf(httperrors.ErrResourceNotFound, "%s %s", StorageManager.Keyword(), query.Storage)
+			return nil, query, errors.Wrapf(httperrors.ErrResourceNotFound, "%s %s", StorageManager.Keyword(), query.StorageId)
 		} else {
 			return nil, query, errors.Wrap(err, "StorageManager.FetchByIdOrName")
 		}
 	}
-	query.Storage = storageObj.GetId()
+	query.StorageId = storageObj.GetId()
 	return storageObj.(*SStorage), query, nil
 }
 
@@ -125,7 +125,7 @@ func (manager *SStorageResourceBaseManager) ListItemFilter(
 	userCred mcclient.TokenCredential,
 	query api.StorageFilterListInput,
 ) (*sqlchemy.SQuery, error) {
-	if len(query.Storage) > 0 {
+	if len(query.StorageId) > 0 {
 		storageObj, _, err := ValidateStorageResourceInput(userCred, query.StorageResourceInput)
 		if err != nil {
 			return nil, errors.Wrap(err, "ValidateStorageResourceInput")
@@ -188,48 +188,36 @@ func (manager *SStorageResourceBaseManager) OrderByExtraFields(
 	userCred mcclient.TokenCredential,
 	query api.StorageFilterListInput,
 ) (*sqlchemy.SQuery, error) {
-	q, orders, fields := manager.GetOrderBySubQuery(q, userCred, query)
-	if len(orders) > 0 {
-		q = db.OrderByFields(q, orders, fields)
+	if !db.NeedOrderQuery(manager.GetOrderByFields(query)) {
+		return q, nil
 	}
+	orderQ := StorageManager.Query("id")
+	orderSubQ := orderQ.SubQuery()
+	orderQ, orders, fields := manager.GetOrderBySubQuery(orderQ, orderSubQ, orderQ.Field("id"), userCred, query, nil, nil)
+	q = q.LeftJoin(orderSubQ, sqlchemy.Equals(q.Field("storage_id"), orderSubQ.Field("id")))
+	q = db.OrderByFields(q, orders, fields)
 	return q, nil
 }
 
 func (manager *SStorageResourceBaseManager) GetOrderBySubQuery(
 	q *sqlchemy.SQuery,
+	subq *sqlchemy.SSubQuery,
+	joinField sqlchemy.IQueryField,
 	userCred mcclient.TokenCredential,
 	query api.StorageFilterListInput,
+	orders []string,
+	fields []sqlchemy.IQueryField,
 ) (*sqlchemy.SQuery, []string, []sqlchemy.IQueryField) {
-	storageQ := StorageManager.Query("id", "name")
-	var orders []string
-	var fields []sqlchemy.IQueryField
-
-	if db.NeedOrderQuery(manager.SZoneResourceBaseManager.GetOrderByFields(query.ZonalFilterListInput)) {
-		var zoneOrders []string
-		var zoneFields []sqlchemy.IQueryField
-		storageQ, zoneOrders, zoneFields = manager.SZoneResourceBaseManager.GetOrderBySubQuery(storageQ, userCred, query.ZonalFilterListInput)
-		if len(zoneOrders) > 0 {
-			orders = append(orders, zoneOrders...)
-			fields = append(fields, zoneFields...)
-		}
+	if !db.NeedOrderQuery(manager.GetOrderByFields(query)) {
+		return q, orders, fields
 	}
-	if db.NeedOrderQuery(manager.SManagedResourceBaseManager.GetOrderByFields(query.ManagedResourceListInput)) {
-		var manOrders []string
-		var manFields []sqlchemy.IQueryField
-		storageQ, manOrders, manFields = manager.SManagedResourceBaseManager.GetOrderBySubQuery(storageQ, userCred, query.ManagedResourceListInput)
-		if len(manOrders) > 0 {
-			orders = append(orders, manOrders...)
-			fields = append(fields, manFields...)
-		}
-	}
-	if db.NeedOrderQuery(manager.GetOrderByFields(query)) {
-		subq := storageQ.SubQuery()
-		q = q.LeftJoin(subq, sqlchemy.Equals(q.Field("storage_id"), subq.Field("id")))
-		if db.NeedOrderQuery([]string{query.OrderByStorage}) {
-			orders = append(orders, query.OrderByStorage)
-			fields = append(fields, subq.Field("name"))
-		}
-	}
+	storageQ := StorageManager.Query().SubQuery()
+	q = q.LeftJoin(storageQ, sqlchemy.Equals(joinField, storageQ.Field("id")))
+	q = q.AppendField(storageQ.Field("name").Label("storage"))
+	orders = append(orders, query.OrderByStorage)
+	fields = append(fields, subq.Field("storage"))
+	q, orders, fields = manager.SZoneResourceBaseManager.GetOrderBySubQuery(q, subq, storageQ.Field("storage_id"), userCred, query.ZonalFilterListInput, orders, fields)
+	q, orders, fields = manager.SManagedResourceBaseManager.GetOrderBySubQuery(q, subq, storageQ.Field("manager_id"), userCred, query.ManagedResourceListInput, orders, fields)
 	return q, orders, fields
 }
 

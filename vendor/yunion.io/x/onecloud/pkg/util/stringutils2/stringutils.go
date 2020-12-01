@@ -18,7 +18,13 @@ import (
 	"crypto/md5"
 	"encoding/hex"
 	"fmt"
+	"math/rand"
+	"strconv"
 	"strings"
+	"time"
+	"unicode"
+
+	"yunion.io/x/pkg/util/osprofile"
 )
 
 func GetMD5Hash(text string) string {
@@ -119,4 +125,120 @@ func SplitByQuotation(line string) ([]string, error) {
 		}
 	}
 	return segs, nil
+}
+
+func GenerateHostName(name string, osType string) string {
+	if len(name) < 2 {
+		name = fmt.Sprintf("hostname-for-%s-%s", name, osType)
+	}
+	// ()英文句号（.）和短横线（-）不能作为首尾字符，更不能连续使用。
+	// 点号（.）和短横线（-）不能作为 HostName 的首尾字符，不能连续使用。
+	var init = func(s string) string {
+		for {
+			if strings.Contains(s, "..") || strings.Contains(s, "--") {
+				s = strings.ReplaceAll(s, "..", ".")
+				s = strings.ReplaceAll(s, "--", "-")
+				continue
+			}
+			if strings.HasPrefix(s, ".") || strings.HasPrefix(s, "-") {
+				s = strings.TrimPrefix(s, ".")
+				s = strings.TrimPrefix(s, "-")
+				continue
+			}
+			if strings.HasSuffix(s, ".") || strings.HasSuffix(s, "-") {
+				s = strings.TrimSuffix(s, ".")
+				s = strings.TrimSuffix(s, "-")
+				continue
+			}
+			break
+		}
+		return s
+	}
+	name = init(name)
+	// (阿里云)Windows实例：字符长度为2~15，不支持英文句号（.），不能全是数字。允许大小写英文字母、数字和短横线（-）。
+	// (腾讯云)Windows 实例：名字符长度为[2, 15]，允许字母（不限制大小写）、数字和短横线（-）组成，不支持点号（.），不能全是数字
+	var forWindows = func(s string) string {
+		s = strings.ReplaceAll(s, ".", "")
+		ret := ""
+		for _, c := range s {
+			if unicode.IsLetter(c) || unicode.IsNumber(c) || c == '-' {
+				ret += string(c)
+			}
+		}
+		_, err := strconv.Atoi(ret)
+		if err == nil {
+			ret = "host-" + ret
+		}
+		if len(ret) > 15 {
+			ret = init(ret[:15])
+		}
+		return ret
+	}
+	// (阿里云)其他类型实例（Linux等）：字符长度为2~64，支持多个英文句号（.），英文句号之间为一段，每段允许大小写英文字母、数字和短横线（-）。
+	// (腾讯云)其他类型（Linux 等）实例：字符长度为[2, 60]，允许支持多个点号，点之间为一段，每段允许字母（不限制大小写）、数字和短横线（-）组成。
+	var forOther = func(s string) string {
+		if len(s) > 60 {
+			return init(s[:60])
+		}
+		return s
+	}
+	if strings.ToLower(osType) == strings.ToLower(osprofile.OS_TYPE_WINDOWS) {
+		return forWindows(name)
+	}
+	return forOther(name)
+}
+
+func GetCharTypeCount(str string) int {
+	digitIdx := 0
+	lowerIdx := 1
+	upperIdx := 2
+	otherIdx := 3
+	complexity := make([]int, 4)
+	for _, b := range []byte(str) {
+		if b >= '0' && b <= '9' {
+			complexity[digitIdx] += 1
+		} else if b >= 'a' && b <= 'z' {
+			complexity[lowerIdx] += 1
+		} else if b >= 'A' && b <= 'Z' {
+			complexity[upperIdx] += 1
+		} else {
+			complexity[otherIdx] += 1
+		}
+	}
+	ret := 0
+	for i := range complexity {
+		if complexity[i] > 0 {
+			ret += 1
+		}
+	}
+	return ret
+}
+
+// Qcloud: 1-128个英文字母、数字和+=,.@_-
+// Aws: 请使用字母数字和‘+=,.@-_’字符。 最长 64 个字符
+// Common: 1-64个字符, 数字字母或 +=,.@-_
+func GenerateRoleName(roleName string) string {
+	ret := ""
+	for _, s := range roleName {
+		if (s >= '0' && s <= '9') || (s >= 'a' && s <= 'z') || (s >= 'A' && s <= 'Z') || strings.Contains("+=,.@-_", string(s)) {
+			ret += string(s)
+		}
+	}
+
+	if len(ret) == 0 {
+		return func(length int) string {
+			bytes := []byte("23456789abcdefghijkmnpqrstuvwxyz")
+			result := []byte{}
+			r := rand.New(rand.NewSource(time.Now().UnixNano()))
+			for i := 0; i < length; i++ {
+				result = append(result, bytes[r.Intn(len(bytes))])
+			}
+			return "role-" + string(result)
+		}(12)
+	}
+
+	if len(ret) > 64 {
+		return ret[:64]
+	}
+	return ret
 }

@@ -195,7 +195,7 @@ func Brand2Hypervisor(brand string) string {
 func (gtm *SGuestTemplateManager) validateContent(ctx context.Context, userCred mcclient.TokenCredential, ownerId mcclient.IIdentityProvider, query jsonutils.JSONObject, content *jsonutils.JSONDict) (*computeapis.ServerCreateInput, error) {
 	input, err := GuestManager.validateCreateData(ctx, userCred, ownerId, query, content)
 	if err != nil {
-		return nil, httperrors.NewInputParameterError(err.Error())
+		return nil, httperrors.NewInputParameterError("%v", err)
 	}
 	// check Image
 	imageId := input.Disks[0].ImageId
@@ -230,7 +230,7 @@ func (gtm *SGuestTemplateManager) validateData(
 	copy := jsonutils.DeepCopy(content).(*jsonutils.JSONDict)
 	input, err := gtm.validateContent(ctx, userCred, ownerId, query, copy)
 	if err != nil {
-		return cinput, httperrors.NewInputParameterError(err.Error())
+		return cinput, httperrors.NewInputParameterError("%v", err)
 	}
 	log.Debugf("data: %#v", input)
 	// fill field
@@ -390,8 +390,8 @@ func (gt *SGuestTemplate) getMoreDetails(ctx context.Context, userCred mcclient.
 	configInfo.Disks = disks
 
 	// keypair
-	if len(input.Keypair) > 0 {
-		model, err := KeypairManager.FetchByIdOrName(userCred, input.Keypair)
+	if len(input.KeypairId) > 0 {
+		model, err := KeypairManager.FetchByIdOrName(userCred, input.KeypairId)
 		if err == nil {
 			keypair := model.(*SKeypair)
 			configInfo.Keypair = keypair.GetName()
@@ -506,7 +506,7 @@ func (gt *SGuestTemplate) PerformPublic(
 
 	// check for below private resource in the guest template
 	privateResource := map[string]int{
-		"keypair":           len(input.Keypair),
+		"keypair":           len(input.KeypairId),
 		"instance group":    len(input.InstanceGroupIds),
 		"instance snapshot": len(input.InstanceSnapshotId),
 	}
@@ -540,7 +540,7 @@ func (gt *SGuestTemplate) PerformPublic(
 			model, err := NetworkManager.FetchByIdOrName(userCred, str)
 			if err != nil {
 				return nil, httperrors.NewResourceNotFoundError(
-					"there is no such secgroup %s descripted by guest template")
+					"there is no such secgroup %s descripted by guest template", str)
 			}
 			network := model.(*SNetwork)
 			netScope := rbacutils.String2Scope(network.PublicScope)
@@ -582,16 +582,22 @@ func (gt *SGuestTemplate) PerformPublic(
 }
 
 func (gt *SGuestTemplate) genForbiddenError(resourceName, resourceStr, scope string) error {
-	var msg string
-	if len(resourceStr) == 0 {
-		msg = fmt.Sprintf("the %s in guest template is not a public resource", resourceName)
+	var (
+		msgFmt  string
+		msgArgs []interface{}
+	)
+	if resourceStr == "" {
+		msgFmt = "the %s in guest template is not a public resource"
+		msgArgs = []interface{}{resourceName}
 	} else {
-		msg = fmt.Sprintf("the %s '%s' in guest template is not a public resource", resourceName, resourceStr)
+		msgFmt = "the %s %q in guest template is not a public resource"
+		msgArgs = []interface{}{resourceName, resourceStr}
 	}
-	if len(scope) > 0 {
-		msg += fmt.Sprintf(" in %s scope", scope)
+	if scope != "" {
+		msgFmt += " in %s scope"
+		msgArgs = append(msgArgs, scope)
 	}
-	return httperrors.NewForbiddenError(msg)
+	return httperrors.NewForbiddenError(msgFmt, msgArgs...)
 }
 
 func (gt *SGuestTemplate) ValidateDeleteCondition(ctx context.Context) error {
@@ -634,7 +640,7 @@ func (manager *SGuestTemplateManager) ListItemFilter(
 	if err != nil {
 		return nil, errors.Wrap(err, "SCloudregionResourceBaseManager.ListItemFilter")
 	}
-	if len(input.Vpc) > 0 {
+	if len(input.VpcId) > 0 {
 		q, err = manager.SVpcResourceBaseManager.ListItemFilter(ctx, q, userCred, input.VpcFilterListInput)
 		if err != nil {
 			return nil, errors.Wrap(err, "SVpcResourceBaseManager.ListItemFilter")
@@ -785,6 +791,7 @@ func (gt *SGuestTemplate) inspect(ctx context.Context, userCred mcclient.TokenCr
 	_, err := GuestTemplateManager.validateContent(ctx, userCred, gt.GetOwnerId(), jsonutils.NewDict(), gt.Content.(*jsonutils.JSONDict))
 	if err == nil {
 		gt.updateCheckTime()
+		gt.SetStatus(userCred, computeapis.GT_READY, "inspect successfully")
 		logclient.AddSimpleActionLog(gt, logclient.ACT_HEALTH_CHECK, "", userCred, true)
 		return nil
 	}
@@ -798,7 +805,7 @@ func (gt *SGuestTemplate) inspect(ctx context.Context, userCred mcclient.TokenCr
 
 func (gm *SGuestTemplateManager) InspectAllTemplate(ctx context.Context, userCred mcclient.TokenCredential, isStart bool) {
 	lastCheckTime := time.Now().Add(time.Duration(-options.Options.GuestTemplateCheckInterval) * time.Hour)
-	q := gm.Query().Equals("status", computeapis.GT_READY)
+	q := gm.Query()
 	q = q.Filter(sqlchemy.OR(sqlchemy.IsNull(q.Field("last_check_time")), sqlchemy.LE(q.Field("last_check_time"),
 		lastCheckTime)))
 	gts := make([]SGuestTemplate, 0, 10)

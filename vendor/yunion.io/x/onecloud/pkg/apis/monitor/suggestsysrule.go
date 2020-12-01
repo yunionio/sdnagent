@@ -23,52 +23,70 @@ import (
 const (
 	METRIC_TAG   = "TAG"
 	METRIC_FIELD = "FIELD"
+
+	METRIC_VM_ID    = "vm_id"
+	METRIC_OSS_ID   = "oss_id"
+	METRIC_RDS_ID   = "rds_id"
+	METRIC_REDIS_ID = "redis_id"
 )
 
 var PROPERTY_TYPE = []string{"databases", "measurements", "metric-measurement"}
+
+var FilterSuggestRuleMeasureMentMap = map[SuggestDriverType]string{
+	SCALE_DOWN:         "vm",
+	REDIS_UNREASONABLE: "dcs",
+	RDS_UNREASONABLE:   "rds",
+	OSS_UNREASONABLE:   "oss",
+}
 
 var METRIC_ATTRI = []string{METRIC_TAG, METRIC_FIELD}
 
 type InfluxMeasurement struct {
 	apis.Meta
-	Database    string
-	Measurement string
-	TagKey      []string
-	TagValue    map[string][]string
-	FieldKey    []string
-	Unit        []string
+	Database               string
+	Measurement            string
+	MeasurementDisplayName string
+	ResType                string
+	TagKey                 []string
+	TagValue               map[string][]string
+	FieldKey               []string
+	FieldDescriptions      map[string]MetricFieldDetail
+	Unit                   []string
 }
 
 type SuggestSysRuleListInput struct {
-	apis.VirtualResourceListInput
+	apis.StandaloneResourceListInput
 	apis.EnabledResourceBaseListInput
 }
 
 type SuggestSysRuleCreateInput struct {
-	apis.VirtualResourceCreateInput
+	apis.StandaloneResourceCreateInput
 
 	// 查询指标周期
-	Period   string                   `json:"period"`
-	TimeFrom string                   `json:"time_from"`
-	Type     string                   `json:"type"`
-	Enabled  *bool                    `json:"enabled"`
-	Setting  *SSuggestSysAlertSetting `json:"setting"`
+	Period         string                   `json:"period"`
+	TimeFrom       string                   `json:"time_from"`
+	Type           string                   `json:"type"`
+	Enabled        *bool                    `json:"enabled"`
+	Setting        *SSuggestSysAlertSetting `json:"setting"`
+	IgnoreTimeFrom *bool                    `json:"ignore_time_from"`
 }
 
 type SuggestSysRuleUpdateInput struct {
 	apis.Meta
 
 	// 查询指标周期
-	Period   string                   `json:"period"`
-	Name     string                   `json:"name"`
-	Type     string                   `json:"type"`
-	Setting  *SSuggestSysAlertSetting `json:"setting"`
-	Enabled  *bool                    `json:"enabled"`
-	ExecTime time.Time                `json:"exec_time"`
+	Period       string                   `json:"period"`
+	Name         string                   `json:"name"`
+	Type         string                   `json:"type"`
+	Setting      *SSuggestSysAlertSetting `json:"setting"`
+	Enabled      *bool                    `json:"enabled"`
+	ExecTime     time.Time                `json:"exec_time"`
+	IgnorePeriod *bool                    `json:"ignore_period"`
 }
 
 type SuggestSysRuleDetails struct {
-	apis.VirtualResourceDetails
+	apis.StandaloneResourceDetails
+	CommonAlertMetricDetails []*CommonAlertMetricDetails `json:"common_alert_metric_details"`
 
 	ID      string                   `json:"id"`
 	Name    string                   `json:"name"`
@@ -84,7 +102,6 @@ type SSuggestSysAlertSetting struct {
 }
 
 type EIPUnused struct {
-	//Status string `json:"status"`
 }
 
 type DiskUnused struct {

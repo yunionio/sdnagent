@@ -85,9 +85,8 @@ type SDBInstanceBackup struct {
 	// example: 32
 	BackupSizeMb int `nullable:"false" list:"user" json:"backup_size_mb"`
 
-	// RDS实例Id
-	// example: 239b9663-6d06-4ef4-8cfc-320a7fb6660d
-	// DBInstanceId string `width:"36" charset:"ascii" name:"dbinstance_id" nullable:"false" list:"user" create:"required" index:"true"`
+	// 备份方式 Logical|Physical
+	BackupMethod string `width:"32" charset:"ascii" nullable:"true" list:"user" create:"optional" json:"backup_method"`
 }
 
 func (manager *SDBInstanceBackupManager) GetContextManagers() [][]db.IModelManager {
@@ -369,6 +368,30 @@ func (backup *SDBInstanceBackup) GetIRegion() (cloudprovider.ICloudRegion, error
 }
 
 func (backup *SDBInstanceBackup) GetIDBInstanceBackup() (cloudprovider.ICloudDBInstanceBackup, error) {
+	if len(backup.ExternalId) == 0 {
+		return nil, errors.Wrapf(cloudprovider.ErrNotFound, "empty external id")
+	}
+	if len(backup.DBInstanceId) > 0 {
+		rds, err := backup.GetDBInstance()
+		if err != nil {
+			return nil, errors.Wrapf(err, "GetDBInstance")
+		}
+		iRds, err := rds.GetIDBInstance()
+		if err != nil {
+			return nil, errors.Wrapf(err, "GetIDBInstance")
+		}
+		backups, err := iRds.GetIDBInstanceBackups()
+		if err != nil {
+			return nil, errors.Wrapf(err, "GetIDBInstanceBackups")
+		}
+		for i := range backups {
+			if backups[i].GetGlobalId() == backup.ExternalId {
+				return backups[i], nil
+			}
+		}
+		return nil, errors.Wrapf(cloudprovider.ErrNotFound, "search backup %s", backup.ExternalId)
+	}
+
 	iRegion, err := backup.GetIRegion()
 	if err != nil {
 		return nil, errors.Wrap(err, "backup.GetIRegion")
@@ -432,6 +455,7 @@ func (self *SDBInstanceBackup) SyncWithCloudDBInstanceBackup(
 	provider *SCloudprovider,
 ) error {
 	_, err := db.UpdateWithLock(ctx, self, func() error {
+		self.ExternalId = extBackup.GetGlobalId()
 		self.Status = extBackup.GetStatus()
 		self.StartTime = extBackup.GetStartTime()
 		self.EndTime = extBackup.GetEndTime()
@@ -439,6 +463,7 @@ func (self *SDBInstanceBackup) SyncWithCloudDBInstanceBackup(
 		self.Engine = extBackup.GetEngine()
 		self.EngineVersion = extBackup.GetEngineVersion()
 		self.DBNames = extBackup.GetDBNames()
+		self.BackupMethod = string(extBackup.GetBackupMethod())
 
 		if dbinstanceId := extBackup.GetDBInstanceId(); len(dbinstanceId) > 0 {
 			//有可能云上删除了实例，未删除备份
@@ -497,6 +522,7 @@ func (manager *SDBInstanceBackupManager) newFromCloudDBInstanceBackup(
 	backup.BackupSizeMb = extBackup.GetBackupSizeMb()
 	backup.DBNames = extBackup.GetDBNames()
 	backup.BackupMode = extBackup.GetBackupMode()
+	backup.BackupMethod = string(extBackup.GetBackupMethod())
 	backup.ExternalId = extBackup.GetGlobalId()
 
 	if dbinstanceId := extBackup.GetDBInstanceId(); len(dbinstanceId) > 0 {
@@ -590,4 +616,71 @@ func (manager *SDBInstanceBackupManager) ListItemExportKeys(ctx context.Context,
 
 func (self *SDBInstanceBackup) GetChangeOwnerCandidateDomainIds() []string {
 	return self.SManagedResourceBase.GetChangeOwnerCandidateDomainIds()
+}
+
+func (self *SDBInstanceBackup) fillRdsConfig(output *api.DBInstanceCreateInput) error {
+	if self.Status != api.DBINSTANCE_BACKUP_READY {
+		return fmt.Errorf("backup %s status is %s require %s", self.Name, self.Status, api.DBINSTANCE_BACKUP_READY)
+	}
+	if len(self.DBInstanceId) == 0 {
+		if len(self.Engine) == 0 {
+			return fmt.Errorf("backup engine %s is unknown", self.Name)
+		}
+		output.Engine = self.Engine
+		if len(self.EngineVersion) == 0 {
+			return fmt.Errorf("backup engine version %s is unknown", self.Name)
+		}
+		output.EngineVersion = self.EngineVersion
+		return nil
+	}
+	rds, err := self.GetDBInstance()
+	if err != nil {
+		return errors.Wrapf(err, "backup.GetDBInstance")
+	}
+	if len(output.NetworkId) == 0 {
+		networks, err := rds.GetDBNetworks()
+		if err != nil {
+			return errors.Wrapf(err, "GetDBNetworks")
+		}
+		if len(networks) > 0 {
+			output.NetworkId = networks[0].NetworkId
+		}
+	}
+
+	if output.VcpuCount == 0 {
+		output.VcpuCount = rds.VcpuCount
+	}
+	if output.VmemSizeMb == 0 {
+		output.VmemSizeMb = rds.VmemSizeMb
+	}
+	if output.DiskSizeGB == 0 {
+		output.DiskSizeGB = rds.DiskSizeGB
+	}
+	if output.Port == 0 {
+		output.Port = rds.Port
+	}
+	if len(output.Category) == 0 {
+		output.Category = rds.Category
+	}
+	if len(output.StorageType) == 0 {
+		output.StorageType = rds.StorageType
+	}
+	output.Engine = rds.Engine
+	output.EngineVersion = rds.EngineVersion
+	if len(output.InstanceType) == 0 {
+		output.InstanceType = rds.InstanceType
+	}
+	if len(output.VpcId) == 0 {
+		output.VpcId = rds.VpcId
+	}
+	if len(output.Zone1) == 0 {
+		output.Zone1 = rds.Zone1
+	}
+	if len(output.Zone2) == 0 {
+		output.Zone2 = rds.Zone2
+	}
+	if len(output.Zone3) == 0 {
+		output.Zone3 = rds.Zone3
+	}
+	return nil
 }

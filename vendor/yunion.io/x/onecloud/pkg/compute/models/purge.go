@@ -16,12 +16,12 @@ package models
 
 import (
 	"context"
-	"database/sql"
 	"fmt"
 
 	"yunion.io/x/log"
 	"yunion.io/x/pkg/errors"
 	"yunion.io/x/pkg/tristate"
+	"yunion.io/x/pkg/utils"
 
 	"yunion.io/x/onecloud/pkg/apis"
 	api "yunion.io/x/onecloud/pkg/apis/compute"
@@ -124,6 +124,9 @@ func (guest *SGuest) purge(ctx context.Context, userCred mcclient.TokenCredentia
 	guest.EjectIso(userCred)
 	guest.DeleteEip(ctx, userCred)
 	guest.DeleteAllDisksInDB(ctx, userCred)
+	if !utils.IsInStringArray(guest.Hypervisor, HypervisorIndependentInstanceSnapshot) {
+		guest.DeleteAllInstanceSnapshotInDB(ctx, userCred)
+	}
 
 	err := guest.ValidatePurgeCondition(ctx)
 	if err != nil {
@@ -150,12 +153,7 @@ func (disk *SDisk) purge(ctx context.Context, userCred mcclient.TokenCredential)
 	lockman.LockObject(ctx, disk)
 	defer lockman.ReleaseObject(ctx, disk)
 
-	err := disk.DetachAllSnapshotpolicies(ctx, userCred)
-	if err != nil {
-		return errors.Wrap(err, "disk.DetachAllSnapshotpolicies")
-	}
-
-	err = disk.ValidatePurgeCondition(ctx)
+	err := disk.ValidatePurgeCondition(ctx)
 	if err != nil {
 		return err
 	}
@@ -182,7 +180,7 @@ func (lbcert *SCachedLoadbalancerCertificate) purge(ctx context.Context, userCre
 	lockman.LockObject(ctx, lbcert)
 	defer lockman.ReleaseObject(ctx, lbcert)
 
-	err := lbcert.ValidateDeleteCondition(ctx)
+	err := lbcert.ValidatePurgeCondition(ctx)
 	if err != nil {
 		return err
 	}
@@ -303,6 +301,8 @@ func (lb *SLoadbalancer) purgeListeners(ctx context.Context, userCred mcclient.T
 func (lb *SLoadbalancer) purge(ctx context.Context, userCred mcclient.TokenCredential) error {
 	lockman.LockObject(ctx, lb)
 	defer lockman.ReleaseObject(ctx, lb)
+
+	lb.DeletePreventionOff(lb, userCred)
 
 	_, err := db.UpdateWithLock(ctx, lb, func() error {
 		//避免 purge backendgroups 时循环依赖
@@ -1014,11 +1014,30 @@ func (vpc *SVpc) purgeWires(ctx context.Context, userCred mcclient.TokenCredenti
 	return nil
 }
 
+func (vpc *SVpc) purgeVpcPeeringConnections(ctx context.Context, userCred mcclient.TokenCredential) error {
+	vpcPCs, err := vpc.GetVpcPeeringConnections()
+	if err != nil {
+		return err
+	}
+	for i := range vpcPCs {
+		err := vpcPCs[i].purge(ctx, userCred)
+		if err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
 func (vpc *SVpc) Purge(ctx context.Context, userCred mcclient.TokenCredential) error {
 	lockman.LockObject(ctx, vpc)
 	defer lockman.ReleaseObject(ctx, vpc)
 
-	err := vpc.purgeWires(ctx, userCred)
+	err := vpc.purgeVpcPeeringConnections(ctx, userCred)
+	if err != nil {
+		return err
+	}
+
+	err = vpc.purgeWires(ctx, userCred)
 	if err != nil {
 		return err
 	}
@@ -1360,12 +1379,36 @@ func (network *SDBInstanceNetwork) purge(ctx context.Context, userCred mcclient.
 }
 
 func (instance *SDBInstance) purgeNetwork(ctx context.Context, userCred mcclient.TokenCredential) error {
-	network, err := instance.GetDBNetwork()
-	if err != nil && errors.Cause(err) != sql.ErrNoRows {
-		return errors.Wrapf(err, "GetDBNetwork")
+	networks, err := instance.GetDBNetworks()
+	if err != nil {
+		return errors.Wrapf(err, "GetDBNetworks")
 	}
-	if network != nil {
-		return network.purge(ctx, userCred)
+	for i := range networks {
+		err = networks[i].purge(ctx, userCred)
+		if err != nil {
+			return errors.Wrapf(err, "networks.purge %d", networks[i].RowId)
+		}
+	}
+	return nil
+}
+
+func (self *SDBInstanceSecgroup) purge(ctx context.Context, userCred mcclient.TokenCredential) error {
+	lockman.LockObject(ctx, self)
+	defer lockman.ReleaseObject(ctx, self)
+
+	return self.Detach(ctx, userCred)
+}
+
+func (instance *SDBInstance) purgeSecgroups(ctx context.Context, userCred mcclient.TokenCredential) error {
+	secgroups, err := instance.GetDBInstanceSecgroups()
+	if err != nil {
+		return errors.Wrapf(err, "GetDBInstanceSecgroups")
+	}
+	for i := range secgroups {
+		err = secgroups[i].purge(ctx, userCred)
+		if err != nil {
+			return errors.Wrapf(err, "secgroups.purge %d", secgroups[i].RowId)
+		}
 	}
 	return nil
 }
@@ -1408,6 +1451,11 @@ func (instance *SDBInstance) Purge(ctx context.Context, userCred mcclient.TokenC
 	err = instance.purgeNetwork(ctx, userCred)
 	if err != nil {
 		return errors.Wrapf(err, "purgeNetwork")
+	}
+
+	err = instance.purgeSecgroups(ctx, userCred)
+	if err != nil {
+		return errors.Wrapf(err, "purgeSecgroups")
 	}
 
 	err = instance.PurgeBackups(ctx, userCred, api.BACKUP_MODE_AUTOMATED)
@@ -1597,7 +1645,7 @@ func (instance *SElasticcache) purge(ctx context.Context, userCred mcclient.Toke
 		return err
 	}
 
-	return instance.Delete(ctx, userCred)
+	return instance.SVirtualResourceBase.Delete(ctx, userCred)
 }
 
 func (manager *SElasticcacheManager) purgeAll(ctx context.Context, userCred mcclient.TokenCredential, providerId string) error {
@@ -1717,4 +1765,10 @@ func (manager *SPolicyDefinitionManager) purgeAll(ctx context.Context, userCred 
 		}
 	}
 	return nil
+}
+
+func (vpcPC *SVpcPeeringConnection) purge(ctx context.Context, userCred mcclient.TokenCredential) error {
+	lockman.LockObject(ctx, vpcPC)
+	defer lockman.ReleaseObject(ctx, vpcPC)
+	return vpcPC.RealDelete(ctx, userCred)
 }

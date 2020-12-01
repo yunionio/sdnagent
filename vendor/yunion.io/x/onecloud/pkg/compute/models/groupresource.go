@@ -40,15 +40,15 @@ type SGroupResourceBaseManager struct {
 }
 
 func ValidateGroupResourceInput(userCred mcclient.TokenCredential, input api.GroupResourceInput) (*SGroup, api.GroupResourceInput, error) {
-	groupObj, err := GroupManager.FetchByIdOrName(userCred, input.Group)
+	groupObj, err := GroupManager.FetchByIdOrName(userCred, input.GroupId)
 	if err != nil {
 		if errors.Cause(err) == sql.ErrNoRows {
-			return nil, input, errors.Wrapf(httperrors.ErrResourceNotFound, "%s %s", GroupManager.Keyword(), input.Group)
+			return nil, input, errors.Wrapf(httperrors.ErrResourceNotFound, "%s %s", GroupManager.Keyword(), input.GroupId)
 		} else {
 			return nil, input, errors.Wrap(err, "GroupManager.FetchByIdOrName")
 		}
 	}
-	input.Group = groupObj.GetId()
+	input.GroupId = groupObj.GetId()
 	return groupObj.(*SGroup), input, nil
 }
 
@@ -103,7 +103,7 @@ func (manager *SGroupResourceBaseManager) ListItemFilter(
 	userCred mcclient.TokenCredential,
 	query api.GroupFilterListInput,
 ) (*sqlchemy.SQuery, error) {
-	if len(query.Group) > 0 {
+	if len(query.GroupId) > 0 {
 		groupObj, _, err := ValidateGroupResourceInput(userCred, query.GroupResourceInput)
 		if err != nil {
 			return nil, errors.Wrap(err, "ValidateGroupResourceInput")
@@ -130,30 +130,34 @@ func (manager *SGroupResourceBaseManager) OrderByExtraFields(
 	userCred mcclient.TokenCredential,
 	query api.GroupFilterListInput,
 ) (*sqlchemy.SQuery, error) {
-	q, orders, fields := manager.GetOrderBySubQuery(q, userCred, query)
-	if len(orders) > 0 {
-		q = db.OrderByFields(q, orders, fields)
+	if !db.NeedOrderQuery(manager.GetOrderByFields(query)) {
+		return q, nil
 	}
+	orderQ := GroupManager.Query("id")
+	orderSubQ := orderQ.SubQuery()
+	orderQ, orders, fields := manager.GetOrderBySubQuery(orderQ, orderSubQ, orderQ.Field("id"), userCred, query, nil, nil)
+	q = q.LeftJoin(orderSubQ, sqlchemy.Equals(q.Field("group_id"), orderSubQ.Field("id")))
+	q = db.OrderByFields(q, orders, fields)
 	return q, nil
 }
 
 func (manager *SGroupResourceBaseManager) GetOrderBySubQuery(
 	q *sqlchemy.SQuery,
+	subq *sqlchemy.SSubQuery,
+	joinField sqlchemy.IQueryField,
 	userCred mcclient.TokenCredential,
 	query api.GroupFilterListInput,
+	orders []string,
+	fields []sqlchemy.IQueryField,
 ) (*sqlchemy.SQuery, []string, []sqlchemy.IQueryField) {
-	groupQ := GroupManager.Query("id", "name")
-	var orders []string
-	var fields []sqlchemy.IQueryField
-
-	if db.NeedOrderQuery(manager.GetOrderByFields(query)) {
-		subq := groupQ.SubQuery()
-		q = q.LeftJoin(subq, sqlchemy.Equals(q.Field("group_id"), subq.Field("id")))
-		if db.NeedOrderQuery([]string{query.OrderByGroup}) {
-			orders = append(orders, query.OrderByGroup)
-			fields = append(fields, subq.Field("name"))
-		}
+	if !db.NeedOrderQuery(manager.GetOrderByFields(query)) {
+		return q, orders, fields
 	}
+	groupQ := GroupManager.Query().SubQuery()
+	q = q.LeftJoin(groupQ, sqlchemy.Equals(joinField, groupQ.Field("id")))
+	q = q.AppendField(groupQ.Field("name").Label("group"))
+	orders = append(orders, query.OrderByGroup)
+	fields = append(fields, subq.Field("group"))
 	return q, orders, fields
 }
 

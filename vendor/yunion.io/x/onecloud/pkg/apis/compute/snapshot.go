@@ -41,6 +41,8 @@ type SnapshotCreateInput struct {
 	OutOfChain bool `json:"out_of_chain"`
 	// swagger:ignore
 	ManagerId string `json:"manager_id"`
+	// swagger:ignore
+	OsArch string `json:"os_arch"`
 }
 
 type SSnapshotPolicyCreateInput struct {
@@ -70,6 +72,7 @@ type SSnapshotPolicyCreateInternalInput struct {
 type SnapshotListInput struct {
 	apis.VirtualResourceListInput
 	apis.ExternalizedResourceBaseListInput
+	apis.MultiArchResourceBaseListInput
 
 	ManagedResourceListInput
 	RegionalFilterListInput
@@ -88,6 +91,9 @@ type SnapshotListInput struct {
 
 	OutOfChain *bool    `json:"out_of_chain"`
 	OsType     []string `json:"os_type"`
+
+	// list server snapshots
+	ServerId string `json:"server_id"`
 }
 
 type SnapshotDetails struct {

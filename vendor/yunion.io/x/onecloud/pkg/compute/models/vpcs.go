@@ -23,6 +23,7 @@ import (
 	"yunion.io/x/jsonutils"
 	"yunion.io/x/log"
 	"yunion.io/x/pkg/errors"
+	"yunion.io/x/pkg/tristate"
 	"yunion.io/x/pkg/util/compare"
 	"yunion.io/x/pkg/util/netutils"
 	"yunion.io/x/pkg/utils"
@@ -36,6 +37,7 @@ import (
 	"yunion.io/x/onecloud/pkg/cloudcommon/db/quotas"
 	"yunion.io/x/onecloud/pkg/cloudcommon/db/taskman"
 	"yunion.io/x/onecloud/pkg/cloudprovider"
+	"yunion.io/x/onecloud/pkg/compute/options"
 	"yunion.io/x/onecloud/pkg/httperrors"
 	"yunion.io/x/onecloud/pkg/mcclient"
 	"yunion.io/x/onecloud/pkg/util/rbacutils"
@@ -117,6 +119,34 @@ func (self *SVpc) GetNatgatewayCount() (int, error) {
 	return self.getNatgatewayQuery().CountWithError()
 }
 
+func (self *SVpc) GetDnsZones() ([]SDnsZone, error) {
+	sq := DnsZoneVpcManager.Query("dns_zone_id").Equals("vpc_id", self.Id)
+	q := DnsZoneManager.Query().In("id", sq.SubQuery())
+	dnsZones := []SDnsZone{}
+	err := db.FetchModelObjects(DnsZoneManager, q, &dnsZones)
+	if err != nil {
+		return nil, errors.Wrapf(err, "db.FetchModelObjects")
+	}
+	return dnsZones, nil
+}
+
+func (self *SVpc) GetInterVpcNetworks() ([]SInterVpcNetwork, error) {
+	sq := InterVpcNetworkVpcManager.Query("inter_vpc_network_id").Equals("vpc_id", self.Id)
+	q := InterVpcNetworkManager.Query().In("id", sq.SubQuery())
+	vpcNetworks := []SInterVpcNetwork{}
+	err := db.FetchModelObjects(InterVpcNetworkManager, q, &vpcNetworks)
+	if err != nil {
+		return nil, errors.Wrapf(err, "db.FetchModelObjects")
+	}
+	return vpcNetworks, nil
+}
+
+func (self *SVpc) GetDnsZoneCount() (int, error) {
+	sq := DnsZoneVpcManager.Query("dns_zone_id").Equals("vpc_id", self.Id)
+	q := DnsZoneManager.Query().In("id", sq.SubQuery())
+	return q.CountWithError()
+}
+
 func (self *SVpc) GetNatgateways() ([]SNatGateway, error) {
 	nats := []SNatGateway{}
 	err := db.FetchModelObjects(NatGatewayManager, self.getNatgatewayQuery(), &nats)
@@ -124,6 +154,45 @@ func (self *SVpc) GetNatgateways() ([]SNatGateway, error) {
 		return nil, err
 	}
 	return nats, nil
+}
+
+func (self *SVpc) getRequesterVpcPeeringConnectionQuery() *sqlchemy.SQuery {
+	return VpcPeeringConnectionManager.Query().Equals("vpc_id", self.Id)
+}
+
+func (self *SVpc) getAccepterVpcPeeringConnectionQuery() *sqlchemy.SQuery {
+	return VpcPeeringConnectionManager.Query().Equals("peer_vpc_id", self.Id)
+}
+
+func (self *SVpc) GetRequesterVpcPeeringConnections() ([]SVpcPeeringConnection, error) {
+	vpcPC := []SVpcPeeringConnection{}
+	err := db.FetchModelObjects(VpcPeeringConnectionManager, self.getRequesterVpcPeeringConnectionQuery(), &vpcPC)
+	if err != nil {
+		return nil, err
+	}
+	return vpcPC, nil
+}
+
+func (self *SVpc) GetAccepterVpcPeeringConnections() ([]SVpcPeeringConnection, error) {
+	vpcPC := []SVpcPeeringConnection{}
+	err := db.FetchModelObjects(VpcPeeringConnectionManager, self.getAccepterVpcPeeringConnectionQuery(), &vpcPC)
+	if err != nil {
+		return nil, err
+	}
+	return vpcPC, nil
+}
+func (self *SVpc) GetVpcPeeringConnectionCount() (int, error) {
+	q := self.getRequesterVpcPeeringConnectionQuery()
+	requesterPeerCount, err := q.CountWithError()
+	if err != nil {
+		return 0, err
+	}
+	q = self.getRequesterVpcPeeringConnectionQuery()
+	accepterPeerCount, err := q.CountWithError()
+	if err != nil {
+		return 0, err
+	}
+	return requesterPeerCount + accepterPeerCount, nil
 }
 
 func (self *SVpc) ValidateUpdateData(ctx context.Context, userCred mcclient.TokenCredential, query jsonutils.JSONObject, input api.VpcUpdateInput) (api.VpcUpdateInput, error) {
@@ -140,6 +209,13 @@ func (self *SVpc) ValidateUpdateData(ctx context.Context, userCred mcclient.Toke
 }
 
 func (self *SVpc) ValidateDeleteCondition(ctx context.Context) error {
+	if self.Id == api.DEFAULT_VPC_ID {
+		return httperrors.NewProtectedResourceError("not allow to delete default vpc")
+	}
+	if self.Status == api.VPC_STATUS_UNKNOWN {
+		return self.SEnabledStatusInfrasResourceBase.ValidateDeleteCondition(ctx)
+	}
+
 	cnt, err := self.GetNetworkCount()
 	if err != nil {
 		return httperrors.NewInternalServerError("GetNetworkCount fail %s", err)
@@ -154,9 +230,14 @@ func (self *SVpc) ValidateDeleteCondition(ctx context.Context) error {
 	if cnt > 0 {
 		return httperrors.NewNotEmptyError("VPC not empty, please delete nat gateway first")
 	}
-	if self.Id == api.DEFAULT_VPC_ID {
-		return httperrors.NewProtectedResourceError("not allow to delete default vpc")
+	cnt, err = self.GetVpcPeeringConnectionCount()
+	if err != nil {
+		return httperrors.NewInternalServerError("GetRequesterVpcPeeringConnections fail %v", err)
 	}
+	if cnt > 0 {
+		return httperrors.NewNotEmptyError("VPC peering not empty, please delete vpc peering first")
+	}
+
 	return self.SEnabledStatusInfrasResourceBase.ValidateDeleteCondition(ctx)
 }
 
@@ -206,7 +287,7 @@ func (manager *SVpcManager) GetOrCreateVpcForClassicNetwork(ctx context.Context,
 	vpc.IsDefault = false
 	vpc.CloudregionId = region.Id
 	vpc.SetModelManager(manager, vpc)
-	vpc.Name = fmt.Sprintf("emulated vpc for %s %s classic network", region.Name, cloudprovider.Name)
+	vpc.Name = "-"
 	vpc.IsEmulated = true
 	vpc.SetEnabled(false)
 	vpc.Status = api.VPC_STATUS_UNAVAILABLE
@@ -236,6 +317,18 @@ func (self *SVpc) GetNetworks() ([]SNetwork, error) {
 	return nets, nil
 }
 
+func (self *SVpc) GetNetworkByExtId(extId string) (*SNetwork, error) {
+	network, err := db.FetchByExternalIdAndManagerId(NetworkManager, extId, func(q *sqlchemy.SQuery) *sqlchemy.SQuery {
+		wireQ := self.getWireQuery().SubQuery()
+		q = q.In("wire_id", wireQ.Query(wireQ.Field("id")).SubQuery())
+		return q
+	})
+	if err != nil {
+		return nil, err
+	}
+	return network.(*SNetwork), nil
+}
+
 func (self *SVpc) GetNetworkCount() (int, error) {
 	q := self.getNetworkQuery()
 	return q.CountWithError()
@@ -261,6 +354,7 @@ func (self *SVpc) getMoreDetails(out api.VpcDetails) api.VpcDetails {
 	out.NetworkCount, _ = self.GetNetworkCount()
 	out.RoutetableCount, _ = self.GetRouteTableCount()
 	out.NatgatewayCount, _ = self.GetNatgatewayCount()
+	out.DnsZoneCount, _ = self.GetDnsZoneCount()
 	return out
 }
 
@@ -571,6 +665,22 @@ func (self *SVpc) markAllNetworksUnknown(userCred mcclient.TokenCredential) erro
 	return nil
 }
 
+func (self *SVpc) SyncRouteTables(ctx context.Context, userCred mcclient.TokenCredential) error {
+	ivpc, err := self.GetIVpc()
+	if err != nil {
+		return errors.Wrap(err, "self.GetIVpc()")
+	}
+	routeTables, err := ivpc.GetIRouteTables()
+	if err != nil {
+		return errors.Wrapf(err, "GetIRouteTables for vpc %s failed", ivpc.GetId())
+	}
+	_, _, result := RouteTableManager.SyncRouteTables(ctx, userCred, self, routeTables, self.GetCloudprovider())
+	if result.IsError() {
+		return errors.Wrapf(result.AllError(), "RouteTableManager.SyncRouteTables(%s,%s)", jsonutils.Marshal(self).String(), jsonutils.Marshal(routeTables).String())
+	}
+	return nil
+}
+
 func (manager *SVpcManager) InitializeData() error {
 	if vpcObj, err := manager.FetchById(api.DEFAULT_VPC_ID); err != nil {
 		if err == sql.ErrNoRows {
@@ -605,7 +715,13 @@ func (manager *SVpcManager) InitializeData() error {
 		}
 	}
 
-	{ // initialize default external_access_mode for onecloud vpc
+	if defaultMode := options.Options.DefaultVpcExternalAccessMode; defaultMode == "" {
+		options.Options.DefaultVpcExternalAccessMode = api.VPC_EXTERNAL_ACCESS_MODE_EIP_DISTGW
+	} else if !utils.IsInStringArray(defaultMode, api.VPC_EXTERNAL_ACCESS_MODES) {
+		return errors.Errorf("invalid DefaultVpcExternalAccessMode, got %s, want %s", defaultMode, api.VPC_EXTERNAL_ACCESS_MODES)
+	}
+	{
+		// initialize default external_access_mode for onecloud vpc
 		var vpcs []SVpc
 		q := manager.Query().
 			IsNullOrEmpty("manager_id").
@@ -617,10 +733,30 @@ func (manager *SVpcManager) InitializeData() error {
 		for i := range vpcs {
 			vpc := &vpcs[i]
 			if _, err := db.Update(vpc, func() error {
-				vpc.ExternalAccessMode = api.VPC_EXTERNAL_ACCESS_MODE_EIP_DISTGW
+				vpc.ExternalAccessMode = options.Options.DefaultVpcExternalAccessMode
 				return nil
 			}); err != nil {
 				return errors.Wrap(err, "db set default external_access_mode")
+			}
+		}
+	}
+
+	{
+		vpcs := []SVpc{}
+		q := manager.Query().IsTrue("is_emulated").IsNotEmpty("external_id").NotEquals("name", "-")
+		err := db.FetchModelObjects(manager, q, &vpcs)
+		if err != nil {
+			return errors.Wrapf(err, "db.FetchModelObjects")
+		}
+		for i := range vpcs {
+			if vpcs[i].ExternalId == manager.getVpcExternalIdForClassicNetwork(vpcs[i].CloudregionId, vpcs[i].ManagerId) {
+				_, err = db.Update(&vpcs[i], func() error {
+					vpcs[i].Name = "-"
+					return nil
+				})
+				if err != nil {
+					return errors.Wrapf(err, "db.Update class vpc name")
+				}
 			}
 		}
 	}
@@ -635,7 +771,7 @@ func (manager *SVpcManager) ValidateCreateData(
 	query jsonutils.JSONObject,
 	input api.VpcCreateInput,
 ) (api.VpcCreateInput, error) {
-	regionId := input.Cloudregion
+	regionId := input.CloudregionId
 	if len(regionId) == 0 {
 		return input, httperrors.NewMissingParameterError("cloudregion_id")
 	}
@@ -648,10 +784,10 @@ func (manager *SVpcManager) ValidateCreateData(
 		}
 	}
 	region := regionObj.(*SCloudregion)
-	input.Cloudregion = region.Id
+	input.CloudregionId = region.Id
 	// data.Add(jsonutils.NewString(region.GetId()), "cloudregion_id")
 	if region.isManaged() {
-		managerStr := input.Cloudprovider
+		managerStr := input.CloudproviderId
 		if len(managerStr) == 0 {
 			return input, httperrors.NewMissingParameterError("manager_id")
 		}
@@ -663,12 +799,12 @@ func (manager *SVpcManager) ValidateCreateData(
 				return input, httperrors.NewGeneralError(err)
 			}
 		}
-		input.Cloudprovider = managerObj.GetId()
+		input.CloudproviderId = managerObj.GetId()
 		// data.Add(jsonutils.NewString(managerObj.GetId()), "manager_id")
 	} else {
 		input.Status = api.VPC_STATUS_AVAILABLE
 		if input.ExternalAccessMode == "" {
-			input.ExternalAccessMode = api.VPC_EXTERNAL_ACCESS_MODE_EIP_DISTGW
+			input.ExternalAccessMode = options.Options.DefaultVpcExternalAccessMode
 		}
 		if !utils.IsInStringArray(input.ExternalAccessMode, api.VPC_EXTERNAL_ACCESS_MODES) {
 			return input, httperrors.NewInputParameterError("invalid external_access_mode %q, want %s",
@@ -811,6 +947,28 @@ func (self *SVpc) RealDelete(ctx context.Context, userCred mcclient.TokenCredent
 		}
 	}
 
+	dnsZones, err := self.GetDnsZones()
+	if err != nil {
+		return errors.Wrapf(err, "self.GetDnsZones")
+	}
+	for i := range dnsZones {
+		err = dnsZones[i].RemoveVpc(ctx, self.Id)
+		if err != nil {
+			return errors.Wrapf(err, "remove vpc from dns zone %s", dnsZones[i].Id)
+		}
+	}
+
+	vpcNetwork, err := self.GetInterVpcNetworks()
+	if err != nil {
+		return errors.Wrapf(err, "self.GetInterVpcNetwork")
+	}
+	for i := range vpcNetwork {
+		err = vpcNetwork[i].RemoveVpc(ctx, self.Id)
+		if err != nil {
+			return errors.Wrapf(err, "remove vpc from InterVpcNetwork %s", vpcNetwork[i].Id)
+		}
+	}
+
 	return self.SEnabledStatusInfrasResourceBase.Delete(ctx, userCred)
 }
 
@@ -908,6 +1066,30 @@ func (manager *SVpcManager) ListItemFilter(
 	q, err = manager.SGlobalVpcResourceBaseManager.ListItemFilter(ctx, q, userCred, query.GlobalVpcResourceListInput)
 	if err != nil {
 		return nil, errors.Wrap(err, "SGlobalVpcResourceBaseManager.ListItemFilter")
+	}
+
+	if len(query.DnsZoneId) > 0 {
+		dnsZone, err := DnsZoneManager.FetchByIdOrName(userCred, query.DnsZoneId)
+		if err != nil {
+			if errors.Cause(err) == sql.ErrNoRows {
+				return nil, httperrors.NewResourceNotFoundError2("dns_zone", query.DnsZoneId)
+			}
+			return nil, httperrors.NewGeneralError(err)
+		}
+		sq := DnsZoneVpcManager.Query("vpc_id").Equals("dns_zone_id", dnsZone.GetId())
+		q = q.In("id", sq.SubQuery())
+	}
+
+	if len(query.InterVpcNetworkId) > 0 {
+		vpcNetwork, err := InterVpcNetworkManager.FetchByIdOrName(userCred, query.InterVpcNetworkId)
+		if err != nil {
+			if errors.Cause(err) == sql.ErrNoRows {
+				return nil, httperrors.NewResourceNotFoundError2("inter_vpc_network", query.InterVpcNetworkId)
+			}
+			return nil, httperrors.NewGeneralError(err)
+		}
+		sq := InterVpcNetworkVpcManager.Query("vpc_id").Equals("inter_vpc_network_id", vpcNetwork.GetId())
+		q = q.In("id", sq.SubQuery())
 	}
 
 	usable := (query.Usable != nil && *query.Usable)
@@ -1076,14 +1258,14 @@ func (self *SVpc) initWire(ctx context.Context, zone *SZone) (*SWire, error) {
 }
 
 func GetVpcQuotaKeysFromCreateInput(input api.VpcCreateInput) quotas.SDomainRegionalCloudResourceKeys {
-	ownerId := &db.SOwnerId{DomainId: input.ProjectDomain}
+	ownerId := &db.SOwnerId{DomainId: input.ProjectDomainId}
 	var region *SCloudregion
-	if len(input.Cloudregion) > 0 {
-		region = CloudregionManager.FetchRegionById(input.Cloudregion)
+	if len(input.CloudregionId) > 0 {
+		region = CloudregionManager.FetchRegionById(input.CloudregionId)
 	}
 	var provider *SCloudprovider
-	if len(input.Cloudprovider) > 0 {
-		provider = CloudproviderManager.FetchCloudproviderById(input.Cloudprovider)
+	if len(input.CloudproviderId) > 0 {
+		provider = CloudproviderManager.FetchCloudproviderById(input.CloudproviderId)
 	}
 	regionKeys := fetchRegionalQuotaKeys(rbacutils.ScopeDomain, ownerId, region, provider)
 	keys := quotas.SDomainRegionalCloudResourceKeys{}
@@ -1315,4 +1497,146 @@ func (vpc *SVpc) PerformChangeOwner(ctx context.Context, userCred mcclient.Token
 	}
 
 	return nil, nil
+}
+
+func (self *SVpc) GetVpcPeeringConnections() ([]SVpcPeeringConnection, error) {
+	q := VpcPeeringConnectionManager.Query().Equals("vpc_id", self.Id)
+	peers := []SVpcPeeringConnection{}
+	err := db.FetchModelObjects(VpcPeeringConnectionManager, q, &peers)
+	if err != nil {
+		return nil, errors.Wrapf(err, "db.FetchModelObjects")
+	}
+	return peers, nil
+}
+
+func (self *SVpc) GetVpcPeeringConnectionByExtId(extId string) (*SVpcPeeringConnection, error) {
+	peer, err := db.FetchByExternalIdAndManagerId(VpcPeeringConnectionManager, extId, func(q *sqlchemy.SQuery) *sqlchemy.SQuery {
+		return q.Equals("vpc_id", self.Id)
+	})
+	if err != nil {
+		return nil, err
+	}
+	return peer.(*SVpcPeeringConnection), nil
+}
+
+func (self *SVpc) GetAccepterVpcPeeringConnectionByExtId(extId string) (*SVpcPeeringConnection, error) {
+	peer, err := db.FetchByExternalIdAndManagerId(VpcPeeringConnectionManager, extId, func(q *sqlchemy.SQuery) *sqlchemy.SQuery {
+		return q.Equals("peer_vpc_id", self.Id)
+	})
+	if err != nil {
+		return nil, err
+	}
+	return peer.(*SVpcPeeringConnection), nil
+}
+
+func (self *SVpc) BackSycVpcPeeringConnectionsVpc(exts []cloudprovider.ICloudVpcPeeringConnection) compare.SyncResult {
+	result := compare.SyncResult{}
+	for i := range exts {
+		Peering, err := self.GetAccepterVpcPeeringConnectionByExtId(exts[i].GetId())
+		if err != nil {
+			if errors.Cause(err) != errors.ErrNotFound {
+				result.Error(err)
+			}
+			break
+		}
+		if len(Peering.PeerVpcId) == 0 {
+			_, err := db.Update(Peering, func() error {
+				Peering.PeerVpcId = self.GetId()
+				return nil
+			})
+			if err != nil {
+				result.Error(err)
+				break
+			}
+		}
+	}
+	return result
+
+}
+
+func (self *SVpc) SyncVpcPeeringConnections(ctx context.Context, userCred mcclient.TokenCredential, exts []cloudprovider.ICloudVpcPeeringConnection) compare.SyncResult {
+	result := compare.SyncResult{}
+
+	dbPeers, err := self.GetVpcPeeringConnections()
+	if err != nil {
+		result.Error(errors.Wrapf(err, "GetVpcPeeringConnections"))
+		return result
+	}
+
+	provider := self.GetCloudprovider()
+
+	removed := make([]SVpcPeeringConnection, 0)
+	commondb := make([]SVpcPeeringConnection, 0)
+	commonext := make([]cloudprovider.ICloudVpcPeeringConnection, 0)
+	added := make([]cloudprovider.ICloudVpcPeeringConnection, 0)
+
+	err = compare.CompareSets(dbPeers, exts, &removed, &commondb, &commonext, &added)
+	if err != nil {
+		result.Error(err)
+		return result
+	}
+
+	for i := 0; i < len(removed); i += 1 {
+		if len(removed[i].ExternalId) > 0 {
+			err = removed[i].syncRemove(ctx, userCred)
+			if err != nil {
+				result.DeleteError(err)
+				continue
+			}
+			result.Delete()
+		}
+	}
+
+	for i := 0; i < len(commondb); i += 1 {
+		err = commondb[i].SyncWithCloudPeerConnection(ctx, userCred, commonext[i], provider)
+		if err != nil {
+			result.UpdateError(err)
+			continue
+		}
+		syncMetadata(ctx, userCred, &commondb[i], commonext[i])
+		result.Update()
+	}
+
+	for i := 0; i < len(added); i += 1 {
+		_, err := self.newFromCloudPeerConnection(ctx, userCred, added[i], provider)
+		if err != nil {
+			result.AddError(errors.Wrapf(err, "newFromCloudPeerConnection"))
+			continue
+		}
+		result.Add()
+	}
+
+	return result
+}
+
+func (self *SVpc) newFromCloudPeerConnection(ctx context.Context, userCred mcclient.TokenCredential, ext cloudprovider.ICloudVpcPeeringConnection, provider *SCloudprovider) (*SVpcPeeringConnection, error) {
+	peer := &SVpcPeeringConnection{}
+	peer.SetModelManager(VpcPeeringConnectionManager, peer)
+	peer.Name, _ = db.GenerateName(VpcPeeringConnectionManager, provider.GetOwnerId(), ext.GetName())
+	peer.ExternalId = ext.GetGlobalId()
+	peer.Status = ext.GetStatus()
+	peer.VpcId = self.Id
+	peer.Enabled = tristate.True
+	peer.ExtPeerVpcId = ext.GetPeerVpcId()
+	manager := self.GetCloudprovider()
+	peerVpc, _ := db.FetchByExternalIdAndManagerId(VpcManager, peer.ExtPeerVpcId, func(q *sqlchemy.SQuery) *sqlchemy.SQuery {
+		managerQ := CloudproviderManager.Query("id").Equals("provider", manager.Provider)
+		return q.In("manager_id", managerQ.SubQuery())
+	})
+	if peerVpc != nil {
+		peer.PeerVpcId = peerVpc.GetId()
+	}
+	peer.ExtPeerAccountId = ext.GetPeerAccountId()
+	err := VpcPeeringConnectionManager.TableSpec().Insert(ctx, peer)
+	if err != nil {
+		return nil, errors.Wrapf(err, "Insert")
+	}
+
+	if provider != nil {
+		SyncCloudDomain(userCred, peer, provider.GetOwnerId())
+		peer.SyncShareState(ctx, userCred, provider.getAccountShareInfo())
+	}
+
+	db.OpsLog.LogEvent(peer, db.ACT_CREATE, peer.GetShortDesc(ctx), userCred)
+	return peer, nil
 }

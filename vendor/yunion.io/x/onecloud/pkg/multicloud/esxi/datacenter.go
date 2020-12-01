@@ -15,6 +15,7 @@
 package esxi
 
 import (
+	"regexp"
 	"strings"
 
 	"github.com/vmware/govmomi/object"
@@ -38,6 +39,7 @@ type SDatacenter struct {
 	istorages    []cloudprovider.ICloudStorage
 	inetworks    []IVMNetwork
 	iresoucePool []cloudprovider.ICloudProject
+	clusters     []*SCluster
 
 	Name string
 }
@@ -148,6 +150,9 @@ func (dc *SDatacenter) GetCluster(cluster string) (*SCluster, error) {
 }
 
 func (dc *SDatacenter) listClusters() ([]*SCluster, error) {
+	if dc.clusters != nil {
+		return dc.clusters, nil
+	}
 	clusters := []mo.ClusterComputeResource{}
 	err := dc.manager.scanMObjects(dc.object.Entity().Self, RESOURCEPOOL_PROPS, &clusters)
 	if err != nil {
@@ -239,19 +244,22 @@ func (dc *SDatacenter) getDcObj() *object.Datacenter {
 	return object.NewDatacenter(dc.manager.client.Client, dc.object.Reference())
 }
 
-func (dc *SDatacenter) fetchVms(vmRefs []types.ManagedObjectReference, all bool) ([]*SVirtualMachine, error) {
+func (dc *SDatacenter) fetchMoVms(filter property.Filter, props []string) ([]mo.VirtualMachine, error) {
+	odc := dc.getObjectDatacenter()
+	root := odc.Reference()
 	var movms []mo.VirtualMachine
-	if vmRefs != nil {
-		err := dc.manager.references2Objects(vmRefs, VIRTUAL_MACHINE_PROPS, &movms)
-		if err != nil {
-			return nil, errors.Wrap(err, "dc.manager.references2Objects")
-		}
+	err := dc.manager.scanMObjectsWithFilter(root, props, &movms, filter)
+	if err != nil {
+		return nil, errors.Wrap(err, "scanMObjectsWithFilter")
 	}
+	return movms, nil
+}
 
+func (dc *SDatacenter) moVms2Vm(movms []mo.VirtualMachine, all *bool) ([]*SVirtualMachine, error) {
 	// avoid applying new memory and copying
 	vms := make([]*SVirtualMachine, 0, len(movms))
 	for i := range movms {
-		if all || !strings.HasPrefix(movms[i].Entity().Name, api.ESXI_IMAGE_CACHE_TMP_PREFIX) {
+		if (all != nil && *all) || !strings.HasPrefix(movms[i].Name, api.ESXI_IMAGE_CACHE_TMP_PREFIX) {
 			vm := NewVirtualMachine(dc.manager, &movms[i], dc)
 			// must
 			if vm == nil {
@@ -263,17 +271,97 @@ func (dc *SDatacenter) fetchVms(vmRefs []types.ManagedObjectReference, all bool)
 	return vms, nil
 }
 
+func (dc *SDatacenter) fetchFakeTemplateVMs(movms []mo.VirtualMachine, regex string) ([]*SVirtualMachine, error) {
+	var (
+		tNameRegex *regexp.Regexp
+		err        error
+	)
+	if len(regex) == 0 {
+		tNameRegex = tempalteNameRegex
+	} else {
+		tNameRegex, err = regexp.Compile(regex)
+		if err != nil {
+			return nil, errors.Wrap(err, "generate regexp")
+		}
+	}
+	objs := make([]types.ManagedObjectReference, 0)
+	for i := range movms {
+		name := movms[i].Name
+		if tNameRegex != nil && tNameRegex.MatchString(name) {
+			objs = append(objs, movms[i].Reference())
+		}
+	}
+	if len(objs) == 0 {
+		return nil, nil
+	}
+	return dc.fetchVms(objs, false)
+}
+
+func (dc *SDatacenter) fetchVms(vmRefs []types.ManagedObjectReference, all bool) ([]*SVirtualMachine, error) {
+	var movms []mo.VirtualMachine
+	if vmRefs != nil {
+		err := dc.manager.references2Objects(vmRefs, VIRTUAL_MACHINE_PROPS, &movms)
+		if err != nil {
+			return nil, errors.Wrap(err, "dc.manager.references2Objects")
+		}
+	}
+	return dc.moVms2Vm(movms, &all)
+}
+
+func (dc *SDatacenter) fetchHosts_(vmRefs []types.ManagedObjectReference, all bool) ([]*SHost, error) {
+	var movms []mo.HostSystem
+	if vmRefs != nil {
+		err := dc.manager.references2Objects(vmRefs, VIRTUAL_MACHINE_PROPS, &movms)
+		if err != nil {
+			return nil, errors.Wrap(err, "dc.manager.references2Objects")
+		}
+	}
+
+	// avoid applying new memory and copying
+	vms := make([]*SHost, 0, len(movms))
+	for i := range movms {
+		if all || !strings.HasPrefix(movms[i].Entity().Name, api.ESXI_IMAGE_CACHE_TMP_PREFIX) {
+			vms = append(vms, NewHost(dc.manager, &movms[i], dc))
+		}
+	}
+	return vms, nil
+}
+
 func (dc *SDatacenter) FetchVMs() ([]*SVirtualMachine, error) {
-	return dc.fetchVMs(property.Filter{})
+	return dc.fetchVMsWithFilter(property.Filter{})
 }
 
 func (dc *SDatacenter) FetchNoTemplateVMs() ([]*SVirtualMachine, error) {
 	filter := property.Filter{}
 	filter["config.template"] = false
-	return dc.fetchVMs(filter)
+	return dc.fetchVMsWithFilter(filter)
 }
 
-func (dc *SDatacenter) fetchVMs(filter property.Filter) ([]*SVirtualMachine, error) {
+func (dc *SDatacenter) FetchFakeTempateVMs(regex string) ([]*SVirtualMachine, error) {
+	filter := property.Filter{}
+	filter["summary.runtime.powerState"] = types.VirtualMachinePowerStatePoweredOff
+	movms, err := dc.fetchMoVms(filter, []string{"name"})
+	if err != nil {
+		return nil, errors.Wrap(err, "unable to fetch mo.VirtualMachines")
+	}
+	return dc.fetchFakeTemplateVMs(movms, regex)
+}
+
+func (dc *SDatacenter) fetchVMsWithFilter(filter property.Filter) ([]*SVirtualMachine, error) {
+	movms, err := dc.fetchMoVms(filter, VIRTUAL_MACHINE_PROPS)
+	if err != nil {
+		return nil, errors.Wrap(err, "unable to fetch mo.VirtualMachines")
+	}
+	ret, err := dc.moVms2Vm(movms, nil)
+	if err != nil {
+		return nil, errors.Wrap(err, "unable to convert mo.VirtualMachine to VirtualMachine")
+	}
+	return ret, err
+}
+
+func (dc *SDatacenter) FetchNoTemplateVMEntityReferens() ([]types.ManagedObjectReference, error) {
+	filter := property.Filter{}
+	filter["config.template"] = false
 	odc := dc.getObjectDatacenter()
 	root := odc.Reference()
 	m := view.NewManager(dc.manager.client.Client)
@@ -288,21 +376,58 @@ func (dc *SDatacenter) fetchVMs(filter property.Filter) ([]*SVirtualMachine, err
 	if err != nil {
 		return nil, err
 	}
-	vms, err := dc.fetchVms(objs, false)
-	return vms, err
+	return objs, nil
+}
+
+func (dc *SDatacenter) FetchNoTemplateHostEntityReferens() ([]types.ManagedObjectReference, error) {
+	filter := property.Filter{}
+	odc := dc.getObjectDatacenter()
+	root := odc.Reference()
+	m := view.NewManager(dc.manager.client.Client)
+	v, err := m.CreateContainerView(dc.manager.context, root, []string{"HostSystem"}, true)
+	if err != nil {
+		return nil, err
+	}
+	defer func() {
+		_ = v.Destroy(dc.manager.context)
+	}()
+	objs, err := v.Find(dc.manager.context, []string{"HostSystem"}, filter)
+	if err != nil {
+		return nil, err
+	}
+	return objs, nil
+}
+
+func (dc *SDatacenter) fetchHosts(filter property.Filter) ([]*SHost, error) {
+	odc := dc.getObjectDatacenter()
+	root := odc.Reference()
+	m := view.NewManager(dc.manager.client.Client)
+	v, err := m.CreateContainerView(dc.manager.context, root, []string{"HostSystem"}, true)
+	if err != nil {
+		return nil, err
+	}
+	defer func() {
+		_ = v.Destroy(dc.manager.context)
+	}()
+	objs, err := v.Find(dc.manager.context, []string{"HostSystem"}, filter)
+	if err != nil {
+		return nil, err
+	}
+	hosts, err := dc.fetchHosts_(objs, false)
+	return hosts, err
 }
 
 func (dc *SDatacenter) FetchTemplateVMs() ([]*SVirtualMachine, error) {
 	filter := property.Filter{}
 	filter["config.template"] = true
-	return dc.fetchVMs(filter)
+	return dc.fetchVMsWithFilter(filter)
 }
 
 func (dc *SDatacenter) FetchTemplateVMById(id string) (*SVirtualMachine, error) {
 	filter := property.Filter{}
 	filter["config.template"] = true
 	filter["summary.config.uuid"] = id
-	vms, err := dc.fetchVMs(filter)
+	vms, err := dc.fetchVMsWithFilter(filter)
 	if err != nil {
 		return nil, err
 	}
@@ -315,7 +440,7 @@ func (dc *SDatacenter) FetchTemplateVMById(id string) (*SVirtualMachine, error) 
 func (dc *SDatacenter) FetchVMById(id string) (*SVirtualMachine, error) {
 	filter := property.Filter{}
 	filter["summary.config.uuid"] = id
-	vms, err := dc.fetchVMs(filter)
+	vms, err := dc.fetchVMsWithFilter(filter)
 	if err != nil {
 		return nil, err
 	}

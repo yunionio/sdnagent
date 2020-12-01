@@ -16,6 +16,8 @@ package apis
 
 import (
 	"time"
+
+	"yunion.io/x/onecloud/pkg/httperrors"
 )
 
 type ModelBaseDetails struct {
@@ -26,7 +28,7 @@ type ModelBaseDetails struct {
 	CanDelete bool `json:"can_delete"`
 
 	// 资源不能删除的原因
-	DeleteFailReason string `json:"delete_fail_reason"`
+	DeleteFailReason httperrors.Error `json:"delete_fail_reason"`
 
 	// 资源是否可以更新, 若为false,update_fail_reason会返回资源不能删除的原因
 	// example: true
@@ -69,10 +71,15 @@ type AdminSharableVirtualResourceDetails struct {
 	SharableVirtualResourceDetails
 }
 
-type StandaloneResourceShortDescDetail struct {
+type StandaloneAnonResourceShortDescDetail struct {
 	ModelBaseShortDescDetail
 
-	Id   string `json:"id"`
+	Id string `json:"id"`
+}
+
+type StandaloneResourceShortDescDetail struct {
+	StandaloneAnonResourceShortDescDetail
+
 	Name string `json:"name"`
 }
 
@@ -135,10 +142,14 @@ type UserResourceDetails struct {
 	OwnerName string `json:"owner_name"`
 }
 
-type StandaloneResourceDetails struct {
+type StandaloneAnonResourceDetails struct {
 	ResourceBaseDetails
 
 	MetadataResourceInfo
+}
+
+type StandaloneResourceDetails struct {
+	StandaloneAnonResourceDetails
 }
 
 type DomainizedResourceInfo struct {
@@ -164,6 +175,7 @@ type ProjectizedResourceInfo struct {
 
 type ScopedResourceBaseInfo struct {
 	ProjectizedResourceInfo
+	Scope string `json:"scope"`
 }
 
 type InfrasResourceBaseDetails struct {

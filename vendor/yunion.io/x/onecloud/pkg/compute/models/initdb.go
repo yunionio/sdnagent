@@ -15,8 +15,6 @@
 package models
 
 import (
-	"yunion.io/x/log"
-
 	"yunion.io/x/onecloud/pkg/cloudcommon/db"
 	"yunion.io/x/onecloud/pkg/cloudcommon/db/proxy"
 )
@@ -44,6 +42,7 @@ func InitDB() error {
 		SecurityGroupManager,
 		SecurityGroupCacheManager,
 		NetworkManager,
+		NetworkAddressManager,
 		GuestManager,
 		LoadbalancerCertificateManager,
 		LoadbalancerAclManager,
@@ -53,6 +52,7 @@ func InitDB() error {
 		LoadbalancerBackendGroupManager,
 		LoadbalancerBackendManager,
 		AwsCachedLbbgManager,
+		CachedLoadbalancerCertificateManager,
 		LoadbalancerClusterManager,
 		SchedtagManager,
 		DynamicschedtagManager,
@@ -67,11 +67,12 @@ func InitDB() error {
 		DBInstanceNetworkManager,
 		DBInstanceAccountManager,
 		DBInstanceDatabaseManager,
+
+		SnapshotPolicyDiskManager,
 	} {
 		err := manager.InitializeData()
 		if err != nil {
-			log.Errorf("Manager %s initializeData fail %s", manager.Keyword(), err)
-			// return err skip error table
+			return err
 		}
 	}
 	return nil

@@ -116,7 +116,7 @@ func optionsStructRvToParams(rv reflect.Value) (*jsonutils.JSONDict, error) {
 			rv64 := f.Convert(gotypes.Float64Type)
 			f64 := rv64.Interface().(float64)
 			if f64 != 0 || !jsonInfo.OmitZero {
-				p.Set(name, jsonutils.NewFloat(f64))
+				p.Set(name, jsonutils.NewFloat64(f64))
 			}
 		case reflect.String:
 			s := f.Interface().(string)
@@ -151,7 +151,7 @@ func optionsStructRvToParams(rv reflect.Value) (*jsonutils.JSONDict, error) {
 }
 
 func optionsStructToParams(v interface{}) (*jsonutils.JSONDict, error) {
-	rv := reflect.ValueOf(v).Elem()
+	rv := reflect.Indirect(reflect.ValueOf(v))
 	return optionsStructRvToParams(rv)
 }
 
@@ -164,7 +164,7 @@ func StructToParams(v interface{}) (*jsonutils.JSONDict, error) {
 // ListStructToParams converts the struct as pointed to by the argument to JSON
 // dict params, taking into account .BaseListOptions.Params() if it exists
 func ListStructToParams(v interface{}) (*jsonutils.JSONDict, error) {
-	rv := reflect.ValueOf(v).Elem()
+	rv := reflect.Indirect(reflect.ValueOf(v))
 	params, err := optionsStructRvToParams(rv)
 	if err != nil {
 		return nil, err
@@ -215,9 +215,8 @@ type BaseListOptions struct {
 	DeleteAll        *bool `help:"Show also deleted resources" json:"-"`
 	ShowEmulated     *bool `help:"Show all resources including the emulated resources"`
 
-	ExportFile  string `help:"Export to file" metavar:"<EXPORT_FILE_PATH>" json:"-"`
-	ExportKeys  string `help:"Export field keys"`
-	ExportTexts string `help:"Export field displayname texts" json:"-"`
+	ExportKeys string `help:"Export field keys"`
+	ExtraListOptions
 
 	Tags      []string `help:"Tags info, eg: hypervisor=aliyun, os_type=Linux, os_version" json:"-"`
 	UserTags  []string `help:"UserTags info, eg: group=rd" json:"-"`
@@ -301,4 +300,95 @@ func (opts *BaseListOptions) Params() (*jsonutils.JSONDict, error) {
 		tagIdx++
 	}
 	return params, nil
+}
+
+func (o *BaseListOptions) GetExportKeys() string {
+	return o.ExportKeys
+}
+
+type ExtraListOptions struct {
+	ExportFile  string `help:"Export to file" metavar:"<EXPORT_FILE_PATH>" json:"-"`
+	ExportTexts string `help:"Export field displayname texts" json:"-"`
+}
+
+func (o ExtraListOptions) GetExportFile() string {
+	return o.ExportFile
+}
+
+func (o ExtraListOptions) GetExportTexts() string {
+	return o.ExportTexts
+}
+
+func (o ExtraListOptions) GetContextId() string {
+	return ""
+}
+
+type ScopedResourceListOptions struct {
+	BelongScope string `help:"Filter by resource belong scope" choices:"system|domain|project"`
+}
+
+func (o *ScopedResourceListOptions) Params() (*jsonutils.JSONDict, error) {
+	return optionsStructToParams(o)
+}
+
+type BaseUpdateOptions struct {
+	ID   string `help:"ID or Name of resource to update"`
+	Name string `help:"Name of resource to update"`
+	Desc string `metavar:"<DESCRIPTION>" help:"Description" json:"description"`
+}
+
+func (opts *BaseUpdateOptions) GetId() string {
+	return opts.ID
+}
+
+func (opts *BaseUpdateOptions) Params() (jsonutils.JSONObject, error) {
+	params := jsonutils.NewDict()
+	if len(opts.Name) > 0 {
+		params.Add(jsonutils.NewString(opts.Name), "name")
+	}
+	if len(opts.Desc) > 0 {
+		params.Add(jsonutils.NewString(opts.Desc), "description")
+	}
+	return params, nil
+}
+
+type BasePublicOptions struct {
+	ID            string   `help:"ID or name of resource" json:"-"`
+	Scope         string   `help:"sharing scope" choices:"system|domain"`
+	SharedDomains []string `help:"share to domains"`
+}
+
+func (opts *BasePublicOptions) GetId() string {
+	return opts.ID
+}
+
+func (opts *BasePublicOptions) Params() (jsonutils.JSONObject, error) {
+	params := jsonutils.Marshal(opts).(*jsonutils.JSONDict)
+	params.Remove("id")
+	return params, nil
+}
+
+type BaseCreateOptions struct {
+	NAME string `help:"Resource Name"`
+	Desc string `metavar:"<DESCRIPTION>" help:"Description" json:"description"`
+}
+
+type EnabledStatusCreateOptions struct {
+	BaseCreateOptions
+	Status  string
+	Enabled *bool `help:"turn on enabled flag"`
+}
+
+type BaseShowOptions struct {
+	ID             string `json:"-"`
+	WithMeta       *bool  `help:"With meta data"`
+	ShowFailReason *bool  `help:"show fail reason fields"`
+}
+
+func (o BaseShowOptions) Params() (jsonutils.JSONObject, error) {
+	return StructToParams(o)
+}
+
+func (o BaseShowOptions) GetId() string {
+	return o.ID
 }

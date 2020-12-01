@@ -19,9 +19,10 @@ type NotificationTemplateCreateInput struct {
 }
 
 type NotificationTemplateConfig struct {
-	Title   string      `json:"title"`
-	Name    string      `json:"name"`
-	Matches []EvalMatch `json:"matches"`
+	Title        string      `json:"title"`
+	Name         string      `json:"name"`
+	ResourceName string      `json:"resource_name"`
+	Matches      []EvalMatch `json:"matches"`
 	// PrevAlertState AlertStateType `json:"prev_alert_state"`
 	// State AlertStateType `json:"state"`
 	NoDataFound bool   `json:"no_data"`
@@ -31,4 +32,5 @@ type NotificationTemplateConfig struct {
 	Priority    string `json:"priority"`
 	Level       string `json:"level"`
 	IsRecovery  bool   `json:"is_recovery"`
+	WebUrl      string `json:"web_url"`
 }

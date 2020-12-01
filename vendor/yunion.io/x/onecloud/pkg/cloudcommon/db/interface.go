@@ -48,7 +48,9 @@ type IModelManager interface {
 	AliasPlural() string
 	SetAlias(alias string, aliasPlural string)
 
+	HasName() bool
 	ValidateName(name string) error
+	EnableGenerateName() bool
 
 	// list hooks
 	AllowListItems(ctx context.Context, userCred mcclient.TokenCredential, query jsonutils.JSONObject) bool
@@ -72,7 +74,7 @@ type IModelManager interface {
 	FilterByOwner(q *sqlchemy.SQuery, userCred mcclient.IIdentityProvider, scope rbacutils.TRbacScope) *sqlchemy.SQuery
 	FilterBySystemAttributes(q *sqlchemy.SQuery, userCred mcclient.TokenCredential, query jsonutils.JSONObject, scope rbacutils.TRbacScope) *sqlchemy.SQuery
 	FilterByHiddenSystemAttributes(q *sqlchemy.SQuery, userCred mcclient.TokenCredential, query jsonutils.JSONObject, scope rbacutils.TRbacScope) *sqlchemy.SQuery
-	FilterByParentId(q *sqlchemy.SQuery, parentId string) *sqlchemy.SQuery
+	FilterByUniqValues(q *sqlchemy.SQuery, uniqValues jsonutils.JSONObject) *sqlchemy.SQuery
 
 	// GetOwnerId(userCred mcclient.IIdentityProvider) mcclient.IIdentityProvider
 
@@ -116,7 +118,7 @@ type IModelManager interface {
 
 	// fetch owner Id from query when create resource
 	FetchOwnerId(ctx context.Context, data jsonutils.JSONObject) (mcclient.IIdentityProvider, error)
-	FetchParentId(ctx context.Context, data jsonutils.JSONObject) string
+	FetchUniqValues(ctx context.Context, data jsonutils.JSONObject) jsonutils.JSONObject
 
 	/* name uniqueness scope, system/domain/project, default is system */
 	NamespaceScope() rbacutils.TRbacScope
@@ -126,6 +128,8 @@ type IModelManager interface {
 	QueryDistinctExtraField(q *sqlchemy.SQuery, field string) (*sqlchemy.SQuery, error)
 
 	GetPagingConfig() *SPagingConfig
+
+	GetI18N(ctx context.Context, idstr string, resObj jsonutils.JSONObject) *jsonutils.JSONDict
 }
 
 type IModel interface {
@@ -186,7 +190,7 @@ type IModel interface {
 	DeleteInContext(ctx context.Context, userCred mcclient.TokenCredential, ctxObjs []IModel, query jsonutils.JSONObject, data jsonutils.JSONObject) (jsonutils.JSONObject, error)
 
 	GetOwnerId() mcclient.IIdentityProvider
-	GetParentId() string
+	GetUniqValues() jsonutils.JSONObject
 
 	IsSharable(reqCred mcclient.IIdentityProvider) bool
 
@@ -195,6 +199,7 @@ type IModel interface {
 	MarkDeletePreventionOff()
 
 	GetUsages() []IUsage
+	GetI18N(ctx context.Context) *jsonutils.JSONDict
 }
 
 type IResourceModelManager interface {
@@ -233,9 +238,6 @@ type IJointModel interface {
 
 	GetIJointModel() IJointModel
 
-	Master() IStandaloneModel
-	Slave() IStandaloneModel
-
 	AllowDetach(ctx context.Context, userCred mcclient.TokenCredential, query jsonutils.JSONObject, data jsonutils.JSONObject) bool
 
 	Detach(ctx context.Context, userCred mcclient.TokenCredential) error
@@ -245,6 +247,10 @@ type IJointModel interface {
 
 type IMetadataBaseModelManager interface {
 	GetMetadataHiddenKeys() []string
+}
+
+type IMetadataBaseModel interface {
+	OnMetadataUpdated(ctx context.Context, userCred mcclient.TokenCredential)
 }
 
 type IStandaloneModelManager interface {
@@ -283,6 +289,8 @@ type IStandaloneModel interface {
 	GetAllMetadata(userCred mcclient.TokenCredential) (map[string]string, error)
 
 	IsShared() bool
+
+	IMetadataBaseModel
 }
 
 type IDomainLevelModelManager interface {

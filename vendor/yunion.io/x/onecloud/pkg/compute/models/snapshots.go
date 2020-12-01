@@ -48,6 +48,7 @@ type SSnapshotManager struct {
 	SCloudregionResourceBaseManager
 	SDiskResourceBaseManager
 	SStorageResourceBaseManager
+	db.SMultiArchResourceBaseManager
 }
 
 type SSnapshot struct {
@@ -56,6 +57,7 @@ type SSnapshot struct {
 
 	SManagedResourceBase
 	SCloudregionResourceBase `width:"36" charset:"ascii" nullable:"true" list:"user" create:"optional"`
+	db.SMultiArchResourceBase
 
 	// 磁盘Id
 	DiskId string `width:"36" charset:"ascii" nullable:"true" create:"required" list:"user" index:"true"`
@@ -126,6 +128,10 @@ func (manager *SSnapshotManager) ListItemFilter(
 	if err != nil {
 		return nil, errors.Wrap(err, "SCloudregionResourceBaseManager.ListItemFilter")
 	}
+	q, err = manager.SMultiArchResourceBaseManager.ListItemFilter(ctx, q, userCred, query.MultiArchResourceBaseListInput)
+	if err != nil {
+		return nil, errors.Wrap(err, "SMultiArchResourceBaseManager.ListItemFilter")
+	}
 
 	if query.FakeDeleted != nil && *query.FakeDeleted {
 		q = q.IsTrue("fake_deleted")
@@ -185,6 +191,17 @@ func (manager *SSnapshotManager) ListItemFilter(
 	}
 	if len(query.OsType) > 0 {
 		q = q.In("os_type", query.OsType)
+	}
+	if len(query.ServerId) > 0 {
+		iG, err := GuestManager.FetchByIdOrName(userCred, query.ServerId)
+		if err != nil && err == sql.ErrNoRows {
+			return nil, httperrors.NewNotFoundError("guest %s not found", query.ServerId)
+		} else if err != nil {
+			return nil, errors.Wrap(err, "fetch guest")
+		}
+		guest := iG.(*SGuest)
+		gdq := GuestdiskManager.Query("disk_id").Equals("guest_id", guest.Id).SubQuery()
+		q = q.In("disk_id", gdq)
 	}
 
 	return q, nil
@@ -346,6 +363,7 @@ func (manager *SSnapshotManager) ValidateCreateData(
 	input.DiskId = disk.Id
 	input.DiskType = disk.DiskType
 	input.Size = disk.DiskSize
+	input.OsArch = disk.OsArch
 
 	storage := disk.GetStorage()
 	if len(disk.ExternalId) == 0 {
@@ -609,6 +627,11 @@ func (self *SSnapshot) ValidateDeleteCondition(ctx context.Context) error {
 	}
 	if count > 0 {
 		return httperrors.NewBadRequestError("snapshot referenced by instance snapshot")
+	}
+	if disk, err := self.GetDisk(); err == nil {
+		if disk.Status == api.DISK_RESET {
+			return httperrors.NewBadRequestError("Cannot delete snapshot on disk reset")
+		}
 	}
 	driver := self.GetRegionDriver()
 	if driver != nil {

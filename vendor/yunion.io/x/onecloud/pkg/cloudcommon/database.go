@@ -27,6 +27,8 @@ import (
 	"yunion.io/x/onecloud/pkg/appsrv"
 	"yunion.io/x/onecloud/pkg/cloudcommon/consts"
 	"yunion.io/x/onecloud/pkg/cloudcommon/db/lockman"
+	"yunion.io/x/onecloud/pkg/cloudcommon/etcd"
+	"yunion.io/x/onecloud/pkg/cloudcommon/informer"
 	common_options "yunion.io/x/onecloud/pkg/cloudcommon/options"
 )
 
@@ -41,6 +43,12 @@ func InitDB(options *common_options.DBOptions) {
 	}
 
 	consts.QueryOffsetOptimization = options.QueryOffsetOptimization
+
+	if options.HistoricalUniqueName {
+		consts.EnableHistoricalUniqueName()
+	} else {
+		consts.DisableHistoricalUniqueName()
+	}
 
 	dialect, sqlStr, err := options.GetDBConnection()
 	if err != nil {
@@ -78,7 +86,6 @@ func InitDB(options *common_options.DBOptions) {
 	}
 	// lm := lockman.NewNoopLockManager()
 
-	/* disable informer feature on release/3.3
 	if len(options.EtcdEndpoints) != 0 {
 		log.Infof("using etcd as resource informer backend")
 		tlsCfg, err := options.GetEtcdTLSConfig()
@@ -98,7 +105,6 @@ func InitDB(options *common_options.DBOptions) {
 		}
 		informer.Init(informerBackend)
 	}
-	*/
 }
 
 func CloseDB() {

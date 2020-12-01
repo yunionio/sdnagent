@@ -25,6 +25,7 @@ type ServerListInput struct {
 	apis.VirtualResourceListInput
 	apis.ExternalizedResourceBaseListInput
 	apis.DeletePreventableResourceBaseListInput
+	apis.MultiArchResourceBaseListInput
 
 	HostFilterListInput
 
@@ -41,6 +42,11 @@ type ServerListInput struct {
 	Baremetal *bool `json:"baremetal"`
 	// 只列出GPU主机
 	Gpu *bool `json:"gpu"`
+	// 只列出还有备份机的主机
+	Backup *bool `json:"bakcup"`
+	// 列出指定类型的主机
+	// enum: normal,gpu,backup
+	ServerType string `json:"server_type"`
 	// 列出管理安全组为指定安全组的主机
 	AdminSecgroup string `json:"admin_security"`
 	// 列出Hypervisor为指定值的主机
@@ -58,12 +64,16 @@ type ServerListInput struct {
 	// enum: asc,desc
 	// OrderByDisk string `json:"order_by_disk"`
 
+	// 根据ip查找机器
+	IpAddr string `json:"ip_addr"`
+
 	// 列出可以挂载指定EIP的主机
 	UsableServerForEip string `json:"usable_server_for_eip"`
 
 	// 列出可以挂载磁盘的主机
 	AttachableServersForDisk string `json:"attachable_servers_for_disk"`
-	// Deprecated:列出可以挂载磁盘的主机
+	// Deprecated
+	// 列出可以挂载磁盘的主机
 	Disk string `json:"disk" yunion-deprecated-by:"attachable_servers_for_disk"`
 
 	// 按主机资源类型进行排序
@@ -94,6 +104,9 @@ type ServerListInput struct {
 	SrcMacCheck *bool `json:"src_mac_check"`
 
 	InstanceType []string `json:"instance_type"`
+
+	// 是否调度到宿主机上
+	WithHost *bool `json:"with_host"`
 }
 
 func (input *ServerListInput) AfterUnmarshal() {
@@ -195,6 +208,8 @@ type ServerDetails struct {
 	// IP地址列表字符串
 	// example: 10.165.2.1,172.16.8.1
 	IPs string `json:"ips"`
+	// mac地址信息
+	Macs string `json:"macs"`
 	// 网卡信息
 	Nics []GuestnetworkShortDesc `json:"nics"`
 
@@ -281,19 +296,19 @@ type GuestResourceInfo struct {
 
 type ServerResourceInput struct {
 	// 主机（ID或Name）
-	Server string `json:"server"`
+	ServerId string `json:"server_id"`
 	// swagger:ignore
 	// Deprecated
 	// Filter by guest Id
-	ServerId string `json:"server_id" yunion-deprecated-by:"server"`
+	Server string `json:"server" yunion-deprecated-by:"server_id"`
 	// swagger:ignore
 	// Deprecated
 	// Filter by guest Id
-	Guest string `json:"guest" yunion-deprecated-by:"server"`
+	Guest string `json:"guest" yunion-deprecated-by:"server_id"`
 	// swagger:ignore
 	// Deprecated
 	// Filter by guest Id
-	GuestId string `json:"guest_id" yunion-deprecated-by:"server"`
+	GuestId string `json:"guest_id" yunion-deprecated-by:"server_id"`
 }
 
 type ServerFilterListInput struct {
@@ -344,4 +359,97 @@ type GuestSaveToTemplateInput struct {
 type GuestSyncFixNicsInput struct {
 	// 需要修正的IP地址列表
 	Ip []string `json:"ip"`
+}
+
+type GuestMigrateInput struct {
+	PreferHost   string `json:"prefer_host"`
+	AutoStart    bool   `json:"auto_start"`
+	IsRescueMode bool   `json:"rescue_mode"`
+}
+
+type GuestLiveMigrateInput struct {
+	PreferHost string `json:"prefer_host"`
+}
+
+type GuestSetSecgroupInput struct {
+	// 安全组Id列表
+	// 实例必须处于运行,休眠或者关机状态
+	//
+	//
+	// | 平台		 | 最多绑定安全组数量	|
+	// |-------------|-------------------	|
+	// | Azure       | 1					|
+	// | VMware      | 不支持安全组			|
+	// | Baremetal   | 不支持安全组			|
+	// | ZStack	     | 1					|
+	// | 其他	     | 5					|
+	SecgroupIds []string `json:"secgroup_ids"`
+}
+
+type GuestRevokeSecgroupInput struct {
+	// 安全组Id列表
+	// 实例必须处于运行,休眠或者关机状态
+	SecgroupIds []string `json:"secgroup_ids"`
+}
+
+type GuestAssignSecgroupInput struct {
+	// 安全组Id
+	// 实例必须处于运行,休眠或者关机状态
+	SecgroupId string `json:"secgroup_id"`
+
+	// swagger:ignore
+	// Deprecated
+	Secgrp string `json:"secgrp" yunion-deprecated-by:"secgroup_id"`
+
+	// swagger:ignore
+	// Deprecated
+	Secgroup string `json:"secgroup" yunion-deprecated-by:"secgroup_id"`
+}
+
+type GuestAddSecgroupInput struct {
+	// 安全组Id列表
+	// 实例必须处于运行,休眠或者关机状态
+	//
+	//
+	// | 平台		 | 最多绑定安全组数量	|
+	// |-------------|-------------------	|
+	// | Azure       | 1					|
+	// | VMware      | 不支持安全组			|
+	// | Baremetal   | 不支持安全组			|
+	// | ZStack	     | 1					|
+	// | 其他	     | 5					|
+	SecgroupIds []string `json:"secgroup_ids"`
+}
+
+type ServerRemoteUpdateInput struct {
+	// 是否覆盖替换所有标签
+	ReplaceTags *bool `json:"replace_tags" help:"replace all remote tags"`
+}
+
+type ServerAssociateEipInput struct {
+	// swagger:ignore
+	// Deprecated
+	Eip string `json:"eip" yunion-deprecated-by:"eip_id"`
+	// 弹性公网IP的ID
+	EipId string `json:"eip_id"`
+}
+
+type ServerDissociateEipInput struct {
+	// 是否自动释放
+	AudoDelete *bool `json:"auto_delete"`
+}
+
+type ServerResetInput struct {
+	InstanceSnapshot string `json:"instance_snapshot"`
+	// 自动启动
+	AutoStart *bool `json:"auto_start"`
+}
+
+type ServerStopInput struct {
+	// 是否强制关机
+	IsForce bool `json:"is_force"`
+
+	// 是否关机停止计费, 若平台不支持停止计费，此参数无作用
+	// 目前仅阿里云，腾讯云此参数生效
+	StopCharging bool `json:"stop_charging"`
 }
