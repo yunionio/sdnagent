@@ -56,9 +56,11 @@ type wCmdReq struct {
 }
 
 type serversWatcher struct {
-	agent      *AgentServer
-	tcMan      *TcMan
-	ovnMan     *ovnMan
+	agent    *AgentServer
+	tcMan    *TcMan
+	ovnMan   *ovnMan
+	ovnMdMan *ovnMdMan
+
 	hostConfig *utils.HostConfig
 	watcher    *fsnotify.Watcher
 	hostLocal  *HostLocal
@@ -77,6 +79,7 @@ func newServersWatcher() (*serversWatcher, error) {
 		cmdCh: make(chan wCmdReq),
 	}
 	w.ovnMan = newOvnMan(w)
+	w.ovnMdMan = newOvnMdMan(w)
 	return w, nil
 }
 
@@ -182,6 +185,9 @@ func (w *serversWatcher) Start(ctx context.Context, agent *AgentServer) {
 
 	wg.Add(1)
 	go w.ovnMan.Start(ctx)
+
+	wg.Add(1)
+	go w.ovnMdMan.Start(ctx)
 
 	// init scan
 	w.hostLocal = NewHostLocal(w)
