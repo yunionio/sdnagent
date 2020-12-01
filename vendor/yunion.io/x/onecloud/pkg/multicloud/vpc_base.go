@@ -15,7 +15,7 @@
 package multicloud
 
 import (
-	"fmt"
+	"yunion.io/x/pkg/errors"
 
 	"yunion.io/x/onecloud/pkg/cloudprovider"
 )
@@ -25,5 +25,41 @@ type SVpc struct {
 }
 
 func (self *SVpc) GetINatGateways() ([]cloudprovider.ICloudNatGateway, error) {
-	return nil, fmt.Errorf("Not Implemented GetNatGateways")
+	return nil, errors.Wrapf(cloudprovider.ErrNotImplemented, "GetINatGateways")
+}
+
+func (self *SVpc) GetICloudVpcPeeringConnections() ([]cloudprovider.ICloudVpcPeeringConnection, error) {
+	return nil, errors.Wrapf(cloudprovider.ErrNotImplemented, "GetICloudVpcPeeringConnections")
+}
+
+func (self *SVpc) GetICloudAccepterVpcPeeringConnections() ([]cloudprovider.ICloudVpcPeeringConnection, error) {
+	return nil, errors.Wrapf(cloudprovider.ErrNotImplemented, "GetICloudVpcPeeringConnections")
+}
+
+func (self *SVpc) GetICloudVpcPeeringConnectionById(id string) (cloudprovider.ICloudVpcPeeringConnection, error) {
+	return nil, errors.Wrapf(cloudprovider.ErrNotImplemented, "GetICloudVpcPeeringConnectionById")
+}
+
+func (self *SVpc) CreateICloudVpcPeeringConnection(opts *cloudprovider.VpcPeeringConnectionCreateOptions) (cloudprovider.ICloudVpcPeeringConnection, error) {
+	return nil, errors.Wrapf(cloudprovider.ErrNotImplemented, "CreateICloudVpcPeeringConnection")
+}
+
+func (self *SVpc) AcceptICloudVpcPeeringConnection(id string) error {
+	return errors.Wrapf(cloudprovider.ErrNotImplemented, "AcceptICloudVpcPeeringConnection")
+}
+
+func (self *SVpc) GetAuthorityOwnerId() string {
+	return ""
+}
+
+func (self *SVpc) CreateRouteToVpcPeeringConnection(cidrBlock, peerId string) error {
+	return errors.Wrapf(cloudprovider.ErrNotImplemented, "CreateRouteToVpcPeeringConnection")
+}
+
+func (self *SVpc) DeleteVpcPeeringConnectionRoute(vpcPeeringConnectionId string) error {
+	return errors.Wrapf(cloudprovider.ErrNotImplemented, "DeleteVpcPeeringConnectionRoute")
+}
+
+func (self *SVpc) ProposeJoinICloudInterVpcNetwork(opts *cloudprovider.SVpcJointInterVpcNetworkOption) error {
+	return errors.Wrapf(cloudprovider.ErrNotImplemented, "ProposeJoinICloudInterVpcNetwork")
 }

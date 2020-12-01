@@ -246,16 +246,43 @@ func (manager *SSecurityGroupCacheManager) FetchCustomizeColumns(
 	manRows := manager.SManagedResourceBaseManager.FetchCustomizeColumns(ctx, userCred, query, objs, fields, isList)
 	regRows := manager.SCloudregionResourceBaseManager.FetchCustomizeColumns(ctx, userCred, query, objs, fields, isList)
 
+	cacheIds := make([]string, len(objs))
+	secIds := make([]string, len(objs))
+	vpcIds := make([]string, len(objs))
 	for i := range rows {
 		rows[i] = api.SecurityGroupCacheDetails{
 			StatusStandaloneResourceDetails: stdRows[i],
 			ManagedResourceInfo:             manRows[i],
 			CloudregionResourceInfo:         regRows[i],
 		}
-		vpc, _ := objs[i].(*SSecurityGroupCache).GetVpc()
-		if vpc != nil {
-			rows[i].Vpc = vpc.Name
+		cache := objs[i].(*SSecurityGroupCache)
+		cacheIds[i] = cache.Id
+		vpcIds[i] = cache.VpcId
+		secIds[i] = cache.SecgroupId
+	}
+	vpcMaps, _ := db.FetchIdNameMap2(VpcManager, vpcIds)
+	for i := range rows {
+		rows[i].Vpc = vpcMaps[vpcIds[i]]
+	}
+
+	secgroups := make(map[string]SSecurityGroup)
+	err := db.FetchStandaloneObjectsByIds(SecurityGroupManager, secIds, &secgroups)
+	if err != nil {
+		log.Errorf("FetchStandaloneObjectsByIds fail: %v", err)
+		return rows
+	}
+
+	virObjs := make([]interface{}, len(objs))
+	for i := range rows {
+		if secgroup, ok := secgroups[secIds[i]]; ok {
+			virObjs[i] = &secgroup
+			rows[i].ProjectId = secgroup.ProjectId
 		}
+	}
+
+	projRows := SecurityGroupManager.SProjectizedResourceBaseManager.FetchCustomizeColumns(ctx, userCred, query, virObjs, fields, isList)
+	for i := range rows {
+		rows[i].ProjectizedResourceInfo = projRows[i]
 	}
 
 	return rows
@@ -466,8 +493,8 @@ func (manager *SSecurityGroupCacheManager) SyncSecurityGroupCaches(ctx context.C
 			_, err = secgroup.PerformPublic(ctx, userCred, nil,
 				apis.PerformPublicProjectInput{
 					PerformPublicDomainInput: apis.PerformPublicDomainInput{
-						Scope:         "domain",
-						SharedDomains: []string{provider.DomainId},
+						Scope:           "domain",
+						SharedDomainIds: []string{provider.DomainId},
 					},
 				})
 			if err != nil {
@@ -521,7 +548,7 @@ func (self *SSecurityGroupCache) StartSecurityGroupCacheDeleteTask(ctx context.C
 }
 
 func (manager *SSecurityGroupCacheManager) InitializeData() error {
-	providerIds := CloudproviderManager.Query("id").In("provider", []string{api.CLOUD_PROVIDER_HUAWEI, api.CLOUD_PROVIDER_CTYUN}).SubQuery()
+	providerIds := CloudproviderManager.Query("id").In("provider", []string{api.CLOUD_PROVIDER_HUAWEI, api.CLOUD_PROVIDER_CTYUN, api.CLOUD_PROVIDER_QCLOUD}).SubQuery()
 
 	deprecatedSecgroups := []SSecurityGroupCache{}
 	q := manager.Query().In("manager_id", providerIds).NotEquals("vpc_id", api.NORMAL_VPC_ID)

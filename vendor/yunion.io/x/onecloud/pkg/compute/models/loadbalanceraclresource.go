@@ -39,15 +39,15 @@ type SLoadbalancerAclResourceBase struct {
 type SLoadbalancerAclResourceBaseManager struct{}
 
 func ValidateLoadbalancerAclResourceInput(userCred mcclient.TokenCredential, input api.LoadbalancerAclResourceInput) (*SLoadbalancerAcl, api.LoadbalancerAclResourceInput, error) {
-	lbaclObj, err := LoadbalancerAclManager.FetchByIdOrName(userCred, input.Acl)
+	lbaclObj, err := LoadbalancerAclManager.FetchByIdOrName(userCred, input.AclId)
 	if err != nil {
 		if errors.Cause(err) == sql.ErrNoRows {
-			return nil, input, errors.Wrapf(httperrors.ErrResourceNotFound, "%s %s", LoadbalancerAclManager.Keyword(), input.Acl)
+			return nil, input, errors.Wrapf(httperrors.ErrResourceNotFound, "%s %s", LoadbalancerAclManager.Keyword(), input.AclId)
 		} else {
 			return nil, input, errors.Wrap(err, "LoadbalancerAclManager.FetchByIdOrName")
 		}
 	}
-	input.Acl = lbaclObj.GetId()
+	input.AclId = lbaclObj.GetId()
 	return lbaclObj.(*SLoadbalancerAcl), input, nil
 }
 
@@ -109,7 +109,7 @@ func (manager *SLoadbalancerAclResourceBaseManager) ListItemFilter(
 	userCred mcclient.TokenCredential,
 	query api.LoadbalancerAclFilterListInput,
 ) (*sqlchemy.SQuery, error) {
-	if len(query.Acl) > 0 {
+	if len(query.AclId) > 0 {
 		aclObj, _, err := ValidateLoadbalancerAclResourceInput(userCred, query.LoadbalancerAclResourceInput)
 		if err != nil {
 			return nil, errors.Wrap(err, "ValidateLoadbalancerAclResourceInput")
@@ -125,10 +125,14 @@ func (manager *SLoadbalancerAclResourceBaseManager) OrderByExtraFields(
 	userCred mcclient.TokenCredential,
 	query api.LoadbalancerAclFilterListInput,
 ) (*sqlchemy.SQuery, error) {
-	q, orders, fields := manager.GetOrderBySubQuery(q, userCred, query)
-	if len(orders) > 0 {
-		q = db.OrderByFields(q, orders, fields)
+	if !db.NeedOrderQuery(manager.GetOrderByFields(query)) {
+		return q, nil
 	}
+	orderQ := LoadbalancerAclManager.Query("id")
+	orderSubQ := orderQ.SubQuery()
+	orderQ, orders, fields := manager.GetOrderBySubQuery(orderQ, orderSubQ, orderQ.Field("id"), userCred, query, nil, nil)
+	q = q.LeftJoin(orderSubQ, sqlchemy.Equals(q.Field("acl_id"), orderSubQ.Field("id")))
+	q = db.OrderByFields(q, orders, fields)
 	return q, nil
 }
 
@@ -145,18 +149,21 @@ func (manager *SLoadbalancerAclResourceBaseManager) QueryDistinctExtraField(q *s
 
 func (manager *SLoadbalancerAclResourceBaseManager) GetOrderBySubQuery(
 	q *sqlchemy.SQuery,
+	subq *sqlchemy.SSubQuery,
+	joinField sqlchemy.IQueryField,
 	userCred mcclient.TokenCredential,
 	query api.LoadbalancerAclFilterListInput,
+	orders []string,
+	fields []sqlchemy.IQueryField,
 ) (*sqlchemy.SQuery, []string, []sqlchemy.IQueryField) {
-	aclQ := LoadbalancerAclManager.Query("id", "name")
-	var orders []string
-	var fields []sqlchemy.IQueryField
-	if db.NeedOrderQuery(manager.GetOrderByFields(query)) {
-		subq := aclQ.SubQuery()
-		q = q.LeftJoin(subq, sqlchemy.Equals(q.Field("acl_id"), subq.Field("id")))
-		orders = append(orders, query.OrderByAcl)
-		fields = append(fields, subq.Field("name"))
+	if !db.NeedOrderQuery(manager.GetOrderByFields(query)) {
+		return q, orders, fields
 	}
+	aclQ := LoadbalancerAclManager.Query().SubQuery()
+	q = q.LeftJoin(aclQ, sqlchemy.Equals(joinField, aclQ.Field("id")))
+	q = q.AppendField(aclQ.Field("name").Label("acl"))
+	orders = append(orders, query.OrderByAcl)
+	fields = append(fields, subq.Field("acl"))
 	return q, orders, fields
 }
 

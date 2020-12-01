@@ -117,7 +117,7 @@ func (manager *SSecurityGroupManager) ListItemFilter(
 		}
 		q = q.In("id", secgroupIds)
 	}
-	serverStr := input.Server
+	serverStr := input.ServerId
 	if len(serverStr) > 0 {
 		guest, _, err := ValidateGuestResourceInput(userCred, input.ServerResourceInput)
 		if err != nil {
@@ -145,6 +145,21 @@ func (manager *SSecurityGroupManager) ListItemFilter(
 		q = q.Filter(sqlchemy.OR(filters...))
 	}
 
+	if len(input.DBInstanceId) > 0 {
+		_, err = validators.ValidateModel(userCred, DBInstanceManager, &input.DBInstanceId)
+		if err != nil {
+			return nil, err
+		}
+		sq := DBInstanceSecgroupManager.Query("secgroup_id").Equals("dbinstance_id", input.DBInstanceId)
+		q = q.In("id", sq.SubQuery())
+	}
+
+	// elastic cache
+	q, err = manager.ListItemElasticcacheFilter(ctx, q, userCred, input)
+	if err != nil {
+		return nil, errors.Wrap(err, "ListItemElasticcacheFilter")
+	}
+
 	if len(input.Ip) > 0 || len(input.Ports) > 0 {
 		sq := SecurityGroupRuleManager.Query("secgroup_id")
 		if len(input.Ip) > 0 {
@@ -157,6 +172,27 @@ func (manager *SSecurityGroupManager) ListItemFilter(
 			sq = sq.Equals("direction", input.Direction)
 		}
 		q = q.In("id", sq.SubQuery())
+	}
+
+	return q, nil
+}
+
+func (manager *SSecurityGroupManager) ListItemElasticcacheFilter(
+	ctx context.Context,
+	q *sqlchemy.SQuery,
+	userCred mcclient.TokenCredential,
+	input api.SecgroupListInput,
+) (*sqlchemy.SQuery, error) {
+	cacheId := input.ElasticcacheId
+	if len(cacheId) > 0 {
+		cache, _, err := ValidateElasticcacheResourceInput(userCred, input.ELasticcacheResourceInput)
+		if err != nil {
+			return nil, errors.Wrap(err, "ValidateElasticcacheResourceInput")
+		}
+		cacheId := cache.GetId()
+		filters := []sqlchemy.ICondition{}
+		filters = append(filters, sqlchemy.In(q.Field("id"), ElasticcachesecgroupManager.Query("secgroup_id").Equals("elasticcache_id", cacheId).SubQuery()))
+		q = q.Filter(sqlchemy.OR(filters...))
 	}
 
 	return q, nil
@@ -439,11 +475,10 @@ func (manager *SSecurityGroupManager) ValidateCreateData(
 ) (api.SSecgroupCreateInput, error) {
 	var err error
 
-	// TODO: check set pending quota
 	input.Status = api.SECGROUP_STATUS_READY
 
-	for i, rule := range input.Rules {
-		err = rule.Check()
+	for i := range input.Rules {
+		err = input.Rules[i].Check()
 		if err != nil {
 			return input, httperrors.NewInputParameterError("rule %d is invalid: %s", i, err)
 		}
@@ -454,11 +489,26 @@ func (manager *SSecurityGroupManager) ValidateCreateData(
 		return input, err
 	}
 
+	pendingUsage := SProjectQuota{Secgroup: 1}
+	quotaKey := quotas.OwnerIdProjectQuotaKeys(rbacutils.ScopeProject, ownerId)
+	pendingUsage.SetKeys(quotaKey)
+	err = quotas.CheckSetPendingQuota(ctx, userCred, &pendingUsage)
+	if err != nil {
+		return input, httperrors.NewOutOfQuotaError("%s", err)
+	}
+
 	return input, nil
 }
 
 func (self *SSecurityGroup) PostCreate(ctx context.Context, userCred mcclient.TokenCredential, ownerId mcclient.IIdentityProvider, query jsonutils.JSONObject, data jsonutils.JSONObject) {
 	self.SSharableVirtualResourceBase.PostCreate(ctx, userCred, ownerId, query, data)
+
+	quota := &SProjectQuota{Secgroup: 1}
+	quota.SetKeys(self.GetQuotaKeys())
+	err := quotas.CancelPendingUsage(ctx, userCred, quota, quota, true)
+	if err != nil {
+		log.Errorf("Secgroup CancelPendingUsage fail %s", err)
+	}
 
 	input := &api.SSecgroupCreateInput{}
 	data.Unmarshal(input)
@@ -633,13 +683,13 @@ func (self *SSecurityGroup) PerformAddRule(ctx context.Context, userCred mcclien
 		PortEnd:   -1,
 	}
 	if err := rule.ParsePorts(secgrouprule.Ports); err != nil {
-		return nil, httperrors.NewInputParameterError(err.Error())
+		return nil, httperrors.NewInputParameterError("%v", err)
 	}
 	if err := rule.ValidateRule(); err != nil {
-		return nil, httperrors.NewInputParameterError(err.Error())
+		return nil, httperrors.NewInputParameterError("%v", err)
 	}
 	if err := SecurityGroupRuleManager.TableSpec().Insert(ctx, secgrouprule); err != nil {
-		return nil, httperrors.NewInputParameterError(err.Error())
+		return nil, httperrors.NewInputParameterError("%v", err)
 	}
 	self.DoSync(ctx, userCred)
 	return nil, nil
@@ -649,32 +699,40 @@ func (self *SSecurityGroup) AllowPerformClone(ctx context.Context, userCred mccl
 	return true
 }
 
-func (self *SSecurityGroup) PerformClone(ctx context.Context, userCred mcclient.TokenCredential, query jsonutils.JSONObject, data jsonutils.JSONObject) (jsonutils.JSONObject, error) {
-	name, _ := data.GetString("name")
-	if len(name) == 0 {
-		return nil, httperrors.NewMissingParameterError("name")
+func (self *SSecurityGroup) PerformClone(ctx context.Context, userCred mcclient.TokenCredential, query jsonutils.JSONObject, input api.SecurityGroupCloneInput) (api.SecurityGroupCloneInput, error) {
+	if len(input.Name) == 0 {
+		return input, httperrors.NewMissingParameterError("name")
 	}
-	_, err := SecurityGroupManager.FetchByName(userCred, name)
+	ownerId := &db.SOwnerId{
+		DomainId:  userCred.GetProjectDomainId(),
+		ProjectId: userCred.GetProjectId(),
+	}
+	var err error
+	input.Name, err = db.GenerateName(SecurityGroupManager, ownerId, input.Name)
 	if err != nil {
-		if err != sql.ErrNoRows {
-			return nil, httperrors.NewInternalServerError("FetchByName fail %s", err)
-		}
-	} else {
-		return nil, httperrors.NewDuplicateNameError("name", name)
+		return input, err
+	}
+
+	pendingUsage := SProjectQuota{Secgroup: 1}
+	quotaKey := quotas.OwnerIdProjectQuotaKeys(rbacutils.ScopeProject, ownerId)
+	pendingUsage.SetKeys(quotaKey)
+	err = quotas.CheckSetPendingQuota(ctx, userCred, &pendingUsage)
+	if err != nil {
+		return input, httperrors.NewOutOfQuotaError("%s", err)
 	}
 
 	secgroup := &SSecurityGroup{}
 	secgroup.SetModelManager(SecurityGroupManager, secgroup)
 
-	secgroup.Name = name
-	secgroup.Description, _ = data.GetString("description")
+	secgroup.Name = input.Name
+	secgroup.Description = input.Description
+	secgroup.Status = api.SECGROUP_STATUS_READY
 	secgroup.ProjectId = userCred.GetProjectId()
 	secgroup.DomainId = userCred.GetProjectDomainId()
 
 	err = SecurityGroupManager.TableSpec().Insert(ctx, secgroup)
 	if err != nil {
-		return nil, err
-		//db.OpsLog.LogCloneEvent(self, secgroup, userCred, nil)
+		return input, httperrors.NewGeneralError(errors.Wrapf(err, "Insert"))
 	}
 
 	secgrouprules := self.getSecurityRules("")
@@ -691,30 +749,39 @@ func (self *SSecurityGroup) PerformClone(ctx context.Context, userCred mcclient.
 		secgrouprule.Description = rule.Description
 		secgrouprule.SecgroupId = secgroup.Id
 		if err := SecurityGroupRuleManager.TableSpec().Insert(ctx, secgrouprule); err != nil {
-			return nil, err
+			return input, err
 		}
 	}
 
+	quota := &SProjectQuota{Secgroup: 1}
+	quota.SetKeys(secgroup.GetQuotaKeys())
+	err = quotas.CancelPendingUsage(ctx, userCred, quota, quota, true)
+	if err != nil {
+		log.Errorf("Secgroup CancelPendingUsage fail %s", err)
+	}
+
 	logclient.AddActionLogWithContext(ctx, secgroup, logclient.ACT_CREATE, secgroup.GetShortDesc(ctx), userCred, true)
-	return nil, nil
+	return input, nil
 }
 
 func (self *SSecurityGroup) AllowPerformMerge(ctx context.Context, userCred mcclient.TokenCredential, query jsonutils.JSONObject, data jsonutils.JSONObject) bool {
 	return self.IsOwner(userCred) || db.IsAdminAllowPerform(userCred, self, "merge")
 }
 
-func (self *SSecurityGroup) PerformMerge(ctx context.Context, userCred mcclient.TokenCredential, query jsonutils.JSONObject, data jsonutils.JSONObject) (jsonutils.JSONObject, error) {
-	secgroupIds := jsonutils.GetQueryStringArray(data, "secgroups")
-	if len(secgroupIds) == 0 {
-		return nil, httperrors.NewMissingParameterError("secgroups")
+func (self *SSecurityGroup) PerformMerge(ctx context.Context, userCred mcclient.TokenCredential, query jsonutils.JSONObject, input api.SecgroupMergeInput) (jsonutils.JSONObject, error) {
+	if len(input.SecgroupIds) == 0 {
+		return nil, httperrors.NewMissingParameterError("secgroup_ids")
 	}
 	inAllowList := self.GetInAllowList()
 	outAllowList := self.GetOutAllowList()
 	secgroups := []*SSecurityGroup{}
-	for _, secgroupId := range secgroupIds {
+	for _, secgroupId := range input.SecgroupIds {
 		_secgroup, err := SecurityGroupManager.FetchByIdOrName(userCred, secgroupId)
 		if err != nil {
-			return nil, httperrors.NewResourceNotFoundError("failed to find secgroup %s error: %v", secgroupId, err)
+			if errors.Cause(err) == sql.ErrNoRows {
+				return nil, httperrors.NewResourceNotFoundError2("secgroup", secgroupId)
+			}
+			return nil, httperrors.NewGeneralError(err)
 		}
 		secgroup := _secgroup.(*SSecurityGroup)
 		secgroup.SetModelManager(SecurityGroupManager, secgroup)
@@ -731,12 +798,14 @@ func (self *SSecurityGroup) PerformMerge(ctx context.Context, userCred mcclient.
 
 	for i := 0; i < len(secgroups); i++ {
 		secgroup := secgroups[i]
-		if err := self.migrateSecurityGroupCache(secgroup); err != nil {
-			return nil, err
+		err := self.mergeSecurityGroupCache(secgroup)
+		if err != nil {
+			return nil, httperrors.NewGeneralError(errors.Wrapf(err, "mergeSecurityGroupCache"))
 		}
 
-		if err := self.migrateGuestSecurityGroup(secgroup); err != nil {
-			return nil, err
+		err = self.mergeGuestSecurityGroup(ctx, userCred, secgroup)
+		if err != nil {
+			return nil, httperrors.NewGeneralError(errors.Wrapf(err, "mergeGuestSecurityGroup"))
 		}
 		secgroup.RealDelete(ctx, userCred)
 	}
@@ -767,12 +836,10 @@ func (self *SSecurityGroup) getSecurityGroupRuleSet() secrules.SecurityGroupRule
 	return srs
 }
 
-func (self *SSecurityGroup) migrateSecurityGroupCache(secgroup *SSecurityGroup) error {
-	caches := []SSecurityGroupCache{}
-	q := SecurityGroupCacheManager.Query().Equals("secgroup_id", secgroup.Id)
-	err := db.FetchModelObjects(SecurityGroupCacheManager, q, &caches)
+func (self *SSecurityGroup) mergeSecurityGroupCache(secgroup *SSecurityGroup) error {
+	caches, err := secgroup.GetSecurityGroupCaches()
 	if err != nil {
-		return err
+		return errors.Wrapf(err, "GetSecurityGroupCaches")
 	}
 	for i := 0; i < len(caches); i++ {
 		cache := caches[i]
@@ -781,46 +848,37 @@ func (self *SSecurityGroup) migrateSecurityGroupCache(secgroup *SSecurityGroup) 
 			return nil
 		})
 		if err != nil {
-			return err
+			return errors.Wrap(err, "db.Update")
 		}
 	}
 	return nil
 }
 
-func (self *SSecurityGroup) migrateGuestSecurityGroup(secgroup *SSecurityGroup) error {
-	guests := secgroup.GetGuests()
+func (self *SSecurityGroup) mergeGuestSecurityGroup(ctx context.Context, userCred mcclient.TokenCredential, fade *SSecurityGroup) error {
+	guests := fade.GetGuests()
 	for i := 0; i < len(guests); i++ {
-		guest := guests[i]
-		_, err := db.Update(&guest, func() error {
-			if guest.SecgrpId == secgroup.Id {
-				guest.SecgrpId = self.Id
-			}
-			if guest.AdminSecgrpId == secgroup.Id {
-				guest.AdminSecgrpId = self.Id
-			}
-			return nil
-		})
+		secgroups, err := guests[i].GetSecgroups()
 		if err != nil {
-			return err
+			return errors.Wrapf(err, "GetSecgroups for guest %s(%s)", guests[i].Name, guests[i].Id)
+		}
+		secgroupIds := []string{}
+		for i := range secgroups {
+			if secgroups[i].Id == fade.Id {
+				continue
+			}
+			if utils.IsInStringArray(secgroups[i].Id, secgroupIds) {
+				continue
+			}
+			secgroupIds = append(secgroupIds, secgroups[i].Id)
+		}
+		if !utils.IsInStringArray(self.Id, secgroupIds) {
+			secgroupIds = append(secgroupIds, self.Id)
+		}
+		err = guests[i].saveSecgroups(ctx, userCred, secgroupIds)
+		if err != nil {
+			return errors.Wrap(err, "saveSecgroups")
 		}
 	}
-
-	guestsecgroups, err := GuestsecgroupManager.GetGuestSecgroups(nil, secgroup)
-	if err != nil {
-		return err
-	}
-
-	for i := 0; i < len(guestsecgroups); i++ {
-		guestsecgroup := guestsecgroups[i]
-		_, err := db.Update(&guestsecgroup, func() error {
-			guestsecgroup.SecgroupId = self.Id
-			return nil
-		})
-		if err != nil {
-			return err
-		}
-	}
-
 	return nil
 }
 
@@ -1093,14 +1151,15 @@ func (self *SSecurityGroup) ValidateDeleteCondition(ctx context.Context) error {
 	return self.SSharableVirtualResourceBase.ValidateDeleteCondition(ctx)
 }
 
-func (self *SSecurityGroup) GetSecurityGroupCaches() []SSecurityGroupCache {
+func (self *SSecurityGroup) GetSecurityGroupCaches() ([]SSecurityGroupCache, error) {
 	caches := []SSecurityGroupCache{}
 	q := SecurityGroupCacheManager.Query()
 	q = q.Filter(sqlchemy.Equals(q.Field("secgroup_id"), self.Id))
-	if err := db.FetchModelObjects(SecurityGroupCacheManager, q, &caches); err != nil {
-		log.Errorf("get secgroupcache for secgroup %s error: %v", self.Name, err)
+	err := db.FetchModelObjects(SecurityGroupCacheManager, q, &caches)
+	if err != nil {
+		return nil, errors.Wrapf(err, "db.FetchModelObjects")
 	}
-	return caches
+	return caches, nil
 }
 
 func (self *SSecurityGroup) CustomizeDelete(ctx context.Context, userCred mcclient.TokenCredential, query jsonutils.JSONObject, data jsonutils.JSONObject) error {
@@ -1156,4 +1215,35 @@ func (sg *SSecurityGroup) GetUsages() []db.IUsage {
 	return []db.IUsage{
 		&usage,
 	}
+}
+
+func (self *SSecurityGroup) AllowPerformImportRules(ctx context.Context, userCred mcclient.TokenCredential, query jsonutils.JSONObject, data jsonutils.JSONObject) bool {
+	return self.IsOwner(userCred) || db.IsAdminAllowPerform(userCred, self, "import-rules")
+}
+
+func (self *SSecurityGroup) PerformImportRules(ctx context.Context, userCred mcclient.TokenCredential, query jsonutils.JSONObject, input api.SecgroupImportRulesInput) (jsonutils.JSONObject, error) {
+	for i := range input.Rules {
+		err := input.Rules[i].Check()
+		if err != nil {
+			return nil, httperrors.NewInputParameterError("rule %d is invalid: %s", i, err)
+		}
+	}
+	for _, r := range input.Rules {
+		rule := &SSecurityGroupRule{
+			Priority:    int64(r.Priority),
+			Protocol:    r.Protocol,
+			Ports:       r.Ports,
+			Direction:   r.Direction,
+			CIDR:        r.CIDR,
+			Action:      r.Action,
+			Description: r.Description,
+		}
+		rule.SecgroupId = self.Id
+
+		err := SecurityGroupRuleManager.TableSpec().Insert(ctx, rule)
+		if err != nil {
+			return nil, httperrors.NewGeneralError(errors.Wrapf(err, "Insert rule"))
+		}
+	}
+	return nil, nil
 }

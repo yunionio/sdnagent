@@ -17,12 +17,15 @@ package models
 import (
 	"context"
 	"fmt"
+	"sort"
+	"time"
 
 	"yunion.io/x/jsonutils"
 	"yunion.io/x/log"
 	"yunion.io/x/pkg/errors"
 	"yunion.io/x/pkg/tristate"
 	"yunion.io/x/pkg/util/compare"
+	"yunion.io/x/pkg/util/sets"
 	"yunion.io/x/sqlchemy"
 
 	api "yunion.io/x/onecloud/pkg/apis/compute"
@@ -173,7 +176,7 @@ func (manager *SSnapshotPolicyManager) ValidateCreateData(ctx context.Context, u
 	input.ProjectId = ownerId.GetProjectId()
 	input.DomainId = ownerId.GetProjectDomainId()
 
-	err = db.NewNameValidator(manager, ownerId, input.Name, "")
+	err = db.NewNameValidator(manager, ownerId, input.Name, nil)
 	if err != nil {
 		return nil, err
 	}
@@ -192,7 +195,7 @@ func (manager *SSnapshotPolicyManager) ValidateCreateData(ctx context.Context, u
 	}
 	input.RepeatWeekdays, err = validate.DaysCheck(input.RepeatWeekdays, 1, 7)
 	if err != nil {
-		return nil, httperrors.NewInputParameterError(err.Error())
+		return nil, httperrors.NewInputParameterError("%v", err)
 	}
 
 	if len(input.TimePoints) == 0 {
@@ -203,7 +206,7 @@ func (manager *SSnapshotPolicyManager) ValidateCreateData(ctx context.Context, u
 	}
 	input.TimePoints, err = validate.DaysCheck(input.TimePoints, 0, 23)
 	if err != nil {
-		return nil, httperrors.NewInputParameterError(err.Error())
+		return nil, httperrors.NewInputParameterError("%v", err)
 	}
 
 	internalInput := manager.sSnapshotPolicyCreateInputToInternal(input)
@@ -215,7 +218,10 @@ func (manager *SSnapshotPolicyManager) OnCreateComplete(ctx context.Context, ite
 	userCred mcclient.TokenCredential, ownerId mcclient.IIdentityProvider, query jsonutils.JSONObject, data jsonutils.JSONObject) {
 	for i := range items {
 		sp := items[i].(*SSnapshotPolicy)
-		sp.SetStatus(userCred, api.SNAPSHOT_POLICY_READY, "create complete")
+		db.Update(sp, func() error {
+			sp.Status = api.SNAPSHOT_POLICY_READY
+			return nil
+		})
 	}
 }
 
@@ -275,7 +281,7 @@ func (sp *SSnapshotPolicy) UpdateParamCheck(input *api.SSnapshotPolicyCreateInpu
 	if input.RepeatWeekdays != nil && len(input.RepeatWeekdays) != 0 {
 		input.RepeatWeekdays, err = validate.DaysCheck(input.RepeatWeekdays, 1, 7)
 		if err != nil {
-			return httperrors.NewInputParameterError(err.Error())
+			return httperrors.NewInputParameterError("%v", err)
 		}
 		if sp.RepeatWeekdays != SnapshotPolicyManager.RepeatWeekdaysParseIntArray(input.RepeatWeekdays) {
 			updateNum++
@@ -285,7 +291,7 @@ func (sp *SSnapshotPolicy) UpdateParamCheck(input *api.SSnapshotPolicyCreateInpu
 	if input.TimePoints != nil && len(input.TimePoints) != 0 {
 		input.TimePoints, err = validate.DaysCheck(input.TimePoints, 0, 23)
 		if err != nil {
-			return httperrors.NewInputParameterError(err.Error())
+			return httperrors.NewInputParameterError("%v", err)
 		}
 		if sp.TimePoints != SnapshotPolicyManager.TimePointsParseIntArray(input.TimePoints) {
 			updateNum++
@@ -365,8 +371,8 @@ func (sp *SSnapshotPolicy) GetExtraDetails(
 }
 
 func (sp *SSnapshotPolicy) getMoreDetails(out api.SnapshotPolicyDetails) api.SnapshotPolicyDetails {
-	out.RepeatWeekdays = SnapshotPolicyManager.RepeatWeekdaysToIntArray(sp.RepeatWeekdays)
-	out.TimePoints = SnapshotPolicyManager.TimePointsToIntArray(sp.TimePoints)
+	out.RepeatWeekdaysDisplay = SnapshotPolicyManager.RepeatWeekdaysToIntArray(sp.RepeatWeekdays)
+	out.TimePointsDisplay = SnapshotPolicyManager.TimePointsToIntArray(sp.TimePoints)
 	out.BindingDiskCount, _ = SnapshotPolicyDiskManager.FetchDiskCountBySPID(sp.Id)
 	return out
 }
@@ -720,6 +726,67 @@ func (self *SSnapshotPolicyManager) TimePointsParseIntArray(nums []int) uint32 {
 
 func (self *SSnapshotPolicyManager) TimePointsToIntArray(n uint32) []int {
 	return bitmap.Uint2IntArray(n)
+}
+
+func computeNextSyncTime(weekDays, timePoints []int, base time.Time) time.Time {
+	if base.IsZero() {
+		base = time.Now()
+	}
+
+	// Add 1 hour to base to prevent the calculation result from being equal to the input base
+	base = base.Add(time.Hour)
+	base = base.Truncate(time.Hour)
+
+	baseWeekday := int(base.Weekday())
+	if baseWeekday == 0 {
+		baseWeekday = 7
+	}
+	weekDays = append(weekDays, weekDays[0]+7)
+	indexw := sort.SearchInts(weekDays, baseWeekday)
+	addDay := weekDays[indexw] - baseWeekday
+	nextTime := base.AddDate(0, 0, addDay)
+
+	// find timePoint closest to the base
+	var newHour int
+	if addDay > 0 {
+		newHour = timePoints[0]
+	} else {
+		baseHour := base.Hour()
+		index := sort.SearchInts(timePoints, baseHour)
+		if index == len(timePoints) {
+			// indexw + 1 must less than len(weekDays)
+			addDay = weekDays[indexw+1] - baseWeekday
+			nextTime = base.AddDate(0, 0, addDay)
+		}
+		index = index % len(timePoints)
+		if timePoints[index] == baseHour {
+			index = (index + 1) % len(timePoints)
+			newHour = timePoints[index]
+		} else {
+			newHour = timePoints[index]
+		}
+	}
+	nextTime = time.Date(nextTime.Year(), nextTime.Month(), nextTime.Day(), newHour, 0, 0, 0, base.Location())
+
+	return nextTime
+}
+
+func (sp *SSnapshotPolicy) ComputeNextSyncTime(base time.Time) time.Time {
+	weekDays := SnapshotPolicyManager.RepeatWeekdaysToIntArray(sp.RepeatWeekdays)
+	timePoints := SnapshotPolicyManager.TimePointsToIntArray(sp.TimePoints)
+	if sp.RetentionDays <= 0 {
+		return computeNextSyncTime(weekDays, timePoints, base)
+	}
+	// A snapshotpolicy takes effect every Monday with keeping snapshot 3 days. So, the snapshots should be synchronized every Monday (snapshots) and Thursdays (release snapshots).
+	set := sets.NewInt(weekDays...)
+	for _, day := range weekDays {
+		newDay := (day + sp.RetentionDays) % 7
+		if newDay == 0 {
+			newDay = 7
+		}
+		set.Insert(newDay)
+	}
+	return computeNextSyncTime(set.List(), timePoints, base)
 }
 
 func (sp *SSnapshotPolicy) GenerateCreateSpParams() *cloudprovider.SnapshotPolicyInput {

@@ -350,7 +350,7 @@ func Query2List(manager IModelManager, ctx context.Context, userCred mcclient.To
 	} else {
 		showDetails = true
 	}
-	items := make([]interface{}, 0)
+	var items []interface{}
 	extraResults := make([]*jsonutils.JSONDict, 0)
 	rows, err := q.Rows()
 	if err != nil && err != sql.ErrNoRows {
@@ -405,7 +405,7 @@ func Query2List(manager IModelManager, ctx context.Context, userCred mcclient.To
 
 		items = append(items, item)
 	}
-	results := make([]jsonutils.JSONObject, len(items))
+	results := make([]*jsonutils.JSONDict, len(items))
 	if showDetails || len(exportKeys) > 0 {
 		var sortedListFields stringutils2.SSortedStrings
 		if len(exportKeys) > 0 {
@@ -445,7 +445,18 @@ func Query2List(manager IModelManager, ctx context.Context, userCred mcclient.To
 			results[i] = jsonDict
 		}
 	}
-	return results, nil
+	for i := range items {
+		i18nDict := items[i].(IModel).GetI18N(ctx)
+		if i18nDict != nil {
+			jsonDict := results[i]
+			jsonDict.Set("_i18n", i18nDict)
+		}
+	}
+	r := make([]jsonutils.JSONObject, len(items))
+	for i := range results {
+		r[i] = results[i]
+	}
+	return r, nil
 }
 
 func fetchContextObjectsIds(manager IModelManager, ctx context.Context, userCred mcclient.TokenCredential, ctxIds []dispatcher.SResourceContext, queryDict *jsonutils.JSONDict) (*jsonutils.JSONDict, error) {
@@ -778,7 +789,7 @@ func getModelExtraDetails(item IModel, ctx context.Context, showReason bool) api
 	if err != nil {
 		out.CanDelete = false
 		if showReason {
-			out.DeleteFailReason = err.Error()
+			out.DeleteFailReason = httperrors.NewErrorFromGeneralError(ctx, err)
 		}
 	}
 	err = item.ValidateUpdateCondition(ctx)
@@ -816,24 +827,8 @@ func getModelItemDetails(manager IModelManager, item IModel, ctx context.Context
 }
 
 func getItemDetails(manager IModelManager, item IModel, ctx context.Context, userCred mcclient.TokenCredential, query jsonutils.JSONObject) (jsonutils.JSONObject, error) {
-	extraDict, err := GetExtraDetails(item, ctx, userCred, query, false)
-	if err != nil {
-		return nil, httperrors.NewGeneralError(err)
-	}
-	if extraDict == nil {
-		// override GetExtraDetails
-		return nil, nil
-	}
-
 	metaFields, excludeFields := GetDetailFields(manager, userCred)
 	fieldFilter := jsonutils.GetQueryStringArray(query, "field")
-	getFields := mergeFields(metaFields, fieldFilter, IsAllowGet(rbacutils.ScopeSystem, userCred, item))
-	excludes, _, _ := stringutils2.Split(stringutils2.NewSortedStrings(excludeFields), getFields)
-
-	//jsonDict := jsonutils.Marshal(item).(*jsonutils.JSONDict)
-	//jsonDict = jsonDict.CopyIncludes(getFields...)
-	// extraDict.Update(jsonDict)
-	// jsonDict = getModelExtraDetails(item, ctx, jsonDict)
 
 	var sortedListFields stringutils2.SSortedStrings
 	if len(fieldFilter) > 0 {
@@ -844,6 +839,8 @@ func getItemDetails(manager IModelManager, item IModel, ctx context.Context, use
 		return nil, errors.Wrap(err, "FetchCustomizeColumns")
 	}
 	if len(extraRows) == 1 {
+		getFields := mergeFields(metaFields, fieldFilter, IsAllowGet(rbacutils.ScopeSystem, userCred, item))
+		excludes, _, _ := stringutils2.Split(stringutils2.NewSortedStrings(excludeFields), getFields)
 		return extraRows[0].CopyExcludes(excludes...), nil
 	}
 	log.Errorf("FetchCustomizeColumns return incorrect number of objects %d", len(extraRows))
@@ -917,6 +914,12 @@ func (dispatcher *DBModelDispatcher) Get(ctx context.Context, idStr string, quer
 	if err != nil {
 		return nil, err
 	} else if data != nil {
+		if dataDict, ok := data.(*jsonutils.JSONDict); ok {
+			i18nDict := dispatcher.modelManager.GetI18N(ctx, idStr, data)
+			if i18nDict != nil {
+				dataDict.Set("_i18n", i18nDict)
+			}
+		}
 		return data, nil
 	}
 
@@ -1124,25 +1127,33 @@ func _doCreateItem(
 		log.Errorf("doCreateItem: fail to decode json data %s", data)
 		return nil, fmt.Errorf("fail to decode json data %s", data)
 	}
+
 	var err error
 
-	generateName, _ := dataDict.GetString("generate_name")
-	if len(generateName) > 0 {
-		dataDict.Remove("generate_name")
-		newName, err := GenerateName2(manager, ownerId, generateName, nil, baseIndex)
-		if err != nil {
-			return nil, err
-		}
-		dataDict.Add(jsonutils.NewString(newName), "name")
-	} /*else {
-		name, _ := data.GetString("name")
-		if len(name) > 0 {
-			err = NewNameValidator(manager, ownerId, name)
-			if err != nil {
-				return nil, err
+	var generateName string
+	if manager.HasName() {
+		if dataDict.Contains("generate_name") {
+			generateName, _ = dataDict.GetString("generate_name")
+			if len(generateName) > 0 {
+				if manager.EnableGenerateName() {
+					// if enable generateName, alway generate name
+					newName, err := GenerateName2(manager, ownerId, generateName, nil, baseIndex)
+					if err != nil {
+						return nil, errors.Wrap(err, "GenerateName2")
+					}
+					dataDict.Add(jsonutils.NewString(newName), "name")
+				} else {
+					// if no name but generate_name provided, use generate_name as name instead
+					oldName, _ := dataDict.GetString("name")
+					if len(oldName) == 0 {
+						dataDict.Add(jsonutils.NewString(generateName), "name")
+					}
+				}
 			}
+			// cleanup generate_name
+			dataDict.Remove("generate_name")
 		}
-	}*/
+	}
 
 	if batchCreate {
 		dataDict, err = manager.BatchCreateValidateCreateData(ctx, userCred, ownerId, query, dataDict)
@@ -1153,19 +1164,22 @@ func _doCreateItem(
 	if err != nil {
 		return nil, httperrors.NewGeneralError(err)
 	}
-	// run name validation after validate create data
-	parentId := manager.FetchParentId(ctx, dataDict)
-	name, _ := dataDict.GetString("name")
-	if len(name) > 0 {
-		err = NewNameValidator(manager, ownerId, name, parentId)
-		if err != nil {
-			return nil, err
+
+	if manager.HasName() {
+		// run name validation after validate create data
+		uniqValues := manager.FetchUniqValues(ctx, dataDict)
+		name, _ := dataDict.GetString("name")
+		if len(name) > 0 {
+			err = NewNameValidator(manager, ownerId, name, uniqValues)
+			if err != nil {
+				return nil, err
+			}
 		}
 	}
 
 	err = jsonutils.CheckRequiredFields(dataDict, createRequireFields(manager, userCred))
 	if err != nil {
-		return nil, httperrors.NewInputParameterError(err.Error())
+		return nil, httperrors.NewInputParameterError("%v", err)
 	}
 	model, err := NewModelObject(manager)
 	if err != nil {
@@ -1184,10 +1198,13 @@ func _doCreateItem(
 	if err != nil {
 		return nil, httperrors.NewGeneralError(err)
 	}
-	// save generateName
-	if len(generateName) > 0 {
-		if standaloneMode, ok := model.(IStandaloneModel); ok {
-			standaloneMode.SetMetadata(ctx, "generate_name", generateName, userCred)
+
+	if manager.HasName() {
+		// HACK: save generateName
+		if len(generateName) > 0 && manager.EnableGenerateName() {
+			if standaloneMode, ok := model.(IStandaloneModel); ok {
+				standaloneMode.SetMetadata(ctx, "generate_name", generateName, userCred)
+			}
 		}
 	}
 	// HACK: set data same as dataDict
@@ -1266,19 +1283,21 @@ func (dispatcher *DBModelDispatcher) Create(ctx context.Context, query jsonutils
 	return getItemDetails(dispatcher.modelManager, model, ctx, userCred, query)
 }
 
-func expandMultiCreateParams(data jsonutils.JSONObject, count int) ([]jsonutils.JSONObject, error) {
+func expandMultiCreateParams(manager IModelManager, data jsonutils.JSONObject, count int) ([]jsonutils.JSONObject, error) {
 	jsonDict, ok := data.(*jsonutils.JSONDict)
 	if !ok {
 		return nil, httperrors.NewInputParameterError("body is not a json?")
 	}
-	name, _ := jsonDict.GetString("generate_name")
-	if len(name) == 0 {
-		name, _ = jsonDict.GetString("name")
+	if manager.HasName() {
+		name, _ := jsonDict.GetString("generate_name")
 		if len(name) == 0 {
-			return nil, httperrors.NewInputParameterError("Missing name or generate_name")
+			name, _ = jsonDict.GetString("name")
+			if len(name) == 0 {
+				return nil, httperrors.NewInputParameterError("Missing name or generate_name")
+			}
+			jsonDict.Add(jsonutils.NewString(name), "generate_name")
+			jsonDict.RemoveIgnoreCase("name")
 		}
-		jsonDict.Add(jsonutils.NewString(name), "generate_name")
-		jsonDict.RemoveIgnoreCase("name")
 	}
 	ret := make([]jsonutils.JSONObject, count)
 	for i := 0; i < count; i += 1 {
@@ -1342,7 +1361,7 @@ func (dispatcher *DBModelDispatcher) BatchCreate(ctx context.Context, query json
 			return nil, errors.Wrap(err, "manager.BatchPreValidate")
 		}
 
-		multiData, err = expandMultiCreateParams(data, count)
+		multiData, err = expandMultiCreateParams(manager, data, count)
 		if err != nil {
 			return nil, errors.Wrap(err, "expandMultiCreateParams")
 		}
@@ -1398,7 +1417,7 @@ func (dispatcher *DBModelDispatcher) BatchCreate(ctx context.Context, query json
 			body, err := getItemDetails(manager, res.model, ctx, userCred, query)
 			if err != nil {
 				result.Status = 500
-				result.Data = jsonutils.NewString(err.Error())
+				result.Data = jsonutils.NewString(err.Error()) // no translation here
 			} else {
 				result.Status = 200
 				result.Data = body
@@ -1535,9 +1554,8 @@ func reflectDispatcherInternal(
 	if !funcValue.IsValid() || funcValue.IsNil() {
 		funcValue = modelValue.MethodByName(generalFuncName)
 		if !funcValue.IsValid() || funcValue.IsNil() {
-			msg := fmt.Sprintf("%s %s %s not found", dispatcher.Keyword(), operator, spec)
-			log.Errorf(msg)
-			return nil, httperrors.NewActionNotFoundError(msg)
+			return nil, httperrors.NewActionNotFoundError("%s %s %s not found",
+				dispatcher.Keyword(), operator, spec)
 		} else {
 			isGeneral = true
 			funcName = generalFuncName
@@ -1572,9 +1590,8 @@ func reflectDispatcherInternal(
 		allowFuncName := "Allow" + funcName
 		allowFuncValue := modelValue.MethodByName(allowFuncName)
 		if !allowFuncValue.IsValid() || allowFuncValue.IsNil() {
-			msg := fmt.Sprintf("%s allow %s %s not found", dispatcher.Keyword(), operator, spec)
-			log.Errorf(msg)
-			return nil, httperrors.NewActionNotFoundError(msg)
+			return nil, httperrors.NewActionNotFoundError("%s allow %s %s not found",
+				dispatcher.Keyword(), operator, spec)
 		}
 
 		outs, err := callFunc(allowFuncValue, allowFuncName, params...)
@@ -1741,7 +1758,7 @@ func deleteItem(manager IModelManager, model IModel, ctx context.Context, userCr
 	err = CustomizeDelete(model, ctx, userCred, query, data)
 	if err != nil {
 		log.Errorf("customize delete error: %s", err)
-		return nil, httperrors.NewNotAcceptableError(err.Error())
+		return nil, httperrors.NewNotAcceptableError("%v", err)
 	}
 
 	details, err := getItemDetails(manager, model, ctx, userCred, query)

@@ -21,6 +21,11 @@ const (
 
 	//metirc fields 之间的运算
 	CommonAlertFieldOpt_Division = "/"
+
+	DEFAULT_SEND_NOTIFY_CHANNEL = "users"
+
+	METRIC_QUERY_TYPE_NO_DATA     = "nodata_query"
+	METRIC_QUERY_NO_DATA_THESHOLD = "nodata"
 )
 
 var CommonAlertLevels = []string{"normal", "important", "fatal"}
@@ -39,9 +44,11 @@ type CommonAlertCreateInput struct {
 	AlertType string `json:"alert_type"`
 
 	//scope Resource
-	Scope     string `json:"scope"`
-	DomainId  string `json:"domain_id"`
-	ProjectId string `json:"project_id"`
+	Scope       string `json:"scope"`
+	DomainId    string `json:"domain_id"`
+	ProjectId   string `json:"project_id"`
+	GetPointStr bool   `json:"get_point_str"`
+	MetaName    string `json:"meta_name"`
 }
 
 type CommonMetricInputQuery struct {
@@ -60,7 +67,8 @@ type CommonAlertQuery struct {
 	// 报警阀值
 	Threshold float64 `json:"threshold"`
 	//field yunsuan
-	FieldOpt string `json:"field_opt"`
+	FieldOpt      string `json:"field_opt"`
+	ConditionType string `json:"condition_type"`
 }
 
 type CommonAlertListInput struct {
@@ -84,6 +92,10 @@ type CommonAlertUpdateInput struct {
 	Channel []string `json:"channel"`
 	// 通知接受者
 	Recipients []string `json:"recipients"`
+	// systemalert policy may need update through operator
+	ForceUpdate bool   `json:"force_update"`
+	GetPointStr bool   `json:"get_point_str"`
+	MetaName    string `json:"meta_name"`
 }
 
 type CommonAlertDetails struct {
@@ -100,14 +112,20 @@ type CommonAlertDetails struct {
 }
 
 type CommonAlertMetricDetails struct {
-	Comparator string  `json:"comparator"`
-	Threshold  float64 `json:"threshold"`
+	Comparator    string  `json:"comparator"`
+	Threshold     float64 `json:"threshold"`
+	ConditionType string  `json:"condition_type"`
+	ThresholdStr  string  `json:"threshold_str"`
 	// metric points'value的运算方式
-	Reduce      string `json:"reduce"`
-	DB          string `json:"db"`
-	Measurement string `json:"measurement"`
-	Field       string `json:"field"`
-	Groupby     string `json:"groupby"`
-
-	FieldOpt string `json:"field_opt"`
+	Reduce                 string           `json:"reduce"`
+	DB                     string           `json:"db"`
+	Measurement            string           `json:"measurement"`
+	MeasurementDisplayName string           `json:"measurement_display_name"`
+	ResType                string           `json:"res_type"`
+	Field                  string           `json:"field"`
+	Groupby                string           `json:"groupby"`
+	Filters                []MetricQueryTag `json:"filters"`
+	FieldDescription       MetricFieldDetail
+	FieldOpt               string `json:"field_opt"`
+	GetPointStr            bool   `json:"get_point_str"`
 }

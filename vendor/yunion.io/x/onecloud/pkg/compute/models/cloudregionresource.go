@@ -39,15 +39,15 @@ type SCloudregionResourceBase struct {
 type SCloudregionResourceBaseManager struct{}
 
 func ValidateCloudregionResourceInput(userCred mcclient.TokenCredential, input api.CloudregionResourceInput) (*SCloudregion, api.CloudregionResourceInput, error) {
-	regionObj, err := CloudregionManager.FetchByIdOrName(userCred, input.Cloudregion)
+	regionObj, err := CloudregionManager.FetchByIdOrName(userCred, input.CloudregionId)
 	if err != nil {
 		if errors.Cause(err) == sql.ErrNoRows {
-			return nil, input, errors.Wrapf(httperrors.ErrResourceNotFound, "%s %s", CloudregionManager.Keyword(), input.Cloudregion)
+			return nil, input, errors.Wrapf(httperrors.ErrResourceNotFound, "%s %s", CloudregionManager.Keyword(), input.CloudregionId)
 		} else {
 			return nil, input, errors.Wrap(err, "CloudregionManager.FetchByIdOrName")
 		}
 	}
-	input.Cloudregion = regionObj.GetId()
+	input.CloudregionId = regionObj.GetId()
 	return regionObj.(*SCloudregion), input, nil
 }
 
@@ -119,10 +119,14 @@ func (manager *SCloudregionResourceBaseManager) OrderByExtraFields(
 	userCred mcclient.TokenCredential,
 	query api.RegionalFilterListInput,
 ) (*sqlchemy.SQuery, error) {
-	q, orders, fields := manager.GetOrderBySubQuery(q, userCred, query)
-	if len(orders) > 0 {
-		q = db.OrderByFields(q, orders, fields)
+	if !db.NeedOrderQuery(manager.GetOrderByFields(query)) {
+		return q, nil
 	}
+	orderQ := CloudregionManager.Query("id")
+	orderSubQ := orderQ.SubQuery()
+	orderQ, orders, fields := manager.GetOrderBySubQuery(orderQ, orderSubQ, orderQ.Field("id"), userCred, query, nil, nil)
+	q = q.LeftJoin(orderSubQ, sqlchemy.Equals(q.Field("cloudregion_id"), orderSubQ.Field("id")))
+	q = db.OrderByFields(q, orders, fields)
 	return q, nil
 }
 
@@ -139,18 +143,22 @@ func (manager *SCloudregionResourceBaseManager) QueryDistinctExtraField(q *sqlch
 
 func (manager *SCloudregionResourceBaseManager) GetOrderBySubQuery(
 	q *sqlchemy.SQuery,
+	subq *sqlchemy.SSubQuery,
+	subqField sqlchemy.IQueryField,
 	userCred mcclient.TokenCredential,
 	query api.RegionalFilterListInput,
+	orders []string,
+	fields []sqlchemy.IQueryField,
 ) (*sqlchemy.SQuery, []string, []sqlchemy.IQueryField) {
-	regionQ := CloudregionManager.Query("id", "name", "city")
-	var orders []string
-	var fields []sqlchemy.IQueryField
-	if db.NeedOrderQuery(manager.GetOrderByFields(query)) {
-		subq := regionQ.SubQuery()
-		q = q.LeftJoin(subq, sqlchemy.Equals(q.Field("cloudregion_id"), subq.Field("id")))
-		orders = append(orders, query.OrderByRegion, query.OrderByCity)
-		fields = append(fields, subq.Field("name"), subq.Field("city"))
+	if !db.NeedOrderQuery(manager.GetOrderByFields(query)) {
+		return q, orders, fields
 	}
+	regions := CloudregionManager.Query().SubQuery()
+	q = q.LeftJoin(regions, sqlchemy.Equals(subqField, regions.Field("id")))
+	q = q.AppendField(regions.Field("name").Label("region"))
+	q = q.AppendField(regions.Field("city"))
+	orders = append(orders, query.OrderByRegion, query.OrderByCity)
+	fields = append(fields, subq.Field("region"), subq.Field("city"))
 	return q, orders, fields
 }
 

@@ -32,6 +32,11 @@ import (
 	"yunion.io/x/onecloud/pkg/util/stringutils2"
 )
 
+type IVpcResource interface {
+	GetVpc() *SVpc
+	GetRegion() *SCloudregion
+}
+
 type SVpcResourceBase struct {
 	VpcId string `width:"36" charset:"ascii" nullable:"true" list:"user" create:"optional" json:"vpc_id"`
 }
@@ -42,15 +47,15 @@ type SVpcResourceBaseManager struct {
 }
 
 func ValidateVpcResourceInput(userCred mcclient.TokenCredential, input api.VpcResourceInput) (*SVpc, api.VpcResourceInput, error) {
-	vpcObj, err := VpcManager.FetchByIdOrName(userCred, input.Vpc)
+	vpcObj, err := VpcManager.FetchByIdOrName(userCred, input.VpcId)
 	if err != nil {
 		if errors.Cause(err) == sql.ErrNoRows {
-			return nil, input, httperrors.NewResourceNotFoundError2(VpcManager.Keyword(), input.Vpc)
+			return nil, input, httperrors.NewResourceNotFoundError2(VpcManager.Keyword(), input.VpcId)
 		} else {
 			return nil, input, errors.Wrap(err, "VpcManager.FetchByIdOrName")
 		}
 	}
-	input.Vpc = vpcObj.GetId()
+	input.VpcId = vpcObj.GetId()
 	return vpcObj.(*SVpc), input, nil
 }
 
@@ -174,7 +179,7 @@ func (manager *SVpcResourceBaseManager) ListItemFilter(
 	query api.VpcFilterListInput,
 ) (*sqlchemy.SQuery, error) {
 	var err error
-	if len(query.Vpc) > 0 {
+	if len(query.VpcId) > 0 {
 		vpcObj, _, err := ValidateVpcResourceInput(userCred, query.VpcResourceInput)
 		if err != nil {
 			return nil, errors.Wrap(err, "ValidateVpcResourceInput")
@@ -222,47 +227,36 @@ func (manager *SVpcResourceBaseManager) OrderByExtraFields(
 	userCred mcclient.TokenCredential,
 	query api.VpcFilterListInput,
 ) (*sqlchemy.SQuery, error) {
-	q, orders, fields := manager.GetOrderBySubQuery(q, userCred, query)
-	if len(orders) > 0 {
-		q = db.OrderByFields(q, orders, fields)
+	if !db.NeedOrderQuery(manager.GetOrderByFields(query)) {
+		return q, nil
 	}
+	orderQ := VpcManager.Query("id")
+	orderSubQ := orderQ.SubQuery()
+	orderQ, orders, fields := manager.GetOrderBySubQuery(orderQ, orderSubQ, orderQ.Field("id"), userCred, query, nil, nil)
+	q = q.LeftJoin(orderSubQ, sqlchemy.Equals(q.Field("vpc_id"), orderSubQ.Field("id")))
+	q = db.OrderByFields(q, orders, fields)
 	return q, nil
 }
 
 func (manager *SVpcResourceBaseManager) GetOrderBySubQuery(
 	q *sqlchemy.SQuery,
+	subq *sqlchemy.SSubQuery,
+	subqField sqlchemy.IQueryField,
 	userCred mcclient.TokenCredential,
 	query api.VpcFilterListInput,
+	orders []string,
+	fields []sqlchemy.IQueryField,
 ) (*sqlchemy.SQuery, []string, []sqlchemy.IQueryField) {
-	vpcQ := VpcManager.Query("id", "name")
-	var orders []string
-	var fields []sqlchemy.IQueryField
-	if db.NeedOrderQuery(manager.SCloudregionResourceBaseManager.GetOrderByFields(query.RegionalFilterListInput)) {
-		var regionOrders []string
-		var regionFields []sqlchemy.IQueryField
-		vpcQ, regionOrders, regionFields = manager.SCloudregionResourceBaseManager.GetOrderBySubQuery(vpcQ, userCred, query.RegionalFilterListInput)
-		if len(regionOrders) > 0 {
-			orders = append(orders, regionOrders...)
-			fields = append(fields, regionFields...)
-		}
+	if !db.NeedOrderQuery(manager.GetOrderByFields(query)) {
+		return q, orders, fields
 	}
-	if db.NeedOrderQuery(manager.SManagedResourceBaseManager.GetOrderByFields(query.ManagedResourceListInput)) {
-		var managerOrders []string
-		var managerFields []sqlchemy.IQueryField
-		vpcQ, managerOrders, managerFields = manager.SManagedResourceBaseManager.GetOrderBySubQuery(vpcQ, userCred, query.ManagedResourceListInput)
-		if len(managerOrders) > 0 {
-			orders = append(orders, managerOrders...)
-			fields = append(fields, managerFields...)
-		}
-	}
-	if db.NeedOrderQuery(manager.GetOrderByFields(query)) {
-		subq := vpcQ.SubQuery()
-		q = q.LeftJoin(subq, sqlchemy.Equals(q.Field("vpc_id"), subq.Field("id")))
-		if db.NeedOrderQuery([]string{query.OrderByVpc}) {
-			orders = append(orders, query.OrderByVpc)
-			fields = append(fields, subq.Field("name"))
-		}
-	}
+	vpcQ := VpcManager.Query().SubQuery()
+	q = q.LeftJoin(vpcQ, sqlchemy.Equals(subqField, vpcQ.Field("id")))
+	q = q.AppendField(vpcQ.Field("name").Label("vpc"))
+	orders = append(orders, query.OrderByVpc)
+	fields = append(fields, subq.Field("vpc"))
+	q, orders, fields = manager.SCloudregionResourceBaseManager.GetOrderBySubQuery(q, subq, vpcQ.Field("cloudregion_id"), userCred, query.RegionalFilterListInput, orders, fields)
+	q, orders, fields = manager.SManagedResourceBaseManager.GetOrderBySubQuery(q, subq, vpcQ.Field("manager_id"), userCred, query.ManagedResourceListInput, orders, fields)
 	return q, orders, fields
 }
 
@@ -317,4 +311,19 @@ func (self *SVpcResourceBase) GetChangeOwnerCandidateDomainIds() []string {
 		return vpc.GetChangeOwnerCandidateDomainIds()
 	}
 	return nil
+}
+
+func IsOneCloudVpcResource(res IVpcResource) bool {
+	vpc := res.GetVpc()
+	if vpc == nil {
+		return false
+	}
+	region := res.GetRegion()
+	if region == nil {
+		return false
+	}
+	if region.Provider == api.CLOUD_PROVIDER_ONECLOUD && vpc.Id != api.DEFAULT_VPC_ID {
+		return true
+	}
+	return false
 }

@@ -18,6 +18,8 @@ import (
 	"net/http"
 
 	"yunion.io/x/pkg/errors"
+	"yunion.io/x/pkg/util/regutils"
+	"yunion.io/x/pkg/utils"
 
 	"yunion.io/x/onecloud/pkg/apis"
 	"yunion.io/x/onecloud/pkg/cloudprovider"
@@ -181,4 +183,148 @@ type BucketGetObjectsOutput struct {
 	MarkerOrder string `json:"marker_order"`
 	// 下一页请求的paging_marker标识
 	NextMarker string `json:"next_marker"`
+}
+
+type BucketWebsiteRoutingRule struct {
+	ConditionErrorCode string
+	ConditionPrefix    string
+
+	RedirectProtocol         string
+	RedirectReplaceKey       string
+	RedirectReplaceKeyPrefix string
+}
+
+type BucketWebsiteConf struct {
+	// 主页
+	Index string
+	// 错误时返回的文档
+	ErrorDocument string
+	// http或https
+	Protocol string
+
+	Rules []BucketWebsiteRoutingRule
+	// 访问网站url
+	Url string
+}
+
+func (input *BucketWebsiteConf) Validate() error {
+	if len(input.Index) == 0 {
+		return httperrors.NewMissingParameterError("index")
+	}
+	if len(input.ErrorDocument) == 0 {
+		return httperrors.NewMissingParameterError("error_document")
+	}
+	if len(input.Protocol) == 0 {
+		return httperrors.NewMissingParameterError("protocol")
+	}
+	return nil
+}
+
+type BucketCORSRule struct {
+	AllowedMethods []string
+	// 允许的源站，可以是*
+	AllowedOrigins []string
+	AllowedHeaders []string
+	MaxAgeSeconds  int
+	ExposeHeaders  []string
+	// 规则区别标识
+	Id string
+}
+
+type BucketCORSRules struct {
+	Data []BucketCORSRule `json:"data"`
+}
+
+type BucketCORSRuleDeleteInput struct {
+	Id []string
+}
+
+type BucketPolicy struct {
+	Data []BucketPolicyStatement
+}
+
+type BucketPolicyStatement struct {
+	// 授权的目标主体
+	Principal map[string][]string `json:"Principal,omitempty"`
+	// 授权的行为
+	Action []string `json:"Action,omitempty"`
+	// Allow|Deny
+	Effect string `json:"Effect,omitempty"`
+	// 被授权的资源地址
+	Resource []string `json:"Resource,omitempty"`
+	// 触发授权的条件
+	Condition map[string]map[string]interface{} `json:"Condition,omitempty"`
+
+	// 解析字段，主账号id:子账号id
+	PrincipalId []string
+	// Read|ReadWrite|FullControl
+	CannedAction string
+	// 资源路径
+	ResourcePath []string
+	// 根据index 生成
+	Id string
+}
+
+type BucketPolicyStatementInput struct {
+	// 主账号id:子账号id
+	PrincipalId []string
+	// Read|ReadWrite|FullControl
+	CannedAction string
+	// Allow|Deny
+	Effect string
+	// 被授权的资源地址,/*
+	ResourcePath []string
+	// ip 条件
+	IpEquals    []string
+	IpNotEquals []string
+}
+
+func (input *BucketPolicyStatementInput) Validate() error {
+	cannedAction := []string{"Read", "ReadWrite", "FullControl"}
+	if !utils.IsInStringArray(input.CannedAction, cannedAction) {
+		return httperrors.NewInputParameterError("invalid CannedAction %s ", input.CannedAction)
+	}
+	if input.Effect != "Allow" && input.Effect != "Deny" {
+		return httperrors.NewInputParameterError("invalid Effect %s ", input.Effect)
+	}
+	for i := range input.IpEquals {
+		if !regutils.MatchIP4Addr(input.IpEquals[i]) && !regutils.MatchCIDR(input.IpEquals[i]) {
+			return httperrors.NewInputParameterError("invalid ipv4 %s ", input.IpEquals[i])
+		}
+	}
+	for i := range input.IpNotEquals {
+		if !regutils.MatchIP4Addr(input.IpNotEquals[i]) && !regutils.MatchCIDR(input.IpNotEquals[i]) {
+			return httperrors.NewInputParameterError("invalid ipv4 %s ", input.IpNotEquals[i])
+		}
+	}
+	return nil
+}
+
+type BucketPolicyDeleteInput struct {
+	Id []string
+}
+
+func (input *BucketCORSRules) Validate() error {
+	for i := range input.Data {
+		if len(input.Data[i].AllowedOrigins) == 0 {
+			return httperrors.NewMissingParameterError("allowed_origins")
+		}
+		if len(input.Data[i].AllowedMethods) == 0 {
+			return httperrors.NewMissingParameterError("allowed_methods")
+		}
+	}
+	return nil
+}
+
+type BucketRefererConf struct {
+	// 白名单域名列表
+	WhiteList []string
+	// 黑名单域名列表
+	BlackList []string
+	// 是否允许空referer 访问
+	AllowEmptyRefer bool
+}
+
+func (input *BucketRefererConf) Validate() error {
+	return nil
 }

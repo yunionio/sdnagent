@@ -94,14 +94,6 @@ func (manager *SCloudproviderregionManager) GetSlaveFieldName() string {
 	return "cloudregion_id"
 }
 
-func (joint *SCloudproviderregion) Master() db.IStandaloneModel {
-	return db.JointMaster(joint)
-}
-
-func (joint *SCloudproviderregion) Slave() db.IStandaloneModel {
-	return db.JointSlave(joint)
-}
-
 func (self *SCloudproviderregion) GetProvider() *SCloudprovider {
 	providerObj, err := CloudproviderManager.FetchById(self.CloudproviderId)
 	if err != nil {
@@ -429,11 +421,11 @@ func (self *SCloudproviderregion) getSyncTaskKey() string {
 	}
 }
 
-func (self *SCloudproviderregion) submitSyncTask(userCred mcclient.TokenCredential, syncRange SSyncRange, waitChan chan bool) {
+func (self *SCloudproviderregion) submitSyncTask(ctx context.Context, userCred mcclient.TokenCredential, syncRange SSyncRange, waitChan chan bool) {
 	self.markStartSync(userCred)
-	RunSyncCloudproviderRegionTask(self.getSyncTaskKey(), func() {
+	RunSyncCloudproviderRegionTask(ctx, self.getSyncTaskKey(), func() {
 		nopanic.Run(func() {
-			err := self.DoSync(context.Background(), userCred, syncRange)
+			err := self.DoSync(ctx, userCred, syncRange)
 			if err != nil {
 				log.Errorf("DoSync faild %v", err)
 			}

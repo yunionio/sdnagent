@@ -21,11 +21,16 @@ import (
 
 	"yunion.io/x/jsonutils"
 	"yunion.io/x/log"
+	"yunion.io/x/pkg/errors"
 	"yunion.io/x/pkg/tristate"
+	"yunion.io/x/pkg/util/compare"
 	"yunion.io/x/sqlchemy"
 
 	"yunion.io/x/onecloud/pkg/apis"
 	api "yunion.io/x/onecloud/pkg/apis/compute"
+	"yunion.io/x/onecloud/pkg/cloudcommon/db"
+	"yunion.io/x/onecloud/pkg/cloudcommon/db/lockman"
+	"yunion.io/x/onecloud/pkg/cloudprovider"
 	"yunion.io/x/onecloud/pkg/mcclient"
 	"yunion.io/x/onecloud/pkg/util/stringutils2"
 )
@@ -68,6 +73,16 @@ func (manager *SGuestManager) FetchCustomizeColumns(
 			for i := range rows {
 				if gip, ok := gips[guestIds[i]]; ok {
 					rows[i].IPs = strings.Join(gip, ",")
+				}
+			}
+		}
+	}
+	if len(fields) == 0 || fields.Contains("macs") {
+		gMacs := fetchGuestMacs(guestIds, tristate.False)
+		if gMacs != nil {
+			for i := range rows {
+				if gMac, ok := gMacs[guestIds[i]]; ok {
+					rows[i].Macs = strings.Join(gMac, ",")
 				}
 			}
 		}
@@ -260,6 +275,36 @@ func fetchGuestIPs(guestIds []string, virtual tristate.TriState) map[string][]st
 			ret[gias[i].GuestId] = make([]string, 0)
 		}
 		ret[gias[i].GuestId] = append(ret[gias[i].GuestId], gias[i].IpAddr)
+	}
+	return ret
+}
+
+func fetchGuestMacs(guestIds []string, virtual tristate.TriState) map[string][]string {
+	guestnetworks := GuestnetworkManager.Query().SubQuery()
+	q := guestnetworks.Query(guestnetworks.Field("guest_id"), guestnetworks.Field("mac_addr"))
+	q = q.In("guest_id", guestIds)
+	if virtual.IsTrue() {
+		q = q.IsTrue("virtual")
+	} else if virtual.IsFalse() {
+		q = q.IsFalse("virtual")
+	}
+	q = q.IsNotEmpty("mac_addr")
+	q = q.Asc("mac_addr")
+	type sGuestIdMacAddr struct {
+		GuestId string
+		MacAddr string
+	}
+	gims := make([]sGuestIdMacAddr, 0)
+	err := q.All(&gims)
+	if err != nil && err != sql.ErrNoRows {
+		return nil
+	}
+	ret := make(map[string][]string)
+	for i := range gims {
+		if _, ok := ret[gims[i].GuestId]; !ok {
+			ret[gims[i].GuestId] = make([]string, 0)
+		}
+		ret[gims[i].GuestId] = append(ret[gims[i].GuestId], gims[i].MacAddr)
 	}
 	return ret
 }
@@ -510,4 +555,64 @@ func fetchScalingGroupGuest(guestIds ...string) map[string]SScalingGroupGuest {
 		ret[sggs[i].GuestId] = sggs[i]
 	}
 	return ret
+}
+
+func (self *SGuest) SyncInstanceSnapshots(ctx context.Context, userCred mcclient.TokenCredential, provider *SCloudprovider) compare.SyncResult {
+	syncResult := compare.SyncResult{}
+
+	extGuest, err := self.GetIVM()
+	if err != nil {
+		syncResult.Error(err)
+		return syncResult
+	}
+
+	extSnapshots, err := extGuest.GetInstanceSnapshots()
+	if errors.Cause(err) == errors.ErrNotImplemented {
+		return syncResult
+	}
+	syncOwnerId := provider.GetOwnerId()
+	localSnapshots, err := self.GetInstanceSnapshots()
+	if err != nil {
+		syncResult.Error(err)
+		return syncResult
+	}
+
+	lockman.LockClass(ctx, InstanceSnapshotManager, db.GetLockClassKey(InstanceSnapshotManager, syncOwnerId))
+	defer lockman.ReleaseClass(ctx, InstanceSnapshotManager, db.GetLockClassKey(InstanceSnapshotManager, syncOwnerId))
+
+	removed := make([]SInstanceSnapshot, 0)
+	commondb := make([]SInstanceSnapshot, 0)
+	commonext := make([]cloudprovider.ICloudInstanceSnapshot, 0)
+	added := make([]cloudprovider.ICloudInstanceSnapshot, 0)
+
+	err = compare.CompareSets(localSnapshots, extSnapshots, &removed, &commondb, &commonext, &added)
+	if err != nil {
+		syncResult.Error(err)
+		return syncResult
+	}
+	for i := 0; i < len(removed); i += 1 {
+		err = removed[i].syncRemoveCloudInstanceSnapshot(ctx, userCred)
+		if err != nil {
+			syncResult.DeleteError(err)
+		} else {
+			syncResult.Delete()
+		}
+	}
+	for i := 0; i < len(commondb); i += 1 {
+		err = commondb[i].SyncWithCloudInstanceSnapshot(ctx, userCred, commonext[i], self)
+		if err != nil {
+			syncResult.UpdateError(err)
+		} else {
+			syncResult.Update()
+		}
+	}
+	for i := 0; i < len(added); i += 1 {
+		_, err := InstanceSnapshotManager.newFromCloudInstanceSnapshot(ctx, userCred, added[i], self)
+		if err != nil {
+			syncResult.AddError(err)
+		} else {
+			syncResult.Add()
+		}
+	}
+	return syncResult
 }

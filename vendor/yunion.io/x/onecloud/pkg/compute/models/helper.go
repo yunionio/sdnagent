@@ -20,16 +20,14 @@ import (
 
 	"yunion.io/x/jsonutils"
 	"yunion.io/x/log"
+	"yunion.io/x/pkg/errors"
 	"yunion.io/x/pkg/utils"
 
 	api "yunion.io/x/onecloud/pkg/apis/compute"
-	"yunion.io/x/onecloud/pkg/cloudcommon/consts"
 	"yunion.io/x/onecloud/pkg/cloudcommon/db"
 	"yunion.io/x/onecloud/pkg/cloudcommon/db/taskman"
-	"yunion.io/x/onecloud/pkg/cloudcommon/policy"
 	"yunion.io/x/onecloud/pkg/httperrors"
 	"yunion.io/x/onecloud/pkg/mcclient"
-	"yunion.io/x/onecloud/pkg/util/rbacutils"
 )
 
 func RunBatchCreateTask(
@@ -55,18 +53,6 @@ func RunBatchCreateTask(
 	}
 }
 
-func allowAssignHost(userCred mcclient.TokenCredential) bool {
-	for _, scope := range []rbacutils.TRbacScope{
-		rbacutils.ScopeSystem,
-		rbacutils.ScopeDomain,
-	} {
-		if userCred.IsAllow(scope, consts.GetServiceType(), GuestManager.KeywordPlural(), policy.PolicyActionPerform, "assign-host") {
-			return true
-		}
-	}
-	return false
-}
-
 func ValidateScheduleCreateData(ctx context.Context, userCred mcclient.TokenCredential, input *api.ServerCreateInput, hypervisor string) (*api.ServerCreateInput, error) {
 	var err error
 
@@ -77,9 +63,6 @@ func ValidateScheduleCreateData(ctx context.Context, userCred mcclient.TokenCred
 	// base validate_create_data
 	if (input.PreferHost != "") && hypervisor != api.HYPERVISOR_CONTAINER {
 
-		if !allowAssignHost(userCred) {
-			return nil, httperrors.NewNotSufficientPrivilegeError("Only system admin can specify preferred host")
-		}
 		bmName := input.PreferHost
 		bmObj, err := HostManager.FetchByIdOrName(nil, bmName)
 		if err != nil {
@@ -90,6 +73,12 @@ func ValidateScheduleCreateData(ctx context.Context, userCred mcclient.TokenCred
 			}
 		}
 		baremetal := bmObj.(*SHost)
+
+		err = baremetal.IsAssignable(userCred)
+		if err != nil {
+			return nil, errors.Wrap(err, "IsAssignable")
+		}
+
 		if !baremetal.GetEnabled() {
 			return nil, httperrors.NewInvalidStatusError("Baremetal %s not enabled", bmName)
 		}
@@ -111,7 +100,10 @@ func ValidateScheduleCreateData(ctx context.Context, userCred mcclient.TokenCred
 			return nil, err
 		}
 
-		defaultStorage := GetDriver(hypervisor).ChooseHostStorage(baremetal, "", nil)
+		defaultStorage, err := GetDriver(hypervisor).ChooseHostStorage(baremetal, nil, &api.DiskConfig{}, nil)
+		if err != nil {
+			return nil, errors.Wrap(err, "ChooseHostStorage")
+		}
 		if defaultStorage == nil {
 			return nil, httperrors.NewInsufficientResourceError("no valid storage on host")
 		}
@@ -123,20 +115,11 @@ func ValidateScheduleCreateData(ctx context.Context, userCred mcclient.TokenCred
 		region := zone.GetRegion()
 		input.PreferRegion = region.Id
 	} else {
-		schedtags := make(map[string]string)
-		for _, tag := range input.Schedtags {
-			schedtags[tag.Id] = tag.Strategy
-		}
-		if len(schedtags) > 0 {
-			schedtags, err = SchedtagManager.ValidateSchedtags(userCred, schedtags)
+		if len(input.Schedtags) > 0 {
+			input.Schedtags, err = SchedtagManager.ValidateSchedtags(userCred, input.Schedtags)
 			if err != nil {
 				return nil, httperrors.NewInputParameterError("invalid aggregate_strategy: %s", err)
 			}
-			tags := make([]*api.SchedtagConfig, 0)
-			for name, strategy := range schedtags {
-				tags = append(tags, &api.SchedtagConfig{Id: name, Strategy: strategy})
-			}
-			input.Schedtags = tags
 		}
 
 		if input.PreferWire != "" {

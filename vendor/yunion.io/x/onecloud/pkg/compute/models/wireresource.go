@@ -43,15 +43,15 @@ type SWireResourceBaseManager struct {
 }
 
 func ValidateWireResourceInput(userCred mcclient.TokenCredential, input api.WireResourceInput) (*SWire, api.WireResourceInput, error) {
-	wireObj, err := WireManager.FetchByIdOrName(userCred, input.Wire)
+	wireObj, err := WireManager.FetchByIdOrName(userCred, input.WireId)
 	if err != nil {
 		if errors.Cause(err) == sql.ErrNoRows {
-			return nil, input, errors.Wrapf(httperrors.ErrResourceNotFound, "%s %s", WireManager.Keyword(), input.Wire)
+			return nil, input, errors.Wrapf(httperrors.ErrResourceNotFound, "%s %s", WireManager.Keyword(), input.WireId)
 		} else {
 			return nil, input, errors.Wrap(err, "WireManager.FetchByIdOrName")
 		}
 	}
-	input.Wire = wireObj.GetId()
+	input.WireId = wireObj.GetId()
 	return wireObj.(*SWire), input, nil
 }
 
@@ -159,7 +159,7 @@ func (manager *SWireResourceBaseManager) ListItemFilter(
 	query api.WireFilterListInput,
 ) (*sqlchemy.SQuery, error) {
 	var err error
-	if len(query.Wire) > 0 {
+	if len(query.WireId) > 0 {
 		wireObj, _, err := ValidateWireResourceInput(userCred, query.WireResourceInput)
 		if err != nil {
 			return nil, errors.Wrap(err, "ValidateWireResourceInput")
@@ -178,19 +178,19 @@ func (manager *SWireResourceBaseManager) ListItemFilter(
 		region := &SCloudregion{}
 		firstZone := query.FirstZone()
 		sq := ZoneManager.Query().SubQuery()
-		q := CloudregionManager.Query()
-		q = q.Join(sq, sqlchemy.Equals(sq.Field("cloudregion_id"), q.Field("id"))).Filter(sqlchemy.OR(
+		regionQ := CloudregionManager.Query()
+		regionQ = regionQ.Join(sq, sqlchemy.Equals(sq.Field("cloudregion_id"), regionQ.Field("id"))).Filter(sqlchemy.OR(
 			sqlchemy.Equals(sq.Field("id"), firstZone),
 			sqlchemy.Equals(sq.Field("name"), firstZone),
 		))
-		count, err := q.CountWithError()
+		count, err := regionQ.CountWithError()
 		if err != nil {
 			return nil, errors.Wrap(err, "CountWithError")
 		}
 		if count < 1 {
 			return nil, httperrors.NewResourceNotFoundError2("zone", firstZone)
 		}
-		err = q.First(region)
+		err = regionQ.First(region)
 		if err != nil {
 			return nil, errors.Wrap(err, "regionQ.First")
 		}
@@ -244,53 +244,39 @@ func (manager *SWireResourceBaseManager) OrderByExtraFields(
 	userCred mcclient.TokenCredential,
 	query api.WireFilterListInput,
 ) (*sqlchemy.SQuery, error) {
-	q, orders, fields := manager.GetOrderBySubQuery(q, userCred, query)
-	if len(orders) > 0 {
-		q = db.OrderByFields(q, orders, fields)
+	if !db.NeedOrderQuery(manager.GetOrderByFields(query)) {
+		return q, nil
 	}
+	orderQ := WireManager.Query("id")
+	orderSubQ := orderQ.SubQuery()
+	orderQ, orders, fields := manager.GetOrderBySubQuery(orderQ, orderSubQ, orderQ.Field("id"), userCred, query, nil, nil)
+	q = q.LeftJoin(orderSubQ, sqlchemy.Equals(q.Field("wire_id"), orderSubQ.Field("id")))
+	q = db.OrderByFields(q, orders, fields)
 	return q, nil
 }
 
 func (manager *SWireResourceBaseManager) GetOrderBySubQuery(
 	q *sqlchemy.SQuery,
+	subq *sqlchemy.SSubQuery,
+	joinField sqlchemy.IQueryField,
 	userCred mcclient.TokenCredential,
 	query api.WireFilterListInput,
+	orders []string,
+	fields []sqlchemy.IQueryField,
 ) (*sqlchemy.SQuery, []string, []sqlchemy.IQueryField) {
-	wireQ := WireManager.Query("id", "name")
-	var orders []string
-	var fields []sqlchemy.IQueryField
+	if !db.NeedOrderQuery(manager.GetOrderByFields(query)) {
+		return q, orders, fields
+	}
+	wireQ := WireManager.Query().SubQuery()
+	q = q.LeftJoin(wireQ, sqlchemy.Equals(joinField, wireQ.Field("id")))
+	q = q.AppendField(wireQ.Field("name").Label("wire"))
+	orders = append(orders, query.OrderByWire)
+	fields = append(fields, subq.Field("wire"))
 	zoneQuery := api.ZonalFilterListInput{
 		ZonalFilterListBase: query.ZonalFilterListBase,
 	}
-	if db.NeedOrderQuery(manager.SZoneResourceBaseManager.GetOrderByFields(zoneQuery)) {
-		var zoneOrders []string
-		var zoneFields []sqlchemy.IQueryField
-		wireQ, zoneOrders, zoneFields = manager.SZoneResourceBaseManager.GetOrderBySubQuery(wireQ, userCred, zoneQuery)
-		if len(zoneOrders) > 0 {
-			orders = append(orders, zoneOrders...)
-			fields = append(fields, zoneFields...)
-		}
-	}
-
-	if db.NeedOrderQuery(manager.SVpcResourceBaseManager.GetOrderByFields(query.VpcFilterListInput)) {
-		var vpcOrders []string
-		var vpcFields []sqlchemy.IQueryField
-		wireQ, vpcOrders, vpcFields = manager.SVpcResourceBaseManager.GetOrderBySubQuery(wireQ, userCred, query.VpcFilterListInput)
-		if len(vpcOrders) > 0 {
-			orders = append(orders, vpcOrders...)
-			fields = append(fields, vpcFields...)
-		}
-	}
-
-	if db.NeedOrderQuery(manager.GetOrderByFields(query)) {
-		subq := wireQ.SubQuery()
-		q = q.LeftJoin(subq, sqlchemy.Equals(q.Field("wire_id"), subq.Field("id")))
-		if db.NeedOrderQuery([]string{query.OrderByWire}) {
-			orders = append(orders, query.OrderByWire)
-			fields = append(fields, subq.Field("name"))
-		}
-	}
-
+	q, orders, fields = manager.SZoneResourceBaseManager.GetOrderBySubQuery(q, subq, wireQ.Field("zone_id"), userCred, zoneQuery, orders, fields)
+	q, orders, fields = manager.SVpcResourceBaseManager.GetOrderBySubQuery(q, subq, wireQ.Field("vpc_id"), userCred, query.VpcFilterListInput, orders, fields)
 	return q, orders, fields
 }
 

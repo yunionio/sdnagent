@@ -134,6 +134,9 @@ type SecgroupListInput struct {
 
 	ServerFilterListInput
 
+	DBInstanceResourceInput
+	ELasticcacheResourceInput
+
 	// equals
 	Equals string
 
@@ -190,11 +193,11 @@ type SecurityGroupRuleListInput struct {
 
 type SecgroupResourceInput struct {
 	// 过滤关联指定安全组（ID或Name）的列表结果
-	Secgroup string `json:"secgroup"`
+	SecgroupId string `json:"secgroup_id"`
 	// swagger:ignore
 	// Deprecated
 	// filter by secgroup_id
-	SecgroupId string `json:"secgroup_id" yunion-deprecated-by:"secgroup"`
+	Secgroup string `json:"secgroup" yunion-deprecated-by:"secgroup_id"`
 
 	// 模糊匹配安全组规则名称
 	SecgroupName string `json:"secgroup_name"`
@@ -240,6 +243,11 @@ type GuestsecgroupListInput struct {
 	SecgroupFilterListInput
 }
 
+type ElasticcachesecgroupListInput struct {
+	ElasticcacheJointsListInput
+	SecgroupFilterListInput
+}
+
 type GuestsecgroupDetails struct {
 	GuestJointResourceDetails
 
@@ -249,5 +257,37 @@ type GuestsecgroupDetails struct {
 	Secgroup string `json:"secgroup"`
 }
 
+//type SElasticcachesecgroup struct {
+//	SElasticcacheJointsBase
+//	SSecurityGroupResourceBase
+//}
+
+type ElasticcachesecgroupDetails struct {
+	ElasticcacheJointResourceDetails
+
+	SElasticcachesecgroup
+
+	// 安全组名称
+	Secgroup string `json:"secgroup"`
+}
+
+type SecgroupMergeInput struct {
+	// 安全组id列表
+	SecgroupIds []string `json:"secgroup_ids"`
+
+	// swagger:ignore
+	// Deprecated
+	Secgroups []string `json:"secgroup" yunion-deprecated-by:"secgroup_ids"`
+}
+
 type SecurityGroupPurgeInput struct {
+}
+
+type SecurityGroupCloneInput struct {
+	Name        string
+	Description string
+}
+
+type SecgroupImportRulesInput struct {
+	Rules []SSecgroupRuleCreateInput `json:"rules"`
 }

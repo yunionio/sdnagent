@@ -19,6 +19,8 @@ import (
 	"time"
 
 	"yunion.io/x/pkg/trace"
+
+	"yunion.io/x/onecloud/pkg/i18n"
 )
 
 type AppContextKey string
@@ -39,8 +41,11 @@ const (
 	APP_CONTEXT_KEY_OBJECT_ID       = AppContextKey("objectid")
 	APP_CONTEXT_KEY_OBJECT_TYPE     = AppContextKey("objecttype")
 	APP_CONTEXT_KEY_START_TIME      = AppContextKey("starttime")
+	APP_CONTEXT_KEY_TASKNAME        = AppContextKey("taskname")
 
 	APP_CONTEXT_KEY_HOST_ID = AppContextKey("hostid")
+
+	APP_CONTEXT_KEY_AUTH_TOKEN = AppContextKey("X_AUTH_TOKEN")
 )
 
 func AppContextServiceName(ctx context.Context) string {
@@ -50,6 +55,10 @@ func AppContextServiceName(ctx context.Context) string {
 	} else {
 		return ""
 	}
+}
+
+func AppContextLang(ctx context.Context) string {
+	return i18n.Lang(ctx).String()
 }
 
 func AppContextCurrentPath(ctx context.Context) []string {
@@ -168,6 +177,7 @@ type AppContextData struct {
 	TaskId        string
 	TaskNotifyUrl string
 	ServiceName   string
+	Lang          string
 }
 
 func (self *AppContextData) IsZero() bool {
@@ -182,6 +192,7 @@ func FetchAppContextData(ctx context.Context) AppContextData {
 	taskId := AppContextTaskId(ctx)
 	taskNotifyUrl := AppContextTaskNotifyUrl(ctx)
 	serviceName := AppContextServiceName(ctx)
+	lang := AppContextLang(ctx)
 
 	var trace trace.STrace
 	if tracePtr != nil {
@@ -194,6 +205,7 @@ func FetchAppContextData(ctx context.Context) AppContextData {
 		TaskId:        taskId,
 		TaskNotifyUrl: taskNotifyUrl,
 		ServiceName:   serviceName,
+		Lang:          lang,
 	}
 }
 
@@ -219,6 +231,9 @@ func (self *AppContextData) GetContext() context.Context {
 	}
 	if len(self.ServiceName) > 0 {
 		ctx = context.WithValue(ctx, APP_CONTEXT_KEY_APPNAME, self.ServiceName)
+	}
+	if len(self.Lang) > 0 {
+		ctx = i18n.WithLang(ctx, self.Lang)
 	}
 	return ctx
 }

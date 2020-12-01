@@ -20,10 +20,12 @@ import (
 	"database/sql"
 	"fmt"
 	"strings"
+	"time"
 
 	"yunion.io/x/jsonutils"
 	"yunion.io/x/log"
 	"yunion.io/x/pkg/errors"
+	"yunion.io/x/pkg/util/sets"
 	"yunion.io/x/sqlchemy"
 
 	api "yunion.io/x/onecloud/pkg/apis/compute"
@@ -73,9 +75,8 @@ type SSnapshotPolicyDisk struct {
 
 	SSnapshotPolicyResourceBase `width:"36" charset:"ascii" nullable:"false" list:"user" create:"required" index:"true"`
 	SDiskResourceBase           `width:"36" charset:"ascii" nullable:"false" list:"user" create:"required" index:"true"`
-	// SnapshotpolicyId string `width:"36" charset:"ascii" nullable:"false" list:"user" create:"required" index:"true"`
-	// DiskId           string `width:"36" charset:"ascii" nullable:"false" list:"user" create:"required" index:"true"`
-	Status string `width:"36" charset:"ascii" nullable:"false" default:"init" list:"user" create:"optional"`
+	Status                      string `width:"36" charset:"ascii" nullable:"false" default:"init" list:"user" create:"optional"`
+	NextSyncTime                time.Time
 }
 
 func (sd *SSnapshotPolicyDisk) SetStatus(userCred mcclient.TokenCredential, status string, reason string) error {
@@ -169,6 +170,59 @@ func (m *SSnapshotPolicyDiskManager) FetchBySnapshotPolicyDisk(spId, diskId stri
 		return nil, nil
 	}
 	return &ret[0], nil
+}
+
+func (sdm *SSnapshotPolicyDiskManager) InitializeData() error {
+	diskQ := DiskManager.Query("id").SubQuery()
+	sdQ := sdm.Query().NotIn("disk_id", diskQ)
+
+	var sds []SSnapshotPolicyDisk
+	err := db.FetchModelObjects(sdm, sdQ, &sds)
+	if err != nil {
+		return errors.Wrap(err, "unable to FetchModelObjects")
+	}
+	for i := range sds {
+		sd := &sds[i]
+		_, err := db.Update(sd, func() error {
+			return sd.MarkDelete()
+		})
+		if err != nil {
+			return err
+		}
+	}
+
+	sds = make([]SSnapshotPolicyDisk, 0)
+	q := sdm.Query().IsNullOrEmpty("next_sync_time")
+	err = db.FetchModelObjects(sdm, q, &sds)
+	if err != nil {
+		return err
+	}
+
+	// fetch all snapshotpolicy
+	spIdSet := sets.NewString()
+	for i := range sds {
+		spIdSet.Insert(sds[i].SnapshotpolicyId)
+	}
+	sps, err := SnapshotPolicyManager.FetchAllByIds(spIdSet.UnsortedList())
+	if err != nil {
+		return errors.Wrap(err, "FetchAllByIds")
+	}
+	spMap := make(map[string]*SSnapshotPolicy, len(sps))
+	for i := range sps {
+		spMap[sps[i].GetId()] = &sps[i]
+	}
+	now := time.Now()
+	for i := range sds {
+		sd := &sds[i]
+		_, err := db.Update(sd, func() error {
+			sd.NextSyncTime = spMap[sd.SnapshotpolicyId].ComputeNextSyncTime(now)
+			return nil
+		})
+		if err != nil {
+			return errors.Wrap(err, "db.Update")
+		}
+	}
+	return nil
 }
 
 func (m *SSnapshotPolicyDiskManager) FetchAllByDiskID(ctx context.Context, userCred mcclient.TokenCredential,
@@ -420,6 +474,8 @@ func (self *SSnapshotPolicyDiskManager) newSnapshotpolicyDisk(ctx context.Contex
 	spd := SSnapshotPolicyDisk{}
 	spd.SnapshotpolicyId = sp.GetId()
 	spd.DiskId = disk.GetId()
+	now := time.Now()
+	spd.NextSyncTime = sp.ComputeNextSyncTime(now)
 	spd.SetModelManager(self, &spd)
 
 	lockman.LockJointObject(ctx, disk, sp)
@@ -454,6 +510,16 @@ func (self *SSnapshotPolicyDiskManager) ValidateCreateData(ctx context.Context, 
 	data.Add(jsonutils.Marshal(snapshotPolicy), "snapshotPolicy")
 	data.Add(jsonutils.Marshal(disk), "disk")
 	return data, nil
+}
+
+func (sd *SSnapshotPolicyDisk) CustomizeCreate(ctx context.Context, userCred mcclient.TokenCredential, ownerId mcclient.IIdentityProvider, query jsonutils.JSONObject, data jsonutils.JSONObject) error {
+	sp, err := SnapshotPolicyManager.FetchSnapshotPolicyById(sd.SnapshotpolicyId)
+	if err != nil {
+		return err
+	}
+	now := time.Now()
+	sd.NextSyncTime = sp.ComputeNextSyncTime(now)
+	return nil
 }
 
 func (sd *SSnapshotPolicyDisk) PostCreate(ctx context.Context, userCred mcclient.TokenCredential, ownerId mcclient.

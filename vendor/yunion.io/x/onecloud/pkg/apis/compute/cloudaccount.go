@@ -191,6 +191,10 @@ type CloudaccountCreateInput struct {
 
 	cloudprovider.SCloudaccount
 	cloudprovider.SCloudaccountCredential
+
+	// 是否启用SAML认证
+	// default: false
+	SAMLAuth *bool `json:"saml_auth"`
 }
 
 type CloudaccountShareModeInput struct {
@@ -315,6 +319,8 @@ type CloudaccountUpdateInput struct {
 	// 带删除的options key
 	RemoveOptions []string `json:"remove_options"`
 
+	SAMLAuth *bool `json:"saml_auth"`
+
 	proxyapi.ProxySettingResourceInput
 }
 
@@ -367,7 +373,8 @@ type CAGuestNet struct {
 
 type CAIPNet struct {
 	// description: IP
-	IP string `json:"ip"`
+	IP     string `json:"ip"`
+	VlanID int32  `json:"vlan_id"`
 	// description: 合适的已有网络
 	SuitableNetwork string `json:"suitable_network,allowempty"`
 }
@@ -377,10 +384,39 @@ type CASimpleNetConf struct {
 	GuestIpEnd   string `json:"guest_ip_end"`
 	GuestIpMask  int8   `json:"guest_ip_mask"`
 	GuestGateway string `json:"guest_gateway"`
+	VlanID       int32  `json:"vlan_id"`
 }
 
 type CANetConf struct {
 	Name        string `json:"name"`
 	Description string `json:"description"`
 	CASimpleNetConf
+}
+
+type SubscriptonCreateInput struct {
+
+	// EA 账号id, 可通过 cloud-account-enrollment-accounts接口获取里面的id字段
+	EnrollmentAccountId string `json:"enrollment_account_id"`
+
+	// 订阅名称
+	Name string `json:"name"`
+
+	// 可选值: MS-AZR-0017P(生产用途), MS-AZR-0148P(开发测试)
+	OfferType string `json:"offer_type"`
+}
+
+type EnrollmentAccountQuery struct {
+}
+
+type GetCloudaccountSamlOutput struct {
+	// cloudaccount SAML ServiceProvider entity ID
+	EntityId string `json:"entity_id,allowempty"`
+	// redirect login URL for this cloudaccount
+	RedirectLoginUrl string `json:"redirect_login_url,allowempty"`
+	// redirect logout URL for this cloudaccount
+	RedirectLogoutUrl string `json:"redirect_logout_url,allowempty"`
+	// metadata URL for this cloudaccount
+	MetadataUrl string `json:"metadata_url,allowempty"`
+	// initial SAML SSO login URL for this cloudaccount
+	InitLoginUrl string `json:"init_login_url,allowempty"`
 }

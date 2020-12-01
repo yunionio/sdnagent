@@ -14,7 +14,11 @@
 
 package multicloud
 
-import "yunion.io/x/onecloud/pkg/cloudprovider"
+import (
+	"context"
+
+	"yunion.io/x/onecloud/pkg/cloudprovider"
+)
 
 type SInstanceBase struct {
 	SResourceBase
@@ -38,5 +42,25 @@ func (instance *SInstanceBase) MigrateVM(hostId string) error {
 }
 
 func (instance *SInstanceBase) LiveMigrateVM(hostId string) error {
+	return cloudprovider.ErrNotImplemented
+}
+
+func (instance *SInstanceBase) SetMetadata(tags map[string]string, replace bool) error {
+	return cloudprovider.ErrNotImplemented
+}
+
+func (instance *SInstanceBase) GetInstanceSnapshot(idStr string) (cloudprovider.ICloudInstanceSnapshot, error) {
+	return nil, cloudprovider.ErrNotImplemented
+}
+
+func (instance *SInstanceBase) GetInstanceSnapshots() ([]cloudprovider.ICloudInstanceSnapshot, error) {
+	return nil, cloudprovider.ErrNotImplemented
+}
+
+func (instance *SInstanceBase) CreateInstanceSnapshot(ctx context.Context, name string, desc string) (cloudprovider.ICloudInstanceSnapshot, error) {
+	return nil, cloudprovider.ErrNotImplemented
+}
+
+func (instance *SInstanceBase) ResetToInstanceSnapshot(ctx context.Context, idStr string) error {
 	return cloudprovider.ErrNotImplemented
 }
