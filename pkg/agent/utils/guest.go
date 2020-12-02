@@ -21,6 +21,8 @@ import (
 	"os"
 	"path"
 	"strings"
+
+	"yunion.io/x/jsonutils"
 )
 
 type guestDesc struct {
@@ -187,6 +189,19 @@ func (g *Guest) Running() bool {
 
 func (g *Guest) IsSlave() bool {
 	return g.isSlave
+}
+
+func (g *Guest) GetJSONObjectDesc() (jsonutils.JSONObject, error) {
+	descPath := path.Join(g.Path, "desc")
+	data, err := ioutil.ReadFile(descPath)
+	if err != nil {
+		return nil, err
+	}
+	obj, err := jsonutils.Parse(data)
+	if err != nil {
+		return nil, err
+	}
+	return obj, nil
 }
 
 func (g *Guest) LoadDesc() error {
