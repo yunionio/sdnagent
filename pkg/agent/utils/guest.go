@@ -258,3 +258,21 @@ func (g *Guest) SrcMacCheck() bool {
 	}
 	return g.srcMacCheck
 }
+
+func (g *Guest) FindNicByNetIdIP(netId, ip string) *GuestNIC {
+	var searchNic = func(nics []*GuestNIC) *GuestNIC {
+		for _, nic := range nics {
+			if nic.NetId == netId && nic.IP == ip {
+				return nic
+			}
+		}
+		return nil
+	}
+	if nic := searchNic(g.VpcNICs); nic != nil {
+		return nic
+	}
+	if nic := searchNic(g.NICs); nic != nil {
+		return nic
+	}
+	return nil
+}
