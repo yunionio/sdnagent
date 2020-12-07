@@ -78,6 +78,19 @@ type ovnMdServer struct {
 	app    *appsrv.Application
 }
 
+func newOvnMdServer(netId, netCidr string, watcher *serversWatcher) *ovnMdServer {
+	s := &ovnMdServer{
+		netId:   netId,
+		netCidr: netCidr,
+		watcher: watcher,
+
+		ns:     netns.None(),
+		origNs: netns.None(),
+		ipNii:  map[string]netIdIP{},
+	}
+	return s
+}
+
 func (s *ovnMdServer) Start(ctx context.Context) {
 	if err := s.ensureMdInfra(ctx); err != nil {
 		log.Errorf("ensureMdInfra: %v", err)
@@ -422,14 +435,7 @@ func (man *ovnMdMan) noteOn(ctx context.Context, nii netIdIP) {
 			log.Errorf("guestId %s, ip %s, parse cidr: %s", nii.guestId, nii.ip, ipmask)
 		}
 		netCidr := ipnet.String()
-		mdServer = &ovnMdServer{
-			ns:      netns.None(),
-			origNs:  netns.None(),
-			netId:   netId,
-			netCidr: netCidr,
-			watcher: man.watcher,
-			ipNii:   map[string]netIdIP{},
-		}
+		mdServer = newOvnMdServer(netId, netCidr, man.watcher)
 		go mdServer.Start(ctx)
 		man.mdServers[netId] = mdServer
 	}
