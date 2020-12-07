@@ -300,6 +300,238 @@ func (s *ovnMdServer) NoteOn(ctx context.Context, nii netIdIP) {
 	s.ipNii[nii.ip] = nii
 }
 
+type nsRunFunc func(ctx context.Context, f func(ctx context.Context) error) error
+type nsRunner interface {
+	nsRun(ctx context.Context, f func(ctx context.Context) error) error
+}
+
+type ovnMdForward struct {
+	Proto      string
+	LocalAddr  string
+	LocalPort  int
+	RemoteAddr string
+	RemotePort int
+
+	localIP        net.IP
+	remoteIP       net.IP
+	listener       net.Listener
+	remoteNsRunner nsRunner
+
+	bindAddr string
+	bindPort int
+}
+
+func (mdf *ovnMdForward) init() error {
+	mdf.localIP = net.ParseIP(mdf.LocalAddr)
+	if mdf.localIP == nil {
+		return errors.Errorf("bad local address %q", mdf.LocalAddr)
+	}
+
+	mdf.remoteIP = net.ParseIP(mdf.RemoteAddr)
+	if mdf.remoteIP == nil {
+		return errors.Errorf("bad remote address %q", mdf.RemoteAddr)
+	}
+
+	return nil
+}
+
+func (mdf *ovnMdForward) NsRunner(runner nsRunner) *ovnMdForward {
+	mdf.remoteNsRunner = runner
+	return mdf
+}
+
+func (mdf *ovnMdForward) BindAddr() string {
+	return mdf.bindAddr
+}
+
+func (mdf *ovnMdForward) BindPort() int {
+	return mdf.bindPort
+}
+
+func (mdf *ovnMdForward) Listen() error {
+	if err := mdf.init(); err != nil {
+		return err
+	}
+	switch mdf.Proto {
+	case "tcp":
+		l, err := net.ListenTCP("tcp", &net.TCPAddr{
+			IP:   mdf.localIP,
+			Port: mdf.LocalPort,
+		})
+		if err != nil {
+			return errors.Errorf("%s listen: %v", mdf.Proto, err)
+		}
+		addr := l.Addr().(*net.TCPAddr)
+		mdf.bindAddr = addr.IP.String()
+		mdf.bindPort = addr.Port
+		mdf.listener = l
+		return err
+	}
+	return errors.Errorf("unknown protocol: %s", mdf.Proto)
+}
+
+func (mdf *ovnMdForward) dial() (net.Conn, error) {
+	switch mdf.Proto {
+	case "tcp":
+		conn, err := net.DialTCP("tcp", nil, &net.TCPAddr{
+			IP:   mdf.remoteIP,
+			Port: mdf.RemotePort,
+		})
+		if err != nil {
+			return nil, errors.Errorf("%s dial: %v", mdf.Proto, err)
+		}
+		return conn, nil
+	}
+	return nil, errors.Errorf("unknown protocol: %s", mdf.Proto)
+}
+
+func (mdf *ovnMdForward) Serve(ctx context.Context) error {
+	go func() {
+		select {
+		case <-ctx.Done():
+			mdf.listener.Close()
+			return
+		}
+	}()
+	for {
+		conn, err := mdf.listener.Accept()
+		if err != nil {
+			return errors.Wrap(err, "accept")
+		}
+		go func() {
+			err := mdf.serveConn(ctx, conn)
+			if err != nil {
+				var (
+					laddr = conn.LocalAddr()
+					raddr = conn.RemoteAddr()
+				)
+				log.Infof("serveConn %s %s->%s: %v", laddr.Network(), raddr, laddr, err)
+			}
+		}()
+	}
+}
+
+func (mdf *ovnMdForward) remoteNsRun(ctx context.Context, f func(ctx context.Context) error) error {
+	return mdf.remoteNsRunner.nsRun(ctx, f)
+}
+
+func (mdf *ovnMdForward) localNsRun(ctx context.Context, f func(ctx context.Context) error) error {
+	return f(ctx)
+}
+
+func (mdf *ovnMdForward) serveConn(ctx context.Context, lconn net.Conn) error {
+	var rconn net.Conn
+	if err := mdf.remoteNsRun(ctx, func(ctx context.Context) error {
+		conn, err := mdf.dial()
+		if err != nil {
+			return err
+		}
+		rconn = conn
+		return nil
+	}); err != nil {
+		lconn.Close()
+		return errors.Wrap(err, "dial remote")
+	}
+
+	ctx, cancelFunc := context.WithCancel(ctx)
+	go func() {
+		select {
+		case <-ctx.Done():
+			lconn.Close()
+			rconn.Close()
+		}
+	}()
+	rwfunc := func(nsf nsRunFunc, conn net.Conn, dataout chan<- []byte, datain <-chan []byte) error {
+		return nsf(ctx, func(ctx context.Context) error {
+			const rwtimeout = time.Hour
+			var (
+				err0 error
+				err1 error
+			)
+
+			defer conn.Close()
+
+			wg := &sync.WaitGroup{}
+			wg.Add(1)
+			go func() {
+				err0 = nsf(ctx, func(ctx context.Context) error {
+					defer wg.Done()
+					defer cancelFunc()
+					for {
+						buf := make([]byte, 4096)
+						conn.SetReadDeadline(time.Now().Add(rwtimeout))
+						n, err := conn.Read(buf)
+						if n > 0 {
+							select {
+							case dataout <- buf[:n]:
+							case <-ctx.Done():
+								return nil
+							}
+						} else if err != nil {
+							return errors.Wrap(err, "read")
+						}
+					}
+				})
+			}()
+
+			wg.Add(1)
+			go func() {
+				err1 = nsf(ctx, func(ctx context.Context) error {
+					defer wg.Done()
+					defer cancelFunc()
+					var data []byte
+					for {
+						select {
+						case data = <-datain:
+						case <-ctx.Done():
+							return nil
+						}
+						conn.SetWriteDeadline(time.Now().Add(rwtimeout))
+						n, err := conn.Write(data)
+						if n != len(data) {
+							return errors.Errorf("wrote %d bytes, written %d", len(data), n)
+						} else if err != nil {
+							return errors.Wrap(err, "write")
+						}
+					}
+				})
+			}()
+
+			wg.Wait()
+
+			err := errors.NewAggregate([]error{err0, err1})
+			if err != nil {
+				var (
+					laddr = conn.LocalAddr()
+					raddr = conn.RemoteAddr()
+				)
+				return errors.Wrapf(err, "conn %s %s->%s", laddr.Network(), raddr, laddr)
+			}
+			return nil
+		})
+	}
+	var (
+		datacslr   = make(chan []byte) // source: local read
+		datacsrr   = make(chan []byte) // source: remote read
+		wg         = &sync.WaitGroup{}
+		err0, err1 error
+	)
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		err0 = rwfunc(mdf.localNsRun, lconn, datacslr, datacsrr)
+	}()
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		// mdf.localNsRun is not typo
+		err1 = rwfunc(mdf.localNsRun, rconn, datacsrr, datacslr)
+	}()
+	wg.Wait()
+
+	return errors.NewAggregate([]error{err0, err1})
+}
+
 type netIdIP struct {
 	netId   string
 	ip      string
