@@ -23,6 +23,8 @@ import (
 	"sync"
 	"time"
 
+	"google.golang.org/protobuf/reflect/protoreflect"
+
 	"github.com/digitalocean/go-openvswitch/ovs"
 	"github.com/vishvananda/netlink"
 	"github.com/vishvananda/netns"
@@ -34,6 +36,7 @@ import (
 	"yunion.io/x/onecloud/pkg/appsrv"
 	"yunion.io/x/onecloud/pkg/cloudcommon/app"
 	common_options "yunion.io/x/onecloud/pkg/cloudcommon/options"
+	fwdpb "yunion.io/x/onecloud/pkg/hostman/guestman/forwarder/api"
 	"yunion.io/x/onecloud/pkg/hostman/metadata"
 	"yunion.io/x/onecloud/pkg/util/iproute2"
 	"yunion.io/x/onecloud/pkg/vpcagent/ovn/mac"
@@ -66,6 +69,20 @@ func ovnMdIsVethPeer(name string) bool {
 	return strings.HasPrefix(name, "md-") && strings.HasSuffix(name, "-p")
 }
 
+type ovnMdServerReqCmd int
+
+const (
+	ovnMdServerReqCmdOpenForward ovnMdServerReqCmd = iota
+	ovnMdServerReqCmdListForward
+	ovnMdServerReqCmdCloseForward
+)
+
+type ovnMdServerReq struct {
+	Cmd   ovnMdServerReqCmd
+	Data  interface{}
+	RespC chan<- interface{}
+}
+
 type ovnMdServer struct {
 	netId   string
 	netCidr string
@@ -76,6 +93,10 @@ type ovnMdServer struct {
 	ns     netns.NsHandle
 	origNs netns.NsHandle
 	app    *appsrv.Application
+
+	requestC          chan *ovnMdServerReq
+	forwardCtx        context.Context
+	forwardCancelFunc context.CancelFunc
 }
 
 func newOvnMdServer(netId, netCidr string, watcher *serversWatcher) *ovnMdServer {
@@ -87,6 +108,8 @@ func newOvnMdServer(netId, netCidr string, watcher *serversWatcher) *ovnMdServer
 		ns:     netns.None(),
 		origNs: netns.None(),
 		ipNii:  map[string]netIdIP{},
+
+		requestC: make(chan *ovnMdServerReq),
 	}
 	return s
 }
@@ -94,6 +117,10 @@ func newOvnMdServer(netId, netCidr string, watcher *serversWatcher) *ovnMdServer
 func (s *ovnMdServer) Start(ctx context.Context) {
 	if err := s.ensureMdInfra(ctx); err != nil {
 		log.Errorf("ensureMdInfra: %v", err)
+	}
+	{
+		s.forwardCtx, s.forwardCancelFunc = context.WithCancel(ctx)
+		go s.serveRequest(ctx)
 	}
 	if err := s.nsRun(ctx, func(ctx context.Context) error {
 		svc := &metadata.Service{
@@ -126,6 +153,7 @@ func (s *ovnMdServer) Stop(ctx context.Context) {
 			log.Errorf("ovnMd: stop appsrv %s", s.netId)
 		}
 	}
+	s.forwardCancelFunc()
 	if err := s.ensureMdInfraOff(ctx); err != nil {
 		log.Errorf("ensureMdInfra: %v", err)
 	}
@@ -273,6 +301,100 @@ func (s *ovnMdServer) nsRun(ctx context.Context, f func(ctx context.Context) err
 	}()
 	wg.Wait()
 	return err
+}
+
+func (s *ovnMdServer) serveRequest(ctx context.Context) {
+	type mdfData struct {
+		ctx    context.Context
+		cancel context.CancelFunc
+	}
+	var (
+		mdfs   = map[*ovnMdForward]mdfData{}
+		mdfsMu = &sync.Mutex{}
+	)
+	for {
+		select {
+		case req := <-s.requestC:
+			switch req.Cmd {
+			case ovnMdServerReqCmdOpenForward:
+				var (
+					mdf                       = req.Data.(*ovnMdForward)
+					forwardCtx, forwardCancel = context.WithCancel(s.forwardCtx)
+					mdfData                   = mdfData{
+						ctx:    forwardCtx,
+						cancel: forwardCancel,
+					}
+				)
+
+				mdfsMu.Lock()
+				mdfs[mdf] = mdfData
+				mdfsMu.Unlock()
+
+				go func() {
+					defer func() {
+						mdfsMu.Lock()
+						defer mdfsMu.Unlock()
+						delete(mdfs, mdf)
+					}()
+
+					mdf.Serve(forwardCtx)
+				}()
+			case ovnMdServerReqCmdCloseForward:
+				var (
+					data = req.Data.(*fwdpb.CloseRequest)
+				)
+				func() {
+					mdfsMu.Lock()
+					defer mdfsMu.Unlock()
+
+					for mdf := range mdfs {
+						if mdf.Proto == data.Proto &&
+							mdf.BindAddr() == data.BindAddr &&
+							mdf.BindPort() == int(data.BindPort) {
+							mdfs[mdf].cancel()
+							delete(mdfs, mdf) // delete is idempotent
+							break
+						}
+					}
+				}()
+			case ovnMdServerReqCmdListForward:
+				var (
+					data     = req.Data.(*fwdpb.ListByRemoteRequest)
+					respMdfs []*ovnMdForward
+				)
+				func() {
+					mdfsMu.Lock()
+					defer mdfsMu.Unlock()
+					for mdf := range mdfs {
+						if addr := mdf.RemoteAddr; addr == data.RemoteAddr {
+							var (
+								portm  = data.RemotePort == 0 || int(data.RemotePort) == mdf.RemotePort
+								protom = data.Proto == "" || data.Proto == mdf.Proto
+							)
+							if portm && protom {
+								respMdfs = append(respMdfs, mdf)
+							}
+						}
+					}
+				}()
+				select {
+				case req.RespC <- respMdfs:
+				case <-ctx.Done():
+				}
+			}
+		case <-ctx.Done():
+			return
+		}
+	}
+}
+
+func (s *ovnMdServer) Request(ctx context.Context, req *ovnMdServerReq) error {
+	select {
+	case s.requestC <- req:
+	case <-ctx.Done():
+		return ctx.Err()
+	}
+	return nil
 }
 
 func (s *ovnMdServer) integrationBridge() string {
@@ -592,6 +714,8 @@ type ovnMdMan struct {
 
 	guestNics map[string]netIdIPm     // key: guestId
 	mdServers map[string]*ovnMdServer // key: netId
+
+	grpcFwdReqC chan ovnMdFwdReq
 }
 
 func newOvnMdMan(watcher *serversWatcher) *ovnMdMan {
@@ -601,6 +725,8 @@ func newOvnMdMan(watcher *serversWatcher) *ovnMdMan {
 
 		mdServers: map[string]*ovnMdServer{},
 		guestNics: map[string]netIdIPm{},
+
+		grpcFwdReqC: make(chan ovnMdFwdReq),
 	}
 	return man
 }
@@ -634,6 +760,8 @@ func (man *ovnMdMan) Start(ctx context.Context) {
 				man.noteOn(ctx, add)
 			}
 			req.r <- utils.Empty{}
+		case mdreq := <-man.grpcFwdReqC:
+			man.handleMdPbReq(ctx, mdreq)
 		case <-refreshTicker.C:
 			man.cleanup(ctx)
 		case <-ctx.Done():
@@ -687,6 +815,122 @@ func (man *ovnMdMan) SetGuestNICs(ctx context.Context, guestId string, nics []*u
 		case <-ctx.Done():
 		}
 	case <-ctx.Done():
+	}
+}
+
+func (man *ovnMdMan) ForwardRequest(ctx context.Context, mdreq ovnMdFwdReq) (protoreflect.ProtoMessage, error) {
+	return mdreq.Do(ctx, man.grpcFwdReqC)
+}
+
+func (man *ovnMdMan) handleMdPbReq(ctx context.Context, mdreq ovnMdFwdReq) {
+	switch pbreq := mdreq.pbreq.(type) {
+	case *fwdpb.OpenRequest:
+		netId := pbreq.NetId
+		mdServer, ok := man.mdServers[netId]
+		if !ok {
+			mdreq.RespErr(ctx, errors.Errorf("forward not available for netId %s", netId))
+			return
+		}
+		mdf := &ovnMdForward{
+			Proto:      pbreq.Proto,
+			LocalAddr:  pbreq.BindAddr,
+			LocalPort:  int(pbreq.BindPort),
+			RemoteAddr: pbreq.RemoteAddr,
+			RemotePort: int(pbreq.RemotePort),
+		}
+		mdf = mdf.NsRunner(mdServer)
+		if err := mdf.Listen(); err != nil {
+			mdreq.RespErr(ctx, errors.Wrap(err, "listen"))
+			return
+		}
+		if err := mdServer.Request(ctx, &ovnMdServerReq{
+			Cmd:  ovnMdServerReqCmdOpenForward,
+			Data: mdf,
+		}); err != nil {
+			mdreq.RespErr(ctx, errors.Wrap(err, "forward"))
+			return
+		}
+		log.Infof("forward net %s, %s local %s:%d, remote %s:%d",
+			netId,
+			mdf.Proto,
+			mdf.BindAddr(),
+			mdf.BindPort(),
+			mdf.RemoteAddr,
+			mdf.RemotePort,
+		)
+		pbresp := &fwdpb.OpenResponse{
+			NetId:      netId,
+			Proto:      mdf.Proto,
+			BindAddr:   mdf.BindAddr(),
+			BindPort:   uint32(mdf.BindPort()),
+			RemoteAddr: mdf.RemoteAddr,
+			RemotePort: uint32(mdf.RemotePort),
+		}
+		mdreq.RespPb(ctx, pbresp)
+	case *fwdpb.CloseRequest:
+		var (
+			netId = pbreq.NetId
+		)
+		mdServer, ok := man.mdServers[netId]
+		if !ok {
+			mdreq.RespErr(ctx, errors.Errorf("forward not available for netId %s", netId))
+			return
+		}
+		if err := mdServer.Request(ctx, &ovnMdServerReq{
+			Cmd:  ovnMdServerReqCmdCloseForward,
+			Data: pbreq,
+		}); err != nil {
+			mdreq.RespErr(ctx, err)
+			return
+		}
+		pbresp := &fwdpb.CloseResponse{
+			NetId:    netId,
+			Proto:    pbreq.Proto,
+			BindAddr: pbreq.BindAddr,
+			BindPort: pbreq.BindPort,
+		}
+		mdreq.RespPb(ctx, pbresp)
+	case *fwdpb.ListByRemoteRequest:
+		var (
+			netId  = pbreq.NetId
+			pbresp = &fwdpb.ListByRemoteResponse{}
+		)
+		mdServer, ok := man.mdServers[netId]
+		if !ok {
+			mdreq.RespPb(ctx, pbresp)
+			return
+		}
+		var (
+			respC = make(chan interface{})
+			mdfs  []*ovnMdForward
+		)
+		if err := mdServer.Request(ctx, &ovnMdServerReq{
+			Cmd:   ovnMdServerReqCmdListForward,
+			Data:  pbreq,
+			RespC: respC,
+		}); err != nil {
+			mdreq.RespErr(ctx, err)
+			return
+		}
+		select {
+		case resp := <-respC:
+			mdfs = resp.([]*ovnMdForward)
+		case <-ctx.Done():
+			mdreq.RespErr(ctx, ctx.Err())
+			return
+		}
+		for _, mdf := range mdfs {
+			pbresp.Forwards = append(pbresp.Forwards, &fwdpb.OpenResponse{
+				Proto:      mdf.Proto,
+				BindAddr:   mdf.BindAddr(),
+				BindPort:   uint32(mdf.BindPort()),
+				RemoteAddr: mdf.RemoteAddr,
+				RemotePort: uint32(mdf.RemotePort),
+			})
+		}
+		mdreq.RespPb(ctx, pbresp)
+	default:
+		mdreq.RespErr(ctx, errors.Errorf("unknown pb message: %t", pbreq))
 	}
 }
 
