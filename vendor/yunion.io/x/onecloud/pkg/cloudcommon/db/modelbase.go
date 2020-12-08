@@ -106,6 +106,14 @@ func (manager *SModelBaseManager) ValidateName(name string) error {
 	return nil
 }
 
+func (manager *SModelBaseManager) EnableGenerateName() bool {
+	return true
+}
+
+func (manager *SModelBaseManager) HasName() bool {
+	return false
+}
+
 func (model *SModelBase) MarkDeletePreventionOn() {
 	return
 }
@@ -196,7 +204,7 @@ func (manager *SModelBaseManager) FilterByHiddenSystemAttributes(q *sqlchemy.SQu
 	return q
 }
 
-func (manager *SModelBaseManager) FilterByParentId(q *sqlchemy.SQuery, parentId string) *sqlchemy.SQuery {
+func (manager *SModelBaseManager) FilterByUniqValues(q *sqlchemy.SQuery, uniqValues jsonutils.JSONObject) *sqlchemy.SQuery {
 	return q
 }
 
@@ -308,8 +316,8 @@ func (manager *SModelBaseManager) FetchOwnerId(ctx context.Context, data jsonuti
 	return nil, nil
 }
 
-func (manager *SModelBaseManager) FetchParentId(ctx context.Context, data jsonutils.JSONObject) string {
-	return ""
+func (manager *SModelBaseManager) FetchUniqValues(ctx context.Context, data jsonutils.JSONObject) jsonutils.JSONObject {
+	return nil
 }
 
 func (manager *SModelBaseManager) NamespaceScope() rbacutils.TRbacScope {
@@ -355,14 +363,15 @@ func (manager *SModelBaseManager) GetPropertyDistinctField(ctx context.Context, 
 		}
 	}
 
-	var res = jsonutils.NewDict()
 	q := im.Query()
 	q, err = ListItemQueryFilters(im, ctx, q, userCred, query, policy.PolicyActionList)
 	if err != nil {
 		return nil, err
 	}
-	var backupQuery = *q
-
+	var (
+		backupQuery = *q
+		res         = jsonutils.NewDict()
+	)
 	// query field
 	for i := 0; i < len(fields); i++ {
 		var nq = backupQuery
@@ -413,10 +422,14 @@ func (manager *SModelBaseManager) BatchPreValidate(
 }
 
 func (manager *SModelBaseManager) BatchCreateValidateCreateData(ctx context.Context, userCred mcclient.TokenCredential, ownerId mcclient.IIdentityProvider, query jsonutils.JSONObject, data *jsonutils.JSONDict) (*jsonutils.JSONDict, error) {
-	return nil, nil
+	return data, nil
 }
 
 func (manager *SModelBaseManager) OnCreateFailed(ctx context.Context, userCred mcclient.TokenCredential, ownerId mcclient.IIdentityProvider, query jsonutils.JSONObject, data jsonutils.JSONObject) error {
+	return nil
+}
+
+func (manager *SModelBaseManager) GetI18N(ctx context.Context, idstr string, resObj jsonutils.JSONObject) *jsonutils.JSONDict {
 	return nil
 }
 
@@ -539,17 +552,24 @@ func (model *SModelBase) CustomizeDelete(ctx context.Context, userCred mcclient.
 	return nil
 }
 
-func cleanModelUsages(ctx context.Context, userCred mcclient.TokenCredential, model IModel) {
+func (model *SModelBase) cleanModelUsages(ctx context.Context, userCred mcclient.TokenCredential) {
 	usages := model.GetIModel().GetUsages()
 	if CancelUsages != nil && len(usages) > 0 {
 		CancelUsages(ctx, userCred, usages)
 	}
 }
 
+func (model *SModelBase) RecoverUsages(ctx context.Context, userCred mcclient.TokenCredential) {
+	usages := model.GetIModel().GetUsages()
+	if AddUsages != nil && len(usages) > 0 {
+		AddUsages(ctx, userCred, usages)
+	}
+}
+
 func (model *SModelBase) PreDelete(ctx context.Context, userCred mcclient.TokenCredential) {
 	// clean usage on predelete
 	// clean usage before fakedelete for pending delete models
-	cleanModelUsages(ctx, userCred, model)
+	model.cleanModelUsages(ctx, userCred)
 }
 
 func (model *SModelBase) PostDelete(ctx context.Context, userCred mcclient.TokenCredential) {
@@ -569,8 +589,8 @@ func (model *SModelBase) GetOwnerId() mcclient.IIdentityProvider {
 	return nil
 }
 
-func (model *SModelBase) GetParentId() string {
-	return ""
+func (model *SModelBase) GetUniqValues() jsonutils.JSONObject {
+	return nil
 }
 
 func (model *SModelBase) IsSharable(ownerId mcclient.IIdentityProvider) bool {
@@ -590,5 +610,9 @@ func (model *SModelBase) DeleteInContext(ctx context.Context, userCred mcclient.
 }
 
 func (model *SModelBase) GetUsages() []IUsage {
+	return nil
+}
+
+func (model *SModelBase) GetI18N(ctx context.Context) *jsonutils.JSONDict {
 	return nil
 }

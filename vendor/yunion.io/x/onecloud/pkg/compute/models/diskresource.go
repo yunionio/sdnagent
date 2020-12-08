@@ -40,15 +40,15 @@ type SDiskResourceBaseManager struct {
 }
 
 func ValidateDiskResourceInput(userCred mcclient.TokenCredential, input api.DiskResourceInput) (*SDisk, api.DiskResourceInput, error) {
-	diskObj, err := DiskManager.FetchByIdOrName(userCred, input.Disk)
+	diskObj, err := DiskManager.FetchByIdOrName(userCred, input.DiskId)
 	if err != nil {
 		if errors.Cause(err) == sql.ErrNoRows {
-			return nil, input, errors.Wrapf(httperrors.ErrResourceNotFound, "%s %s", DiskManager.Keyword(), input.Disk)
+			return nil, input, errors.Wrapf(httperrors.ErrResourceNotFound, "%s %s", DiskManager.Keyword(), input.DiskId)
 		} else {
 			return nil, input, errors.Wrap(err, "DiskManager.FetchByIdOrName")
 		}
 	}
-	input.Disk = diskObj.GetId()
+	input.DiskId = diskObj.GetId()
 	return diskObj.(*SDisk), input, nil
 }
 
@@ -139,7 +139,7 @@ func (manager *SDiskResourceBaseManager) ListItemFilter(
 	query api.DiskFilterListInput,
 ) (*sqlchemy.SQuery, error) {
 	var err error
-	if len(query.Disk) > 0 {
+	if len(query.DiskId) > 0 {
 		diskObj, _, err := ValidateDiskResourceInput(userCred, query.DiskResourceInput)
 		if err != nil {
 			return nil, errors.Wrap(err, "ValidateDiskResourceInput")
@@ -181,39 +181,35 @@ func (manager *SDiskResourceBaseManager) OrderByExtraFields(
 	userCred mcclient.TokenCredential,
 	query api.DiskFilterListInput,
 ) (*sqlchemy.SQuery, error) {
-	q, orders, fields := manager.GetOrderBySubQuery(q, userCred, query)
-	if len(orders) > 0 {
-		q = db.OrderByFields(q, orders, fields)
+	if !db.NeedOrderQuery(manager.GetOrderByFields(query)) {
+		return q, nil
 	}
+	orderQ := DiskManager.Query("id")
+	orderSubQ := orderQ.SubQuery()
+	orderQ, orders, fields := manager.GetOrderBySubQuery(orderQ, orderSubQ, orderQ.Field("id"), userCred, query, nil, nil)
+	q = q.LeftJoin(orderSubQ, sqlchemy.Equals(q.Field("disk_id"), orderSubQ.Field("id")))
+	q = db.OrderByFields(q, orders, fields)
 	return q, nil
 }
 
 func (manager *SDiskResourceBaseManager) GetOrderBySubQuery(
 	q *sqlchemy.SQuery,
+	subq *sqlchemy.SSubQuery,
+	joinField sqlchemy.IQueryField,
 	userCred mcclient.TokenCredential,
 	query api.DiskFilterListInput,
+	orders []string,
+	fields []sqlchemy.IQueryField,
 ) (*sqlchemy.SQuery, []string, []sqlchemy.IQueryField) {
-	diskQ := DiskManager.Query("id", "name")
-	var orders []string
-	var fields []sqlchemy.IQueryField
-
-	if db.NeedOrderQuery(manager.SStorageResourceBaseManager.GetOrderByFields(query.StorageFilterListInput)) {
-		var storageOrders []string
-		var storageFields []sqlchemy.IQueryField
-		diskQ, storageOrders, storageFields = manager.SStorageResourceBaseManager.GetOrderBySubQuery(diskQ, userCred, query.StorageFilterListInput)
-		if len(storageOrders) > 0 {
-			orders = append(orders, storageOrders...)
-			fields = append(fields, storageFields...)
-		}
+	if !db.NeedOrderQuery(manager.GetOrderByFields(query)) {
+		return q, orders, fields
 	}
-	if db.NeedOrderQuery(manager.GetOrderByFields(query)) {
-		subq := diskQ.SubQuery()
-		q = q.LeftJoin(subq, sqlchemy.Equals(q.Field("disk_id"), subq.Field("id")))
-		if db.NeedOrderQuery([]string{query.OrderByDisk}) {
-			orders = append(orders, query.OrderByDisk)
-			fields = append(fields, subq.Field("name"))
-		}
-	}
+	diskQ := DiskManager.Query().SubQuery()
+	q = q.LeftJoin(diskQ, sqlchemy.Equals(joinField, diskQ.Field("id")))
+	q = q.AppendField(diskQ.Field("name").Label("disk"))
+	orders = append(orders, query.OrderByDisk)
+	fields = append(fields, subq.Field("disk"))
+	q, orders, fields = manager.SStorageResourceBaseManager.GetOrderBySubQuery(q, subq, diskQ.Field("storage_id"), userCred, query.StorageFilterListInput, orders, fields)
 	return q, orders, fields
 }
 

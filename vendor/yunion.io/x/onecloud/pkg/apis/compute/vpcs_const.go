@@ -53,6 +53,10 @@ type VpcListInput struct {
 	RegionalFilterListInput
 	GlobalVpcResourceListInput
 
+	DnsZoneFilterListBase
+
+	InterVpcNetworkFilterListBase
+
 	UsableResourceListInput
 	UsableVpcResourceListInput
 

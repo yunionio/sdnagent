@@ -107,14 +107,6 @@ func (self *SGuestdisk) ValidateUpdateData(ctx context.Context, userCred mcclien
 	return input, nil
 }
 
-func (joint *SGuestdisk) Master() db.IStandaloneModel {
-	return db.JointMaster(joint)
-}
-
-func (joint *SGuestdisk) Slave() db.IStandaloneModel {
-	return db.JointSlave(joint)
-}
-
 func (self *SGuestdisk) GetExtraDetails(
 	ctx context.Context,
 	userCred mcclient.TokenCredential,
@@ -249,6 +241,9 @@ func (self *SGuestdisk) GetJsonDescAtHost(host *SHost) jsonutils.JSONObject {
 	dev := disk.getDev()
 	if len(dev) > 0 {
 		desc.Add(jsonutils.NewString(dev), "dev")
+	}
+	if disk.IsSsd {
+		desc.Add(jsonutils.JSONTrue, "is_ssd")
 	}
 	return desc
 }

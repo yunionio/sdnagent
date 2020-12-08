@@ -46,6 +46,7 @@ type SLoadbalancerManager struct {
 
 	db.SVirtualResourceBaseManager
 	db.SExternalizedResourceBaseManager
+	SDeletePreventableResourceBaseManager
 
 	SVpcResourceBaseManager
 	SZoneResourceBaseManager
@@ -86,6 +87,7 @@ type SLoadbalancer struct {
 	db.SExternalizedResourceBase
 	SManagedResourceBase
 	SCloudregionResourceBase
+	SDeletePreventableResourceBase
 
 	// LB might optionally be in a VPC, vpc_id, manager_id, cloudregion_id
 	SVpcResourceBase `width:"36" charset:"ascii" nullable:"true" list:"user" create:"optional"`
@@ -95,6 +97,9 @@ type SLoadbalancer struct {
 	SNetworkResourceBase `width:"147" charset:"ascii" nullable:"true" list:"user" create:"optional"`
 
 	SLoadbalancerRateLimiter
+
+	// 备可用区
+	Zone1 string `width:"36" charset:"ascii" nullable:"true" list:"user" create:"optional" update:"user" json:"zone_1"`
 
 	// IP地址
 	Address string `width:"128" charset:"ascii" nullable:"true" list:"user" create:"optional" json:"address"`
@@ -148,6 +153,10 @@ func (man *SLoadbalancerManager) ListItemFilter(
 	q, err = man.SCloudregionResourceBaseManager.ListItemFilter(ctx, q, userCred, query.RegionalFilterListInput)
 	if err != nil {
 		return nil, errors.Wrap(err, "SCloudregionResourceBaseManager.ListItemFilter")
+	}
+	q, err = man.SDeletePreventableResourceBaseManager.ListItemFilter(ctx, q, userCred, query.DeletePreventableResourceBaseListInput)
+	if err != nil {
+		return nil, errors.Wrap(err, "SDeletePreventableResourceBaseManager.ListItemFilter")
 	}
 	vpcQuery := api.VpcFilterListInput{
 		VpcFilterListInputBase: query.VpcFilterListInputBase,
@@ -212,11 +221,11 @@ func (man *SLoadbalancerManager) OrderByExtraFields(
 	if err != nil {
 		return nil, errors.Wrap(err, "SVirtualResourceBaseManager.OrderByExtraFields")
 	}
-	q, err = man.SManagedResourceBaseManager.ListItemFilter(ctx, q, userCred, query.ManagedResourceListInput)
+	q, err = man.SManagedResourceBaseManager.OrderByExtraFields(ctx, q, userCred, query.ManagedResourceListInput)
 	if err != nil {
 		return nil, errors.Wrap(err, "SManagedResourceBaseManager.ListItemFilter")
 	}
-	q, err = man.SCloudregionResourceBaseManager.ListItemFilter(ctx, q, userCred, query.RegionalFilterListInput)
+	q, err = man.SCloudregionResourceBaseManager.OrderByExtraFields(ctx, q, userCred, query.RegionalFilterListInput)
 	if err != nil {
 		return nil, errors.Wrap(err, "SCloudregionResourceBaseManager.ListItemFilter")
 	}
@@ -268,6 +277,21 @@ func (man *SLoadbalancerManager) QueryDistinctExtraField(q *sqlchemy.SQuery, fie
 	return q, httperrors.ErrNotFound
 }
 
+func (man *SLoadbalancerManager) BatchCreateValidateCreateData(ctx context.Context, userCred mcclient.TokenCredential, ownerId mcclient.IIdentityProvider, query jsonutils.JSONObject, data *jsonutils.JSONDict) (*jsonutils.JSONDict, error) {
+	input := api.LoadbalancerCreateInput{}
+	err := data.Unmarshal(&input)
+	if err != nil {
+		return nil, err
+	}
+
+	newData, err := man.ValidateCreateData(ctx, userCred, ownerId, query, input)
+	if err != nil {
+		return nil, err
+	}
+
+	return newData, nil
+}
+
 func (man *SLoadbalancerManager) ValidateCreateData(
 	ctx context.Context,
 	userCred mcclient.TokenCredential,
@@ -278,23 +302,23 @@ func (man *SLoadbalancerManager) ValidateCreateData(
 	var err error
 
 	var region *SCloudregion
-	if len(input.Vpc) > 0 {
+	if len(input.VpcId) > 0 {
 		var vpc *SVpc
 		vpc, input.VpcResourceInput, err = ValidateVpcResourceInput(userCred, input.VpcResourceInput)
 		if err != nil {
 			return nil, errors.Wrap(err, "ValidateVpcResourceInput")
 		}
 		region, _ = vpc.GetRegion()
-	} else if len(input.Zone) > 0 {
+	} else if len(input.ZoneId) > 0 {
 		var zone *SZone
 		zone, input.ZoneResourceInput, err = ValidateZoneResourceInput(userCred, input.ZoneResourceInput)
 		if err != nil {
 			return nil, errors.Wrap(err, "ValidateZoneResourceInput")
 		}
 		region = zone.GetRegion()
-	} else if len(input.Network) > 0 {
-		if strings.IndexByte(input.Network, ',') >= 0 {
-			input.Network = strings.Split(input.Network, ",")[0]
+	} else if len(input.NetworkId) > 0 {
+		if strings.IndexByte(input.NetworkId, ',') >= 0 {
+			input.NetworkId = strings.Split(input.NetworkId, ",")[0]
 		}
 		var network *SNetwork
 		network, input.NetworkResourceInput, err = ValidateNetworkResourceInput(userCred, input.NetworkResourceInput)
@@ -308,10 +332,11 @@ func (man *SLoadbalancerManager) ValidateCreateData(
 		return nil, httperrors.NewBadRequestError("cannot find region info")
 	}
 
-	input.Cloudregion = region.GetId()
+	input.CloudregionId = region.GetId()
 
-	if len(input.Cloudprovider) > 0 {
-		_, input.CloudproviderResourceInput, err = ValidateCloudproviderResourceInput(userCred, input.CloudproviderResourceInput)
+	var cloudprovider *SCloudprovider
+	if len(input.CloudproviderId) > 0 {
+		cloudprovider, input.CloudproviderResourceInput, err = ValidateCloudproviderResourceInput(userCred, input.CloudproviderResourceInput)
 		if err != nil {
 			return nil, errors.Wrap(err, "ValidateCloudproviderResourceInput")
 		}
@@ -320,6 +345,13 @@ func (man *SLoadbalancerManager) ValidateCreateData(
 	input.VirtualResourceCreateInput, err = man.SVirtualResourceBaseManager.ValidateCreateData(ctx, userCred, ownerId, query, input.VirtualResourceCreateInput)
 	if err != nil {
 		return nil, err
+	}
+
+	quotaKeys := fetchRegionalQuotaKeys(rbacutils.ScopeProject, ownerId, region, cloudprovider)
+	pendingUsage := SRegionQuota{Loadbalancer: 1}
+	pendingUsage.SetKeys(quotaKeys)
+	if err := quotas.CheckSetPendingQuota(ctx, userCred, &pendingUsage); err != nil {
+		return nil, httperrors.NewOutOfQuotaError("%s", err)
 	}
 
 	return region.GetDriver().ValidateCreateLoadbalancerData(ctx, userCred, ownerId, input.JSON(input))
@@ -370,6 +402,13 @@ func (lb *SLoadbalancer) PostCreate(ctx context.Context, userCred mcclient.Token
 	// NOTE lb.Id will only be available after BeforeInsert happens
 	// NOTE this means lb.UpdateVersion will be 0, then 1 after creation
 	// NOTE need ways to notify error
+
+	pendingUsage := SRegionQuota{Loadbalancer: 1}
+	pendingUsage.SetKeys(lb.GetQuotaKeys())
+	err := quotas.CancelPendingUsage(ctx, userCred, &pendingUsage, &pendingUsage, true)
+	if err != nil {
+		log.Errorf("CancelPendingUsage error %s", err)
+	}
 
 	lb.SetStatus(userCred, api.LB_CREATING, "")
 	if err := lb.StartLoadBalancerCreateTask(ctx, userCred, data.(*jsonutils.JSONDict), ""); err != nil {
@@ -436,6 +475,7 @@ func (lb *SLoadbalancer) GetCreateLoadbalancerParams(iRegion cloudprovider.IClou
 		ChargeType:       lb.ChargeType,
 		LoadbalancerSpec: lb.LoadbalancerSpec,
 	}
+	params.Tags, _ = lb.GetAllUserMetadata()
 
 	if len(lb.ZoneId) > 0 {
 		zone := lb.GetZone()
@@ -448,6 +488,19 @@ func (lb *SLoadbalancer) GetCreateLoadbalancerParams(iRegion cloudprovider.IClou
 		}
 		params.ZoneID = iZone.GetId()
 	}
+
+	if len(lb.Zone1) > 0 {
+		z1 := ZoneManager.FetchZoneById(lb.Zone1)
+		if z1 == nil {
+			return nil, fmt.Errorf("failed to find zone 1 for lb %s", lb.Name)
+		}
+		iZone, err := iRegion.GetIZoneById(z1.ExternalId)
+		if err != nil {
+			return nil, errors.Wrap(err, "GetIZoneById")
+		}
+		params.SlaveZoneID = iZone.GetId()
+	}
+
 	if lb.ChargeType == api.LB_CHARGE_TYPE_BY_BANDWIDTH {
 		params.EgressMbps = lb.EgressMbps
 	}
@@ -582,6 +635,7 @@ func (man *SLoadbalancerManager) FetchCustomizeColumns(
 	regRows := man.SCloudregionResourceBaseManager.FetchCustomizeColumns(ctx, userCred, query, objs, fields, isList)
 	vpcRows := man.SVpcResourceBaseManager.FetchCustomizeColumns(ctx, userCred, query, objs, fields, isList)
 	zoneRows := man.SZoneResourceBaseManager.FetchCustomizeColumns(ctx, userCred, query, objs, fields, isList)
+	zone1Rows := man.FetchZone1ResourceInfos(ctx, userCred, query, objs)
 	netRows := man.SNetworkResourceBaseManager.FetchCustomizeColumns(ctx, userCred, query, objs, fields, isList)
 
 	for i := range rows {
@@ -593,6 +647,7 @@ func (man *SLoadbalancerManager) FetchCustomizeColumns(
 			CloudregionResourceInfo: regRows[i],
 			VpcResourceInfoBase:     vpcRows[i].VpcResourceInfoBase,
 			ZoneResourceInfoBase:    zoneRows[i].ZoneResourceInfoBase,
+			Zone1ResourceInfoBase:   zone1Rows[i],
 			NetworkResourceInfoBase: netRows[i].NetworkResourceInfoBase,
 		}
 		rows[i], _ = objs[i].(*SLoadbalancer).getMoreDetails(rows[i])
@@ -600,6 +655,37 @@ func (man *SLoadbalancerManager) FetchCustomizeColumns(
 
 	return rows
 }
+
+func (lb *SLoadbalancerManager) FetchZone1ResourceInfos(ctx context.Context,
+	userCred mcclient.TokenCredential,
+	query jsonutils.JSONObject,
+	objs []interface{}) []api.Zone1ResourceInfoBase {
+	rows := make([]api.Zone1ResourceInfoBase, len(objs))
+	zoneIds := []string{}
+	for i := range objs {
+		zone1 := objs[i].(*SLoadbalancer).Zone1
+		if len(zone1) > 0 {
+			zoneIds = append(zoneIds, zone1)
+		}
+	}
+
+	zones := make(map[string]SZone)
+	err := db.FetchStandaloneObjectsByIds(ZoneManager, zoneIds, &zones)
+	if err != nil {
+		log.Errorf("FetchStandaloneObjectsByIds fail %s", err)
+		return rows
+	}
+
+	for i := range objs {
+		if zone, ok := zones[objs[i].(*SLoadbalancer).Zone1]; ok {
+			rows[i].Zone1Name = zone.GetName()
+			rows[i].Zone1ExtId = fetchExternalId(zone.GetExternalId())
+		}
+	}
+
+	return rows
+}
+
 func (lb *SLoadbalancer) GetExtraDetails(
 	ctx context.Context,
 	userCred mcclient.TokenCredential,
@@ -635,6 +721,10 @@ func (lb *SLoadbalancer) ValidateDeleteCondition(ctx context.Context) error {
 		if err := region.GetDriver().ValidateDeleteLoadbalancerCondition(ctx, lb); err != nil {
 			return err
 		}
+	}
+
+	if lb.DisableDelete.IsTrue() {
+		return httperrors.NewInvalidStatusError("loadbalancer is locked, cannot delete")
 	}
 
 	return lb.SModelBase.ValidateDeleteCondition(ctx)
@@ -713,6 +803,53 @@ func (man *SLoadbalancerManager) getLoadbalancersByRegion(region *SCloudregion, 
 	return lbs, nil
 }
 
+func (man *SLoadbalancerManager) getLoadbalancersByExternalIds(externalIds []string) ([]SLoadbalancer, error) {
+	lbs := []SLoadbalancer{}
+	q := man.Query()
+	q = q.In("external_id", externalIds)
+	q = q.IsFalse("pending_deleted")
+	if err := db.FetchModelObjects(man, q, &lbs); err != nil {
+		log.Errorf("failed to get lbs for region: %#v error: %v", externalIds, err)
+		return nil, err
+	}
+	return lbs, nil
+}
+
+func (man *SLoadbalancerManager) getLocalLoadbalancers(ctx context.Context, userCred mcclient.TokenCredential, provider *SCloudprovider, region *SCloudregion, lbs []cloudprovider.ICloudLoadbalancer) ([]SLoadbalancer, error) {
+	part1, err := man.getLoadbalancersByRegion(region, provider)
+	if err != nil {
+		return nil, err
+	}
+
+	localLbs := map[string]SLoadbalancer{}
+	for i := range part1 {
+		localLbs[part1[i].Id] = part1[i]
+	}
+
+	externalIds := []string{}
+	for i := range lbs {
+		externalIds = append(externalIds, lbs[i].GetGlobalId())
+	}
+
+	if len(externalIds) > 0 {
+		part2, err := man.getLoadbalancersByExternalIds(externalIds)
+		if err != nil {
+			return nil, err
+		}
+
+		for i := range part2 {
+			localLbs[part2[i].Id] = part2[i]
+		}
+	}
+
+	ret := []SLoadbalancer{}
+	for id, _ := range localLbs {
+		ret = append(ret, localLbs[id])
+	}
+
+	return ret, nil
+}
+
 func (man *SLoadbalancerManager) SyncLoadbalancers(ctx context.Context, userCred mcclient.TokenCredential, provider *SCloudprovider, region *SCloudregion, lbs []cloudprovider.ICloudLoadbalancer, syncRange *SSyncRange) ([]SLoadbalancer, []cloudprovider.ICloudLoadbalancer, compare.SyncResult) {
 	syncOwnerId := provider.GetOwnerId()
 
@@ -723,7 +860,7 @@ func (man *SLoadbalancerManager) SyncLoadbalancers(ctx context.Context, userCred
 	remoteLbs := []cloudprovider.ICloudLoadbalancer{}
 	syncResult := compare.SyncResult{}
 
-	dbLbs, err := man.getLoadbalancersByRegion(region, provider)
+	dbLbs, err := man.getLocalLoadbalancers(ctx, userCred, provider, region, remoteLbs)
 	if err != nil {
 		syncResult.Error(err)
 		return nil, nil, syncResult
@@ -756,7 +893,7 @@ func (man *SLoadbalancerManager) SyncLoadbalancers(ctx context.Context, userCred
 		}
 	}
 	for i := 0; i < len(commondb); i++ {
-		err = commondb[i].SyncWithCloudLoadbalancer(ctx, userCred, commonext[i], syncOwnerId, provider)
+		err = commondb[i].SyncWithCloudLoadbalancer(ctx, userCred, commonext[i], syncOwnerId, provider, region)
 		if err != nil {
 			syncResult.UpdateError(err)
 		} else {
@@ -822,6 +959,14 @@ func (man *SLoadbalancerManager) newFromCloudLoadbalancer(ctx context.Context, u
 	lbNetworkIds := getExtLbNetworkIds(extLb, lb.ManagerId)
 	lb.NetworkId = strings.Join(lbNetworkIds, ",")
 
+	// classic vpc
+	if extLb.GetNetworkType() == api.LB_NETWORK_TYPE_CLASSIC {
+		if vpc, err := VpcManager.GetOrCreateVpcForClassicNetwork(ctx, provider, region); err == nil && vpc != nil {
+			lb.VpcId = vpc.GetId()
+		}
+	}
+
+	// vpc
 	if vpcId := extLb.GetVpcId(); len(vpcId) > 0 {
 		if vpc, err := db.FetchByExternalIdAndManagerId(VpcManager, vpcId, func(q *sqlchemy.SQuery) *sqlchemy.SQuery {
 			return q.Equals("manager_id", provider.Id)
@@ -832,6 +977,12 @@ func (man *SLoadbalancerManager) newFromCloudLoadbalancer(ctx context.Context, u
 	if zoneId := extLb.GetZoneId(); len(zoneId) > 0 {
 		if zone, err := db.FetchByExternalId(ZoneManager, zoneId); err == nil && zone != nil {
 			lb.ZoneId = zone.GetId()
+		}
+	}
+
+	if zoneId := extLb.GetZone1Id(); len(zoneId) > 0 {
+		if zone, err := db.FetchByExternalId(ZoneManager, zoneId); err == nil && zone != nil {
+			lb.Zone1 = zone.GetId()
 		}
 	}
 
@@ -985,7 +1136,7 @@ func (self *SLoadbalancer) SyncLoadbalancerEip(ctx context.Context, userCred mcc
 	return result
 }
 
-func (lb *SLoadbalancer) SyncWithCloudLoadbalancer(ctx context.Context, userCred mcclient.TokenCredential, extLb cloudprovider.ICloudLoadbalancer, syncOwnerId mcclient.IIdentityProvider, provider *SCloudprovider) error {
+func (lb *SLoadbalancer) SyncWithCloudLoadbalancer(ctx context.Context, userCred mcclient.TokenCredential, extLb cloudprovider.ICloudLoadbalancer, syncOwnerId mcclient.IIdentityProvider, provider *SCloudprovider, region *SCloudregion) error {
 	lockman.LockObject(ctx, lb)
 	defer lockman.ReleaseObject(ctx, lb)
 
@@ -1002,12 +1153,37 @@ func (lb *SLoadbalancer) SyncWithCloudLoadbalancer(ctx context.Context, userCred
 		if extLb.GetMetadata() != nil {
 			lb.LBInfo = extLb.GetMetadata()
 		}
+		syncVirtualResourceMetadata(ctx, userCred, lb, extLb)
 
+		// classic vpc
+		if extLb.GetNetworkType() == api.LB_NETWORK_TYPE_CLASSIC {
+			if vpc, err := VpcManager.GetOrCreateVpcForClassicNetwork(ctx, provider, region); err == nil && vpc != nil {
+				lb.VpcId = vpc.GetId()
+			}
+		}
+
+		// vpc
 		if vpcId := extLb.GetVpcId(); len(vpcId) > 0 {
 			if vpc, err := db.FetchByExternalIdAndManagerId(VpcManager, vpcId, func(q *sqlchemy.SQuery) *sqlchemy.SQuery {
 				return q.Equals("manager_id", provider.Id)
 			}); err == nil && vpc != nil {
 				lb.VpcId = vpc.GetId()
+			}
+		}
+
+		extZoneId := extLb.GetZoneId()
+		if len(extZoneId) > 0 {
+			if zone, err := db.FetchByExternalId(ZoneManager, extZoneId); err == nil && zone != nil {
+				lb.ZoneId = zone.GetId()
+			}
+		}
+
+		if len(lb.Zone1) == 0 {
+			extZoneId := extLb.GetZone1Id()
+			if len(extZoneId) > 0 {
+				if zone, err := db.FetchByExternalId(ZoneManager, extZoneId); err == nil && zone != nil {
+					lb.Zone1 = zone.GetId()
+				}
 			}
 		}
 
@@ -1189,4 +1365,40 @@ func (manager *SLoadbalancerManager) ListItemExportKeys(ctx context.Context,
 
 func (self *SLoadbalancer) GetChangeOwnerCandidateDomainIds() []string {
 	return self.SManagedResourceBase.GetChangeOwnerCandidateDomainIds()
+}
+
+func (self *SLoadbalancer) AllowPerformRemoteUpdate(ctx context.Context, userCred mcclient.TokenCredential, query jsonutils.JSONObject, data jsonutils.JSONObject) bool {
+	return self.IsOwner(userCred) || db.IsAdminAllowPerform(userCred, self, "remote-update")
+}
+
+func (self *SLoadbalancer) PerformRemoteUpdate(ctx context.Context, userCred mcclient.TokenCredential, query jsonutils.JSONObject, input api.LoadbalancerRemoteUpdateInput) (jsonutils.JSONObject, error) {
+	err := self.StartRemoteUpdateTask(ctx, userCred, (input.ReplaceTags != nil && *input.ReplaceTags), "")
+	if err != nil {
+		return nil, errors.Wrap(err, "StartRemoteUpdateTask")
+	}
+	return nil, nil
+}
+
+func (self *SLoadbalancer) StartRemoteUpdateTask(ctx context.Context, userCred mcclient.TokenCredential, replaceTags bool, parentTaskId string) error {
+	data := jsonutils.NewDict()
+	if replaceTags {
+		data.Add(jsonutils.JSONTrue, "replace_tags")
+	}
+	if task, err := taskman.TaskManager.NewTask(ctx, "LoadbalancerRemoteUpdateTask", self, userCred, data, parentTaskId, "", nil); err != nil {
+		log.Errorln(err)
+		return errors.Wrap(err, "Start LoadbalancerRemoteUpdateTask")
+	} else {
+		task.ScheduleRun(nil)
+	}
+	return nil
+}
+
+func (self *SLoadbalancer) OnMetadataUpdated(ctx context.Context, userCred mcclient.TokenCredential) {
+	if len(self.ExternalId) == 0 {
+		return
+	}
+	err := self.StartRemoteUpdateTask(ctx, userCred, false, "")
+	if err != nil {
+		log.Errorf("StartRemoteUpdateTask fail: %s", err)
+	}
 }

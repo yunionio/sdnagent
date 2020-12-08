@@ -64,6 +64,8 @@ type SVirtualResourceBase struct {
 	PendingDeletedAt time.Time `json:"pending_deleted_at" list:"user"`
 	// 资源是否处于回收站中
 	PendingDeleted bool `nullable:"false" default:"false" index:"true" get:"user" list:"user" json:"pending_deleted"`
+	// 资源是否被冻结
+	Freezed bool `nullable:"false" default:"false" get:"user" list:"user" json:"freezed"`
 }
 
 func (model *SVirtualResourceBase) IsOwner(userCred mcclient.TokenCredential) bool {
@@ -80,11 +82,10 @@ func (manager *SVirtualResourceBaseManager) GetIVirtualModelManager() IVirtualMo
 }
 */
 
-func (manager *SVirtualResourceBaseManager) FilterByName(q *sqlchemy.SQuery, name string) *sqlchemy.SQuery {
+/*func (manager *SVirtualResourceBaseManager) FilterByName(q *sqlchemy.SQuery, name string) *sqlchemy.SQuery {
 	q = manager.SStatusStandaloneResourceBaseManager.FilterByName(q, name)
-	q = q.Filter(sqlchemy.OR(sqlchemy.IsNull(q.Field("pending_deleted")), sqlchemy.IsFalse(q.Field("pending_deleted"))))
 	return q
-}
+}*/
 
 func (manager *SVirtualResourceBaseManager) FilterByHiddenSystemAttributes(q *sqlchemy.SQuery, userCred mcclient.TokenCredential, query jsonutils.JSONObject, scope rbacutils.TRbacScope) *sqlchemy.SQuery {
 	q = manager.SStatusStandaloneResourceBaseManager.FilterByHiddenSystemAttributes(q, userCred, query, scope)
@@ -228,8 +229,21 @@ func (manager *SVirtualResourceBaseManager) FetchCustomizeColumns(
 	return ret
 }
 
+func (model *SVirtualResourceBase) PreCheckPerformAction(
+	ctx context.Context, userCred mcclient.TokenCredential,
+	action string, query jsonutils.JSONObject, data jsonutils.JSONObject,
+) error {
+	if err := model.SStandaloneResourceBase.PreCheckPerformAction(ctx, userCred, action, query, data); err != nil {
+		return err
+	}
+	if model.Freezed && action != "unfreeze" {
+		return httperrors.NewBadRequestError("Virtual resource freezed, can't do %s", action)
+	}
+	return nil
+}
+
 func (model *SVirtualResourceBase) AllowUpdateItem(ctx context.Context, userCred mcclient.TokenCredential) bool {
-	return model.IsOwner(userCred) || IsAdminAllowUpdate(userCred, model)
+	return !model.Freezed && (model.IsOwner(userCred) || IsAdminAllowUpdate(userCred, model))
 }
 
 func (model *SVirtualResourceBase) AllowDeleteItem(ctx context.Context, userCred mcclient.TokenCredential, query jsonutils.JSONObject, data jsonutils.JSONObject) bool {
@@ -251,6 +265,47 @@ func (model *SVirtualResourceBase) AllowGetDetailsStatus(ctx context.Context, us
 func (model *SVirtualResourceBase) GetTenantCache(ctx context.Context) (*STenant, error) {
 	// log.Debugf("Get tenant by Id %s", model.ProjectId)
 	return TenantCacheManager.FetchTenantById(ctx, model.ProjectId)
+}
+
+func (model *SVirtualResourceBase) AllowPerformFreeze(ctx context.Context, userCred mcclient.TokenCredential, query jsonutils.JSONObject, input apis.PerformFreezeInput) bool {
+	return IsAdminAllowPerform(userCred, model, "freeze")
+}
+
+// freezed update and perform action operation except for unfreeze
+func (model *SVirtualResourceBase) PerformFreeze(ctx context.Context, userCred mcclient.TokenCredential, query jsonutils.JSONObject, input apis.PerformFreezeInput) (jsonutils.JSONObject, error) {
+	if model.Freezed {
+		return nil, httperrors.NewBadRequestError("virtual resource already freezed")
+	}
+	_, err := Update(model, func() error {
+		model.Freezed = true
+		return nil
+	})
+	if err != nil {
+		return nil, err
+	}
+	OpsLog.LogEvent(model, ACT_FREEZE, "perform freeze", userCred)
+	logclient.AddActionLogWithContext(ctx, model, logclient.ACT_FREEZE, "perform freeze", userCred, true)
+	return nil, nil
+}
+
+func (model *SVirtualResourceBase) AllowPerformUnfreeze(ctx context.Context, userCred mcclient.TokenCredential, query jsonutils.JSONObject, input apis.PerformUnfreezeInput) bool {
+	return IsAdminAllowPerform(userCred, model, "unfreeze")
+}
+
+func (model *SVirtualResourceBase) PerformUnfreeze(ctx context.Context, userCred mcclient.TokenCredential, query jsonutils.JSONObject, input apis.PerformUnfreezeInput) (jsonutils.JSONObject, error) {
+	if !model.Freezed {
+		return nil, httperrors.NewBadRequestError("virtual resource not freezed")
+	}
+	_, err := Update(model, func() error {
+		model.Freezed = false
+		return nil
+	})
+	if err != nil {
+		return nil, err
+	}
+	OpsLog.LogEvent(model, ACT_UNFREEZE, "perform unfreeze", userCred)
+	logclient.AddActionLogWithContext(ctx, model, logclient.ACT_UNFREEZE, "perform unfreeze", userCred, true)
+	return nil, nil
 }
 
 func (model *SVirtualResourceBase) AllowPerformChangeOwner(ctx context.Context, userCred mcclient.TokenCredential, query jsonutils.JSONObject, input apis.PerformChangeProjectOwnerInput) bool {
@@ -324,6 +379,9 @@ func (model *SVirtualResourceBase) PerformChangeOwner(ctx context.Context, userC
 		}
 	}
 
+	// cancel usage
+	model.cleanModelUsages(ctx, userCred)
+
 	_, err = Update(model, func() error {
 		model.DomainId = ownerId.GetProjectDomainId()
 		model.ProjectId = ownerId.GetProjectId()
@@ -333,6 +391,9 @@ func (model *SVirtualResourceBase) PerformChangeOwner(ctx context.Context, userC
 	if err != nil {
 		return nil, errors.Wrap(err, "Update")
 	}
+
+	// add usage
+	model.RecoverUsages(ctx, userCred)
 
 	OpsLog.SyncOwner(model, former, userCred)
 	notes := struct {
@@ -399,13 +460,6 @@ func (model *SVirtualResourceBase) PerformCancelDelete(ctx context.Context, user
 		model.RecoverUsages(ctx, userCred)
 	}
 	return nil, nil
-}
-
-func (model *SVirtualResourceBase) RecoverUsages(ctx context.Context, userCred mcclient.TokenCredential) {
-	usages := model.GetIModel().GetUsages()
-	if AddUsages != nil && len(usages) > 0 {
-		AddUsages(ctx, userCred, usages)
-	}
 }
 
 func (model *SVirtualResourceBase) DoCancelPendingDelete(ctx context.Context, userCred mcclient.TokenCredential) error {

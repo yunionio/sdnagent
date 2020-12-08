@@ -85,8 +85,8 @@ func (db *SInfluxdb) Write(data string, precision string) error {
 }
 
 func (db *SInfluxdb) Query(sql string) ([][]dbResult, error) {
-	nurl := fmt.Sprintf("%s/query?q=%s", db.accessUrl, url.QueryEscape(sql))
-	_, body, err := httputils.JSONRequest(db.client, context.Background(), "POST", nurl, nil, nil, db.debug)
+	nurl := fmt.Sprintf("%s/query?db=%s&q=%s&epoch=ms", db.accessUrl, db.dbName, url.QueryEscape(sql))
+	_, body, err := httputils.JSONRequest(db.client, context.Background(), "GET", nurl, nil, nil, db.debug)
 	if err != nil {
 		return nil, err
 	}
@@ -163,7 +163,7 @@ func JSONRequest(client *http.Client, ctx context.Context, method httputils.THtt
 	header.Set("Content-Length", strconv.FormatInt(int64(len(bodystr)), 10))
 	header.Set("Content-Type", "application/x-www-form-urlencoded")
 	resp, err := httputils.Request(client, ctx, method, urlStr, header, jbody, debug)
-	return httputils.ParseJSONResponse(resp, err, debug)
+	return httputils.ParseJSONResponse(bodystr, resp, err, debug)
 }
 
 func (db *SInfluxdb) SetDatabase(dbName string) error {

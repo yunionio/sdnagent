@@ -43,15 +43,15 @@ type SElasticcacheResourceBaseManager struct {
 }
 
 func ValidateElasticcacheResourceInput(userCred mcclient.TokenCredential, input api.ELasticcacheResourceInput) (*SElasticcache, api.ELasticcacheResourceInput, error) {
-	cacheObj, err := ElasticcacheManager.FetchByIdOrName(userCred, input.Elasticcache)
+	cacheObj, err := ElasticcacheManager.FetchByIdOrName(userCred, input.ElasticcacheId)
 	if err != nil {
 		if errors.Cause(err) == sql.ErrNoRows {
-			return nil, input, errors.Wrapf(httperrors.ErrResourceNotFound, "%s %s", ElasticcacheManager.Keyword(), input.Elasticcache)
+			return nil, input, errors.Wrapf(httperrors.ErrResourceNotFound, "%s %s", ElasticcacheManager.Keyword(), input.ElasticcacheId)
 		} else {
 			return nil, input, errors.Wrap(err, "ElasticcacheManager.FetchByIdOrName")
 		}
 	}
-	input.Elasticcache = cacheObj.GetId()
+	input.ElasticcacheId = cacheObj.GetId()
 	return cacheObj.(*SElasticcache), input, nil
 }
 
@@ -143,7 +143,7 @@ func (manager *SElasticcacheResourceBaseManager) ListItemFilter(
 	userCred mcclient.TokenCredential,
 	query api.ElasticcacheFilterListInput,
 ) (*sqlchemy.SQuery, error) {
-	if len(query.Elasticcache) > 0 {
+	if len(query.ElasticcacheId) > 0 {
 		dbObj, _, err := ValidateElasticcacheResourceInput(userCred, query.ELasticcacheResourceInput)
 		if err != nil {
 			return nil, errors.Wrap(err, "ValidateElasticcacheResourceInput")
@@ -193,51 +193,39 @@ func (manager *SElasticcacheResourceBaseManager) OrderByExtraFields(
 	userCred mcclient.TokenCredential,
 	query api.ElasticcacheFilterListInput,
 ) (*sqlchemy.SQuery, error) {
-	q, orders, fields := manager.GetOrderBySubQuery(q, userCred, query)
-	if len(orders) > 0 {
-		q = db.OrderByFields(q, orders, fields)
+	if !db.NeedOrderQuery(manager.GetOrderByFields(query)) {
+		return q, nil
 	}
+	orderQ := ElasticcacheManager.Query("id")
+	orderSubQ := orderQ.SubQuery()
+	orderQ, orders, fields := manager.GetOrderBySubQuery(orderQ, orderSubQ, orderQ.Field("id"), userCred, query, nil, nil)
+	q = q.LeftJoin(orderSubQ, sqlchemy.Equals(q.Field("elasticcache_id"), orderSubQ.Field("id")))
+	q = db.OrderByFields(q, orders, fields)
 	return q, nil
 }
 
 func (manager *SElasticcacheResourceBaseManager) GetOrderBySubQuery(
 	q *sqlchemy.SQuery,
+	subq *sqlchemy.SSubQuery,
+	joinField sqlchemy.IQueryField,
 	userCred mcclient.TokenCredential,
 	query api.ElasticcacheFilterListInput,
+	orders []string,
+	fields []sqlchemy.IQueryField,
 ) (*sqlchemy.SQuery, []string, []sqlchemy.IQueryField) {
-	cacheQ := ElasticcacheManager.Query("id", "name")
-	var orders []string
-	var fields []sqlchemy.IQueryField
-
-	if db.NeedOrderQuery(manager.SVpcResourceBaseManager.GetOrderByFields(query.VpcFilterListInput)) {
-		var vpcOrders []string
-		var vpcFields []sqlchemy.IQueryField
-		cacheQ, vpcOrders, vpcFields = manager.SVpcResourceBaseManager.GetOrderBySubQuery(cacheQ, userCred, query.VpcFilterListInput)
-		if len(vpcOrders) > 0 {
-			orders = append(orders, vpcOrders...)
-			fields = append(fields, vpcFields...)
-		}
+	if !db.NeedOrderQuery(manager.GetOrderByFields(query)) {
+		return q, orders, fields
 	}
+	cacheQ := ElasticcacheManager.Query("id", "name").SubQuery()
+	q = q.LeftJoin(cacheQ, sqlchemy.Equals(joinField, cacheQ.Field("id")))
+	q = q.AppendField(cacheQ.Field("name").Label("elasticcache"))
+	orders = append(orders, query.OrderByElasticcache)
+	fields = append(fields, subq.Field("elasticcache"))
+	q, orders, fields = manager.SVpcResourceBaseManager.GetOrderBySubQuery(q, subq, cacheQ.Field("vpc_id"), userCred, query.VpcFilterListInput, orders, fields)
 	zoneQuery := api.ZonalFilterListInput{
 		ZonalFilterListBase: query.ZonalFilterListBase,
 	}
-	if db.NeedOrderQuery(manager.SZoneResourceBaseManager.GetOrderByFields(zoneQuery)) {
-		var zoneOrders []string
-		var zoneFields []sqlchemy.IQueryField
-		cacheQ, zoneOrders, zoneFields = manager.SZoneResourceBaseManager.GetOrderBySubQuery(cacheQ, userCred, zoneQuery)
-		if len(zoneOrders) > 0 {
-			orders = append(orders, zoneOrders...)
-			fields = append(fields, zoneFields...)
-		}
-	}
-	if db.NeedOrderQuery(manager.GetOrderByFields(query)) {
-		subq := cacheQ.SubQuery()
-		q = q.LeftJoin(subq, sqlchemy.Equals(q.Field("elasticcache_id"), subq.Field("id")))
-		if db.NeedOrderQuery([]string{query.OrderByElasticcache}) {
-			orders = append(orders, query.OrderByElasticcache)
-			fields = append(fields, subq.Field("name"))
-		}
-	}
+	q, orders, fields = manager.SZoneResourceBaseManager.GetOrderBySubQuery(q, subq, cacheQ.Field("zone_id"), userCred, zoneQuery, orders, fields)
 	return q, orders, fields
 }
 
@@ -253,20 +241,6 @@ func (manager *SElasticcacheResourceBaseManager) GetOrderByFields(query api.Elas
 	fields = append(fields, query.OrderByElasticcache)
 	return fields
 }
-
-/*
-func (manager *SElasticcacheResourceBaseManager) FetchParentId(ctx context.Context, data jsonutils.JSONObject) string {
-	parentId, _ := data.GetString("dbinstance_id")
-	return parentId
-}
-
-func (manager *SElasticcacheResourceBaseManager) FilterByParentId(q *sqlchemy.SQuery, parentId string) *sqlchemy.SQuery {
-	if len(parentId) > 0 {
-		q = q.Equals("dbinstance_id", parentId)
-	}
-	return q
-}
-*/
 
 func (manager *SElasticcacheResourceBaseManager) ListItemExportKeys(ctx context.Context,
 	q *sqlchemy.SQuery,

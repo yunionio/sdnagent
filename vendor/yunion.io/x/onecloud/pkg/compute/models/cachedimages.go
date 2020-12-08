@@ -272,11 +272,24 @@ func (manager *SCachedimageManager) cacheGlanceImageInfo(ctx context.Context, us
 	}
 }
 
+func (image *SCachedimage) GetStorages() ([]SStorage, error) {
+	sq := StorageManager.Query()
+	storagecacheimageSubq := StoragecachedimageManager.Query("storagecache_id").Equals("cachedimage_id", image.GetId()).SubQuery()
+	sq.Join(storagecacheimageSubq, sqlchemy.Equals(sq.Field("storagecache_id"), storagecacheimageSubq.Field("storagecache_id")))
+	storages := make([]SStorage, 0, 1)
+	err := db.FetchModelObjects(StorageManager, sq, &storages)
+	if err != nil {
+		return nil, errors.Wrap(err, "FetchModelObjects")
+	}
+	return storages, nil
+}
+
 func (manager *SCachedimageManager) GetImageById(ctx context.Context, userCred mcclient.TokenCredential, imageId string, refresh bool) (*cloudprovider.SImage, error) {
 	imgObj, _ := manager.FetchById(imageId)
 	if imgObj != nil {
 		cachedImage := imgObj.(*SCachedimage)
-		if !refresh && cachedImage.GetStatus() == cloudprovider.IMAGE_STATUS_ACTIVE && len(cachedImage.GetOSType()) > 0 && !cachedImage.isRefreshSessionExpire() {
+		oSTypeOk := options.Options.NoCheckOsTypeForCachedImage || len(cachedImage.GetOSType()) > 0
+		if !refresh && cachedImage.GetStatus() == cloudprovider.IMAGE_STATUS_ACTIVE && oSTypeOk && !cachedImage.isRefreshSessionExpire() {
 			return cachedImage.GetImage()
 		} else if len(cachedImage.ExternalId) > 0 { // external image, request refresh
 			return cachedImage.requestRefreshExternalImage(ctx, userCred)
@@ -315,6 +328,10 @@ func (manager *SCachedimageManager) getImageByName(ctx context.Context, userCred
 		return nil, errors.Wrap(err, "manager.cacheGlanceImageInfo")
 	}
 	return cachedImage.GetImage()
+}
+
+func (manager *SCachedimageManager) GetImageInfo(ctx context.Context, userCred mcclient.TokenCredential, imageId string, refresh bool) (*cloudprovider.SImage, error) {
+	return manager.getImageInfo(ctx, userCred, imageId, refresh)
 }
 
 func (manager *SCachedimageManager) getImageInfo(ctx context.Context, userCred mcclient.TokenCredential, imageId string, refresh bool) (*cloudprovider.SImage, error) {
@@ -472,7 +489,11 @@ func (self *SCachedimage) canDeleteLastCache() bool {
 
 func (self *SCachedimage) syncWithCloudImage(ctx context.Context, userCred mcclient.TokenCredential, ownerId mcclient.IIdentityProvider, image cloudprovider.ICloudImage, managerId string) error {
 	diff, err := db.UpdateWithLock(ctx, self, func() error {
-		self.Name = image.GetName()
+		newName, err := db.GenerateAlterName(self, image.GetName())
+		if err != nil {
+			return errors.Wrap(err, "GenerateAlterName")
+		}
+		self.Name = newName
 		self.Size = image.GetSizeByte()
 		self.ExternalId = image.GetGlobalId()
 		self.ImageType = image.GetImageType()
@@ -668,20 +689,6 @@ func (manager *SCachedimageManager) ListItemFilter(
 		return nil, errors.Wrapf(err, "SSharableBaseResourceManager.ListItemFilter")
 	}
 
-	q, err = managedResourceFilterByAccount(q, query.ManagedResourceListInput, "id", func() *sqlchemy.SQuery {
-		cachedImages := CachedimageManager.Query().SubQuery()
-		storagecachedImages := StoragecachedimageManager.Query().SubQuery()
-		storageCaches := StoragecacheManager.Query().SubQuery()
-
-		subq := cachedImages.Query(cachedImages.Field("id"))
-		subq = subq.Join(storagecachedImages, sqlchemy.Equals(cachedImages.Field("id"), storagecachedImages.Field("cachedimage_id")))
-		subq = subq.Join(storageCaches, sqlchemy.Equals(storagecachedImages.Field("storagecache_id"), storageCaches.Field("id")))
-		return subq
-	})
-	if err != nil {
-		return nil, errors.Wrap(err, "managedResourceFilterByAccount")
-	}
-
 	q, err = manager.SSharableVirtualResourceBaseManager.ListItemFilter(ctx, q, userCred, query.SharableVirtualResourceListInput)
 	if err != nil {
 		return nil, errors.Wrap(err, "SSharableVirtualResourceBaseManager.ListItemFilter")
@@ -692,40 +699,74 @@ func (manager *SCachedimageManager) ListItemFilter(
 		return nil, errors.Wrap(err, "SExternalizedResourceBaseManager.ListItemFilter")
 	}
 
-	q, err = managedResourceFilterByRegion(q, query.RegionalFilterListInput, "id", func() *sqlchemy.SQuery {
+	{
+		var idFilter bool
 		storagecachedImages := StoragecachedimageManager.Query().SubQuery()
 		storageCaches := StoragecacheManager.Query().SubQuery()
-		storages := StorageManager.Query().SubQuery()
+		var storages *sqlchemy.SSubQuery
+
+		if query.Valid == nil {
+			storages = StorageManager.Query().SubQuery()
+		} else if *query.Valid {
+			idFilter = true
+			storages = StorageManager.Query().In("status", []string{api.STORAGE_ENABLED, api.STORAGE_ONLINE}).IsTrue("enabled").SubQuery()
+		} else {
+			idFilter = true
+			stroage := StorageManager.Query()
+			storages = stroage.Filter(sqlchemy.OR(sqlchemy.NotIn(stroage.Field("status"), []string{}), sqlchemy.IsFalse(stroage.Field("enabled")))).SubQuery()
+		}
 		zones := ZoneManager.Query().SubQuery()
 
 		subq := storagecachedImages.Query(storagecachedImages.Field("cachedimage_id"))
 		subq = subq.Join(storageCaches, sqlchemy.Equals(storagecachedImages.Field("storagecache_id"), storageCaches.Field("id")))
 		subq = subq.Join(storages, sqlchemy.Equals(storageCaches.Field("id"), storages.Field("storagecache_id")))
 		subq = subq.Join(zones, sqlchemy.Equals(storages.Field("zone_id"), zones.Field("id")))
-		subq = subq.Filter(sqlchemy.Equals(storagecachedImages.Field("status"), api.CACHED_IMAGE_STATUS_ACTIVE))
-		return subq
-	})
-	if err != nil {
-		return nil, errors.Wrap(err, "managedResourceFilterByRegion")
-	}
 
-	q, err = managedResourceFilterByZone(q, query.ZonalFilterListInput, "id", func() *sqlchemy.SQuery {
-		storagecachedImages := StoragecachedimageManager.Query().SubQuery()
-		storageCaches := StoragecacheManager.Query().SubQuery()
-		storages := StorageManager.Query().SubQuery()
-
-		subq := storagecachedImages.Query(storagecachedImages.Field("cachedimage_id"))
-		subq = subq.Join(storageCaches, sqlchemy.Equals(storagecachedImages.Field("storagecache_id"), storageCaches.Field("id")))
-		subq = subq.Join(storages, sqlchemy.Equals(storageCaches.Field("id"), storages.Field("storagecache_id")))
+		if len(query.HostSchedtagId) > 0 {
+			idFilter = true
+			schedTagObj, err := SchedtagManager.FetchByIdOrName(userCred, query.HostSchedtagId)
+			if err != nil {
+				if errors.Cause(err) == sql.ErrNoRows {
+					return nil, errors.Wrapf(httperrors.ErrResourceNotFound, "%s %s", SchedtagManager.Keyword(), query.HostSchedtagId)
+				} else {
+					return nil, errors.Wrap(err, "SchedtagManager.FetchByIdOrName")
+				}
+			}
+			hoststorages := HoststorageManager.Query("host_id", "storage_id").SubQuery()
+			hostschedtags := HostschedtagManager.Query().Equals("schedtag_id", schedTagObj.GetId()).SubQuery()
+			subq = subq.Join(hoststorages, sqlchemy.Equals(hoststorages.Field("storage_id"), storages.Field("id")))
+			subq = subq.Join(hostschedtags, sqlchemy.Equals(hostschedtags.Field("host_id"), hoststorages.Field("host_id")))
+		}
 		subq = subq.Filter(sqlchemy.Equals(storagecachedImages.Field("status"), api.CACHED_IMAGE_STATUS_ACTIVE))
-		return subq
-	})
-	if err != nil {
-		return nil, errors.Wrap(err, "managedResourceFilterByZone")
+
+		subq = subq.Snapshot()
+
+		subq, err = managedResourceFilterByAccount(subq, query.ManagedResourceListInput, "", nil)
+		if err != nil {
+			return nil, errors.Wrap(err, "managedResourceFilterByAccount")
+		}
+
+		subq, err = managedResourceFilterByRegion(subq, query.RegionalFilterListInput, "", nil)
+		if err != nil {
+			return nil, errors.Wrap(err, "_managedResourceFilterByRegion")
+		}
+
+		subq, err = managedResourceFilterByZone(subq, query.ZonalFilterListInput, "", nil)
+		if err != nil {
+			return nil, errors.Wrap(err, "_managedResourceFilterByZone")
+		}
+
+		if subq.IsAltered() {
+			idFilter = true
+		}
+
+		if idFilter {
+			q = q.In("id", subq)
+		}
 	}
 
 	if len(query.ImageType) > 0 {
-		q = q.In("image_type", query.ImageType)
+		q = q.Equals("image_type", query.ImageType)
 	}
 
 	return q, nil

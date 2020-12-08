@@ -17,6 +17,7 @@ package models
 import (
 	"context"
 	"database/sql"
+	"fmt"
 
 	"yunion.io/x/jsonutils"
 	"yunion.io/x/log"
@@ -39,7 +40,6 @@ import (
 
 type SDBInstanceAccountManager struct {
 	db.SStatusStandaloneResourceBaseManager
-	db.SExternalizedResourceBaseManager
 	SDBInstanceResourceBaseManager
 }
 
@@ -59,15 +59,13 @@ func init() {
 
 type SDBInstanceAccount struct {
 	db.SStatusStandaloneResourceBase
-	db.SExternalizedResourceBase
+
+	Host string `width:"32" charset:"ascii" nullable:"false" list:"user" create:"optional" default:"%"`
 
 	SDBInstanceResourceBase `width:"36" charset:"ascii" name:"dbinstance_id" nullable:"false" list:"user" create:"required" index:"true"`
 
 	// 数据库密码
 	Secret string `width:"256" charset:"ascii" nullable:"false" list:"user" create:"optional"`
-
-	// RDS实例Id
-	// DBInstanceId string `width:"36" charset:"ascii" name:"dbinstance_id" nullable:"false" list:"user" create:"required" index:"true"`
 }
 
 func (manager *SDBInstanceAccountManager) GetContextManagers() [][]db.IModelManager {
@@ -97,11 +95,11 @@ func (manager *SDBInstanceAccountManager) AllowListItems(ctx context.Context, us
 }
 
 func (manager *SDBInstanceAccountManager) FetchOwnerId(ctx context.Context, data jsonutils.JSONObject) (mcclient.IIdentityProvider, error) {
-	parentId := manager.FetchParentId(ctx, data)
-	if len(parentId) > 0 {
-		instance, err := db.FetchById(DBInstanceManager, parentId)
+	dbinstanceId, _ := data.GetString("dbinstance_id")
+	if len(dbinstanceId) > 0 {
+		instance, err := db.FetchById(DBInstanceManager, dbinstanceId)
 		if err != nil {
-			return nil, errors.Wrapf(err, "db.FetchById(DBInstanceManager, %s)", parentId)
+			return nil, errors.Wrapf(err, "db.FetchById(DBInstanceManager, %s)", dbinstanceId)
 		}
 		return instance.(*SDBInstance).GetOwnerId(), nil
 	}
@@ -132,7 +130,19 @@ func (self *SDBInstanceAccount) AllowGetDetails(ctx context.Context, userCred mc
 }
 
 func (self *SDBInstanceAccount) AllowUpdateItem(ctx context.Context, userCred mcclient.TokenCredential) bool {
-	return false
+	return db.IsProjectAllowUpdate(userCred, self)
+}
+
+func (self *SDBInstanceAccount) ValidateUpdateData(ctx context.Context, userCred mcclient.TokenCredential, query jsonutils.JSONObject, input api.DBInstanceAccountUpdateInput) (api.DBInstanceAccountUpdateInput, error) {
+	var err error
+	input.StatusStandaloneResourceBaseUpdateInput, err = self.SStatusStandaloneResourceBase.ValidateUpdateData(ctx, userCred, query, input.StatusStandaloneResourceBaseUpdateInput)
+	if err != nil {
+		return input, errors.Wrapf(err, "SStatusStandaloneResourceBase.ValidateUpdateData")
+	}
+	if len(input.Name) > 0 && input.Name != self.Name {
+		return input, httperrors.NewForbiddenError("not allow update rds account name")
+	}
+	return input, nil
 }
 
 func (self *SDBInstanceAccount) AllowDeleteItem(ctx context.Context, userCred mcclient.TokenCredential, query jsonutils.JSONObject, data jsonutils.JSONObject) bool {
@@ -224,10 +234,6 @@ func (manager *SDBInstanceAccountManager) ListItemFilter(
 	if err != nil {
 		return nil, errors.Wrap(err, "SStatusStandaloneResourceBaseManager.ListItemFilter")
 	}
-	q, err = manager.SExternalizedResourceBaseManager.ListItemFilter(ctx, q, userCred, query.ExternalizedResourceBaseListInput)
-	if err != nil {
-		return nil, errors.Wrap(err, "SExternalizedResourceBaseManager.ListItemFilter")
-	}
 	q, err = manager.SDBInstanceResourceBaseManager.ListItemFilter(ctx, q, userCred, query.DBInstanceFilterListInput)
 	if err != nil {
 		return nil, errors.Wrap(err, "SDBInstanceResourceBaseManager.ListItemFilter")
@@ -264,14 +270,33 @@ func (manager *SDBInstanceAccountManager) QueryDistinctExtraField(q *sqlchemy.SQ
 	return q, httperrors.ErrNotFound
 }
 
-func (manager *SDBInstanceAccountManager) FetchParentId(ctx context.Context, data jsonutils.JSONObject) string {
-	parentId, _ := data.GetString("dbinstance_id")
-	return parentId
+type sRdsAccount struct {
+	Name         string
+	DBInstanceId string `json:"dbinstance_id"`
+	Host         string
 }
 
-func (manager *SDBInstanceAccountManager) FilterByParentId(q *sqlchemy.SQuery, parentId string) *sqlchemy.SQuery {
-	if len(parentId) > 0 {
-		q = q.Equals("dbinstance_id", parentId)
+func (self *SDBInstanceAccount) GetUniqValues() jsonutils.JSONObject {
+	return jsonutils.Marshal(sRdsAccount{Name: self.Name, DBInstanceId: self.DBInstanceId, Host: self.Host})
+}
+
+func (manager *SDBInstanceAccountManager) FetchUniqValues(ctx context.Context, data jsonutils.JSONObject) jsonutils.JSONObject {
+	info := sRdsAccount{}
+	data.Unmarshal(&info)
+	return jsonutils.Marshal(info)
+}
+
+func (manager *SDBInstanceAccountManager) FilterByUniqValues(q *sqlchemy.SQuery, values jsonutils.JSONObject) *sqlchemy.SQuery {
+	info := sRdsAccount{}
+	values.Unmarshal(&info)
+	if len(info.DBInstanceId) > 0 {
+		q = q.Equals("dbinstance_id", info.DBInstanceId)
+	}
+	if len(info.Name) > 0 {
+		q = q.Equals("name", info.Name)
+	}
+	if len(info.Host) > 0 {
+		q = q.Equals("host", info.Host)
 	}
 	return q
 }
@@ -607,54 +632,82 @@ func (manager *SDBInstanceAccountManager) SyncDBInstanceAccounts(ctx context.Con
 	defer lockman.ReleaseClass(ctx, manager, db.GetLockClassKey(manager, instance.GetOwnerId()))
 
 	result := compare.SyncResult{}
+	localAccounts := []SDBInstanceAccount{}
+	remoteAccounts := []cloudprovider.ICloudDBInstanceAccount{}
 	dbAccounts, err := instance.GetDBInstanceAccounts()
 	if err != nil {
 		result.Error(err)
 		return nil, nil, result
 	}
-
-	localAccounts := []SDBInstanceAccount{}
-	remoteAccounts := []cloudprovider.ICloudDBInstanceAccount{}
-
-	removed := make([]SDBInstanceAccount, 0)
-	commondb := make([]SDBInstanceAccount, 0)
-	commonext := make([]cloudprovider.ICloudDBInstanceAccount, 0)
-	added := make([]cloudprovider.ICloudDBInstanceAccount, 0)
-	if err := compare.CompareSets(dbAccounts, cloudAccounts, &removed, &commondb, &commonext, &added); err != nil {
-		result.Error(err)
-		return nil, nil, result
-	}
-
-	for i := 0; i < len(removed); i++ {
-		err := removed[i].Purge(ctx, userCred)
-		if err != nil {
-			result.DeleteError(err)
-		} else {
-			result.Delete()
+	accountMaps := map[string][]SDBInstanceAccount{}
+	for i := range dbAccounts {
+		key := fmt.Sprintf("%s:%s", dbAccounts[i].Name, dbAccounts[i].Host)
+		_, ok := accountMaps[key]
+		if !ok {
+			accountMaps[key] = []SDBInstanceAccount{}
 		}
+		accountMaps[key] = append(accountMaps[key], dbAccounts[i])
+	}
+	remoteMaps := map[string]cloudprovider.ICloudDBInstanceAccount{}
+	for i := range cloudAccounts {
+		remoteMaps[fmt.Sprintf("%s:%s", cloudAccounts[i].GetName(), cloudAccounts[i].GetHost())] = cloudAccounts[i]
 	}
 
-	for i := 0; i < len(commondb); i++ {
-		err := commondb[i].SyncWithCloudDBInstanceAccount(ctx, userCred, instance, commonext[i])
-		if err != nil {
-			result.UpdateError(err)
-		} else {
-			result.Update()
-			localAccounts = append(localAccounts, commondb[i])
-			remoteAccounts = append(remoteAccounts, commonext[i])
-		}
-	}
-
-	for i := 0; i < len(added); i++ {
-		account, err := manager.newFromCloudDBInstanceAccount(ctx, userCred, instance, added[i])
-		if err != nil {
-			result.AddError(err)
-		} else {
-			localAccounts = append(localAccounts, *account)
-			remoteAccounts = append(remoteAccounts, added[i])
+	for key, account := range remoteMaps {
+		locals, ok := accountMaps[key]
+		if !ok {
+			_account, err := manager.newFromCloudDBInstanceAccount(ctx, userCred, instance, account)
+			if err != nil {
+				result.AddError(err)
+				continue
+			}
 			result.Add()
+			remoteAccounts = append(remoteAccounts, account)
+			localAccounts = append(localAccounts, *_account)
+			continue
+		}
+		password := ""
+		for i := range locals {
+			if i == 0 {
+				err = locals[i].SyncWithCloudDBInstanceAccount(ctx, userCred, instance, account)
+				if err != nil {
+					result.UpdateError(err)
+					continue
+				}
+				result.Update()
+				remoteAccounts = append(remoteAccounts, account)
+				localAccounts = append(localAccounts, locals[0])
+			} else {
+				if passwd, err := locals[i].GetPassword(); err == nil && len(passwd) > 0 {
+					password = passwd
+				}
+				err := locals[i].Purge(ctx, userCred)
+				if err != nil {
+					result.DeleteError(err)
+					continue
+				}
+				result.Delete()
+			}
+		}
+		if len(password) > 0 {
+			locals[0].savePassword(password)
 		}
 	}
+
+	for key, accounts := range accountMaps {
+		_, ok := remoteMaps[key]
+		if !ok {
+			for i := range accounts {
+				err := accounts[i].Purge(ctx, userCred)
+				if err != nil {
+					result.DeleteError(err)
+					continue
+				}
+				result.Delete()
+			}
+		}
+	}
+
 	return localAccounts, remoteAccounts, result
 }
 
@@ -679,7 +732,7 @@ func (manager *SDBInstanceAccountManager) newFromCloudDBInstanceAccount(ctx cont
 	account.Name = extAccount.GetName()
 	account.DBInstanceId = instance.Id
 	account.Status = extAccount.GetStatus()
-	account.ExternalId = extAccount.GetGlobalId()
+	account.Host = extAccount.GetHost()
 
 	err := manager.TableSpec().Insert(ctx, &account)
 	if err != nil {

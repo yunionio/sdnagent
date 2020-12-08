@@ -34,6 +34,9 @@ const (
 	AUTH_METHOD_TOKEN    = "token"
 	AUTH_METHOD_AKSK     = "aksk"
 	AUTH_METHOD_CAS      = "cas"
+	AUTH_METHOD_SAML     = "saml"
+	AUTH_METHOD_OIDC     = "oidc"
+	AUTH_METHOD_OAuth2   = "oauth2"
 
 	// AUTH_METHOD_ID_PASSWORD = 1
 	// AUTH_METHOD_ID_TOKEN    = 2
@@ -57,9 +60,12 @@ const (
 	IdMappingEntityGroup  = "group"
 	IdMappingEntityDomain = "domain"
 
-	IdentityDriverSQL  = "sql"
-	IdentityDriverLDAP = "ldap"
-	IdentityDriverCAS  = "cas"
+	IdentityDriverSQL    = "sql"
+	IdentityDriverLDAP   = "ldap"
+	IdentityDriverCAS    = "cas"
+	IdentityDriverSAML   = "saml"
+	IdentityDriverOIDC   = "oidc"   // OpenID Connect
+	IdentityDriverOAuth2 = "oauth2" // OAuth2.0
 
 	IdentityDriverStatusConnected    = "connected"
 	IdentityDriverStatusDisconnected = "disconnected"
@@ -99,6 +105,7 @@ var (
 			"time_zone",
 			"domainized_namespace",
 			"api_server",
+			"customized_private_prefixes",
 		},
 	}
 
@@ -196,3 +203,19 @@ var (
 		},
 	}
 )
+
+func mergeConfigOptionsFrom(opt1, opt2 map[string][]string) map[string][]string {
+	for opt, values := range opt2 {
+		ovalues, _ := opt1[opt]
+		opt1[opt] = append(ovalues, values...)
+	}
+	return opt1
+}
+
+func MergeServiceConfigOptions(opts ...map[string][]string) map[string][]string {
+	ret := make(map[string][]string)
+	for i := range opts {
+		ret = mergeConfigOptionsFrom(ret, opts[i])
+	}
+	return ret
+}

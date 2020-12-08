@@ -111,7 +111,7 @@ func (sm *SGroupManager) ListItemFilter(
 		return nil, errors.Wrap(err, "SZoneResourceBaseManager.ListItemFilter")
 	}
 
-	guestFilter := input.Server
+	guestFilter := input.ServerId
 	if len(guestFilter) != 0 {
 		guestObj, err := GuestManager.FetchByIdOrName(userCred, guestFilter)
 		if err != nil {
@@ -214,7 +214,7 @@ func (group *SGroup) ValidateDeleteCondition(ctx context.Context) error {
 		return errors.Wrapf(err, "fail to check that if there are any guest in this group %s", group.Name)
 	}
 	if count > 0 {
-		return httperrors.NewUnsupportOperationError("请在解绑所有主机后重试")
+		return httperrors.NewUnsupportOperationError("please retry after unbind all guests in group")
 	}
 	return nil
 }

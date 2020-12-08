@@ -492,6 +492,7 @@ func (manager *SMetadataManager) SetValues(ctx context.Context, obj IModel, stor
 		}
 
 		newRecord := SMetadata{}
+		newRecord.SetModelManager(manager, &newRecord)
 
 		newRecord.ObjId = obj.GetId()
 		newRecord.ObjType = obj.GetModelManager().Keyword()
@@ -585,12 +586,15 @@ func (manager *SMetadataManager) SetAll(ctx context.Context, obj IModel, store m
 	return nil
 }
 
-func (manager *SMetadataManager) GetAll(obj IModel, keys []string, userCred mcclient.TokenCredential) (map[string]string, error) {
+func (manager *SMetadataManager) GetAll(obj IModel, keys []string, keyPrefix string, userCred mcclient.TokenCredential) (map[string]string, error) {
 	idStr := GetObjectIdstr(obj)
 	records := make([]SMetadata, 0)
 	q := manager.Query().Equals("id", idStr)
 	if keys != nil && len(keys) > 0 {
 		q = q.In("key", keys)
+	}
+	if len(keyPrefix) > 0 {
+		q = q.Startswith("key", keyPrefix)
 	}
 	err := FetchModelObjects(manager, q, &records)
 	if err != nil {

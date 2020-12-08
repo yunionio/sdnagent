@@ -35,6 +35,7 @@ type IGuestScheduleDriver interface {
 	DoScheduleCPUFilter() bool
 	DoScheduleMemoryFilter() bool
 	DoScheduleStorageFilter() bool
+	DoScheduleCloudproviderTagFilter() bool
 }
 
 type IGuestDriver interface {
@@ -56,7 +57,7 @@ type IGuestDriver interface {
 
 	RequestRenewInstance(guest *SGuest, bc billing.SBillingCycle) (time.Time, error)
 
-	GetJsonDescAtHost(ctx context.Context, userCred mcclient.TokenCredential, guest *SGuest, host *SHost) jsonutils.JSONObject
+	GetJsonDescAtHost(ctx context.Context, userCred mcclient.TokenCredential, guest *SGuest, host *SHost, params *jsonutils.JSONDict) (jsonutils.JSONObject, error)
 
 	ValidateImage(ctx context.Context, image *cloudprovider.SImage) error
 	ValidateCreateData(ctx context.Context, userCred mcclient.TokenCredential, data *api.ServerCreateInput) (*api.ServerCreateInput, error)
@@ -73,7 +74,7 @@ type IGuestDriver interface {
 	GetRandomNetworkTypes() []string
 
 	GetStorageTypes() []string
-	ChooseHostStorage(host *SHost, backend string, storageIds []string) *SStorage
+	ChooseHostStorage(host *SHost, guest *SGuest, diskConfig *api.DiskConfig, storageIds []string) (*SStorage, error)
 
 	StartGuestCreateTask(guest *SGuest, ctx context.Context, userCred mcclient.TokenCredential, params *jsonutils.JSONDict, pendingUsage quotas.IQuota, parentTaskId string) error
 
@@ -95,6 +96,7 @@ type IGuestDriver interface {
 	GetGuestInitialStateAfterCreate() string
 	GetGuestInitialStateAfterRebuild() string
 	GetLinuxDefaultAccount(desc cloudprovider.SManagedVMCreateConfig) string
+	GetInstanceCapability() cloudprovider.SInstanceCapability
 
 	OnGuestDeployTaskDataReceived(ctx context.Context, guest *SGuest, task taskman.ITask, data jsonutils.JSONObject) error
 
@@ -142,6 +144,8 @@ type IGuestDriver interface {
 	IsRebuildRootSupportChangeImage() bool
 	IsRebuildRootSupportChangeUEFI() bool
 
+	ValidateRebuildRoot(ctx context.Context, userCred mcclient.TokenCredential, guest *SGuest, input *api.ServerRebuildRootInput) (*api.ServerRebuildRootInput, error)
+
 	IsSupportdDcryptPasswordFromSecretKey() bool
 
 	RequestDeleteDetachedDisk(ctx context.Context, disk *SDisk, task taskman.ITask, isPurge bool) error
@@ -169,6 +173,7 @@ type IGuestDriver interface {
 	RequestSyncToBackup(ctx context.Context, guest *SGuest, task taskman.ITask) error
 
 	IsSupportEip() bool
+	IsSupportPublicIp() bool
 	ValidateCreateEip(ctx context.Context, userCred mcclient.TokenCredential, data jsonutils.JSONObject) error
 	RequestAssociateEip(ctx context.Context, userCred mcclient.TokenCredential, guest *SGuest, eip *SElasticip, task taskman.ITask) error
 
@@ -194,10 +199,12 @@ type IGuestDriver interface {
 	RequestSetAutoRenewInstance(ctx context.Context, userCred mcclient.TokenCredential, guest *SGuest, autoRenew bool, task taskman.ITask) error
 	IsSupportMigrate() bool
 	IsSupportLiveMigrate() bool
-	CheckMigrate(guest *SGuest, userCred mcclient.TokenCredential, data jsonutils.JSONObject) error
-	CheckLiveMigrate(guest *SGuest, userCred mcclient.TokenCredential, data jsonutils.JSONObject) error
+	CheckMigrate(guest *SGuest, userCred mcclient.TokenCredential, input api.GuestMigrateInput) error
+	CheckLiveMigrate(guest *SGuest, userCred mcclient.TokenCredential, input api.GuestLiveMigrateInput) error
 	RequestMigrate(ctx context.Context, guest *SGuest, userCred mcclient.TokenCredential, data *jsonutils.JSONDict, task taskman.ITask) error
 	RequestLiveMigrate(ctx context.Context, guest *SGuest, userCred mcclient.TokenCredential, data *jsonutils.JSONDict, task taskman.ITask) error
+
+	RequestRemoteUpdate(ctx context.Context, guest *SGuest, userCred mcclient.TokenCredential, replaceTags bool) error
 }
 
 var guestDrivers map[string]IGuestDriver

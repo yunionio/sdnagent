@@ -72,6 +72,9 @@ type SStorage struct {
 
 	// 容量大小,单位Mb
 	Capacity int64 `nullable:"false" list:"domain" update:"domain" create:"domain_required"`
+	// 实际容量大小，单位Mb
+	// we always expect actual capacity great or equal than zero, otherwise something wrong
+	ActualCapacityUsed int64 `nullable:"true" list:"domain" update:"domain" create:"domain_optional"`
 	// 预留容量大小
 	Reserved int64 `nullable:"true" default:"0" list:"domain" update:"domain"`
 	// 存储类型
@@ -204,7 +207,7 @@ func (manager *SStorageManager) ValidateCreateData(
 	if !utils.IsInStringArray(input.MediumType, api.DISK_TYPES) {
 		return input, httperrors.NewInputParameterError("Invalid medium type %s", input.MediumType)
 	}
-	if len(input.Zone) == 0 {
+	if len(input.ZoneId) == 0 {
 		return input, httperrors.NewMissingParameterError("zone")
 	}
 	_, input.ZoneResourceInput, err = ValidateZoneResourceInput(userCred, input.ZoneResourceInput)
@@ -409,6 +412,7 @@ func (self *SStorage) getStorageCapacity() SStorageCapacity {
 	capa.Used = self.GetUsedCapacity(tristate.True)
 	capa.Wasted = self.GetUsedCapacity(tristate.False)
 	capa.VCapacity = int64(float32(self.GetCapacity()) * self.GetOvercommitBound())
+	capa.ActualUsed = self.ActualCapacityUsed
 
 	return capa
 }
@@ -754,6 +758,113 @@ func (self *SStorage) syncRemoveCloudStorage(ctx context.Context, userCred mccli
 	return err
 }
 
+var CapacityUsedCloudStorageProvider = []string{
+	api.CLOUD_PROVIDER_VMWARE,
+}
+
+func (sm *SStorageManager) SyncCapacityUsedForEsxiStorage(ctx context.Context, userCred mcclient.TokenCredential, isStart bool) {
+	cpQ := CloudproviderManager.Query("id").Equals("provider", api.CLOUD_PROVIDER_VMWARE)
+	cloudproviders := make([]SCloudprovider, 0)
+	err := db.FetchModelObjects(CloudproviderManager, cpQ, &cloudproviders)
+	if err != nil {
+		log.Errorf("unable to FetchModelObjects: %v", err)
+	}
+	for i := range cloudproviders {
+		cp := cloudproviders[i]
+		icp, err := cp.GetProvider()
+		if err != nil {
+			log.Errorf("unable to GetProvider: %v", err)
+			continue
+		}
+		iregion, err := icp.GetOnPremiseIRegion()
+		if err != nil {
+			log.Errorf("unable to GetOnPremiseIRegion: %v", err)
+			continue
+		}
+		css, err := iregion.GetIStorages()
+		if err != nil {
+			log.Errorf("unable to GetIStorages: %v", err)
+			continue
+		}
+		storageSizeMap := make(map[string]int64, len(css))
+		for i := range css {
+			id := css[i].GetGlobalId()
+			size := css[i].GetCapacityUsedMB()
+			storageSizeMap[id] = size
+		}
+		sQ := sm.Query().Equals("manager_id", cp.GetId())
+		storages := make([]SStorage, 0, 5)
+		err = db.FetchModelObjects(sm, sQ, &storages)
+		if err != nil {
+			log.Errorf("unable to fetch storages with sql %q: %v", sQ.String(), err)
+			continue
+		}
+		for i := range storages {
+			s := &storages[i]
+			newSize, ok := storageSizeMap[s.GetExternalId()]
+			if !ok {
+				log.Warningf("can't find usedSize for storage %q", s.GetId())
+				continue
+			}
+			_, err = db.Update(s, func() error {
+				s.ActualCapacityUsed = newSize
+				return nil
+			})
+			if err != nil {
+				log.Errorf("unable to udpate storage %q: %v", s.GetId(), err)
+			}
+		}
+	}
+}
+
+func (sm *SStorageManager) SyncCapacityUsedForStorage(ctx context.Context, userCred mcclient.TokenCredential, isStart bool) {
+	cpSubQ := CloudproviderManager.Query("id").In("provider", CapacityUsedCloudStorageProvider).SubQuery()
+	sQ := sm.Query()
+	sQ = sQ.Join(cpSubQ, sqlchemy.Equals(sQ.Field("manager_id"), cpSubQ.Field("id")))
+	storages := make([]SStorage, 0, 5)
+	err := db.FetchModelObjects(sm, sQ, &storages)
+	if err != nil {
+		log.Errorf("unable to fetch storages with sql %q: %v", sQ.String(), err)
+	}
+	for i := range storages {
+		err := storages[i].SyncCapacityUsed(ctx)
+		if err != nil {
+			log.Errorf("unable to sync CapacityUsed for storage %q: %v", storages[i].Id, err)
+		}
+	}
+}
+
+func (s *SStorage) SyncCapacityUsed(ctx context.Context) error {
+	cp := s.GetCloudprovider()
+	if cp == nil {
+		return errors.Wrapf(errors.ErrNotFound, "no cloudprovider for storage %s", s.Id)
+	}
+	if !utils.IsInStringArray(cp.Provider, CapacityUsedCloudStorageProvider) {
+		return nil
+	}
+	icp, err := cp.GetProvider()
+	if err != nil {
+		return errors.Wrap(err, "GetProvider")
+	}
+	iregion, err := icp.GetOnPremiseIRegion()
+	if err != nil {
+		return errors.Wrap(err, "GetOnPremiseIRegion")
+	}
+	cloudStorage, err := iregion.GetIStorageById(s.ExternalId)
+	if err != nil {
+		return errors.Wrap(err, "GetIStorageById")
+	}
+	capacityUsed := cloudStorage.GetCapacityUsedMB()
+	if s.ActualCapacityUsed == capacityUsed {
+		return nil
+	}
+	_, err = db.UpdateWithLock(ctx, s, func() error {
+		s.ActualCapacityUsed = capacityUsed
+		return nil
+	})
+	return err
+}
+
 func (self *SStorage) syncWithCloudStorage(ctx context.Context, userCred mcclient.TokenCredential, extStorage cloudprovider.ICloudStorage, provider *SCloudprovider) error {
 	diff, err := db.UpdateWithLock(ctx, self, func() error {
 		// self.Name = extStorage.GetName()
@@ -762,6 +873,9 @@ func (self *SStorage) syncWithCloudStorage(ctx context.Context, userCred mcclien
 		self.MediumType = extStorage.GetMediumType()
 		if capacity := extStorage.GetCapacityMB(); capacity != 0 {
 			self.Capacity = capacity
+		}
+		if capacity := extStorage.GetCapacityUsedMB(); capacity != 0 {
+			self.ActualCapacityUsed = capacity
 		}
 		self.StorageConf = extStorage.GetStorageConf()
 
@@ -803,6 +917,7 @@ func (manager *SStorageManager) newFromCloudStorage(ctx context.Context, userCre
 	storage.MediumType = extStorage.GetMediumType()
 	storage.StorageConf = extStorage.GetStorageConf()
 	storage.Capacity = extStorage.GetCapacityMB()
+	storage.ActualCapacityUsed = extStorage.GetCapacityUsedMB()
 	storage.Cmtbound = 1.0
 
 	storage.Enabled = tristate.NewFromBool(extStorage.GetEnabled())
@@ -1286,11 +1401,11 @@ func (manager *SStorageManager) ListItemFilter(
 		q = q.Filter(sqlchemy.In(q.Field("storage_type"), api.STORAGE_LOCAL_TYPES))
 	}
 
-	if len(query.Schedtag) > 0 {
-		schedTag, err := SchedtagManager.FetchByIdOrName(nil, query.Schedtag)
+	if len(query.SchedtagId) > 0 {
+		schedTag, err := SchedtagManager.FetchByIdOrName(nil, query.SchedtagId)
 		if err != nil {
 			if errors.Cause(err) == sql.ErrNoRows {
-				return nil, httperrors.NewResourceNotFoundError2(SchedtagManager.Keyword(), query.Schedtag)
+				return nil, httperrors.NewResourceNotFoundError2(SchedtagManager.Keyword(), query.SchedtagId)
 			}
 			return nil, httperrors.NewGeneralError(err)
 		}
@@ -1322,6 +1437,32 @@ func (manager *SStorageManager) ListItemFilter(
 			)).
 			Filter(sqlchemy.In(q.Field("status"), []string{api.STORAGE_ENABLED, api.STORAGE_ONLINE})).
 			Filter(sqlchemy.IsTrue(q.Field("enabled")))
+	}
+
+	if len(query.HostSchedtagId) > 0 {
+		schedTagObj, err := SchedtagManager.FetchByIdOrName(userCred, query.HostSchedtagId)
+		if err != nil {
+			if errors.Cause(err) == sql.ErrNoRows {
+				return nil, errors.Wrapf(httperrors.ErrResourceNotFound, "%s %s", SchedtagManager.Keyword(), query.HostSchedtagId)
+			} else {
+				return nil, errors.Wrap(err, "SchedtagManager.FetchByIdOrName")
+			}
+		}
+		subq := HoststorageManager.Query("storage_id")
+		hostschedtags := HostschedtagManager.Query().Equals("schedtag_id", schedTagObj.GetId()).SubQuery()
+		subq = subq.Join(hostschedtags, sqlchemy.Equals(hostschedtags.Field("host_id"), subq.Field("host_id")))
+		q = q.In("id", subq.SubQuery())
+	}
+
+	if len(query.ImageId) > 0 {
+		image, err := CachedimageManager.getImageInfo(ctx, userCred, query.ImageId, false)
+		if err != nil {
+			return nil, errors.Wrap(err, "CachedimageManager.getImageInfo")
+		}
+		subq := StorageManager.Query("id")
+		storagecaches := StoragecachedimageManager.Query("storagecache_id").Equals("cachedimage_id", image.Id).SubQuery()
+		subq = subq.Join(storagecaches, sqlchemy.Equals(subq.Field("storagecache_id"), storagecaches.Field("storagecache_id")))
+		q = q.In("id", subq.SubQuery())
 	}
 
 	return q, err
@@ -1561,9 +1702,9 @@ func (storage *SStorage) PerformForceDetachHost(ctx context.Context, userCred mc
 	if storage.Enabled.Bool() {
 		return nil, httperrors.NewBadRequestError("storage is enabled")
 	}
-	iHost, err := HostManager.FetchByIdOrName(userCred, input.Host)
+	iHost, err := HostManager.FetchByIdOrName(userCred, input.HostId)
 	if err == sql.ErrNoRows {
-		return nil, httperrors.NewNotFoundError("host %s not found", input.Host)
+		return nil, httperrors.NewNotFoundError("host %s not found", input.HostId)
 	} else if err != nil {
 		return nil, err
 	}
@@ -1573,7 +1714,7 @@ func (storage *SStorage) PerformForceDetachHost(ctx context.Context, userCred mc
 	}
 	iHostStorage, err := db.FetchJointByIds(HoststorageManager, host.GetId(), storage.Id, nil)
 	if err == sql.ErrNoRows {
-		return nil, httperrors.NewNotFoundError("host %s storage %s not found", input.Host, storage.Name)
+		return nil, httperrors.NewNotFoundError("host %s storage %s not found", input.HostId, storage.Name)
 	} else if err != nil {
 		return nil, err
 	}
@@ -1581,7 +1722,7 @@ func (storage *SStorage) PerformForceDetachHost(ctx context.Context, userCred mc
 	hostStorage.SetModelManager(HoststorageManager, hostStorage)
 	err = hostStorage.Delete(ctx, userCred)
 	if err == nil {
-		db.OpsLog.LogDetachEvent(ctx, hostStorage.Master(), hostStorage.Slave(), userCred, jsonutils.NewString("force detach"))
+		db.OpsLog.LogDetachEvent(ctx, db.JointMaster(hostStorage), db.JointSlave(hostStorage), userCred, jsonutils.NewString("force detach"))
 	}
 	return nil, err
 }

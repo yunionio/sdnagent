@@ -16,7 +16,8 @@ package multicloud
 
 import (
 	"context"
-	"fmt"
+
+	"yunion.io/x/pkg/errors"
 
 	"yunion.io/x/onecloud/pkg/cloudprovider"
 	"yunion.io/x/onecloud/pkg/util/billing"
@@ -35,24 +36,24 @@ func (instance *SDBInstanceBase) GetInternalConnectionStr() string {
 	return ""
 }
 
-func (instance *SDBInstanceBase) GetDBNetwork() (*cloudprovider.SDBInstanceNetwork, error) {
-	return nil, fmt.Errorf("Not Implemented GetDBNetwork")
+func (instance *SDBInstanceBase) GetDBNetworks() ([]cloudprovider.SDBInstanceNetwork, error) {
+	return nil, errors.Wrapf(cloudprovider.ErrNotImplemented, "GetDBNetworks")
 }
 
 func (instance *SDBInstanceBase) GetIDBInstanceParameters() ([]cloudprovider.ICloudDBInstanceParameter, error) {
-	return nil, fmt.Errorf("Not Implemented GetIDBInstanceParameters")
+	return nil, errors.Wrapf(cloudprovider.ErrNotImplemented, "GetIDBInstanceParameters")
 }
 
 func (instance *SDBInstanceBase) GetIDBInstanceDatabases() ([]cloudprovider.ICloudDBInstanceDatabase, error) {
-	return nil, fmt.Errorf("Not Implemented GetIDBInstanceDatabases")
+	return nil, errors.Wrapf(cloudprovider.ErrNotImplemented, "GetIDBInstanceDatabases")
 }
 
 func (instance *SDBInstanceBase) GetIDBInstanceAccounts() ([]cloudprovider.ICloudDBInstanceAccount, error) {
-	return nil, fmt.Errorf("Not Implemented GetIDBInstanceAccounts")
+	return nil, errors.Wrapf(cloudprovider.ErrNotImplemented, "GetIDBInstanceAccounts")
 }
 
 func (instance *SDBInstanceBase) GetIDBInstanceBackups() ([]cloudprovider.ICloudDBInstanceBackup, error) {
-	return nil, fmt.Errorf("Not Implemented GetIDBInstanceBackups")
+	return nil, errors.Wrapf(cloudprovider.ErrNotImplemented, "GetIDBInstanceBackups")
 }
 
 func (instance *SDBInstanceBase) GetCategory() string {
@@ -60,49 +61,53 @@ func (instance *SDBInstanceBase) GetCategory() string {
 }
 
 func (instance *SDBInstanceBase) Reboot() error {
-	return fmt.Errorf("Not Implemmented Reboot")
+	return errors.Wrapf(cloudprovider.ErrNotImplemented, "Reboot")
 }
 
 func (instance *SDBInstanceBase) Delete() error {
-	return fmt.Errorf("Not Implemmented Delete")
+	return errors.Wrapf(cloudprovider.ErrNotImplemented, "Delete")
+}
+
+func (instance *SDBInstanceBase) SetMetadata(tags map[string]string, replace bool) error {
+	return cloudprovider.ErrNotImplemented
 }
 
 func (instance *SDBInstanceBase) GetMasterInstanceId() string {
 	return ""
 }
 
-func (instance *SDBInstanceBase) GetSecurityGroupId() string {
-	return ""
+func (instance *SDBInstanceBase) GetSecurityGroupIds() ([]string, error) {
+	return []string{}, errors.Wrapf(cloudprovider.ErrNotImplemented, "GetSecurityGroupIds")
 }
 
 func (instance *SDBInstanceBase) Renew(bc billing.SBillingCycle) error {
-	return fmt.Errorf("Not Implemented Renew")
+	return errors.Wrapf(cloudprovider.ErrNotImplemented, "Renew")
 }
 
 func (instance *SDBInstanceBase) ChangeConfig(ctx context.Context, config *cloudprovider.SManagedDBInstanceChangeConfig) error {
-	return fmt.Errorf("Not Implemented ChnageConfig")
+	return errors.Wrapf(cloudprovider.ErrNotImplemented, "ChangeConfig")
 }
 
 func (instance *SDBInstanceBase) OpenPublicConnection() error {
-	return fmt.Errorf("Not Implemented OpenPublicConnection")
+	return errors.Wrapf(cloudprovider.ErrNotImplemented, "OpenPublicConnection")
 }
 
 func (instance *SDBInstanceBase) ClosePublicConnection() error {
-	return fmt.Errorf("Not Implemented ClosePublicConnection")
+	return errors.Wrapf(cloudprovider.ErrNotImplemented, "ClosePublicConnection")
 }
 
 func (instance *SDBInstanceBase) CreateDatabase(conf *cloudprovider.SDBInstanceDatabaseCreateConfig) error {
-	return fmt.Errorf("Not Implemented CreateDatabase")
+	return errors.Wrapf(cloudprovider.ErrNotImplemented, "CreateDatabase")
 }
 
 func (instance *SDBInstanceBase) CreateAccount(conf *cloudprovider.SDBInstanceAccountCreateConfig) error {
-	return fmt.Errorf("Not Implemented CreateAccount")
+	return errors.Wrapf(cloudprovider.ErrNotImplemented, "CreateAccount")
 }
 
 func (instance *SDBInstanceBase) CreateIBackup(conf *cloudprovider.SDBInstanceBackupCreateConfig) (string, error) {
-	return "", fmt.Errorf("Not Implemented CreateIBackup")
+	return "", errors.Wrapf(cloudprovider.ErrNotImplemented, "CreateIBackup")
 }
 
 func (instance *SDBInstanceBase) RecoveryFromBackup(conf *cloudprovider.SDBInstanceRecoveryConfig) error {
-	return fmt.Errorf("Not Implemented RecoveryFromBackup")
+	return errors.Wrapf(cloudprovider.ErrNotImplemented, "RecoveryFromBackup")
 }

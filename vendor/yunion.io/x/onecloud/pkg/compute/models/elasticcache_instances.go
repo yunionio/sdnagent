@@ -16,6 +16,7 @@ package models
 
 import (
 	"context"
+	"database/sql"
 	"fmt"
 	"regexp"
 	"strings"
@@ -30,7 +31,6 @@ import (
 	"yunion.io/x/sqlchemy"
 
 	"yunion.io/x/onecloud/pkg/apis"
-	"yunion.io/x/onecloud/pkg/apis/billing"
 	billing_api "yunion.io/x/onecloud/pkg/apis/billing"
 	api "yunion.io/x/onecloud/pkg/apis/compute"
 	"yunion.io/x/onecloud/pkg/cloudcommon/db"
@@ -217,6 +217,8 @@ func (manager *SElasticcacheManager) FetchCustomizeColumns(
 	zoneRows := manager.SZoneResourceBaseManager.FetchCustomizeColumns(ctx, userCred, query, objs, fields, isList)
 
 	netIds := make([]string, len(objs))
+	cacheIds := make([]string, len(objs))
+	zoneIds := []string{}
 	for i := range rows {
 		rows[i] = api.ElasticcacheDetails{
 			VirtualResourceDetails: virtRows[i],
@@ -224,6 +226,14 @@ func (manager *SElasticcacheManager) FetchCustomizeColumns(
 			ZoneResourceInfoBase:   zoneRows[i].ZoneResourceInfoBase,
 		}
 		netIds[i] = objs[i].(*SElasticcache).NetworkId
+		cacheIds[i] = objs[i].(*SElasticcache).Id
+
+		sz := strings.Split(objs[i].(*SElasticcache).SlaveZones, ",")
+		for j := range sz {
+			if !utils.IsInStringArray(sz[j], zoneIds) {
+				zoneIds = append(zoneIds, sz[j])
+			}
+		}
 	}
 
 	networks := make(map[string]SNetwork)
@@ -239,7 +249,61 @@ func (manager *SElasticcacheManager) FetchCustomizeColumns(
 		}
 	}
 
+	if len(fields) == 0 || fields.Contains("secgroups") || fields.Contains("secgroup") {
+		gsgs := fetchElasticcacheSecgroups(cacheIds)
+		if gsgs != nil {
+			for i := range rows {
+				if gsg, ok := gsgs[cacheIds[i]]; ok {
+					if len(fields) == 0 || fields.Contains("secgroups") {
+						rows[i].Secgroups = gsg
+					}
+				}
+			}
+		}
+	}
+
+	// zone ids
+	if len(zoneIds) > 0 {
+		zss := fetchElasticcacheSlaveZones(zoneIds)
+		for i := range objs {
+			if len(objs[i].(*SElasticcache).SlaveZones) > 0 {
+				sz := strings.Split(objs[i].(*SElasticcache).SlaveZones, ",")
+				szi := []apis.StandaloneShortDesc{}
+				for j := range sz {
+					if info, ok := zss[sz[j]]; ok {
+						szi = append(szi, info)
+					} else {
+						szi = append(szi, apis.StandaloneShortDesc{Id: sz[j], Name: sz[j]})
+					}
+				}
+
+				rows[i].SlaveZoneInfos = szi
+			}
+		}
+	}
+
 	return rows
+}
+
+func fetchElasticcacheSlaveZones(zoneIds []string) map[string]apis.StandaloneShortDesc {
+	zones := []SZone{}
+	err := ZoneManager.Query().In("id", zoneIds).All(&zones)
+	if err != nil {
+		log.Debugf("fetchElasticcacheSlaveZones.ZoneManager %s", err)
+		return nil
+	}
+
+	ret := make(map[string]apis.StandaloneShortDesc)
+	for i := range zones {
+		zsd := apis.StandaloneShortDesc{
+			Id:   zones[i].Id,
+			Name: zones[i].Name,
+		}
+
+		ret[zsd.Id] = zsd
+	}
+
+	return ret
 }
 
 func (self *SElasticcache) GetElasticcacheParameters() ([]SElasticcacheParameter, error) {
@@ -511,7 +575,7 @@ func (self *SElasticcache) syncRemoveCloudElasticcache(ctx context.Context, user
 
 	self.DeleteSubResources(ctx, userCred)
 
-	err := self.ValidateDeleteCondition(ctx)
+	err := self.ValidatePurgeCondition(ctx)
 	if err != nil {
 		self.SetStatus(userCred, api.ELASTIC_CACHE_STATUS_ERROR, "sync to delete")
 		return errors.Wrap(err, "ValidateDeleteCondition")
@@ -540,12 +604,25 @@ func (self *SElasticcache) SyncWithCloudElasticcache(ctx context.Context, userCr
 		self.MaintainEndTime = extInstance.GetMaintainEndTime()
 		self.AuthMode = extInstance.GetAuthMode()
 
+		factory, err := provider.GetProviderFactory()
+		if err != nil {
+			return errors.Wrap(err, "SyncWithCloudElasticcache.GetProviderFactory")
+		}
+
+		if factory.IsSupportPrepaidResources() {
+			self.BillingType = extInstance.GetBillingType()
+			if expired := extInstance.GetExpiredAt(); !expired.IsZero() {
+				self.ExpiredAt = expired
+			}
+			self.AutoRenew = extInstance.IsAutoRenew()
+		}
+
 		return nil
 	})
 	if err != nil {
 		return errors.Wrapf(err, "syncWithCloudElasticcache.Update")
 	}
-
+	syncVirtualResourceMetadata(ctx, userCred, self, extInstance)
 	db.OpsLog.LogSyncUpdate(self, diff, userCred)
 	return nil
 }
@@ -680,7 +757,7 @@ func (manager *SElasticcacheManager) AllowCreateItem(ctx context.Context, userCr
 }
 
 func (manager *SElasticcacheManager) BatchCreateValidateCreateData(ctx context.Context, userCred mcclient.TokenCredential, ownerId mcclient.IIdentityProvider, query jsonutils.JSONObject, data *jsonutils.JSONDict) (*jsonutils.JSONDict, error) {
-	input, err := manager.ValidateCreateData(ctx, userCred, ownerId, query, data)
+	input, err := manager.validateCreateData(ctx, userCred, ownerId, query, data)
 	if err != nil {
 		return nil, err
 	}
@@ -688,14 +765,22 @@ func (manager *SElasticcacheManager) BatchCreateValidateCreateData(ctx context.C
 	return input, nil
 }
 
-func (manager *SElasticcacheManager) ValidateCreateData(ctx context.Context, userCred mcclient.TokenCredential, ownerId mcclient.IIdentityProvider, query jsonutils.JSONObject, data *jsonutils.JSONDict) (*jsonutils.JSONDict, error) {
+func (manager *SElasticcacheManager) ValidateCreateData(ctx context.Context, userCred mcclient.TokenCredential, ownerId mcclient.IIdentityProvider, query jsonutils.JSONObject, input api.ElasticcacheCreateInput) (*jsonutils.JSONDict, error) {
+	data := input.JSON(&input)
+	return manager.validateCreateData(ctx, userCred, ownerId, query, data)
+}
+
+func (manager *SElasticcacheManager) validateCreateData(ctx context.Context, userCred mcclient.TokenCredential, ownerId mcclient.IIdentityProvider, query jsonutils.JSONObject, data *jsonutils.JSONDict) (*jsonutils.JSONDict, error) {
 	var region *SCloudregion
+	var provider *SCloudprovider
 	if id, _ := data.GetString("network"); len(id) > 0 {
 		network, err := db.FetchByIdOrName(NetworkManager, userCred, strings.Split(id, ",")[0])
 		if err != nil {
 			return nil, fmt.Errorf("getting network failed")
 		}
 		region = network.(*SNetwork).GetRegion()
+		vpc := network.(*SNetwork).GetVpc()
+		provider = vpc.GetCloudprovider()
 	}
 
 	if region == nil {
@@ -730,11 +815,30 @@ func (manager *SElasticcacheManager) ValidateCreateData(ctx context.Context, use
 	}
 	data.Update(jsonutils.Marshal(input))
 
-	return region.GetDriver().ValidateCreateElasticcacheData(ctx, userCred, nil, data)
+	ret, err := region.GetDriver().ValidateCreateElasticcacheData(ctx, userCred, nil, data)
+	if err != nil {
+		return nil, errors.Wrap(err, "region.GetDriver().ValidateCreateElasticcacheData")
+	}
+
+	cachePendingUsage := &SRegionQuota{Cache: 1}
+	quotaKeys := fetchRegionalQuotaKeys(rbacutils.ScopeProject, ownerId, region, provider)
+	cachePendingUsage.SetKeys(quotaKeys)
+	if err = quotas.CheckSetPendingQuota(ctx, userCred, cachePendingUsage); err != nil {
+		return nil, errors.Wrap(err, "quotas.CheckSetPendingQuota")
+	}
+
+	return ret, nil
 }
 
 func (self *SElasticcache) PostCreate(ctx context.Context, userCred mcclient.TokenCredential, ownerId mcclient.IIdentityProvider, query jsonutils.JSONObject, data jsonutils.JSONObject) {
 	self.SVirtualResourceBase.PostCreate(ctx, userCred, ownerId, query, data)
+
+	pendingUsage := SRegionQuota{Cache: 1}
+	pendingUsage.SetKeys(self.GetQuotaKeys())
+	err := quotas.CancelPendingUsage(ctx, userCred, &pendingUsage, &pendingUsage, true)
+	if err != nil {
+		log.Errorf("CancelPendingUsage error %s", err)
+	}
 
 	password, _ := data.GetString("password")
 	if reset, _ := data.Bool("reset_password"); reset && len(password) == 0 {
@@ -743,6 +847,10 @@ func (self *SElasticcache) PostCreate(ctx context.Context, userCred mcclient.Tok
 
 	params := jsonutils.NewDict()
 	params.Set("password", jsonutils.NewString(password))
+	secgroupIds, err := data.Get("secgroup_ids")
+	if err == nil {
+		params.Set("secgroup_ids", secgroupIds)
+	}
 	self.SetStatus(userCred, api.ELASTIC_CACHE_STATUS_DEPLOYING, "")
 	if err := self.StartElasticcacheCreateTask(ctx, userCred, params, ""); err != nil {
 		log.Errorf("Failed to create elastic cache error: %v", err)
@@ -800,12 +908,13 @@ func (self *SElasticcache) GetCreateAliyunElasticcacheParams(data *jsonutils.JSO
 	}
 
 	switch self.BillingType {
-	case billing.BILLING_TYPE_PREPAID:
+	case billing_api.BILLING_TYPE_PREPAID:
 		input.ChargeType = "PrePaid"
 		billingCycle, err := bc.ParseBillingCycle(self.BillingCycle)
 		if err != nil {
 			return nil, errors.Wrap(err, "elasticcache.GetCreateAliyunElasticcacheParams.BillingCycle")
 		}
+		billingCycle.AutoRenew = self.AutoRenew
 		input.BC = &billingCycle
 	default:
 		input.ChargeType = "PostPaid"
@@ -847,6 +956,7 @@ func (self *SElasticcache) GetCreateAliyunElasticcacheParams(data *jsonutils.JSO
 			input.NetworkId = network.ExternalId
 		}
 	}
+	input.Tags, _ = self.GetAllUserMetadata()
 
 	return input, nil
 }
@@ -890,12 +1000,13 @@ func (self *SElasticcache) GetCreateHuaweiElasticcacheParams(data *jsonutils.JSO
 	}
 
 	switch self.BillingType {
-	case billing.BILLING_TYPE_PREPAID:
+	case billing_api.BILLING_TYPE_PREPAID:
 		input.ChargeType = "PrePaid"
 		billingCycle, err := bc.ParseBillingCycle(self.BillingCycle)
 		if err != nil {
 			return nil, errors.Wrap(err, "elasticcache.GetCreateHuaweiElasticcacheParams.BillingCycle")
 		}
+		billingCycle.AutoRenew = self.AutoRenew
 		input.BC = &billingCycle
 	default:
 		input.ChargeType = "PostPaid"
@@ -941,13 +1052,81 @@ func (self *SElasticcache) GetCreateHuaweiElasticcacheParams(data *jsonutils.JSO
 			return nil, errors.Wrap(fmt.Errorf("cached security group not found"), "elasticcache.GetCreateHuaweiElasticcacheParams.SecurityGroup")
 		}
 
-		input.SecurityGroupId = sgCache.GetExternalId()
+		input.SecurityGroupIds = []string{sgCache.GetExternalId()}
 	}
 
 	if len(self.MaintainEndTime) > 0 {
 		input.MaintainBegin = self.MaintainStartTime
 		input.MaintainEnd = self.MaintainEndTime
 	}
+	return input, nil
+}
+
+func (self *SElasticcache) GetCreateQCloudElasticcacheParams(data *jsonutils.JSONDict) (*cloudprovider.SCloudElasticCacheInput, error) {
+	input := &cloudprovider.SCloudElasticCacheInput{}
+	iregion, err := self.GetIRegion()
+	if err != nil {
+		return nil, fmt.Errorf("elastic cache %s(%s) region not found", self.Name, self.Id)
+	} else {
+		input.RegionId = iregion.GetId()
+	}
+
+	input.InstanceType = self.InstanceType
+	input.InstanceName = self.GetName()
+
+	if password, _ := data.GetString("password"); len(password) > 0 {
+		input.Password = password
+	}
+
+	zone := self.GetZone()
+	if zone != nil {
+		izone, err := iregion.GetIZoneById(zone.ExternalId)
+		if err != nil {
+			return nil, errors.Wrap(err, "elasticcache.GetCreateHuaweiElasticcacheParams.Zone")
+		}
+		input.ZoneIds = []string{izone.GetId()}
+	}
+
+	switch self.BillingType {
+	case billing_api.BILLING_TYPE_PREPAID:
+		input.ChargeType = "PrePaid"
+		billingCycle, err := bc.ParseBillingCycle(self.BillingCycle)
+		if err != nil {
+			return nil, errors.Wrap(err, "elasticcache.GetCreateHuaweiElasticcacheParams.BillingCycle")
+		}
+		billingCycle.AutoRenew = self.AutoRenew
+		input.BC = &billingCycle
+	default:
+		input.ChargeType = "PostPaid"
+	}
+
+	switch self.NetworkType {
+	case api.LB_NETWORK_TYPE_CLASSIC:
+		input.NetworkType = "CLASSIC"
+	default:
+		input.NetworkType = "VPC"
+	}
+
+	if ivpc, err := db.FetchById(VpcManager, self.VpcId); err != nil {
+		return nil, errors.Wrap(err, "elasticcache.GetCreateHuaweiElasticcacheParams.Vpc")
+	} else {
+		if ivpc != nil {
+			vpc := ivpc.(*SVpc)
+			input.VpcId = vpc.ExternalId
+		}
+	}
+
+	if inetwork, err := db.FetchById(NetworkManager, self.NetworkId); err != nil {
+		return nil, errors.Wrap(err, "elasticcache.GetCreateHuaweiElasticcacheParams.Network")
+	} else {
+		if inetwork != nil {
+			network := inetwork.(*SNetwork)
+			input.NetworkId = network.ExternalId
+		}
+	}
+
+	input.Tags, _ = self.GetAllUserMetadata()
+
 	return input, nil
 }
 
@@ -981,7 +1160,7 @@ func (self *SElasticcache) ValidateDeleteCondition(ctx context.Context) error {
 		return httperrors.NewInvalidStatusError("Elastic cache is locked, cannot delete")
 	}
 
-	if self.GetChargeType() == billing.BILLING_TYPE_PREPAID && self.ExpiredAt.Sub(time.Now()).Seconds() > 0 {
+	if self.IsNotDeletablePrePaid() {
 		return httperrors.NewInvalidStatusError("Elastic cache is not expired, cannot delete")
 	}
 
@@ -997,6 +1176,7 @@ func (self *SElasticcache) CustomizeDelete(ctx context.Context, userCred mcclien
 }
 
 func (self *SElasticcache) StartDeleteElasticcacheTask(ctx context.Context, userCred mcclient.TokenCredential, params *jsonutils.JSONDict, parentTaskId string) error {
+	self.SetStatus(userCred, api.ELASTIC_CACHE_STATUS_RELEASING, "")
 	task, err := taskman.TaskManager.NewTask(ctx, "ElasticcacheDeleteTask", self, userCred, params, parentTaskId, "", nil)
 	if err != nil {
 		return err
@@ -1164,7 +1344,7 @@ func (self *SElasticcache) GetAdminAccount() (*SElasticcacheAccount, error) {
 		}
 	}
 
-	return nil, fmt.Errorf("no admin account found for elastic cache %s", self.Id)
+	return nil, httperrors.NewNotFoundError("no admin account found for elastic cache %s", self.Id)
 }
 
 func (self *SElasticcache) StartResetPasswordTask(ctx context.Context, userCred mcclient.TokenCredential, params *jsonutils.JSONDict, parentTaskId string) error {
@@ -1312,7 +1492,7 @@ func (self *SElasticcache) AllowPerformFlushInstance(ctx context.Context, userCr
 
 func (self *SElasticcache) PerformFlushInstance(ctx context.Context, userCred mcclient.TokenCredential, query jsonutils.JSONObject, data jsonutils.JSONObject) (jsonutils.JSONObject, error) {
 	self.SetStatus(userCred, api.ELASTIC_CACHE_STATUS_FLUSHING, "")
-	return nil, self.StartFlushInstanceTask(ctx, userCred, jsonutils.NewDict(), "")
+	return nil, self.StartFlushInstanceTask(ctx, userCred, data.(*jsonutils.JSONDict), "")
 }
 
 func (self *SElasticcache) StartFlushInstanceTask(ctx context.Context, userCred mcclient.TokenCredential, params *jsonutils.JSONDict, parentTaskId string) error {
@@ -1436,11 +1616,11 @@ func (self *SElasticcache) AllowPerformSync(ctx context.Context, userCred mcclie
 }
 
 func (self *SElasticcache) PerformSync(ctx context.Context, userCred mcclient.TokenCredential, query jsonutils.JSONObject, data jsonutils.JSONObject) (jsonutils.JSONObject, error) {
-	self.SetStatus(userCred, api.ELASTIC_CACHE_STATUS_SYNCING, "")
 	return nil, self.StartSyncTask(ctx, userCred, data.(*jsonutils.JSONDict), "")
 }
 
 func (self *SElasticcache) StartSyncTask(ctx context.Context, userCred mcclient.TokenCredential, params *jsonutils.JSONDict, parentTaskId string) error {
+	self.SetStatus(userCred, api.ELASTIC_CACHE_STATUS_SYNCING, "")
 	task, err := taskman.TaskManager.NewTask(ctx, "ElasticcacheSyncTask", self, userCred, params, parentTaskId, "", nil)
 	if err != nil {
 		return err
@@ -1644,7 +1824,7 @@ func (self *SElasticcache) doExternalSync(ctx context.Context, userCred mcclient
 	return self.SyncWithCloudElasticcache(ctx, userCred, provider, iecs)
 }
 
-func (model *SElasticcacheManager) Delete(ctx context.Context, userCred mcclient.TokenCredential) error {
+func (self *SElasticcache) Delete(ctx context.Context, userCred mcclient.TokenCredential) error {
 	log.Infof("elasticcache delete do nothing. Do delete in StartDeleteElasticcacheTask")
 	return nil
 }
@@ -1711,5 +1891,451 @@ func (self *SElasticcache) CancelExpireTime(ctx context.Context, userCred mcclie
 		return errors.Wrap(err, "elasticcache cancel expire time")
 	}
 	db.OpsLog.LogEvent(self, db.ACT_RENEW, "elasticcache cancel expire time", userCred)
+	return nil
+}
+
+func (self *SElasticcache) AllowPerformRemoteUpdate(ctx context.Context, userCred mcclient.TokenCredential, query jsonutils.JSONObject, data jsonutils.JSONObject) bool {
+	return self.IsOwner(userCred) || db.IsAdminAllowPerform(userCred, self, "remote-update")
+}
+
+func (self *SElasticcache) PerformRemoteUpdate(ctx context.Context, userCred mcclient.TokenCredential, query jsonutils.JSONObject, input api.ElasticcacheRemoteUpdateInput) (jsonutils.JSONObject, error) {
+	err := self.StartRemoteUpdateTask(ctx, userCred, (input.ReplaceTags != nil && *input.ReplaceTags), "")
+	if err != nil {
+		return nil, errors.Wrap(err, "StartRemoteUpdateTask")
+	}
+	return nil, nil
+}
+
+func (self *SElasticcache) StartRemoteUpdateTask(ctx context.Context, userCred mcclient.TokenCredential, replaceTags bool, parentTaskId string) error {
+	data := jsonutils.NewDict()
+	if replaceTags {
+		data.Add(jsonutils.JSONTrue, "replace_tags")
+	}
+	if task, err := taskman.TaskManager.NewTask(ctx, "ElasticcacheRemoteUpdateTask", self, userCred, data, parentTaskId, "", nil); err != nil {
+		log.Errorln(err)
+		return errors.Wrap(err, "Start ElasticcacheRemoteUpdateTask")
+	} else {
+		task.ScheduleRun(nil)
+	}
+	return nil
+}
+
+func (self *SElasticcache) OnMetadataUpdated(ctx context.Context, userCred mcclient.TokenCredential) {
+	if len(self.ExternalId) == 0 {
+		return
+	}
+	err := self.StartRemoteUpdateTask(ctx, userCred, false, "")
+	if err != nil {
+		log.Errorf("StartRemoteUpdateTask fail: %s", err)
+	}
+}
+
+func (self *SElasticcache) getSecgroupsBySecgroupExternalIds(externalIds []string) ([]SSecurityGroup, error) {
+	vpc := self.GetVpc()
+	if vpc == nil {
+		return nil, errors.Wrap(errors.ErrNotFound, "GetVpc")
+	}
+
+	return getSecgroupsBySecgroupExternalIds(vpc.ManagerId, externalIds)
+}
+
+func (self *SElasticcache) GetElasticcacheSecgroups() ([]SElasticcachesecgroup, error) {
+	ess := []SElasticcachesecgroup{}
+	q := ElasticcachesecgroupManager.Query().Equals("elasticcache_id", self.Id)
+	err := db.FetchModelObjects(ElasticcachesecgroupManager, q, &ess)
+	if err != nil {
+		return nil, errors.Wrapf(err, "db.FetchModelObjects")
+	}
+	return ess, nil
+}
+
+func (self *SElasticcache) validateSecgroupInput(secgroups []string) error {
+	if !utils.IsInStringArray(self.Status, []string{api.ELASTIC_CACHE_STATUS_RUNNING, api.ELASTIC_CACHE_STATUS_DEPLOYING}) {
+		return httperrors.NewInputParameterError("Cannot add security groups in status %s", self.Status)
+	}
+
+	region := self.GetRegion()
+	if region == nil {
+		return httperrors.NewNotFoundError("region")
+	}
+
+	driver := region.GetDriver()
+	if driver == nil {
+		return httperrors.NewNotFoundError("regiondriver")
+	}
+
+	maxCount := driver.GetMaxElasticcacheSecurityGroupCount()
+	if !driver.IsSupportedElasticcacheSecgroup() || maxCount == 0 {
+		return httperrors.NewNotSupportedError("not supported bind security group")
+	}
+
+	if len(secgroups) > maxCount {
+		return httperrors.NewOutOfLimitError("beyond security group quantity limit, max items %d.", maxCount)
+	}
+
+	return nil
+}
+
+func CheckingSecgroupIds(ctx context.Context, userCred mcclient.TokenCredential, secgroupIds []string) ([]string, error) {
+	secgroupNames := []string{}
+	for _, secgroupId := range secgroupIds {
+		secgrp, err := SecurityGroupManager.FetchByIdOrName(userCred, secgroupId)
+		if err != nil {
+			if errors.Cause(err) == sql.ErrNoRows {
+				return nil, httperrors.NewResourceNotFoundError2("secgroup", secgroupId)
+			}
+			return nil, httperrors.NewGeneralError(errors.Wrapf(err, "FetchByIdOrName(%s)", secgroupId))
+		}
+
+		err = SecurityGroupManager.ValidateName(secgrp.GetName())
+		if err != nil {
+			return nil, httperrors.NewInputParameterError("The secgroup name %s does not meet the requirements, please change the name", secgrp.GetName())
+		}
+
+		secgroupNames = append(secgroupNames, secgrp.GetName())
+	}
+
+	return secgroupNames, nil
+}
+
+func (self *SElasticcache) checkingSecgroupIds(ctx context.Context, userCred mcclient.TokenCredential, secgroupIds []string) ([]string, error) {
+	return CheckingSecgroupIds(ctx, userCred, secgroupIds)
+}
+
+// 返回 本次更新后secgroup id的全集、本次更增的secgroup id, 本次删除的secgroup id, error
+func (self *SElasticcache) cleanSecgroupIds(action string, secgroupIds []string) ([]string, []string, []string, error) {
+	ess, err := self.GetElasticcacheSecgroups()
+	if err != nil {
+		return nil, nil, nil, errors.Wrap(err, "GetElasticcacheSecgroups")
+	}
+
+	currentIds := make([]string, len(ess))
+	for i := range ess {
+		currentIds[i] = ess[i].SecgroupId
+	}
+
+	all := []string{}
+	adds := []string{}
+	removes := []string{}
+
+	switch action {
+	case "add":
+		all = currentIds
+		for i := range secgroupIds {
+			if !utils.IsInStringArray(secgroupIds[i], currentIds) && !utils.IsInStringArray(secgroupIds[i], adds) {
+				adds = append(adds, secgroupIds[i])
+				all = append(all, secgroupIds[i])
+			}
+		}
+	case "revoke":
+		for i := range secgroupIds {
+			if utils.IsInStringArray(secgroupIds[i], currentIds) && !utils.IsInStringArray(secgroupIds[i], adds) {
+				removes = append(removes, secgroupIds[i])
+			}
+		}
+
+		for i := range currentIds {
+			if !utils.IsInStringArray(currentIds[i], removes) {
+				all = append(all, currentIds[i])
+			}
+		}
+	case "set":
+		for i := range secgroupIds {
+			if !utils.IsInStringArray(secgroupIds[i], all) {
+				all = append(all, secgroupIds[i])
+			}
+		}
+
+		for i := range currentIds {
+			if !utils.IsInStringArray(currentIds[i], all) {
+				removes = append(removes, currentIds[i])
+			}
+		}
+
+		for i := range all {
+			if !utils.IsInStringArray(all[i], currentIds) {
+				adds = append(adds, all[i])
+			}
+		}
+	default:
+		return nil, nil, nil, fmt.Errorf("not supported cleanSecgroupIds action %s", action)
+	}
+
+	return all, adds, removes, nil
+}
+
+func (self *SElasticcache) addSecgroup(ctx context.Context, userCred mcclient.TokenCredential, secgroupId string) error {
+	es := &SElasticcachesecgroup{}
+	es.SetModelManager(GuestsecgroupManager, es)
+	es.ElasticcacheId = self.Id
+	es.SecgroupId = secgroupId
+	err := ElasticcachesecgroupManager.TableSpec().Insert(ctx, es)
+	if err != nil {
+		return errors.Wrap(err, "ElasticcachesecgroupManager.Insert")
+	}
+
+	return nil
+}
+
+func (self *SElasticcache) removeSecgroup(ctx context.Context, userCred mcclient.TokenCredential, secgroupId string) error {
+	q := ElasticcachesecgroupManager.Query().Equals("secgroup_id", secgroupId).Equals("elasticcache_id", self.GetId())
+	ret := []SElasticcachesecgroup{}
+	err := db.FetchModelObjects(ElasticcachesecgroupManager, q, &ret)
+	if err != nil {
+		if errors.Cause(err) != sql.ErrNoRows {
+			return errors.Wrap(err, "FetchModelObjects")
+		} else {
+			return nil
+		}
+	}
+
+	for i := range ret {
+		err = ret[i].Delete(ctx, userCred)
+		if err != nil {
+			return errors.Wrapf(err, "Delete elasticcache %s secgroup %s", self.Name, secgroupId)
+		}
+	}
+
+	return nil
+}
+
+func (self *SElasticcache) saveSecgroups(ctx context.Context, userCred mcclient.TokenCredential, adds []string, removes []string) compare.SyncResult {
+	saveResult := compare.SyncResult{}
+
+	for i := range adds {
+		err := self.addSecgroup(ctx, userCred, adds[i])
+		if err != nil {
+			saveResult.Error(errors.Wrap(err, "addSecgroup"))
+			return saveResult
+		} else {
+			saveResult.Add()
+		}
+	}
+
+	for i := range removes {
+		err := self.removeSecgroup(ctx, userCred, removes[i])
+		if err != nil {
+			saveResult.Error(errors.Wrap(err, "removeSecgroup"))
+			return saveResult
+		} else {
+			saveResult.Delete()
+		}
+	}
+
+	return saveResult
+}
+
+func (self *SElasticcache) ProcessElasticcacheSecgroupsInput(ctx context.Context, userCred mcclient.TokenCredential, action string, input *api.ElasticcacheSecgroupsInput) ([]string, error) {
+	all, adds, removes, err := self.cleanSecgroupIds(action, input.SecgroupIds)
+	if err != nil {
+		return nil, httperrors.NewGeneralError(err)
+	}
+
+	if len(all) == 0 {
+		return nil, httperrors.NewInputParameterError("secgroups will be empty after update.")
+	}
+
+	switch action {
+	case "add":
+		input.SecgroupIds = adds
+	case "revoke":
+		input.SecgroupIds = removes
+	case "set":
+		input.SecgroupIds = all
+	}
+
+	err = self.validateSecgroupInput(all)
+	if err != nil {
+		return nil, err
+	}
+
+	names, err := self.checkingSecgroupIds(ctx, userCred, input.SecgroupIds)
+	if err != nil {
+		return nil, err
+	}
+
+	result := self.saveSecgroups(ctx, userCred, adds, removes)
+	if result.IsError() {
+		return nil, result.AllError()
+	}
+
+	return names, nil
+}
+
+func (self *SElasticcache) SyncSecgroup(ctx context.Context, userCred mcclient.TokenCredential, action string, input api.ElasticcacheSecgroupsInput) (jsonutils.JSONObject, error) {
+	names, err := self.ProcessElasticcacheSecgroupsInput(ctx, userCred, action, &input)
+	if err != nil {
+		return nil, err
+	}
+
+	logclient.AddActionLogWithContext(ctx, self, logclient.ACT_SYNC_CONF, names, userCred, true)
+	return nil, self.StartSyncSecgroupsTask(ctx, userCred, nil, "")
+}
+
+func (self *SElasticcache) AllowPerformAddSecgroup(ctx context.Context, userCred mcclient.TokenCredential, query jsonutils.JSONObject, data jsonutils.JSONObject) bool {
+	return self.IsOwner(userCred) || db.IsAdminAllowPerform(userCred, self, "add-secgroup")
+}
+
+func (self *SElasticcache) PerformAddSecgroup(ctx context.Context, userCred mcclient.TokenCredential, query jsonutils.JSONObject, input api.ElasticcacheSecgroupsInput) (jsonutils.JSONObject, error) {
+	return self.SyncSecgroup(ctx, userCred, "add", input)
+}
+
+func (self *SElasticcache) AllowPerformRevokeSecgroup(ctx context.Context, userCred mcclient.TokenCredential, query jsonutils.JSONObject, data jsonutils.JSONObject) bool {
+	return self.IsOwner(userCred) || db.IsAdminAllowPerform(userCred, self, "revoke-secgroup")
+}
+
+func (self *SElasticcache) PerformRevokeSecgroup(ctx context.Context, userCred mcclient.TokenCredential, query jsonutils.JSONObject, input api.ElasticcacheSecgroupsInput) (jsonutils.JSONObject, error) {
+	return self.SyncSecgroup(ctx, userCred, "revoke", input)
+}
+
+func (self *SElasticcache) AllowPerformSetSecgroup(ctx context.Context, userCred mcclient.TokenCredential, query jsonutils.JSONObject, data jsonutils.JSONObject) bool {
+	return self.IsOwner(userCred) || db.IsAdminAllowPerform(userCred, self, "set-secgroup")
+}
+
+func (self *SElasticcache) PerformSetSecgroup(ctx context.Context, userCred mcclient.TokenCredential, query jsonutils.JSONObject, input api.ElasticcacheSecgroupsInput) (jsonutils.JSONObject, error) {
+	return self.SyncSecgroup(ctx, userCred, "set", input)
+}
+
+func (self *SElasticcache) SyncElasticcacheSecgroups(ctx context.Context, userCred mcclient.TokenCredential, externalIds []string) compare.SyncResult {
+	syncResult := compare.SyncResult{}
+
+	secgroups, err := self.getSecgroupsBySecgroupExternalIds(externalIds)
+	if err != nil {
+		syncResult.Error(err)
+		return syncResult
+	}
+
+	secgroupIds := []string{}
+	for _, secgroup := range secgroups {
+		secgroupIds = append(secgroupIds, secgroup.Id)
+	}
+
+	_, adds, removes, err := self.cleanSecgroupIds("set", secgroupIds)
+	if err != nil {
+		syncResult.Error(err)
+		return syncResult
+	}
+
+	return self.saveSecgroups(ctx, userCred, adds, removes)
+}
+
+func (self *SElasticcache) StartSyncSecgroupsTask(ctx context.Context, userCred mcclient.TokenCredential, params *jsonutils.JSONDict, parentTaskId string) error {
+	self.SetStatus(userCred, api.ELASTIC_CACHE_STATUS_SYNCING, "")
+	task, err := taskman.TaskManager.NewTask(ctx, "ElasticcacheSyncsecgroupsTask", self, userCred, params, parentTaskId, "", nil)
+	if err != nil {
+		return err
+	}
+
+	task.ScheduleRun(nil)
+	return nil
+}
+
+func (self *SElasticcache) AllowPerformSetAutoRenew(ctx context.Context, userCred mcclient.TokenCredential, query jsonutils.JSONObject, data jsonutils.JSONObject) bool {
+	return db.IsAdminAllowPerform(userCred, self, "set-auto-renew")
+}
+
+func (self *SElasticcache) SetAutoRenew(autoRenew bool) error {
+	_, err := db.Update(self, func() error {
+		self.AutoRenew = autoRenew
+		return nil
+	})
+	return err
+}
+
+/*
+设置自动续费
+要求实例状态为running
+要求实例计费类型为包年包月(预付费)
+*/
+func (self *SElasticcache) PerformSetAutoRenew(ctx context.Context, userCred mcclient.TokenCredential, query jsonutils.JSONObject, input api.GuestAutoRenewInput) (jsonutils.JSONObject, error) {
+	if !utils.IsInStringArray(self.Status, []string{api.ELASTIC_CACHE_STATUS_RUNNING}) {
+		return nil, httperrors.NewUnsupportOperationError("The elastic cache status need be %s, current is %s", api.ELASTIC_CACHE_STATUS_RUNNING, self.Status)
+	}
+
+	if self.BillingType != billing_api.BILLING_TYPE_PREPAID {
+		return nil, httperrors.NewUnsupportOperationError("Only %s elastic cache support set auto renew operation", billing_api.BILLING_TYPE_PREPAID)
+	}
+
+	if self.AutoRenew == input.AutoRenew {
+		return nil, nil
+	}
+
+	region := self.GetRegion()
+	if region == nil {
+		return nil, httperrors.NewResourceNotFoundError("elastic cache no related region found")
+	}
+
+	if !region.GetDriver().IsSupportedElasticcacheAutoRenew() {
+		err := self.SetAutoRenew(input.AutoRenew)
+		if err != nil {
+			return nil, httperrors.NewGeneralError(err)
+		}
+
+		logclient.AddSimpleActionLog(self, logclient.ACT_SET_AUTO_RENEW, jsonutils.Marshal(input), userCred, true)
+		return nil, nil
+	}
+
+	return nil, self.StartSetAutoRenewTask(ctx, userCred, input.AutoRenew, "")
+}
+
+func (self *SElasticcache) StartSetAutoRenewTask(ctx context.Context, userCred mcclient.TokenCredential, autoRenew bool, parentTaskId string) error {
+	self.SetStatus(userCred, api.ELASTIC_CACHE_SET_AUTO_RENEW, "")
+
+	data := jsonutils.NewDict()
+	data.Set("auto_renew", jsonutils.NewBool(autoRenew))
+	task, err := taskman.TaskManager.NewTask(ctx, "ElasticcacheSetAutoRenewTask", self, userCred, data, parentTaskId, "", nil)
+	if err != nil {
+		return errors.Wrap(err, "ElasticcacheSetAutoRenewTask")
+	}
+	task.ScheduleRun(nil)
+	return nil
+}
+
+func (self *SElasticcache) AllowPerformRenew(ctx context.Context, userCred mcclient.TokenCredential, query jsonutils.JSONObject, data jsonutils.JSONObject) bool {
+	return db.IsAdminAllowPerform(userCred, self, "renew")
+}
+
+func (self *SElasticcache) PerformRenew(ctx context.Context, userCred mcclient.TokenCredential, query jsonutils.JSONObject, data jsonutils.JSONObject) (jsonutils.JSONObject, error) {
+	if self.BillingType != billing_api.BILLING_TYPE_PREPAID {
+		return nil, httperrors.NewUnsupportOperationError("Only %s elastic cache support renew operation", billing_api.BILLING_TYPE_PREPAID)
+	}
+
+	durationStr, _ := data.GetString("duration")
+	if len(durationStr) == 0 {
+		return nil, httperrors.NewInputParameterError("missong duration")
+	}
+
+	bc, err := bc.ParseBillingCycle(durationStr)
+	if err != nil {
+		return nil, httperrors.NewInputParameterError("invalid duration %s: %s", durationStr, err)
+	}
+
+	region := self.GetRegion()
+	if region == nil {
+		return nil, httperrors.NewResourceNotFoundError("elastic cache no related region found")
+	}
+
+	if !region.GetDriver().IsSupportedBillingCycle(bc, self.KeywordPlural()) {
+		return nil, httperrors.NewInputParameterError("unsupported duration %s", durationStr)
+	}
+
+	err = self.startRenewTask(ctx, userCred, durationStr, "")
+	if err != nil {
+		return nil, err
+	}
+
+	return nil, nil
+}
+
+func (self *SElasticcache) startRenewTask(ctx context.Context, userCred mcclient.TokenCredential, duration string, parentTaskId string) error {
+	self.SetStatus(userCred, api.ELASTIC_CACHE_RENEWING, "")
+	data := jsonutils.NewDict()
+	data.Add(jsonutils.NewString(duration), "duration")
+	task, err := taskman.TaskManager.NewTask(ctx, "ElasticcacheRenewTask", self, userCred, data, parentTaskId, "", nil)
+	if err != nil {
+		log.Errorf("fail to crate ElasticcacheRenewTask %s", err)
+		return err
+	}
+	task.ScheduleRun(nil)
 	return nil
 }

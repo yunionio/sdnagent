@@ -20,11 +20,11 @@ import (
 
 type WireResourceInput struct {
 	// 二层网络(ID或Name)的资源
-	Wire string `json:"wire"`
+	WireId string `json:"wire_id"`
 	// swagger:ignore
 	// Deprecated
 	// fitler by wire id
-	WireId string `json:"wire_id" yunion-deprecated-by:"wire"`
+	Wire string `json:"wire" yunion-deprecated-by:"wire_id"`
 }
 
 type WireFilterListBase struct {
@@ -43,11 +43,11 @@ type WireFilterListInput struct {
 
 type NetworkResourceInput struct {
 	// IP子网（ID或Name）
-	Network string `json:"network"`
+	NetworkId string `json:"network_id"`
 	// swagger:ignore
 	// Deprecated
 	// filter by networkId
-	NetworkId string `json:"network_id" yunion-deprecated-by:"network"`
+	Network string `json:"network" yunion-deprecated-by:"network_id"`
 }
 
 type NetworkFilterListBase struct {
@@ -69,6 +69,7 @@ type NetworkListInput struct {
 	WireFilterListInput
 
 	HostResourceInput
+	StorageResourceInput
 
 	UsableResourceListInput
 
@@ -110,6 +111,16 @@ type NetworkListInput struct {
 	ServerType []string `json:"server_type"`
 	// 分配策略
 	AllocPolicy []string `json:"alloc_policy"`
+	// 是否加入自动分配地址池
+	IsAutoAlloc *bool `json:"is_auto_alloc"`
+	// 是否为基础网络（underlay）
+	IsClassic *bool `json:"is_classic"`
+
+	// filter by Host schedtag
+	HostSchedtagId string `json:"host_schedtag_id"`
+
+	// filter by BGP types
+	BgpType []string `json:"bgp_type"`
 }
 
 type NetworkResourceInfoBase struct {
@@ -177,6 +188,18 @@ type NetworkCreateInput struct {
 	// enum: guest,baremetal,pxe,ipmi
 	// default: guest
 	ServerType string `json:"server_type"`
+
+	// 是否加入自动分配地址池
+	IsAutoAlloc *bool `json:"is_auto_alloc"`
+
+	// VlanId
+	VlanId *int `json:"vlan_id"`
+
+	// deprecated
+	Vlan *int `json:"vlan" yunion-deprecated-by:"vlan_id"`
+
+	// 线路类型
+	BgpType string `json:"bgp_type"`
 }
 
 type NetworkDetails struct {
@@ -299,6 +322,9 @@ type NetworkUpdateInput struct {
 
 	// 分配策略
 	AllocPolicy string `json:"alloc_policy"`
+
+	// 是否加入自动分配地址池
+	IsAutoAlloc *bool `json:"is_auto_alloc"`
 }
 
 type GetNetworkAddressesInput struct {
@@ -308,5 +334,14 @@ type GetNetworkAddressesInput struct {
 
 type GetNetworkAddressesOutput struct {
 	// IP子网地址记录
-	Addresses []SNetworkAddress `json:"addresses"`
+	Addresses []SNetworkUsedAddress `json:"addresses"`
+}
+
+type NetworkSetBgpTypeInput struct {
+	apis.Meta
+
+	// description: new BgpType name
+	// required: true
+	// example: ChinaTelecom, BGP, etc.
+	BgpType string `json:"bgp_type"`
 }

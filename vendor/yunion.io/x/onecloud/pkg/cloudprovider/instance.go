@@ -26,6 +26,38 @@ import (
 	"yunion.io/x/onecloud/pkg/util/seclib2"
 )
 
+type SDistDefaultAccount struct {
+	// 操作系统发行版
+	OsDistribution string
+	// 默认用户名
+	DefaultAccount string
+	// 是否可更改
+	Changeable bool
+}
+
+type SOsDefaultAccount struct {
+	// 默认用户名
+	DefaultAccount string
+	// 是否可更改用户名
+	Changeable bool
+	// 禁止使用的账号
+	DisabledAccounts []string
+	// 各操作系统发行版的默认用户名信息
+	DistAccounts []SDistDefaultAccount
+}
+
+type SDefaultAccount struct {
+	Linux   SOsDefaultAccount
+	Windows SOsDefaultAccount
+}
+
+type SInstanceCapability struct {
+	Provider   string
+	Hypervisor string
+
+	DefaultAccount SDefaultAccount
+}
+
 type SDiskInfo struct {
 	StorageExternalId string
 	StorageType       string
@@ -40,6 +72,16 @@ const (
 	CLOUD_POWER_SHELL           = "powershell"
 	CLOUD_EC2                   = "ec2"
 )
+
+type SPublicIpInfo struct {
+	PublicIpBw         int
+	PublicIpChargeType TElasticipChargeType
+}
+
+type ServerStopOptions struct {
+	IsForce      bool
+	StopCharging bool
+}
 
 type SManagedVMCreateConfig struct {
 	Name                string
@@ -63,6 +105,10 @@ type SManagedVMCreateConfig struct {
 	Password            string
 	UserData            string
 	ProjectId           string
+
+	SPublicIpInfo
+
+	Tags map[string]string
 
 	BillingCycle *billing.SBillingCycle
 }

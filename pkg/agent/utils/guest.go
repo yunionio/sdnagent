@@ -21,6 +21,8 @@ import (
 	"os"
 	"path"
 	"strings"
+
+	"yunion.io/x/jsonutils"
 )
 
 type guestDesc struct {
@@ -189,6 +191,19 @@ func (g *Guest) IsSlave() bool {
 	return g.isSlave
 }
 
+func (g *Guest) GetJSONObjectDesc() (jsonutils.JSONObject, error) {
+	descPath := path.Join(g.Path, "desc")
+	data, err := ioutil.ReadFile(descPath)
+	if err != nil {
+		return nil, err
+	}
+	obj, err := jsonutils.Parse(data)
+	if err != nil {
+		return nil, err
+	}
+	return obj, nil
+}
+
 func (g *Guest) LoadDesc() error {
 	descPath := path.Join(g.Path, "desc")
 	descFile, err := os.Open(descPath)
@@ -257,4 +272,22 @@ func (g *Guest) SrcMacCheck() bool {
 		return true
 	}
 	return g.srcMacCheck
+}
+
+func (g *Guest) FindNicByNetIdIP(netId, ip string) *GuestNIC {
+	var searchNic = func(nics []*GuestNIC) *GuestNIC {
+		for _, nic := range nics {
+			if nic.NetId == netId && nic.IP == ip {
+				return nic
+			}
+		}
+		return nil
+	}
+	if nic := searchNic(g.VpcNICs); nic != nil {
+		return nic
+	}
+	if nic := searchNic(g.NICs); nic != nil {
+		return nic
+	}
+	return nil
 }

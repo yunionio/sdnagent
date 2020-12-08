@@ -42,15 +42,15 @@ type SLoadbalancerResourceBaseManager struct {
 }
 
 func ValidateLoadbalancerResourceInput(userCred mcclient.TokenCredential, input api.LoadbalancerResourceInput) (*SLoadbalancer, api.LoadbalancerResourceInput, error) {
-	lbObj, err := LoadbalancerManager.FetchByIdOrName(userCred, input.Loadbalancer)
+	lbObj, err := LoadbalancerManager.FetchByIdOrName(userCred, input.LoadbalancerId)
 	if err != nil {
 		if errors.Cause(err) == sql.ErrNoRows {
-			return nil, input, errors.Wrapf(httperrors.ErrResourceNotFound, "%s %s", LoadbalancerManager.Keyword(), input.Loadbalancer)
+			return nil, input, errors.Wrapf(httperrors.ErrResourceNotFound, "%s %s", LoadbalancerManager.Keyword(), input.LoadbalancerId)
 		} else {
 			return nil, input, errors.Wrap(err, "LoadbalancerManager.FetchByIdOrName")
 		}
 	}
-	input.Loadbalancer = lbObj.GetId()
+	input.LoadbalancerId = lbObj.GetId()
 	return lbObj.(*SLoadbalancer), input, nil
 }
 
@@ -199,7 +199,7 @@ func (manager *SLoadbalancerResourceBaseManager) ListItemFilter(
 	userCred mcclient.TokenCredential,
 	query api.LoadbalancerFilterListInput,
 ) (*sqlchemy.SQuery, error) {
-	if len(query.Loadbalancer) > 0 {
+	if len(query.LoadbalancerId) > 0 {
 		lbObj, _, err := ValidateLoadbalancerResourceInput(userCred, query.LoadbalancerResourceInput)
 		if err != nil {
 			return nil, errors.Wrap(err, "ValidateLoadbalancerResourceInput")
@@ -258,53 +258,40 @@ func (manager *SLoadbalancerResourceBaseManager) OrderByExtraFields(
 	userCred mcclient.TokenCredential,
 	query api.LoadbalancerFilterListInput,
 ) (*sqlchemy.SQuery, error) {
-	q, orders, fields := manager.GetOrderBySubQuery(q, userCred, query)
-	if len(orders) > 0 {
-		q = db.OrderByFields(q, orders, fields)
+	if !db.NeedOrderQuery(manager.GetOrderByFields(query)) {
+		return q, nil
 	}
+	orderQ := LoadbalancerManager.Query("id")
+	orderSubQ := orderQ.SubQuery()
+	orderQ, orders, fields := manager.GetOrderBySubQuery(orderQ, orderSubQ, orderQ.Field("id"), userCred, query, nil, nil)
+	q = q.LeftJoin(orderSubQ, sqlchemy.Equals(q.Field("loadbalancer_id"), orderSubQ.Field("id")))
+	q = db.OrderByFields(q, orders, fields)
 	return q, nil
 }
 
 func (manager *SLoadbalancerResourceBaseManager) GetOrderBySubQuery(
 	q *sqlchemy.SQuery,
+	subq *sqlchemy.SSubQuery,
+	joinField sqlchemy.IQueryField,
 	userCred mcclient.TokenCredential,
 	query api.LoadbalancerFilterListInput,
+	orders []string,
+	fields []sqlchemy.IQueryField,
 ) (*sqlchemy.SQuery, []string, []sqlchemy.IQueryField) {
-	lbQ := LoadbalancerManager.Query("id", "name")
-	var orders []string
-	var fields []sqlchemy.IQueryField
+	if !db.NeedOrderQuery(manager.GetOrderByFields(query)) {
+		return q, orders, fields
+	}
+	lbQ := LoadbalancerManager.Query().SubQuery()
+	q = q.LeftJoin(lbQ, sqlchemy.Equals(joinField, lbQ.Field("id")))
+	q = q.AppendField(lbQ.Field("name").Label("loadbalancer"))
+	orders = append(orders, query.OrderByLoadbalancer)
+	fields = append(fields, subq.Field("loadbalancer"))
+
 	zoneQuery := api.ZonalFilterListInput{
 		ZonalFilterListBase: query.ZonalFilterListBase,
 	}
-	if db.NeedOrderQuery(manager.SZoneResourceBaseManager.GetOrderByFields(zoneQuery)) {
-		var zoneOrders []string
-		var zoneFields []sqlchemy.IQueryField
-		lbQ, zoneOrders, zoneFields = manager.SZoneResourceBaseManager.GetOrderBySubQuery(lbQ, userCred, zoneQuery)
-		if len(zoneOrders) > 0 {
-			orders = append(orders, zoneOrders...)
-			fields = append(fields, zoneFields...)
-		}
-	}
-
-	if db.NeedOrderQuery(manager.SVpcResourceBaseManager.GetOrderByFields(query.VpcFilterListInput)) {
-		var vpcOrders []string
-		var vpcFields []sqlchemy.IQueryField
-		lbQ, vpcOrders, vpcFields = manager.SVpcResourceBaseManager.GetOrderBySubQuery(lbQ, userCred, query.VpcFilterListInput)
-		if len(vpcOrders) > 0 {
-			orders = append(orders, vpcOrders...)
-			fields = append(fields, vpcFields...)
-		}
-	}
-
-	if db.NeedOrderQuery(manager.GetOrderByFields(query)) {
-		subq := lbQ.SubQuery()
-		q = q.LeftJoin(subq, sqlchemy.Equals(q.Field("loadbalancer_id"), subq.Field("id")))
-		if db.NeedOrderQuery([]string{query.OrderByLoadbalancer}) {
-			orders = append(orders, query.OrderByLoadbalancer)
-			fields = append(fields, subq.Field("name"))
-		}
-	}
-
+	q, orders, fields = manager.SZoneResourceBaseManager.GetOrderBySubQuery(q, subq, lbQ.Field("zone_id"), userCred, zoneQuery, orders, fields)
+	q, orders, fields = manager.SVpcResourceBaseManager.GetOrderBySubQuery(q, subq, lbQ.Field("vpc_id"), userCred, query.VpcFilterListInput, orders, fields)
 	return q, orders, fields
 }
 
