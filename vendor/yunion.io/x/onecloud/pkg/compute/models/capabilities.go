@@ -42,8 +42,16 @@ type SCapabilities struct {
 	DisabledBrands              []string `json:",allowempty"`
 	ComputeEngineBrands         []string `json:",allowempty"`
 	DisabledComputeEngineBrands []string `json:",allowempty"`
+	RdsEngineBrands             []string `json:",allowempty"`
+	RedisEngineBrands           []string `json:",allowempty"`
+	LoadbalancerEngineBrands    []string `json:",allowempty"`
+	DisabledRdsEngineBrands     []string `json:",allowempty"`
 	CloudIdBrands               []string `json:",allowempty"`
 	DisabledCloudIdBrands       []string `json:",allowempty"`
+	// 支持SAML 2.0
+	SamlAuthBrands              []string `json:",allowempty"`
+	DisabledSamlAuthBrands      []string `json:",allowempty"`
+	PublicIpBrands              []string `json:",allowempty"`
 	NetworkManageBrands         []string `json:",allowempty"`
 	DisabledNetworkManageBrands []string `json:",allowempty"`
 	ObjectStorageBrands         []string `json:",allowempty"`
@@ -52,25 +60,33 @@ type SCapabilities struct {
 	StorageTypes                []string `json:",allowempty"` // going to remove on 2.14
 	DataStorageTypes            []string `json:",allowempty"` // going to remove on 2.14
 	GPUModels                   []string `json:",allowempty"`
+	HostCpuArchs                []string `json:",allowempty"` // x86_64 aarch64
 	MinNicCount                 int
 	MaxNicCount                 int
 	MinDataDiskCount            int
 	MaxDataDiskCount            int
 	SchedPolicySupport          bool
 	Usable                      bool
-	PublicNetworkCount          int
-	DBInstance                  map[string]map[string]map[string][]string //map[engine][engineVersion][category][]{storage_type}
-	Specs                       jsonutils.JSONObject
-	AvailableHostCount          int
+
+	// Deprecated
+	PublicNetworkCount int
+
+	AutoAllocNetworkCount int
+	DBInstance            map[string]map[string]map[string][]string //map[engine][engineVersion][category][]{storage_type}
+	Specs                 jsonutils.JSONObject
+	AvailableHostCount    int
 
 	StorageTypes2     map[string][]string                      `json:",allowempty"`
 	StorageTypes3     map[string]map[string]*SimpleStorageInfo `json:",allowempty"`
 	DataStorageTypes2 map[string][]string                      `json:",allowempty"`
 	DataStorageTypes3 map[string]map[string]*SimpleStorageInfo `json:",allowempty"`
+
+	InstanceCapabilities []cloudprovider.SInstanceCapability
 }
 
 func GetCapabilities(ctx context.Context, userCred mcclient.TokenCredential, query jsonutils.JSONObject, region *SCloudregion, zone *SZone) (SCapabilities, error) {
 	capa := SCapabilities{}
+	var ownerId mcclient.IIdentityProvider
 	scopeStr := jsonutils.GetAnyString(query, []string{"scope"})
 	scope := rbacutils.String2Scope(scopeStr)
 	var domainId string
@@ -84,8 +100,11 @@ func GetCapabilities(ctx context.Context, userCred mcclient.TokenCredential, que
 			return capa, httperrors.NewGeneralError(err)
 		}
 		domainId = domain.GetId()
+		ownerId = &db.SOwnerId{DomainId: domainId}
+		scope = rbacutils.ScopeDomain
 	} else {
 		domainId = userCred.GetProjectDomainId()
+		ownerId = userCred
 	}
 	if scope == rbacutils.ScopeSystem {
 		result := policy.PolicyManager.Allow(scope, userCred, consts.GetServiceType(), "capabilities", policy.PolicyActionList)
@@ -95,6 +114,13 @@ func GetCapabilities(ctx context.Context, userCred mcclient.TokenCredential, que
 		domainId = ""
 	}
 	capa.Hypervisors = getHypervisors(region, zone, domainId)
+	capa.InstanceCapabilities = []cloudprovider.SInstanceCapability{}
+	for _, hypervisor := range capa.Hypervisors {
+		driver := GetDriver(hypervisor)
+		if driver != nil {
+			capa.InstanceCapabilities = append(capa.InstanceCapabilities, driver.GetInstanceCapability())
+		}
+	}
 	getBrands(region, zone, domainId, &capa)
 	// capa.Brands, capa.ComputeEngineBrands, capa.NetworkManageBrands, capa.ObjectStorageBrands = a, c, n, o
 	capa.ResourceTypes = getResourceTypes(region, zone, domainId)
@@ -109,7 +135,8 @@ func GetCapabilities(ctx context.Context, userCred mcclient.TokenCredential, que
 	capa.MinDataDiskCount = getMinDataDiskCount(region, zone)
 	capa.MaxDataDiskCount = getMaxDataDiskCount(region, zone)
 	capa.DBInstance = getDBInstanceInfo(region, zone)
-	capa.Usable = isUsable(region, zone, domainId)
+	capa.Usable = isUsable(ownerId, scope, region, zone)
+	capa.HostCpuArchs = getHostCpuArchs(region, zone, domainId)
 	if query == nil {
 		query = jsonutils.NewDict()
 	}
@@ -124,8 +151,9 @@ func GetCapabilities(ctx context.Context, userCred mcclient.TokenCredential, que
 	}
 	var err error
 	serverType := jsonutils.GetAnyString(query, []string{"host_type", "server_type"})
-	publicNetworkCount, _ := getNetworkPublicCount(region, zone, domainId, serverType)
-	capa.PublicNetworkCount = publicNetworkCount
+	autoAllocNetworkCount, _ := getAutoAllocNetworkCount(ownerId, scope, region, zone, serverType)
+	capa.PublicNetworkCount = autoAllocNetworkCount
+	capa.AutoAllocNetworkCount = autoAllocNetworkCount
 	mans := []ISpecModelManager{HostManager, IsolatedDeviceManager}
 	capa.Specs, err = GetModelsSpecs(ctx, userCred, query.(*jsonutils.JSONDict), mans...)
 	if err != nil {
@@ -250,21 +278,33 @@ func getDBInstanceInfo(region *SCloudregion, zone *SZone) map[string]map[string]
 func getBrands(region *SCloudregion, zone *SZone, domainId string, capa *SCapabilities) {
 	capa.Brands, _ = CloudaccountManager.getBrandsOfCapability(region, zone, domainId, tristate.True, "")
 	capa.ComputeEngineBrands, _ = CloudaccountManager.getBrandsOfCapability(region, zone, domainId, tristate.True, cloudprovider.CLOUD_CAPABILITY_COMPUTE)
+	capa.RdsEngineBrands, _ = CloudaccountManager.getBrandsOfCapability(region, zone, domainId, tristate.True, cloudprovider.CLOUD_CAPABILITY_RDS)
+	capa.RedisEngineBrands, _ = CloudaccountManager.getBrandsOfCapability(region, zone, domainId, tristate.True, cloudprovider.CLOUD_CAPABILITY_CACHE)
 	capa.NetworkManageBrands, _ = CloudaccountManager.getBrandsOfCapability(region, zone, domainId, tristate.True, cloudprovider.CLOUD_CAPABILITY_NETWORK)
 	capa.ObjectStorageBrands, _ = CloudaccountManager.getBrandsOfCapability(region, zone, domainId, tristate.True, cloudprovider.CLOUD_CAPABILITY_OBJECTSTORE)
 	capa.CloudIdBrands, _ = CloudaccountManager.getBrandsOfCapability(region, zone, domainId, tristate.True, cloudprovider.CLOUD_CAPABILITY_CLOUDID)
+	capa.PublicIpBrands, _ = CloudaccountManager.getBrandsOfCapability(region, zone, domainId, tristate.True, cloudprovider.CLOUD_CAPABILITY_PUBLIC_IP)
+	capa.LoadbalancerEngineBrands, _ = CloudaccountManager.getBrandsOfCapability(region, zone, domainId, tristate.True, cloudprovider.CLOUD_CAPABILITY_LOADBALANCER)
+	capa.SamlAuthBrands, _ = CloudaccountManager.getBrandsOfCapability(region, zone, domainId, tristate.True, cloudprovider.CLOUD_CAPABILITY_SAML_AUTH)
 
 	if utils.IsInStringArray(api.HYPERVISOR_KVM, capa.Hypervisors) || utils.IsInStringArray(api.HYPERVISOR_BAREMETAL, capa.Hypervisors) {
 		capa.Brands = append(capa.Brands, api.ONECLOUD_BRAND_ONECLOUD)
 		capa.ComputeEngineBrands = append(capa.ComputeEngineBrands, api.ONECLOUD_BRAND_ONECLOUD)
 	}
+
+	if count, _ := LoadbalancerClusterManager.Query().Limit(1).CountWithError(); count > 0 {
+		capa.LoadbalancerEngineBrands = append(capa.LoadbalancerEngineBrands, api.ONECLOUD_BRAND_ONECLOUD)
+	}
+
 	capa.NetworkManageBrands = append(capa.NetworkManageBrands, api.ONECLOUD_BRAND_ONECLOUD)
 
 	capa.DisabledBrands, _ = CloudaccountManager.getBrandsOfCapability(region, zone, domainId, tristate.False, "")
 	capa.DisabledComputeEngineBrands, _ = CloudaccountManager.getBrandsOfCapability(region, zone, domainId, tristate.False, cloudprovider.CLOUD_CAPABILITY_COMPUTE)
+	capa.DisabledRdsEngineBrands, _ = CloudaccountManager.getBrandsOfCapability(region, zone, domainId, tristate.False, cloudprovider.CLOUD_CAPABILITY_RDS)
 	capa.DisabledNetworkManageBrands, _ = CloudaccountManager.getBrandsOfCapability(region, zone, domainId, tristate.False, cloudprovider.CLOUD_CAPABILITY_NETWORK)
 	capa.DisabledObjectStorageBrands, _ = CloudaccountManager.getBrandsOfCapability(region, zone, domainId, tristate.False, cloudprovider.CLOUD_CAPABILITY_OBJECTSTORE)
 	capa.DisabledCloudIdBrands, _ = CloudaccountManager.getBrandsOfCapability(region, zone, domainId, tristate.False, cloudprovider.CLOUD_CAPABILITY_CLOUDID)
+	capa.DisabledSamlAuthBrands, _ = CloudaccountManager.getBrandsOfCapability(region, zone, domainId, tristate.False, cloudprovider.CLOUD_CAPABILITY_SAML_AUTH)
 
 	return
 }
@@ -602,15 +642,48 @@ func getGPUs(region *SCloudregion, zone *SZone, domainId string) []string {
 	return gpus
 }
 
-func getNetworkCount(region *SCloudregion, zone *SZone, domainId string) (int, error) {
-	return getNetworkCountByFilter(region, zone, domainId, tristate.None, "")
+func getHostCpuArchs(region *SCloudregion, zone *SZone, domainId string) []string {
+	q := HostManager.Query("cpu_architecture").Equals("enabled", true).
+		Equals("host_status", "online").Equals("host_type", api.HOST_TYPE_HYPERVISOR)
+	if len(domainId) > 0 {
+		ownerId := &db.SOwnerId{DomainId: domainId}
+		q = HostManager.FilterByOwner(q, ownerId, rbacutils.ScopeDomain)
+	}
+	if zone != nil {
+		q = q.Equals("zone_id", zone.Id)
+	}
+	if region != nil {
+		subq := ZoneManager.Query("id").Equals("cloudregion_id", region.Id).SubQuery()
+		q = q.Filter(sqlchemy.In(q.Field("zone_id"), subq))
+	}
+	q = q.Distinct()
+	type CpuArch struct {
+		CpuArchitecture string
+	}
+	archs := make([]CpuArch, 0)
+	if err := q.All(&archs); err != nil && err != sql.ErrNoRows {
+		log.Errorf("failed fetch host cpu archs %s", err)
+		return nil
+	}
+	if len(archs) == 0 {
+		return nil
+	}
+	res := make([]string, len(archs))
+	for i := 0; i < len(archs); i++ {
+		res[i] = archs[i].CpuArchitecture
+	}
+	return res
 }
 
-func getNetworkPublicCount(region *SCloudregion, zone *SZone, domainId, serverType string) (int, error) {
-	return getNetworkCountByFilter(region, zone, domainId, tristate.True, serverType)
+func getNetworkCount(ownerId mcclient.IIdentityProvider, scope rbacutils.TRbacScope, region *SCloudregion, zone *SZone) (int, error) {
+	return getNetworkCountByFilter(ownerId, scope, region, zone, tristate.None, "")
 }
 
-func getNetworkCountByFilter(region *SCloudregion, zone *SZone, domainId string, isPublic tristate.TriState, serverType string) (int, error) {
+func getAutoAllocNetworkCount(ownerId mcclient.IIdentityProvider, scope rbacutils.TRbacScope, region *SCloudregion, zone *SZone, serverType string) (int, error) {
+	return getNetworkCountByFilter(ownerId, scope, region, zone, tristate.True, serverType)
+}
+
+func getNetworkCountByFilter(ownerId mcclient.IIdentityProvider, scope rbacutils.TRbacScope, region *SCloudregion, zone *SZone, isAutoAlloc tristate.TriState, serverType string) (int, error) {
 	if zone != nil && region == nil {
 		region = zone.GetRegion()
 	}
@@ -618,13 +691,6 @@ func getNetworkCountByFilter(region *SCloudregion, zone *SZone, domainId string,
 	networks := NetworkManager.Query().SubQuery()
 
 	q := networks.Query()
-	if !isPublic.IsNone() {
-		if isPublic.IsTrue() {
-			q = q.IsTrue("is_public")
-		} else {
-			q = q.IsFalse("is_public")
-		}
-	}
 
 	if zone != nil && !utils.IsInStringArray(region.Provider, api.REGIONAL_NETWORK_PROVIDERS) {
 		wires := WireManager.Query("id").Equals("zone_id", zone.Id)
@@ -644,9 +710,13 @@ func getNetworkCountByFilter(region *SCloudregion, zone *SZone, domainId string,
 		}
 	}
 
-	if len(domainId) > 0 {
-		ownerId := &db.SOwnerId{DomainId: domainId}
-		q = NetworkManager.FilterByOwner(q, ownerId, rbacutils.ScopeDomain)
+	q = NetworkManager.FilterByOwner(q, ownerId, scope)
+	if !isAutoAlloc.IsNone() {
+		if isAutoAlloc.IsTrue() {
+			q = q.IsTrue("is_auto_alloc")
+		} else {
+			q = q.IsFalse("is_auto_alloc")
+		}
 	}
 	if len(serverType) > 0 {
 		q = q.Filter(sqlchemy.Equals(networks.Field("server_type"), serverType))
@@ -700,8 +770,8 @@ func getMaxDataDiskCount(region *SCloudregion, zone *SZone) int {
 	return 0
 }
 
-func isUsable(region *SCloudregion, zone *SZone, domainId string) bool {
-	cnt, err := getNetworkCount(region, zone, domainId)
+func isUsable(ownerId mcclient.IIdentityProvider, scope rbacutils.TRbacScope, region *SCloudregion, zone *SZone) bool {
+	cnt, err := getNetworkCount(ownerId, scope, region, zone)
 	if err != nil {
 		return false
 	}

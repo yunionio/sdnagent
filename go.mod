@@ -13,11 +13,13 @@ require (
 	github.com/spf13/pflag v1.0.3
 	github.com/spf13/viper v1.3.2
 	github.com/vishvananda/netlink v1.0.0
+	github.com/vishvananda/netns v0.0.0-20191106174202-0a2b9b5464df
 	golang.org/x/net v0.0.0-20200226121028-0de0cce0169b
 	google.golang.org/grpc v1.26.0
+	yunion.io/x/jsonutils v0.0.0-20201110084044-3e4e1cb49769
 	yunion.io/x/log v0.0.0-20200313080802-57a4ce5966b3
-	yunion.io/x/onecloud v0.0.0-20201125012830-6c3c023a7f18
-	yunion.io/x/pkg v0.0.0-20200814072949-4f1b541857d6
+	yunion.io/x/onecloud v0.0.0-20201204022325-beb7661b9fc4
+	yunion.io/x/pkg v0.0.0-20201123083159-ca3aea986ff2
 )
 
 replace github.com/digitalocean/go-openvswitch => github.com/yousong/go-openvswitch v0.0.0-20200422025222-6b2d502be872

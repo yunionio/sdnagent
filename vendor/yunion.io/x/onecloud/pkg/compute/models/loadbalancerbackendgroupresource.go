@@ -41,15 +41,15 @@ type SLoadbalancerBackendgroupResourceBaseManager struct {
 }
 
 func ValidateLoadbalancerBackendgroupResourceInput(userCred mcclient.TokenCredential, input api.LoadbalancerBackendGroupResourceInput) (*SLoadbalancerBackendGroup, api.LoadbalancerBackendGroupResourceInput, error) {
-	lbbgObj, err := LoadbalancerBackendGroupManager.FetchByIdOrName(userCred, input.BackendGroup)
+	lbbgObj, err := LoadbalancerBackendGroupManager.FetchByIdOrName(userCred, input.BackendGroupId)
 	if err != nil {
 		if errors.Cause(err) == sql.ErrNoRows {
-			return nil, input, errors.Wrapf(httperrors.ErrResourceNotFound, "%s %s", LoadbalancerBackendGroupManager.Keyword(), input.BackendGroup)
+			return nil, input, errors.Wrapf(httperrors.ErrResourceNotFound, "%s %s", LoadbalancerBackendGroupManager.Keyword(), input.BackendGroupId)
 		} else {
 			return nil, input, errors.Wrap(err, "LoadbalancerBackendGroupManager.FetchByIdOrName")
 		}
 	}
-	input.BackendGroup = lbbgObj.GetId()
+	input.BackendGroupId = lbbgObj.GetId()
 	return lbbgObj.(*SLoadbalancerBackendGroup), input, nil
 }
 
@@ -168,7 +168,7 @@ func (manager *SLoadbalancerBackendgroupResourceBaseManager) ListItemFilter(
 	userCred mcclient.TokenCredential,
 	query api.LoadbalancerBackendGroupFilterListInput,
 ) (*sqlchemy.SQuery, error) {
-	if len(query.BackendGroup) > 0 {
+	if len(query.BackendGroupId) > 0 {
 		lbbgObj, _, err := ValidateLoadbalancerBackendgroupResourceInput(userCred, query.LoadbalancerBackendGroupResourceInput)
 		if err != nil {
 			return nil, errors.Wrap(err, "ValidateLoadbalancerBackendgroupResourceInput")
@@ -213,41 +213,35 @@ func (manager *SLoadbalancerBackendgroupResourceBaseManager) OrderByExtraFields(
 	userCred mcclient.TokenCredential,
 	query api.LoadbalancerBackendGroupFilterListInput,
 ) (*sqlchemy.SQuery, error) {
-	q, orders, fields := manager.GetOrderBySubQuery(q, userCred, query)
-	if len(orders) > 0 {
-		q = db.OrderByFields(q, orders, fields)
+	if !db.NeedOrderQuery(manager.GetOrderByFields(query)) {
+		return q, nil
 	}
+	orderQ := LoadbalancerBackendGroupManager.Query("id")
+	orderSubQ := orderQ.SubQuery()
+	orderQ, orders, fields := manager.GetOrderBySubQuery(orderQ, orderSubQ, orderQ.Field("id"), userCred, query, nil, nil)
+	q = q.LeftJoin(orderSubQ, sqlchemy.Equals(q.Field("backend_group_id"), orderSubQ.Field("id")))
+	q = db.OrderByFields(q, orders, fields)
 	return q, nil
 }
 
 func (manager *SLoadbalancerBackendgroupResourceBaseManager) GetOrderBySubQuery(
 	q *sqlchemy.SQuery,
+	subq *sqlchemy.SSubQuery,
+	joinField sqlchemy.IQueryField,
 	userCred mcclient.TokenCredential,
 	query api.LoadbalancerBackendGroupFilterListInput,
+	orders []string,
+	fields []sqlchemy.IQueryField,
 ) (*sqlchemy.SQuery, []string, []sqlchemy.IQueryField) {
-	lbbgQ := LoadbalancerBackendGroupManager.Query("id", "name")
-	var orders []string
-	var fields []sqlchemy.IQueryField
-
-	if db.NeedOrderQuery(manager.SLoadbalancerResourceBaseManager.GetOrderByFields(query.LoadbalancerFilterListInput)) {
-		var lbOrders []string
-		var lbFields []sqlchemy.IQueryField
-		lbbgQ, lbOrders, lbFields = manager.SLoadbalancerResourceBaseManager.GetOrderBySubQuery(lbbgQ, userCred, query.LoadbalancerFilterListInput)
-		if len(lbOrders) > 0 {
-			orders = append(orders, lbOrders...)
-			fields = append(fields, lbFields...)
-		}
+	if !db.NeedOrderQuery(manager.GetOrderByFields(query)) {
+		return q, orders, fields
 	}
-
-	if db.NeedOrderQuery(manager.GetOrderByFields(query)) {
-		subq := lbbgQ.SubQuery()
-		q = q.LeftJoin(subq, sqlchemy.Equals(q.Field("backend_group_id"), subq.Field("id")))
-		if db.NeedOrderQuery([]string{query.OrderByBackendGroup}) {
-			orders = append(orders, query.OrderByBackendGroup)
-			fields = append(fields, subq.Field("name"))
-		}
-	}
-
+	lbbgQ := LoadbalancerBackendGroupManager.Query().SubQuery()
+	q = q.LeftJoin(lbbgQ, sqlchemy.Equals(joinField, lbbgQ.Field("id")))
+	q = q.AppendField(lbbgQ.Field("name").Label("backend_group"))
+	orders = append(orders, query.OrderByBackendGroup)
+	fields = append(fields, subq.Field("backend_group"))
+	q, orders, fields = manager.SLoadbalancerResourceBaseManager.GetOrderBySubQuery(q, subq, lbbgQ.Field("loadbalancer_id"), userCred, query.LoadbalancerFilterListInput, orders, fields)
 	return q, orders, fields
 }
 

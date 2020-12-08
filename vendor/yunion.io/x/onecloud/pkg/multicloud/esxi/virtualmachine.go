@@ -24,6 +24,7 @@ import (
 
 	"github.com/vmware/govmomi/nfc"
 	"github.com/vmware/govmomi/object"
+	"github.com/vmware/govmomi/vim25/methods"
 	"github.com/vmware/govmomi/vim25/mo"
 	"github.com/vmware/govmomi/vim25/soap"
 	"github.com/vmware/govmomi/vim25/types"
@@ -48,20 +49,27 @@ import (
 	"yunion.io/x/onecloud/pkg/util/version"
 )
 
-var VIRTUAL_MACHINE_PROPS = []string{"name", "parent", "runtime", "summary", "config", "guest", "resourcePool", "layoutEx"}
+var VIRTUAL_MACHINE_PROPS = []string{"name", "parent", "runtime", "summary", "config", "guest", "resourcePool", "layoutEx", "snapshot"}
 
 type SVirtualMachine struct {
 	multicloud.SInstanceBase
 	SManagedObject
 
-	vnics  []SVirtualNIC
-	vdisks []SVirtualDisk
-	vga    SVirtualVGA
-	cdroms []SVirtualCdrom
-	devs   map[int32]SVirtualDevice
-	ihost  cloudprovider.ICloudHost
+	vnics     []SVirtualNIC
+	vdisks    []SVirtualDisk
+	vga       SVirtualVGA
+	cdroms    []SVirtualCdrom
+	devs      map[int32]SVirtualDevice
+	ihost     cloudprovider.ICloudHost
+	snapshots []SVirtualMachineSnapshot
 
 	guestIps map[string]string
+}
+
+type VMFetcher interface {
+	FetchNoTemplateVMs() ([]*SVirtualMachine, error)
+	FetchTemplateVMs() ([]*SVirtualMachine, error)
+	FetchFakeTempateVMs(string) ([]*SVirtualMachine, error)
 }
 
 type byDiskType []SVirtualDisk
@@ -220,10 +228,6 @@ func (self *SVirtualMachine) GetIHost() cloudprovider.ICloudHost {
 	return self.ihost
 }
 
-func (self *SVirtualMachine) GetIHostId() string {
-	return ""
-}
-
 func (self *SVirtualMachine) getIHost() cloudprovider.ICloudHost {
 	vm := self.getVmObj()
 
@@ -251,7 +255,7 @@ func (self *SVirtualMachine) GetIDisks() ([]cloudprovider.ICloudDisk, error) {
 
 func (self *SVirtualMachine) GetIDiskById(idStr string) (cloudprovider.ICloudDisk, error) {
 	for i := 0; i < len(self.vdisks); i += 1 {
-		if self.vdisks[i].GetGlobalId() == idStr {
+		if self.vdisks[i].MatchId(idStr) {
 			return &self.vdisks[i], nil
 		}
 	}
@@ -452,11 +456,11 @@ func makeNicStartConnected(nic *SVirtualNIC) *types.VirtualDeviceConfigSpec {
 	return &editSpec
 }
 
-func (self *SVirtualMachine) StopVM(ctx context.Context, isForce bool) error {
+func (self *SVirtualMachine) StopVM(ctx context.Context, opts *cloudprovider.ServerStopOptions) error {
 	if self.GetStatus() == api.VM_READY {
 		return nil
 	}
-	if !isForce && self.isToolsOk() {
+	if !opts.IsForce && self.isToolsOk() {
 		return self.shutdownVM(ctx)
 	} else {
 		return self.poweroffVM(ctx)
@@ -509,8 +513,16 @@ func (self *SVirtualMachine) shutdownVM(ctx context.Context) error {
 	return err
 }
 
-func (self *SVirtualMachine) doDelete(ctx context.Context) error {
+func (self *SVirtualMachine) doDestroy(ctx context.Context) error {
 	vm := self.getVmObj()
+	task, err := vm.Destroy(ctx)
+	if err != nil {
+		return errors.Wrap(err, "unable to destroy vm")
+	}
+	return task.Wait(ctx)
+}
+
+func (self *SVirtualMachine) doDelete(ctx context.Context) error {
 	// detach all disks first
 	for i := range self.vdisks {
 		err := self.doDetachAndDeleteDisk(ctx, &self.vdisks[i])
@@ -519,12 +531,7 @@ func (self *SVirtualMachine) doDelete(ctx context.Context) error {
 		}
 	}
 
-	task, err := vm.Destroy(ctx)
-	if err != nil {
-		log.Errorf("vm.Destroy(ctx) fail %s", err)
-		return err
-	}
-	return task.Wait(ctx)
+	return self.doDestroy(ctx)
 }
 
 func (self *SVirtualMachine) doUnregister(ctx context.Context) error {
@@ -543,7 +550,7 @@ func (self *SVirtualMachine) DeleteVM(ctx context.Context) error {
 	if err != nil {
 		return self.doUnregister(ctx)
 	}
-	return self.doDelete(ctx)
+	return self.doDestroy(ctx)
 }
 
 func (self *SVirtualMachine) doDetachAndDeleteDisk(ctx context.Context, vdisk *SVirtualDisk) error {
@@ -773,6 +780,9 @@ func (self *SVirtualMachine) fetchGuestIps() map[string]string {
 		mac := netutils.FormatMacAddr(net.MacAddress)
 		for _, ip := range net.IpAddress {
 			if regutils.MatchIP4Addr(ip) {
+				if !vmIPV4Filter.Contains(ip) {
+					continue
+				}
 				guestIps[mac] = ip
 				break
 			}
@@ -934,13 +944,59 @@ func (self *SVirtualMachine) createDriverAndDisk(ctx context.Context, sizeMb int
 	return self.createDiskWithDeviceChange(ctx, deviceChange, sizeMb, uuid, 0, diskKey, scsiKey, "", true)
 }
 
+func (self *SVirtualMachine) copyRootDisk(ctx context.Context, imagePath string, index int) (string, error) {
+	movm := self.getVirtualMachine()
+	if movm.LayoutEx == nil || len(movm.LayoutEx.File) == 0 {
+		return "", fmt.Errorf("invalid LayoutEx")
+	}
+	file := movm.LayoutEx.File[0].Name
+	// find stroage
+	host := self.GetIHost()
+	storages, err := host.GetIStorages()
+	if err != nil {
+		return "", errors.Wrap(err, "host.GetIStorages")
+	}
+	var datastore *SDatastore
+	for i := range storages {
+		ds := storages[i].(*SDatastore)
+		if ds.HasFile(file) {
+			datastore = ds
+			break
+		}
+	}
+	if datastore == nil {
+		return "", fmt.Errorf("can't find storage associated with vm %q", self.GetName())
+	}
+	path := datastore.cleanPath(file)
+	vmDir := strings.Split(path, "/")[0]
+	newImagePath := datastore.getPathString(fmt.Sprintf("%s/%s-%d.vmdk", vmDir, vmDir, index))
+
+	fm := datastore.getDatastoreObj().NewFileManager(datastore.datacenter.getObjectDatacenter(), true)
+	err = fm.Copy(ctx, imagePath, newImagePath)
+	if err != nil {
+		return "", errors.Wrap(err, "unable to copy system disk")
+	}
+	return newImagePath, nil
+}
+
 func (self *SVirtualMachine) createDiskWithDeviceChange(ctx context.Context,
 	deviceChange []types.BaseVirtualDeviceConfigSpec, sizeMb int,
 	uuid string, index int32, diskKey int32, ctlKey int32, imagePath string, check bool) error {
 
+	var err error
+	// copy disk
+	if len(imagePath) > 0 {
+		imagePath, err = self.copyRootDisk(ctx, imagePath, int(index))
+		if err != nil {
+			return errors.Wrap(err, "unable to copyRootDisk")
+		}
+	}
+
 	devSpec := NewDiskDev(int64(sizeMb), imagePath, uuid, index, 0, ctlKey, diskKey)
 	spec := addDevSpec(devSpec)
-	spec.FileOperation = types.VirtualDeviceConfigSpecFileOperationCreate
+	if len(imagePath) == 0 {
+		spec.FileOperation = types.VirtualDeviceConfigSpecFileOperationCreate
+	}
 	configSpec := types.VirtualMachineConfigSpec{}
 	configSpec.DeviceChange = append(deviceChange, spec)
 
@@ -1114,7 +1170,7 @@ func (self *SVirtualMachine) DoCustomize(ctx context.Context, params jsonutils.J
 	spec.NicSettingMap = maps
 
 	var (
-		osName = "Linux"
+		osName string
 		name   = "yunionhost"
 	)
 	if params.Contains("os_name") {
@@ -1130,7 +1186,7 @@ func (self *SVirtualMachine) DoCustomize(ctx context.Context, params jsonutils.J
 			TimeZone: "Asia/Shanghai",
 		}
 		spec.Identity = &linuxPrep
-	} else {
+	} else if osName == "Windows" {
 		sysPrep := types.CustomizationSysprep{
 			GuiUnattended: types.CustomizationGuiUnattended{
 				TimeZone:  210,
@@ -1148,6 +1204,7 @@ func (self *SVirtualMachine) DoCustomize(ctx context.Context, params jsonutils.J
 		}
 		spec.Identity = &sysPrep
 	}
+	log.Infof("customize spec: %#v", spec)
 	task, err := self.getVmObj().Customize(ctx, *spec)
 	if err != nil {
 		return errors.Wrap(err, "object.VirtualMachine.Customize")
@@ -1239,7 +1296,152 @@ func (self *SVirtualMachine) FindMinDiffKey(limit int32) int32 {
 	return limit
 }
 
+func (self *SVirtualMachine) relocate(hostId string) error {
+	var targetHs *mo.HostSystem
+	if hostId == "" {
+		return errors.Wrap(fmt.Errorf("require hostId"), "relocate")
+	}
+	ihost, err := self.manager.GetIHostById(hostId)
+	if err != nil {
+		return errors.Wrap(err, "self.manager.GetIHostById(hostId)")
+	}
+	targetHs = ihost.(*SHost).object.(*mo.HostSystem)
+	if len(targetHs.Datastore) < 1 {
+		return errors.Wrap(fmt.Errorf("target host has no datastore"), "relocate")
+	}
+	ctx := self.manager.context
+	config := types.VirtualMachineRelocateSpec{}
+	hrs := targetHs.Reference()
+	config.Host = &hrs
+	config.Datastore = &targetHs.Datastore[0]
+	task, err := self.getVmObj().Relocate(ctx, config, types.VirtualMachineMovePriorityDefaultPriority)
+	if err != nil {
+		log.Errorf("vm.Migrate %s", err)
+		return errors.Wrap(err, "SVirtualMachine Migrate")
+	}
+	err = task.Wait(ctx)
+	if err != nil {
+		log.Errorf("task.Wait %s", err)
+		return errors.Wrap(err, "task.wait")
+	}
+	return nil
+}
+
+func (self *SVirtualMachine) MigrateVM(hostId string) error {
+	return self.relocate(hostId)
+}
+
+func (self *SVirtualMachine) LiveMigrateVM(hostId string) error {
+	return self.relocate(hostId)
+}
+
+func (self *SVirtualMachine) GetIHostId() string {
+	ctx := self.manager.context
+	hs, err := self.getVmObj().HostSystem(ctx)
+	if err != nil {
+		log.Errorf("get HostSystem %s", err)
+		return ""
+	}
+	var moHost mo.HostSystem
+	err = self.manager.reference2Object(hs.Reference(), HOST_SYSTEM_PROPS, &moHost)
+	if err != nil {
+		log.Errorf("hostsystem reference2Object %s", err)
+		return ""
+	}
+	shost := NewHost(self.manager, &moHost, nil)
+	return shost.GetGlobalId()
+}
+
 func (self *SVirtualMachine) IsTemplate() bool {
 	movm := self.getVirtualMachine()
+	if tempalteNameRegex != nil && tempalteNameRegex.MatchString(self.GetName()) && movm.Summary.Runtime.PowerState == types.VirtualMachinePowerStatePoweredOff {
+		return true
+	}
 	return movm.Config != nil && movm.Config.Template
+}
+
+func (self *SVirtualMachine) fetchSnapshots() {
+	movm := self.getVirtualMachine()
+	if movm.Snapshot == nil {
+		return
+	}
+	self.snapshots = self.extractSnapshots(movm.Snapshot.RootSnapshotList, make([]SVirtualMachineSnapshot, 0, len(movm.Snapshot.RootSnapshotList)))
+}
+
+func (self *SVirtualMachine) extractSnapshots(tree []types.VirtualMachineSnapshotTree, snapshots []SVirtualMachineSnapshot) []SVirtualMachineSnapshot {
+	for i := range tree {
+		snapshots = append(snapshots, SVirtualMachineSnapshot{
+			snapshotTree: tree[i],
+			vm:           self,
+		})
+		snapshots = self.extractSnapshots(tree[i].ChildSnapshotList, snapshots)
+	}
+	return snapshots
+}
+
+func (self *SVirtualMachine) GetInstanceSnapshots() ([]cloudprovider.ICloudInstanceSnapshot, error) {
+	if self.snapshots == nil {
+		self.fetchSnapshots()
+	}
+	ret := make([]cloudprovider.ICloudInstanceSnapshot, 0, len(self.snapshots))
+	for i := range self.snapshots {
+		ret = append(ret, &self.snapshots[i])
+	}
+	return ret, nil
+}
+
+func (self *SVirtualMachine) GetInstanceSnapshot(idStr string) (cloudprovider.ICloudInstanceSnapshot, error) {
+	if self.snapshots == nil {
+		self.fetchSnapshots()
+	}
+	for i := range self.snapshots {
+		if self.snapshots[i].GetGlobalId() == idStr {
+			// copyone
+			sp := self.snapshots[i]
+			return &sp, nil
+		}
+	}
+	return nil, errors.ErrNotFound
+}
+
+func (self *SVirtualMachine) CreateInstanceSnapshot(ctx context.Context, name string, desc string) (cloudprovider.ICloudInstanceSnapshot, error) {
+	ovm := self.getVmObj()
+	task, err := ovm.CreateSnapshot(ctx, name, desc, false, false)
+	if err != nil {
+		return nil, errors.Wrap(err, "CreateSnapshot")
+	}
+	info, err := task.WaitForResult(ctx, nil)
+	if err != nil {
+		return nil, errors.Wrap(err, "task.Wait")
+	}
+	sp := info.Result.(types.ManagedObjectReference)
+	err = self.Refresh()
+	if err != nil {
+		return nil, errors.Wrap(err, "create successfully")
+	}
+	self.fetchSnapshots()
+	for i := range self.snapshots {
+		if self.snapshots[i].snapshotTree.Snapshot == sp {
+			// copyone
+			sp := self.snapshots[i]
+			return &sp, nil
+		}
+	}
+	return nil, errors.Wrap(errors.ErrNotFound, "create successfully")
+}
+
+func (self *SVirtualMachine) ResetToInstanceSnapshot(ctx context.Context, idStr string) error {
+	cloudIsp, err := self.GetInstanceSnapshot(idStr)
+	if err != nil {
+		return errors.Wrap(err, "GetInstanceSnapshot")
+	}
+	isp := cloudIsp.(*SVirtualMachineSnapshot)
+	req := types.RevertToSnapshot_Task{
+		This: isp.snapshotTree.Snapshot.Reference(),
+	}
+	res, err := methods.RevertToSnapshot_Task(ctx, self.manager.client.Client, &req)
+	if err != nil {
+		return errors.Wrap(err, "RevertToSnapshot_Task")
+	}
+	return object.NewTask(self.manager.client.Client, res.Returnval).Wait(ctx)
 }

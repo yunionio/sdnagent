@@ -39,15 +39,15 @@ type SSchedtagResourceBase struct {
 type SSchedtagResourceBaseManager struct{}
 
 func ValidateSchedtagResourceInput(userCred mcclient.TokenCredential, query api.SchedtagResourceInput) (*SSchedtag, api.SchedtagResourceInput, error) {
-	tagObj, err := SchedtagManager.FetchByIdOrName(userCred, query.Schedtag)
+	tagObj, err := SchedtagManager.FetchByIdOrName(userCred, query.SchedtagId)
 	if err != nil {
 		if err == sql.ErrNoRows {
-			return nil, query, errors.Wrapf(httperrors.ErrResourceNotFound, "%s %s", SchedtagManager.Keyword(), query.Schedtag)
+			return nil, query, errors.Wrapf(httperrors.ErrResourceNotFound, "%s %s", SchedtagManager.Keyword(), query.SchedtagId)
 		} else {
 			return nil, query, errors.Wrap(err, "SchedtagManager.FetchByIdOrName")
 		}
 	}
-	query.Schedtag = tagObj.GetId()
+	query.SchedtagId = tagObj.GetId()
 	return tagObj.(*SSchedtag), query, nil
 }
 
@@ -110,7 +110,7 @@ func (manager *SSchedtagResourceBaseManager) ListItemFilter(
 	userCred mcclient.TokenCredential,
 	query api.SchedtagFilterListInput,
 ) (*sqlchemy.SQuery, error) {
-	if len(query.Schedtag) > 0 {
+	if len(query.SchedtagId) > 0 {
 		tagObj, _, err := ValidateSchedtagResourceInput(userCred, query.SchedtagResourceInput)
 		if err != nil {
 			return nil, errors.Wrap(err, "ValidateSchedtagResourceInput")
@@ -126,10 +126,14 @@ func (manager *SSchedtagResourceBaseManager) OrderByExtraFields(
 	userCred mcclient.TokenCredential,
 	query api.SchedtagFilterListInput,
 ) (*sqlchemy.SQuery, error) {
-	q, orders, fields := manager.GetOrderBySubQuery(q, userCred, query)
-	if len(orders) > 0 {
-		q = db.OrderByFields(q, orders, fields)
+	if !db.NeedOrderQuery(manager.GetOrderByFields(query)) {
+		return q, nil
 	}
+	orderQ := SchedtagManager.Query("id")
+	orderSubQ := orderQ.SubQuery()
+	orderQ, orders, fields := manager.GetOrderBySubQuery(orderQ, orderSubQ, orderQ.Field("id"), userCred, query, nil, nil)
+	q = q.LeftJoin(orderSubQ, sqlchemy.Equals(q.Field("schedtag_id"), orderSubQ.Field("id")))
+	q = db.OrderByFields(q, orders, fields)
 	return q, nil
 }
 
@@ -146,21 +150,45 @@ func (manager *SSchedtagResourceBaseManager) QueryDistinctExtraField(q *sqlchemy
 
 func (manager *SSchedtagResourceBaseManager) GetOrderBySubQuery(
 	q *sqlchemy.SQuery,
+	subq *sqlchemy.SSubQuery,
+	joinField sqlchemy.IQueryField,
 	userCred mcclient.TokenCredential,
 	query api.SchedtagFilterListInput,
+	orders []string,
+	fields []sqlchemy.IQueryField,
 ) (*sqlchemy.SQuery, []string, []sqlchemy.IQueryField) {
-	tagQ := SchedtagManager.Query("id", "name", "resource_type")
-	var orders []string
-	var fields []sqlchemy.IQueryField
-	if db.NeedOrderQuery(manager.GetOrderByFields(query)) {
-		subq := tagQ.SubQuery()
-		q = q.LeftJoin(subq, sqlchemy.Equals(q.Field("schedtag_id"), subq.Field("id")))
-		orders = append(orders, query.OrderBySchedtag, query.OrderByResourceType)
-		fields = append(fields, subq.Field("name"), subq.Field("resource_type"))
+	if !db.NeedOrderQuery(manager.GetOrderByFields(query)) {
+		return q, orders, fields
 	}
+	tagQ := SchedtagManager.Query().SubQuery()
+	q = q.LeftJoin(tagQ, sqlchemy.Equals(joinField, tagQ.Field("id")))
+	q = q.AppendField(tagQ.Field("name").Label("schedtag"))
+	q = q.AppendField(tagQ.Field("resource_type").Label("resource_type"))
+	orders = append(orders, query.OrderBySchedtag, query.OrderByResourceType)
+	fields = append(fields, subq.Field("schedtag"), subq.Field("resource_type"))
 	return q, orders, fields
 }
 
 func (manager *SSchedtagResourceBaseManager) GetOrderByFields(query api.SchedtagFilterListInput) []string {
 	return []string{query.OrderBySchedtag, query.OrderByResourceType}
+}
+
+func InsertJointResourceSchedtag(ctx context.Context, jointMan ISchedtagJointManager, resourceId, schedtagId string) (ISchedtagJointModel, error) {
+	newTagObj, err := db.NewModelObject(jointMan)
+	if err != nil {
+		return nil, errors.Wrap(err, "NewModelObject")
+	}
+
+	objectKey := jointMan.GetResourceIdKey(jointMan)
+	createData := jsonutils.NewDict()
+	createData.Add(jsonutils.NewString(schedtagId), "schedtag_id")
+	createData.Add(jsonutils.NewString(resourceId), objectKey)
+	if err := createData.Unmarshal(newTagObj); err != nil {
+		return nil, errors.Wrapf(err, "Create %s joint schedtag", jointMan.Keyword())
+	}
+	if err := newTagObj.GetModelManager().TableSpec().Insert(ctx, newTagObj); err != nil {
+		return nil, errors.Wrap(err, "Insert to database")
+	}
+
+	return newTagObj.(ISchedtagJointModel), nil
 }

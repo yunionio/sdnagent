@@ -88,6 +88,19 @@ const (
 	IdpTemplateMSSingleDomain       = "msad_one_domain"
 	IdpTemplateMSMultiDomain        = "msad_multi_domain"
 	IdpTemplateOpenLDAPSingleDomain = "openldap_one_domain"
+
+	IdpTemplateSAMLTest    = "samltest_saml"
+	IdpTemplateAzureADSAML = "azure_ad_saml"
+
+	IdpTemplateDex         = "dex_oidc"
+	IdpTemplateGithub      = "github_oidc"
+	IdpTemplateAzureOAuth2 = "azure_oidc"
+
+	IdpTemplateAlipay   = "alipay_oauth2"
+	IdpTemplateWechat   = "wechat_oauth2"
+	IdpTemplateDingtalk = "dingtalk_oauth2"
+	IdpTemplateFeishu   = "feishu_oauth2"
+	IdpTemplateQywechat = "qywechat_oauth2"
 )
 
 var (
@@ -95,6 +108,19 @@ var (
 		IdpTemplateMSSingleDomain:       IdentityDriverLDAP,
 		IdpTemplateMSMultiDomain:        IdentityDriverLDAP,
 		IdpTemplateOpenLDAPSingleDomain: IdentityDriverLDAP,
+
+		IdpTemplateSAMLTest:    IdentityDriverSAML,
+		IdpTemplateAzureADSAML: IdentityDriverSAML,
+
+		IdpTemplateDex:         IdentityDriverOIDC,
+		IdpTemplateGithub:      IdentityDriverOIDC,
+		IdpTemplateAzureOAuth2: IdentityDriverOIDC,
+
+		IdpTemplateAlipay:   IdentityDriverOAuth2,
+		IdpTemplateFeishu:   IdentityDriverOAuth2,
+		IdpTemplateDingtalk: IdentityDriverOAuth2,
+		IdpTemplateWechat:   IdentityDriverOAuth2,
+		IdpTemplateQywechat: IdentityDriverOAuth2,
 	}
 )
 

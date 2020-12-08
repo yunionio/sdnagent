@@ -224,6 +224,11 @@ func (manager *SIsolatedDeviceManager) ListItemFilter(
 		q = q.In("vendor_device_id", query.VendorDeviceId)
 	}
 
+	if !query.ShowBaremetalIsolatedDevices {
+		sq := HostManager.Query("id").Equals("host_type", api.HOST_TYPE_HYPERVISOR).SubQuery()
+		q = q.In("host_id", sq)
+	}
+
 	return q, nil
 }
 
@@ -601,7 +606,7 @@ func (self *SIsolatedDevice) GetSpec(statusCheck bool) *jsonutils.JSONDict {
 			return nil
 		}
 		host := self.getHost()
-		if host.Status != api.BAREMETAL_RUNNING || !host.GetEnabled() {
+		if host.Status != api.BAREMETAL_RUNNING || !host.GetEnabled() || host.HostType != api.HOST_TYPE_HYPERVISOR {
 			return nil
 		}
 	}
@@ -775,14 +780,19 @@ func (manager *SIsolatedDeviceManager) GetDevsOnHost(hostId string, model string
 	return devs, nil
 }
 
-func (manager *SIsolatedDeviceManager) FetchParentId(ctx context.Context, data jsonutils.JSONObject) string {
-	parentId, _ := data.GetString("host_id")
-	return parentId
+func (self *SIsolatedDevice) GetUniqValues() jsonutils.JSONObject {
+	return jsonutils.Marshal(map[string]string{"host_id": self.HostId})
 }
 
-func (manager *SIsolatedDeviceManager) FilterByParentId(q *sqlchemy.SQuery, parentId string) *sqlchemy.SQuery {
-	if len(parentId) > 0 {
-		q = q.Equals("host_id", parentId)
+func (manager *SIsolatedDeviceManager) FetchUniqValues(ctx context.Context, data jsonutils.JSONObject) jsonutils.JSONObject {
+	hostId, _ := data.GetString("host_id")
+	return jsonutils.Marshal(map[string]string{"host_id": hostId})
+}
+
+func (manager *SIsolatedDeviceManager) FilterByUniqValues(q *sqlchemy.SQuery, values jsonutils.JSONObject) *sqlchemy.SQuery {
+	hostId, _ := values.GetString("host_id")
+	if len(hostId) > 0 {
+		q = q.Equals("host_id", hostId)
 	}
 	return q
 }

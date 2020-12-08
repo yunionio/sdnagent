@@ -40,15 +40,15 @@ type SGuestResourceBaseManager struct {
 }
 
 func ValidateGuestResourceInput(userCred mcclient.TokenCredential, input api.ServerResourceInput) (*SGuest, api.ServerResourceInput, error) {
-	srvObj, err := GuestManager.FetchByIdOrName(userCred, input.Server)
+	srvObj, err := GuestManager.FetchByIdOrName(userCred, input.ServerId)
 	if err != nil {
 		if errors.Cause(err) == sql.ErrNoRows {
-			return nil, input, errors.Wrapf(httperrors.ErrResourceNotFound, "%s %s", GuestManager.Keyword(), input.Server)
+			return nil, input, errors.Wrapf(httperrors.ErrResourceNotFound, "%s %s", GuestManager.Keyword(), input.ServerId)
 		} else {
 			return nil, input, errors.Wrap(err, "GuestManager.FetchByIdOrName")
 		}
 	}
-	input.Server = srvObj.GetId()
+	input.ServerId = srvObj.GetId()
 	return srvObj.(*SGuest), input, nil
 }
 
@@ -138,7 +138,7 @@ func (manager *SGuestResourceBaseManager) ListItemFilter(
 	query api.ServerFilterListInput,
 ) (*sqlchemy.SQuery, error) {
 	var err error
-	if len(query.Server) > 0 {
+	if len(query.ServerId) > 0 {
 		guestObj, _, err := ValidateGuestResourceInput(userCred, query.ServerResourceInput)
 		if err != nil {
 			return nil, errors.Wrap(err, "ValidateGuestResourceInput")
@@ -180,39 +180,35 @@ func (manager *SGuestResourceBaseManager) OrderByExtraFields(
 	userCred mcclient.TokenCredential,
 	query api.ServerFilterListInput,
 ) (*sqlchemy.SQuery, error) {
-	q, orders, fields := manager.GetOrderBySubQuery(q, userCred, query)
-	if len(orders) > 0 {
-		q = db.OrderByFields(q, orders, fields)
+	if !db.NeedOrderQuery(manager.GetOrderByFields(query)) {
+		return q, nil
 	}
+	orderQ := GuestManager.Query("id")
+	orderSubQ := orderQ.SubQuery()
+	orderQ, orders, fields := manager.GetOrderBySubQuery(orderQ, orderSubQ, orderQ.Field("id"), userCred, query, nil, nil)
+	q = q.LeftJoin(orderSubQ, sqlchemy.Equals(q.Field("guest_id"), orderSubQ.Field("id")))
+	q = db.OrderByFields(q, orders, fields)
 	return q, nil
 }
 
 func (manager *SGuestResourceBaseManager) GetOrderBySubQuery(
 	q *sqlchemy.SQuery,
+	subq *sqlchemy.SSubQuery,
+	joinField sqlchemy.IQueryField,
 	userCred mcclient.TokenCredential,
 	query api.ServerFilterListInput,
+	orders []string,
+	fields []sqlchemy.IQueryField,
 ) (*sqlchemy.SQuery, []string, []sqlchemy.IQueryField) {
-	guestQ := GuestManager.Query("id", "name")
-	var orders []string
-	var fields []sqlchemy.IQueryField
-
-	if db.NeedOrderQuery(manager.SHostResourceBaseManager.GetOrderByFields(query.HostFilterListInput)) {
-		var hostOrders []string
-		var hostFields []sqlchemy.IQueryField
-		guestQ, hostOrders, hostFields = manager.SHostResourceBaseManager.GetOrderBySubQuery(guestQ, userCred, query.HostFilterListInput)
-		if len(hostOrders) > 0 {
-			orders = append(orders, hostOrders...)
-			fields = append(fields, hostFields...)
-		}
+	if !db.NeedOrderQuery(manager.GetOrderByFields(query)) {
+		return q, orders, fields
 	}
-	if db.NeedOrderQuery(manager.GetOrderByFields(query)) {
-		subq := guestQ.SubQuery()
-		q = q.LeftJoin(subq, sqlchemy.Equals(q.Field("guest_id"), subq.Field("id")))
-		if db.NeedOrderQuery([]string{query.OrderByServer}) {
-			orders = append(orders, query.OrderByServer)
-			fields = append(fields, subq.Field("name"))
-		}
-	}
+	guestQ := GuestManager.Query().SubQuery()
+	q = q.LeftJoin(guestQ, sqlchemy.Equals(joinField, guestQ.Field("id")))
+	q = q.AppendField(guestQ.Field("name").Label("server"))
+	orders = append(orders, query.OrderByServer)
+	fields = append(fields, subq.Field("server"))
+	q, orders, fields = manager.SHostResourceBaseManager.GetOrderBySubQuery(q, subq, guestQ.Field("host_id"), userCred, query.HostFilterListInput, orders, fields)
 	return q, orders, fields
 }
 

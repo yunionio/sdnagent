@@ -32,6 +32,7 @@ import (
 	"yunion.io/x/onecloud/pkg/compute/options"
 	"yunion.io/x/onecloud/pkg/httperrors"
 	"yunion.io/x/onecloud/pkg/mcclient"
+	"yunion.io/x/onecloud/pkg/util/rbacutils"
 	"yunion.io/x/onecloud/pkg/util/stringutils2"
 )
 
@@ -139,7 +140,7 @@ func (zone *SZone) getStorageCount() (int, error) {
 }
 
 func (zone *SZone) getNetworkCount() (int, error) {
-	return getNetworkCount(nil, zone, "")
+	return getNetworkCount(nil, rbacutils.ScopeSystem, nil, zone)
 }
 
 func (manager *SZoneManager) FetchCustomizeColumns(
@@ -565,12 +566,12 @@ func (manager *SZoneManager) ListItemFilter(
 		}
 	}
 
-	managerStr := query.Cloudprovider
+	managerStr := query.CloudproviderId
 	if len(managerStr) > 0 {
 		subq := CloudproviderRegionManager.QueryRelatedRegionIds(nil, managerStr)
 		q = q.In("cloudregion_id", subq)
 	}
-	accountArr := query.Cloudaccount
+	accountArr := query.CloudaccountId
 	if len(accountArr) > 0 {
 		subq := CloudproviderRegionManager.QueryRelatedRegionIds(accountArr)
 		q = q.In("cloudregion_id", subq)
@@ -712,4 +713,40 @@ func (manager *SZoneManager) ValidateCreateData(ctx context.Context, userCred mc
 	}
 
 	return input.JSON(input), nil
+}
+
+func (self *SZone) GetSchedtags() []SSchedtag {
+	return GetSchedtags(ZoneschedtagManager, self.Id)
+}
+
+func (self *SZone) GetDynamicConditionInput() *jsonutils.JSONDict {
+	return jsonutils.Marshal(self).(*jsonutils.JSONDict)
+}
+
+func (self *SZone) AllowPerformSetSchedtag(ctx context.Context, userCred mcclient.TokenCredential, query jsonutils.JSONObject, data jsonutils.JSONObject) bool {
+	return AllowPerformSetResourceSchedtag(self, ctx, userCred, query, data)
+}
+
+func (self *SZone) PerformSetSchedtag(ctx context.Context, userCred mcclient.TokenCredential, query jsonutils.JSONObject, data jsonutils.JSONObject) (jsonutils.JSONObject, error) {
+	return PerformSetResourceSchedtag(self, ctx, userCred, query, data)
+}
+
+func (self *SZone) GetSchedtagJointManager() ISchedtagJointManager {
+	return ZoneschedtagManager
+}
+
+func (self *SZone) ClearSchedDescCache() error {
+	hosts := make([]SHost, 0)
+	q := HostManager.Query().Equals("zone_id", self.Id)
+	err := db.FetchModelObjects(HostManager, q, &hosts)
+	if err != nil {
+		return errors.Wrapf(err, "fetch hosts by zone_id %s", self.Id)
+	}
+	for i := range hosts {
+		err := hosts[i].ClearSchedDescCache()
+		if err != nil {
+			return errors.Wrapf(err, "clean host %s sched cache", hosts[i].GetName())
+		}
+	}
+	return nil
 }

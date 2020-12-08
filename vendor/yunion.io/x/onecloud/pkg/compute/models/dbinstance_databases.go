@@ -97,11 +97,11 @@ func (manager *SDBInstanceDatabaseManager) AllowListItems(ctx context.Context, u
 }
 
 func (manager *SDBInstanceDatabaseManager) FetchOwnerId(ctx context.Context, data jsonutils.JSONObject) (mcclient.IIdentityProvider, error) {
-	parentId := manager.FetchParentId(ctx, data)
-	if len(parentId) > 0 {
-		instance, err := db.FetchById(DBInstanceManager, parentId)
+	dbinstanceId, _ := data.GetString("dbinstance_id")
+	if len(dbinstanceId) > 0 {
+		instance, err := db.FetchById(DBInstanceManager, dbinstanceId)
 		if err != nil {
-			return nil, errors.Wrapf(err, "db.FetchById(DBInstanceManager, %s)", parentId)
+			return nil, errors.Wrapf(err, "db.FetchById(DBInstanceManager, %s)", dbinstanceId)
 		}
 		return instance.(*SDBInstance).GetOwnerId(), nil
 	}
@@ -123,13 +123,20 @@ func (manager *SDBInstanceDatabaseManager) FilterByOwner(q *sqlchemy.SQuery, use
 	return q
 }
 
-//func (self *SDBInstanceDatabase) AllowUpdateItem(ctx context.Context, userCred mcclient.TokenCredential) bool {
-//只能创建或删除，避免update name后造成登录数据库名称异常
-//	return false
-//}
+func (self *SDBInstanceDatabase) AllowUpdateItem(ctx context.Context, userCred mcclient.TokenCredential) bool {
+	return db.IsProjectAllowUpdate(userCred, self)
+}
 
-func (self *SDBInstanceDatabase) ValidateUpdateData(ctx context.Context, userCred mcclient.TokenCredential, query jsonutils.JSONObject, data *jsonutils.JSONDict) (*jsonutils.JSONDict, error) {
-	return nil, httperrors.ErrForbidden
+func (self *SDBInstanceDatabase) ValidateUpdateData(ctx context.Context, userCred mcclient.TokenCredential, query jsonutils.JSONObject, input api.DBInstanceDatabaseUpdateInput) (api.DBInstanceDatabaseUpdateInput, error) {
+	var err error
+	input.StatusStandaloneResourceBaseUpdateInput, err = self.SStatusStandaloneResourceBase.ValidateUpdateData(ctx, userCred, query, input.StatusStandaloneResourceBaseUpdateInput)
+	if err != nil {
+		return input, errors.Wrapf(err, "SStatusStandaloneResourceBase.ValidateUpdateData")
+	}
+	if len(input.Name) > 0 && input.Name != self.Name {
+		return input, httperrors.NewForbiddenError("not allow update rds database name")
+	}
+	return input, nil
 }
 
 // RDS数据库列表
@@ -190,18 +197,19 @@ func (manager *SDBInstanceDatabaseManager) QueryDistinctExtraField(q *sqlchemy.S
 	return q, httperrors.ErrNotFound
 }
 
-func (self *SDBInstanceDatabase) GetParentId() string {
-	return self.DBInstanceId
+func (self *SDBInstanceDatabase) GetUniqValues() jsonutils.JSONObject {
+	return jsonutils.Marshal(map[string]string{"dbinstance_id": self.DBInstanceId})
 }
 
-func (manager *SDBInstanceDatabaseManager) FetchParentId(ctx context.Context, data jsonutils.JSONObject) string {
-	parentId, _ := data.GetString("dbinstance_id")
-	return parentId
+func (manager *SDBInstanceDatabaseManager) FetchUniqValues(ctx context.Context, data jsonutils.JSONObject) jsonutils.JSONObject {
+	dbinstanceId, _ := data.GetString("dbinstance_id")
+	return jsonutils.Marshal(map[string]string{"dbinstance_id": dbinstanceId})
 }
 
-func (manager *SDBInstanceDatabaseManager) FilterByParentId(q *sqlchemy.SQuery, parentId string) *sqlchemy.SQuery {
-	if len(parentId) > 0 {
-		q = q.Equals("dbinstance_id", parentId)
+func (manager *SDBInstanceDatabaseManager) FilterByUniqValues(q *sqlchemy.SQuery, values jsonutils.JSONObject) *sqlchemy.SQuery {
+	dbinstanceId, _ := values.GetString("dbinstance_id")
+	if len(dbinstanceId) > 0 {
+		q = q.Equals("dbinstance_id", dbinstanceId)
 	}
 	return q
 }

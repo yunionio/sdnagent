@@ -179,16 +179,25 @@ func inWhiteList(provider string) bool {
 	return provider == api.CLOUD_PROVIDER_ONECLOUD || utils.IsInStringArray(provider, api.PRIVATE_CLOUD_PROVIDERS)
 }
 
-func genInstanceType(family string, cpu, mem_mb int64) (string, error) {
+func genInstanceType(family string, cpu, memMb int64) (string, error) {
 	if cpu <= 0 {
 		return "", fmt.Errorf("cpu_core_count should great than zero")
 	}
 
-	if mem_mb <= 0 || mem_mb%1024 != 0 {
-		return "", fmt.Errorf("memory_size_mb should great than zero. and should be integral multiple of 1024")
+	if memMb <= 0 {
+		return "", fmt.Errorf("memory_size_mb should great than zero")
 	}
 
-	return fmt.Sprintf("ecs.%s.c%dm%d", family, cpu, mem_mb/1024), nil
+	if memMb%1024 != 0 && memMb != 512 {
+		return "", fmt.Errorf("memory_size_mb should be 512 or integral multiple of 1024")
+	}
+
+	switch memMb {
+	case 512:
+		return fmt.Sprintf("ecs.%s.c%dm1.nano", family, cpu), nil
+	default:
+		return fmt.Sprintf("ecs.%s.c%dm%d", family, cpu, memMb/1024), nil
+	}
 }
 
 func skuRelatedGuestCount(self *SServerSku) (int, error) {
@@ -308,36 +317,35 @@ func (manager *SServerSkuManager) AllowCreateItem(ctx context.Context, userCred 
 	return db.IsAdminAllowCreate(userCred, manager)
 }
 
-func (self *SServerSkuManager) ValidateCreateData(ctx context.Context, userCred mcclient.TokenCredential, ownerId mcclient.IIdentityProvider, query jsonutils.JSONObject, input api.ServerSkuCreateInput) (*jsonutils.JSONDict, error) {
-	if len(input.Cloudregion) == 0 {
-		input.Cloudregion = api.DEFAULT_REGION_ID
-	}
-	region, err := CloudregionManager.FetchByIdOrName(nil, input.Cloudregion)
-	if err != nil {
-		if err == sql.ErrNoRows {
-			return nil, httperrors.NewResourceNotFoundError("failed to found cloudregion %s", input.Cloudregion)
-		}
-		return nil, httperrors.NewGeneralError(err)
-	}
-	input.CloudregionId = region.GetId()
-
-	if len(input.Zone) > 0 {
-		zone, err := ZoneManager.FetchByIdOrName(nil, input.Zone)
+func (self *SServerSkuManager) ValidateCreateData(ctx context.Context, userCred mcclient.TokenCredential, ownerId mcclient.IIdentityProvider, query jsonutils.JSONObject, input api.ServerSkuCreateInput) (api.ServerSkuCreateInput, error) {
+	var err error
+	if len(input.CloudregionId) > 0 {
+		_, err = validators.ValidateModel(userCred, CloudregionManager, &input.CloudregionId)
 		if err != nil {
-			if err == sql.ErrNoRows {
-				return nil, httperrors.NewResourceNotFoundError("failed to found zone %s", input.Zone)
-			}
-			return nil, httperrors.NewGeneralError(err)
+			return input, err
 		}
-		input.ZoneId = zone.GetId()
+	}
+
+	if len(input.ZoneId) > 0 {
+		_zone, err := validators.ValidateModel(userCred, ZoneManager, &input.ZoneId)
+		if err != nil {
+			return input, err
+		}
+		zone := _zone.(*SZone)
+		if len(input.CloudregionId) == 0 {
+			input.CloudregionId = zone.CloudregionId
+		}
+		if input.CloudregionId != zone.CloudregionId {
+			return input, httperrors.NewConflictError("zone %s not in cloudregion %s", zone.Name, input.CloudregionId)
+		}
 	}
 
 	if input.CpuCoreCount < 1 || input.CpuCoreCount > 256 {
-		return nil, httperrors.NewOutOfRangeError("cpu_core_count should be range of 1~256")
+		return input, httperrors.NewOutOfRangeError("cpu_core_count should be range of 1~256")
 	}
 
 	if input.MemorySizeMB < 512 || input.MemorySizeMB > 1024*512 {
-		return nil, httperrors.NewOutOfRangeError("memory_size_mb, shoud be range of 512~%d", 1024*512)
+		return input, httperrors.NewOutOfRangeError("memory_size_mb, shoud be range of 512~%d", 1024*512)
 	}
 
 	if len(input.InstanceTypeCategory) == 0 {
@@ -345,7 +353,7 @@ func (self *SServerSkuManager) ValidateCreateData(ctx context.Context, userCred 
 	}
 
 	if !utils.IsInStringArray(input.InstanceTypeCategory, api.SKU_FAMILIES) {
-		return nil, httperrors.NewInputParameterError("instance_type_category shoud be one of %s", api.SKU_FAMILIES)
+		return input, httperrors.NewInputParameterError("instance_type_category shoud be one of %s", api.SKU_FAMILIES)
 	}
 
 	if input.Enabled == nil {
@@ -363,23 +371,23 @@ func (self *SServerSkuManager) ValidateCreateData(ctx context.Context, userCred 
 		// 格式 ecs.g1.c1m1
 		input.Name, err = genInstanceType(input.InstanceTypeFamily, input.CpuCoreCount, input.MemorySizeMB)
 		if err != nil {
-			return nil, httperrors.NewInputParameterError(err.Error())
+			return input, httperrors.NewInputParameterError("%v", err)
 		}
 		q := self.Query().Equals("name", input.Name)
 		count, err := q.CountWithError()
 		if err != nil {
-			return nil, httperrors.NewGeneralError(fmt.Errorf("checkout server sku name duplicate error: %v", err))
+			return input, httperrors.NewInternalServerError("checkout server sku name duplicate error: %v", err)
 		}
 		if count > 0 {
-			return nil, httperrors.NewDuplicateResourceError("Duplicate sku %s", input.Name)
+			return input, httperrors.NewDuplicateResourceError("Duplicate sku %s", input.Name)
 		}
 	}
 
 	input.StatusStandaloneResourceCreateInput, err = self.SStatusStandaloneResourceBaseManager.ValidateCreateData(ctx, userCred, ownerId, query, input.StatusStandaloneResourceCreateInput)
 	if err != nil {
-		return nil, err
+		return input, err
 	}
-	return input.JSON(input), nil
+	return input, nil
 }
 
 func (self *SServerSku) PostCreate(ctx context.Context, userCred mcclient.TokenCredential, ownerId mcclient.IIdentityProvider, query jsonutils.JSONObject, data jsonutils.JSONObject) {
@@ -759,7 +767,7 @@ func (manager *SServerSkuManager) ListItemFilter(
 		)
 	}
 
-	if domainStr := query.ProjectDomain; len(domainStr) > 0 {
+	if domainStr := query.ProjectDomainId; len(domainStr) > 0 {
 		domain, err := db.TenantCacheManager.FetchDomainByIdOrName(context.Background(), domainStr)
 		if err != nil {
 			if errors.Cause(err) == sql.ErrNoRows {
@@ -767,9 +775,9 @@ func (manager *SServerSkuManager) ListItemFilter(
 			}
 			return nil, httperrors.NewGeneralError(err)
 		}
-		query.ProjectDomain = domain.GetId()
+		query.ProjectDomainId = domain.GetId()
 	}
-	q = listItemDomainFilter(q, query.Providers, query.ProjectDomain)
+	q = listItemDomainFilter(q, query.Providers, query.ProjectDomainId)
 
 	providers := query.Providers
 	if len(providers) > 0 {
@@ -794,7 +802,7 @@ func (manager *SServerSkuManager) ListItemFilter(
 		q = q.IsTrue("enabled")
 	}
 
-	zoneStr := query.Zone
+	zoneStr := query.ZoneId
 	if len(zoneStr) > 0 {
 		_zone, err := ZoneManager.FetchByIdOrName(userCred, zoneStr)
 		if err != nil {
@@ -828,12 +836,22 @@ func (manager *SServerSkuManager) ListItemFilter(
 		q = q.Equals("prepaid_status", query.PrepaidStatus)
 	}
 
-	// 按区间查询内存, 避免0.75G这样的套餐不好过滤
-	memSizeMB := query.MemorySizeMb
-	if memSizeMB > 0 {
-		s, e := intervalMem(int(memSizeMB))
-		q = q.GT("memory_size_mb", s)
-		q = q.LE("memory_size_mb", e)
+	conditions := []sqlchemy.ICondition{}
+	for _, sizeMb := range query.MemorySizeMb {
+		// 按区间查询内存, 避免0.75G这样的套餐不好过滤
+		if sizeMb > 0 {
+			s, e := intervalMem(sizeMb)
+			conditions = append(
+				conditions,
+				sqlchemy.AND(
+					sqlchemy.GE(q.Field("memory_size_mb"), s),
+					sqlchemy.LE(q.Field("memory_size_mb"), e),
+				),
+			)
+		}
+	}
+	if len(conditions) > 0 {
+		q = q.Filter(sqlchemy.OR(conditions...))
 	}
 	if len(query.CpuCoreCount) > 0 {
 		q = q.In("cpu_core_count", query.CpuCoreCount)

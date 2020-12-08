@@ -95,11 +95,12 @@ func (self *SCachedLoadbalancerCertificate) ValidateDeleteCondition(ctx context.
 	men := []db.IModelManager{
 		LoadbalancerListenerManager,
 	}
-	lbcertId := self.Id
+	lbcertId := self.CertificateId
 	for _, man := range men {
 		t := man.TableSpec().Instance()
 		pdF := t.Field("pending_deleted")
 		n, err := t.Query().
+			Equals("domain_id", self.DomainId).
 			Equals("certificate_id", lbcertId).
 			Filter(sqlchemy.OR(sqlchemy.IsNull(pdF), sqlchemy.IsFalse(pdF))).
 			CountWithError()
@@ -111,6 +112,10 @@ func (self *SCachedLoadbalancerCertificate) ValidateDeleteCondition(ctx context.
 				lbcertId, n, man.KeywordPlural())
 		}
 	}
+	return nil
+}
+
+func (self *SCachedLoadbalancerCertificate) ValidatePurgeCondition(ctx context.Context) error {
 	return nil
 }
 
@@ -312,12 +317,14 @@ func (man *SCachedLoadbalancerCertificateManager) newFromCloudLoadbalancerCertif
 	lbcert.CloudregionId = region.Id
 
 	c := SLoadbalancerCertificate{}
-	q1 := LoadbalancerCertificateManager.Query().IsFalse("pending_deleted").Equals("fingerprint", extCertificate.GetFingerprint())
+	q1 := LoadbalancerCertificateManager.Query().IsFalse("pending_deleted")
+	q1 = q1.Equals("fingerprint", extCertificate.GetFingerprint())
+	q1 = q1.Equals("tenant_id", provider.ProjectId)
 	err = q1.First(&c)
 	if err != nil {
 		switch err {
 		case sql.ErrNoRows:
-			localcert, err := LoadbalancerCertificateManager.CreateCertificate(ctx, userCred, lbcert.Name, extCertificate.GetPublickKey(), extCertificate.GetPrivateKey(), extCertificate.GetFingerprint())
+			localcert, err := LoadbalancerCertificateManager.CreateCertificate(ctx, userCred, provider, lbcert.Name, extCertificate)
 			if err != nil {
 				return nil, fmt.Errorf("newFromCloudLoadbalancerCertificate CreateCertificate %s", err)
 			}
@@ -375,8 +382,12 @@ func (lbcert *SCachedLoadbalancerCertificate) syncRemoveCloudLoadbalancerCertifi
 func (man *SCachedLoadbalancerCertificateManager) getLoadbalancerCertificateByRegion(provider *SCloudprovider, regionId string, localCertificateId string) (SCachedLoadbalancerCertificate, error) {
 	certificates := []SCachedLoadbalancerCertificate{}
 	q := man.Query().Equals("manager_id", provider.Id).Equals("certificate_id", localCertificateId).IsFalse("pending_deleted")
-	// aws 所有region共用一份证书.与region无关
-	if provider.GetName() != api.CLOUD_PROVIDER_AWS {
+	regionDriver, err := provider.GetRegionDriver()
+	if err != nil {
+		return SCachedLoadbalancerCertificate{}, errors.Wrap(err, "GetRegionDriver")
+	}
+
+	if regionDriver.IsCertificateBelongToRegion() {
 		q = q.Equals("cloudregion_id", regionId)
 	}
 
@@ -395,8 +406,7 @@ func (man *SCachedLoadbalancerCertificateManager) getLoadbalancerCertificateByRe
 func (man *SCachedLoadbalancerCertificateManager) getLoadbalancerCertificatesByRegion(region *SCloudregion, provider *SCloudprovider) ([]SCachedLoadbalancerCertificate, error) {
 	certificates := []SCachedLoadbalancerCertificate{}
 	q := man.Query().Equals("manager_id", provider.Id).IsFalse("pending_deleted")
-	// aws 所有region共用一份证书.与region无关
-	if region.GetProviderName() != api.CLOUD_PROVIDER_AWS {
+	if region.GetDriver().IsCertificateBelongToRegion() {
 		q = q.Equals("cloudregion_id", region.Id)
 	}
 
@@ -570,4 +580,32 @@ func (manager *SCachedLoadbalancerCertificateManager) ListItemExportKeys(ctx con
 		}
 	}
 	return q, nil
+}
+
+func (man *SCachedLoadbalancerCertificateManager) InitializeData() error {
+	certs := man.Query().SubQuery()
+	sq := certs.Query(certs.Field("id"), certs.Field("external_id"), sqlchemy.COUNT("external_id").Label("total"))
+	sq2 := sq.GroupBy("external_id").SubQuery()
+	sq3 := sq2.Query(sq2.Field("external_id")).GT("total", 1).SubQuery()
+
+	duplicates := []SCachedLoadbalancerCertificate{}
+	q := man.Query().In("external_id", sq3)
+	err := db.FetchModelObjects(man, q, &duplicates)
+	if err != nil {
+		return errors.Wrap(err, "clean duplicated cached loadbalancer certificates")
+	}
+
+	for i := range duplicates {
+		cache := duplicates[i]
+		_, err := db.Update(&cache, func() error {
+			cache.MarkDelete()
+			return nil
+		})
+		if err != nil {
+			return errors.Wrap(err, fmt.Sprintf("clean duplicated cached loadbalancer certificate %s", cache.GetId()))
+		}
+	}
+
+	log.Infof("%d duplicated cached loadbalancer certificate cleaned", len(duplicates))
+	return nil
 }

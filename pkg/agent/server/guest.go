@@ -211,12 +211,18 @@ func (g *Guest) updateOvn(ctx context.Context) {
 		ovnMan := g.watcher.ovnMan
 		ovnMan.SetHostId(ctx, g.HostId)
 		ovnMan.SetGuestNICs(ctx, g.Id, g.VpcNICs)
+
+		ovnMdMan := g.watcher.ovnMdMan
+		ovnMdMan.SetGuestNICs(ctx, g.Id, g.VpcNICs)
 	}
 }
 
 func (g *Guest) clearOvn(ctx context.Context) {
 	ovnMan := g.watcher.ovnMan
 	ovnMan.SetGuestNICs(ctx, g.Id, nil)
+
+	ovnMdMan := g.watcher.ovnMdMan
+	ovnMdMan.SetGuestNICs(ctx, g.Id, nil)
 }
 
 func (g *Guest) UpdateSettings(ctx context.Context) {

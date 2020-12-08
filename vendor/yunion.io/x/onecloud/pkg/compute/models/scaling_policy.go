@@ -116,12 +116,16 @@ func (spm *SScalingPolicyManager) QueryDistinctExtraField(q *sqlchemy.SQuery, fi
 	return spm.SScalingGroupResourceBaseManager.QueryDistinctExtraField(q, field)
 }
 
-func (spm *SScalingPolicyManager) FetchParentId(ctx context.Context, data jsonutils.JSONObject) string {
-	return spm.SScalingGroupResourceBaseManager.FetchParentId(ctx, data)
+func (sgm *SScalingPolicy) GetUniqValues() jsonutils.JSONObject {
+	return jsonutils.Marshal(map[string]string{"scaling_group_id": sgm.ScalingGroupId})
 }
 
-func (spm *SScalingPolicyManager) FilterByParentId(q *sqlchemy.SQuery, parentId string) *sqlchemy.SQuery {
-	return spm.SScalingGroupResourceBaseManager.FilterByParentId(q, parentId)
+func (spm *SScalingPolicyManager) FetchUniqValues(ctx context.Context, data jsonutils.JSONObject) jsonutils.JSONObject {
+	return spm.SScalingGroupResourceBaseManager.FetchUniqValues(ctx, data)
+}
+
+func (spm *SScalingPolicyManager) FilterByUniqValues(q *sqlchemy.SQuery, values jsonutils.JSONObject) *sqlchemy.SQuery {
+	return spm.SScalingGroupResourceBaseManager.FilterByUniqValues(q, values)
 }
 
 func (spm *SScalingPolicyManager) OrderByExtraFields(ctx context.Context, q *sqlchemy.SQuery,
@@ -234,7 +238,7 @@ func (spm *SScalingPolicyManager) ValidateCreateData(ctx context.Context, userCr
 	}
 	input, err = trigger.ValidateCreateData(input)
 	if err != nil {
-		return input, httperrors.NewInputParameterError(err.Error())
+		return input, httperrors.NewInputParameterError("%v", err)
 	}
 	return input, err
 }

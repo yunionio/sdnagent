@@ -115,6 +115,13 @@ type SNetwork struct {
 	AllocPolicy string `width:"16" charset:"ascii" nullable:"true" get:"user" update:"user" create:"optional"`
 
 	AllocTimoutSeconds int `default:"0" nullable:"true" get:"admin"`
+
+	// 该网段是否用于自动分配IP地址，如果为false，则用户需要明确选择该网段，才会使用该网段分配IP，
+	// 如果为true，则用户不指定网段时，则自动从该值为true的网络中选择一个分配地址
+	IsAutoAlloc tristate.TriState `nullable:"true" list:"user" get:"user" update:"user" create:"optional"`
+
+	// 线路类型
+	BgpType string `width:"64" charset:"utf8" nullable:"false" list:"user" get:"user" update:"user" create:"optional"`
 }
 
 func (manager *SNetworkManager) GetContextManagers() [][]db.IModelManager {
@@ -965,7 +972,7 @@ func isValidNetworkInfo(userCred mcclient.TokenCredential, netConfig *api.Networ
 	if len(netConfig.Network) > 0 {
 		netObj, err := NetworkManager.FetchByIdOrName(userCred, netConfig.Network)
 		if err != nil {
-			return httperrors.NewResourceNotFoundError("Network %s not found %s", err)
+			return httperrors.NewResourceNotFoundError("Network %s not found: %v", netConfig.Network, err)
 		}
 		net := netObj.(*SNetwork)
 		/*
@@ -1231,7 +1238,16 @@ func (manager *SNetworkManager) newIfnameHint(hint string) (string, error) {
 				return r, nil
 			}
 		}
-		return "", fmt.Errorf("failed finding ifname hint after 3 tries")
+		/* generate ifname by ifname hint failed
+		 * try generate from rand string */
+		for i := 0; i < 3; i++ {
+			r := sani(rand.String(MAX_HINT_LEN))
+			cnt, err := manager.Query().Equals("ifname_hint", r).CountWithError()
+			if err == nil && cnt == 0 {
+				return r, nil
+			}
+		}
+		return "", fmt.Errorf("failed finding ifname hint")
 	}
 
 	r := ""
@@ -1327,6 +1343,20 @@ func (manager *SNetworkManager) ValidateCreateData(ctx context.Context, userCred
 		input.ServerType = api.NETWORK_TYPE_GUEST
 	} else if !utils.IsInStringArray(input.ServerType, api.ALL_NETWORK_TYPES) {
 		return input, httperrors.NewInputParameterError("Invalid server_type: %s", input.ServerType)
+	}
+
+	{
+		defaultVlanId := 1
+
+		if input.VlanId == nil {
+			input.VlanId = &defaultVlanId
+		} else if *input.VlanId < 1 {
+			input.VlanId = &defaultVlanId
+		}
+
+		if *input.VlanId > 4095 {
+			return input, httperrors.NewInputParameterError("valid vlan id")
+		}
 	}
 
 	{
@@ -1437,6 +1467,9 @@ func (manager *SNetworkManager) ValidateCreateData(ctx context.Context, userCred
 	}
 	if input.ServerType == api.NETWORK_TYPE_EIP && vpc.Id != api.DEFAULT_VPC_ID {
 		return input, httperrors.NewInputParameterError("eip network can only exist in default vpc, got %s(%s)", vpc.Name, vpc.Id)
+	}
+	if input.ServerType != api.NETWORK_TYPE_EIP {
+		input.BgpType = ""
 	}
 
 	var (
@@ -1602,6 +1635,12 @@ func (self *SNetwork) validateUpdateData(ctx context.Context, userCred mcclient.
 		}
 	}
 
+	if input.IsAutoAlloc != nil && *input.IsAutoAlloc {
+		if self.ServerType != api.NETWORK_TYPE_GUEST {
+			return input, httperrors.NewInputParameterError("network server_type %s not support auto alloc", self.ServerType)
+		}
+	}
+
 	return input, nil
 }
 
@@ -1695,7 +1734,9 @@ func (self *SNetwork) PostCreate(ctx context.Context, userCred mcclient.TokenCre
 		}
 	} else {
 		self.SetStatus(userCred, api.NETWORK_STATUS_AVAILABLE, "")
-		self.ClearSchedDescCache()
+		if err := self.ClearSchedDescCache(); err != nil {
+			log.Errorf("network post create clear schedcache error: %v", err)
+		}
 	}
 }
 
@@ -1726,7 +1767,6 @@ func (self *SNetwork) RealDelete(ctx context.Context, userCred mcclient.TokenCre
 	DeleteResourceJointSchedtags(self, ctx, userCred)
 	db.OpsLog.LogEvent(self, db.ACT_DELOCATE, self.GetShortDesc(ctx), userCred)
 	self.SetStatus(userCred, api.NETWORK_STATUS_DELETED, "real delete")
-	self.ClearSchedDescCache()
 	networkinterfaces, err := self.GetNetworkInterfaces()
 	if err != nil {
 		return errors.Wrap(err, "GetNetworkInterfaces")
@@ -1747,7 +1787,11 @@ func (self *SNetwork) RealDelete(ctx context.Context, userCred mcclient.TokenCre
 			return errors.Wrapf(err, "reservedIps.Release %s(%d)", reservedIps[i].IpAddr, reservedIps[i].Id)
 		}
 	}
-	return self.SSharableVirtualResourceBase.Delete(ctx, userCred)
+	if err := self.SSharableVirtualResourceBase.Delete(ctx, userCred); err != nil {
+		return err
+	}
+	self.ClearSchedDescCache()
+	return nil
 }
 
 func (self *SNetwork) StartDeleteNetworkTask(ctx context.Context, userCred mcclient.TokenCredential) error {
@@ -1783,12 +1827,7 @@ func (self *SNetwork) isManaged() bool {
 }
 
 func (self *SNetwork) isOneCloudVpcNetwork() bool {
-	vpc := self.GetVpc()
-	region := self.GetRegion()
-	if region.Provider == api.CLOUD_PROVIDER_ONECLOUD && vpc.Id != api.DEFAULT_VPC_ID {
-		return true
-	}
-	return false
+	return IsOneCloudVpcResource(self)
 }
 
 func parseIpToIntArray(ip string) ([]int, error) {
@@ -1862,7 +1901,7 @@ func (manager *SNetworkManager) ListItemFilter(
 		q = q.In("wire_id", sq.SubQuery()).Equals("status", api.NETWORK_STATUS_AVAILABLE)
 	}
 
-	hostStr := input.Host
+	hostStr := input.HostId
 	if len(hostStr) > 0 {
 		hostObj, err := HostManager.FetchByIdOrName(userCred, hostStr)
 		if err != nil {
@@ -1871,6 +1910,28 @@ func (manager *SNetworkManager) ListItemFilter(
 		host := hostObj.(*SHost)
 		sq := HostwireManager.Query("wire_id").Equals("host_id", hostObj.GetId())
 		if len(host.OvnVersion) > 0 {
+			wireQuery := WireManager.Query("id").IsNotNull("vpc_id")
+			q = q.Filter(sqlchemy.OR(
+				sqlchemy.In(q.Field("wire_id"), wireQuery.SubQuery()),
+				sqlchemy.In(q.Field("wire_id"), sq.SubQuery())),
+			)
+		} else {
+			q = q.Filter(sqlchemy.In(q.Field("wire_id"), sq.SubQuery()))
+		}
+	}
+
+	storageStr := input.StorageId
+	if len(storageStr) > 0 {
+		storage, err := StorageManager.FetchByIdOrName(userCred, storageStr)
+		if err != nil {
+			return nil, errors.Wrapf(err, "unable to fetch storage %q", storageStr)
+		}
+		hoststorages := HoststorageManager.Query("host_id").Equals("storage_id", storage.GetId()).SubQuery()
+		hostSq := HostManager.Query("id").In("id", hoststorages).SubQuery()
+		sq := HostwireManager.Query("wire_id").In("host_id", hostSq)
+
+		ovnHosts := HostManager.Query().In("id", hoststorages).IsNotEmpty("ovn_version")
+		if n, _ := ovnHosts.CountWithError(); n > 0 {
 			wireQuery := WireManager.Query("id").IsNotNull("vpc_id")
 			q = q.Filter(sqlchemy.OR(
 				sqlchemy.In(q.Field("wire_id"), wireQuery.SubQuery()),
@@ -1916,11 +1977,11 @@ func (manager *SNetworkManager) ListItemFilter(
 		q = q.Filter(ipCondtion)
 	}
 
-	if len(input.Schedtag) > 0 {
-		schedTag, err := SchedtagManager.FetchByIdOrName(nil, input.Schedtag)
+	if len(input.SchedtagId) > 0 {
+		schedTag, err := SchedtagManager.FetchByIdOrName(nil, input.SchedtagId)
 		if err != nil {
 			if errors.Cause(err) == sql.ErrNoRows {
-				return nil, httperrors.NewResourceNotFoundError2(SchedtagManager.Keyword(), input.Schedtag)
+				return nil, httperrors.NewResourceNotFoundError2(SchedtagManager.Keyword(), input.SchedtagId)
 			}
 			return nil, httperrors.NewGeneralError(err)
 		}
@@ -1932,10 +1993,10 @@ func (manager *SNetworkManager) ListItemFilter(
 		q = q.In("ifname_hint", input.IfnameHint)
 	}
 	if len(input.GuestIpStart) > 0 {
-		q = q.In("guest_ip_start", input.GuestIpStart)
+		q = q.Filter(sqlchemy.ContainsAny(q.Field("guest_ip_start"), input.GuestIpStart))
 	}
 	if len(input.GuestIpEnd) > 0 {
-		q = q.In("guest_ip_end", input.GuestIpEnd)
+		q = q.Filter(sqlchemy.ContainsAny(q.Field("guest_ip_end"), input.GuestIpEnd))
 	}
 	if len(input.GuestIpMask) > 0 {
 		q = q.In("guest_ip_mask", input.GuestIpMask)
@@ -1978,6 +2039,44 @@ func (manager *SNetworkManager) ListItemFilter(
 	}
 	if len(input.AllocPolicy) > 0 {
 		q = q.In("alloc_policy", input.AllocPolicy)
+	}
+	if len(input.BgpType) > 0 {
+		q = q.In("bgp_type", input.BgpType)
+	}
+
+	if input.IsAutoAlloc != nil {
+		if *input.IsAutoAlloc {
+			q = q.IsTrue("is_auto_alloc")
+		} else {
+			q = q.IsFalse("is_auto_alloc")
+		}
+	}
+
+	if input.IsClassic != nil {
+		subq := manager.Query("id")
+		wires := WireManager.Query("id", "vpc_id").SubQuery()
+		subq = subq.Join(wires, sqlchemy.Equals(wires.Field("id"), subq.Field("wire_id")))
+		if *input.IsClassic {
+			subq = subq.Filter(sqlchemy.Equals(wires.Field("vpc_id"), api.DEFAULT_VPC_ID))
+		} else {
+			subq = subq.Filter(sqlchemy.NotEquals(wires.Field("vpc_id"), api.DEFAULT_VPC_ID))
+		}
+		q = q.In("id", subq.SubQuery())
+	}
+
+	if len(input.HostSchedtagId) > 0 {
+		schedTagObj, err := SchedtagManager.FetchByIdOrName(userCred, input.HostSchedtagId)
+		if err != nil {
+			if errors.Cause(err) == sql.ErrNoRows {
+				return nil, errors.Wrapf(httperrors.ErrResourceNotFound, "%s %s", SchedtagManager.Keyword(), input.HostSchedtagId)
+			} else {
+				return nil, errors.Wrap(err, "SchedtagManager.FetchByIdOrName")
+			}
+		}
+		subq := HostwireManager.Query("wire_id")
+		hostschedtags := HostschedtagManager.Query().Equals("schedtag_id", schedTagObj.GetId()).SubQuery()
+		subq = subq.Join(hostschedtags, sqlchemy.Equals(hostschedtags.Field("host_id"), subq.Field("host_id")))
+		q = q.In("wire_id", subq.SubQuery())
 	}
 
 	return q, nil
@@ -2048,6 +2147,16 @@ func (manager *SNetworkManager) InitializeData() error {
 				return nil
 			})
 		}
+		if n.IsAutoAlloc.IsNone() {
+			db.Update(&n, func() error {
+				if n.IsPublic && n.ServerType == api.NETWORK_TYPE_GUEST {
+					n.IsAutoAlloc = tristate.True
+				} else {
+					n.IsAutoAlloc = tristate.False
+				}
+				return nil
+			})
+		}
 	}
 	return nil
 }
@@ -2057,6 +2166,11 @@ func (self *SNetwork) ValidateUpdateCondition(ctx context.Context) error {
 		return httperrors.NewConflictError("Cannot update external resource")
 	}*/
 	return self.SSharableVirtualResourceBase.ValidateUpdateCondition(ctx)
+}
+
+func (self *SNetwork) PostUpdate(ctx context.Context, userCred mcclient.TokenCredential, query, data jsonutils.JSONObject) {
+	self.SSharableVirtualResourceBase.PostUpdate(ctx, userCred, query, data)
+	self.ClearSchedDescCache()
 }
 
 func (self *SNetwork) AllowPerformPurge(ctx context.Context, userCred mcclient.TokenCredential, query jsonutils.JSONObject, data jsonutils.JSONObject) bool {
@@ -2134,8 +2248,21 @@ func (self *SNetwork) PerformMerge(ctx context.Context, userCred mcclient.TokenC
 		logclient.AddActionLogWithContext(ctx, self, logclient.ACT_MERGE, err.Error(), userCred, false)
 		return nil, err
 	}
-	if self.WireId != net.WireId || self.GuestGateway != net.GuestGateway {
-		err = httperrors.NewInputParameterError("Invalid Target Network: %s", input.Target)
+
+	failReason := make([]string, 0)
+
+	if self.WireId != net.WireId {
+		failReason = append(failReason, "wire_id")
+	}
+	if self.GuestGateway != net.GuestGateway {
+		failReason = append(failReason, "guest_gateway")
+	}
+	if self.VlanId != net.VlanId {
+		failReason = append(failReason, "vlan_id")
+	}
+
+	if len(failReason) > 0 {
+		err = httperrors.NewInputParameterError("Invalid Target Network %s: inconsist %s", input.Target, strings.Join(failReason, ","))
 		logclient.AddActionLogWithContext(ctx, self, logclient.ACT_MERGE, err.Error(), userCred, false)
 		return nil, err
 	}
@@ -2146,9 +2273,17 @@ func (self *SNetwork) PerformMerge(ctx context.Context, userCred mcclient.TokenC
 	ipSS, _ := netutils.NewIPV4Addr(self.GuestIpStart)
 	ipSE, _ := netutils.NewIPV4Addr(self.GuestIpEnd)
 
-	if ipNE.StepUp() == ipSS {
+	wireNets := make([]SNetwork, 0)
+	q := NetworkManager.Query().Equals("wire_id", self.WireId).NotEquals("id", self.Id).NotEquals("id", net.Id)
+	err = db.FetchModelObjects(NetworkManager, q, &wireNets)
+	if err != nil && errors.Cause(err) != sql.ErrNoRows {
+		logclient.AddActionLogWithContext(ctx, self, logclient.ACT_MERGE, err.Error(), userCred, false)
+		return nil, errors.Wrap(err, "Query nets of same wire")
+	}
+
+	if ipNE.StepUp() == ipSS || (ipNE.StepUp() < ipSS && !isOverlapNetworks(wireNets, ipNE.StepUp(), ipSS.StepDown())) {
 		startIp, endIp = net.GuestIpStart, self.GuestIpEnd
-	} else if ipSE.StepUp() == ipNS {
+	} else if ipSE.StepUp() == ipNS || (ipSE.StepUp() < ipNS && !isOverlapNetworks(wireNets, ipSE.StepUp(), ipNS.StepDown())) {
 		startIp, endIp = self.GuestIpStart, net.GuestIpEnd
 	} else {
 		note := "Incontinuity Network for %s and %s"
@@ -2222,7 +2357,7 @@ func (self *SNetwork) PerformSplit(ctx context.Context, userCred mcclient.TokenC
 	defer lockman.ReleaseClass(ctx, NetworkManager, db.GetLockClassKey(NetworkManager, userCred))
 
 	if len(input.Name) > 0 {
-		if err := db.NewNameValidator(NetworkManager, userCred, input.Name, ""); err != nil {
+		if err := db.NewNameValidator(NetworkManager, userCred, input.Name, nil); err != nil {
 			return nil, httperrors.NewInputParameterError("Duplicate name %s", input.Name)
 		}
 	} else {
@@ -2255,6 +2390,7 @@ func (self *SNetwork) PerformSplit(ctx context.Context, userCred mcclient.TokenC
 	// network.UserId = self.UserId
 	network.IsSystem = self.IsSystem
 	network.Description = self.Description
+	network.IsAutoAlloc = self.IsAutoAlloc
 
 	err = NetworkManager.TableSpec().Insert(ctx, network)
 	if err != nil {
@@ -2449,219 +2585,27 @@ func (network *SNetwork) AllowGetDetailsAddresses(ctx context.Context, userCred 
 }
 
 func (network *SNetwork) getUsedAddressQuery(owner mcclient.IIdentityProvider, scope rbacutils.TRbacScope, addrOnly bool) *sqlchemy.SQuery {
-	guestnetworks := GuestnetworkManager.Query().Equals("network_id", network.Id).SubQuery()
-	var guestNetQ *sqlchemy.SQuery
-	if addrOnly {
-		guestNetQ = guestnetworks.Query(
-			guestnetworks.Field("ip_addr"),
-		)
-	} else {
-		guests := GuestManager.FilterByOwner(GuestManager.Query(), owner, scope).SubQuery()
-		guestNetQ = guestnetworks.Query(
-			guestnetworks.Field("ip_addr"),
-			guestnetworks.Field("mac_addr"),
-			sqlchemy.NewStringField(GuestManager.KeywordPlural()).Label("owner_type"),
-			guests.Field("id").Label("owner_id"),
-			guests.Field("name").Label("owner"),
-			sqlchemy.NewStringField("").Label("associate_id"),
-			sqlchemy.NewStringField("").Label("associate_type"),
-			guestnetworks.Field("created_at"),
-		).LeftJoin(
-			guests,
-			sqlchemy.Equals(
-				guests.Field("id"),
-				guestnetworks.Field("guest_id"),
-			),
-		)
-	}
+	var (
+		args = &usedAddressQueryArgs{
+			network:  network,
+			owner:    owner,
+			scope:    scope,
+			addrOnly: addrOnly,
+		}
+		queries = make([]sqlchemy.IQuery, len(usedAddressQueryProviders))
+	)
 
-	groupnetworks := GroupnetworkManager.Query().Equals("network_id", network.Id).SubQuery()
-	var groupNetQ *sqlchemy.SQuery
-	if addrOnly {
-		groupNetQ = groupnetworks.Query(
-			groupnetworks.Field("ip_addr"),
-		)
-	} else {
-		groups := GroupManager.FilterByOwner(GroupManager.Query(), owner, scope).SubQuery()
-		groupNetQ = groupnetworks.Query(
-			groupnetworks.Field("ip_addr"),
-			sqlchemy.NewStringField("").Label("mac_addr"),
-			sqlchemy.NewStringField(GroupManager.KeywordPlural()).Label("owner_type"),
-			groups.Field("id").Label("owner_id"),
-			groups.Field("name").Label("owner"),
-			sqlchemy.NewStringField("").Label("associate_id"),
-			sqlchemy.NewStringField("").Label("associate_type"),
-			groupnetworks.Field("created_at"),
-		).LeftJoin(
-			groups,
-			sqlchemy.Equals(
-				groups.Field("id"),
-				groupnetworks.Field("group_id"),
-			),
-		)
+	for i, provider := range usedAddressQueryProviders {
+		queries[i] = provider.usedAddressQuery(args)
 	}
-
-	hostnetworks := HostnetworkManager.Query().Equals("network_id", network.Id).SubQuery()
-	var hostNetQ *sqlchemy.SQuery
-	if addrOnly {
-		hostNetQ = hostnetworks.Query(
-			hostnetworks.Field("ip_addr"),
-		)
-	} else {
-		hosts := HostManager.FilterByOwner(HostManager.Query(), owner, scope).SubQuery()
-		hostNetQ = hostnetworks.Query(
-			hostnetworks.Field("ip_addr"),
-			hostnetworks.Field("mac_addr"),
-			sqlchemy.NewStringField(HostManager.KeywordPlural()).Label("owner_type"),
-			hosts.Field("id").Label("owner_id"),
-			hosts.Field("name").Label("owner"),
-			sqlchemy.NewStringField("").Label("associate_id"),
-			sqlchemy.NewStringField("").Label("associate_type"),
-			hostnetworks.Field("created_at"),
-		).LeftJoin(
-			hosts,
-			sqlchemy.Equals(
-				hosts.Field("id"),
-				hostnetworks.Field("baremetal_id"),
-			),
-		)
-	}
-
-	reserved := ReservedipManager.Query().Equals("network_id", network.Id).SubQuery()
-	var reservedQ *sqlchemy.SQuery
-	if addrOnly {
-		reservedQ = reserved.Query(
-			reserved.Field("ip_addr"),
-		)
-	} else {
-		reservedQ = reserved.Query(
-			reserved.Field("ip_addr"),
-			sqlchemy.NewStringField("").Label("mac_addr"),
-			sqlchemy.NewStringField(ReservedipManager.KeywordPlural()).Label("owner_type"),
-			reserved.Field("id").Label("owner_id"),
-			reserved.Field("notes").Label("owner"),
-			sqlchemy.NewStringField("").Label("associate_id"),
-			sqlchemy.NewStringField("").Label("associate_type"),
-			reserved.Field("created_at"),
-		)
-	}
-	reservedQ = reservedQ.Filter(sqlchemy.OR(
-		sqlchemy.IsNullOrEmpty(reserved.Field("expired_at")),
-		sqlchemy.GT(reserved.Field("expired_at"), time.Now()),
-	))
-
-	lbnetworks := LoadbalancernetworkManager.Query().Equals("network_id", network.Id).SubQuery()
-	var lbNetQ *sqlchemy.SQuery
-	if addrOnly {
-		lbNetQ = lbnetworks.Query(
-			lbnetworks.Field("ip_addr"),
-		)
-	} else {
-		loadbalancers := LoadbalancerManager.FilterByOwner(LoadbalancerManager.Query(), owner, scope).SubQuery()
-		lbNetQ = lbnetworks.Query(
-			lbnetworks.Field("ip_addr"),
-			sqlchemy.NewStringField("").Label("mac_addr"),
-			sqlchemy.NewStringField(LoadbalancerManager.KeywordPlural()).Label("owner_type"),
-			loadbalancers.Field("id").Label("owner_id"),
-			loadbalancers.Field("name").Label("owner"),
-			sqlchemy.NewStringField("").Label("associate_id"),
-			sqlchemy.NewStringField("").Label("associate_type"),
-			lbnetworks.Field("created_at"),
-		).LeftJoin(
-			loadbalancers,
-			sqlchemy.Equals(
-				loadbalancers.Field("id"),
-				lbnetworks.Field("loadbalancer_id"),
-			),
-		)
-	}
-
-	elasticips := ElasticipManager.Query().Equals("network_id", network.Id).SubQuery()
-	ownerEips := ElasticipManager.FilterByOwner(ElasticipManager.Query().Equals("network_id", network.Id), owner, scope).SubQuery()
-	var eipQ *sqlchemy.SQuery
-	if addrOnly {
-		eipQ = elasticips.Query(
-			elasticips.Field("ip_addr"),
-		)
-	} else {
-		eipQ = elasticips.Query(
-			elasticips.Field("ip_addr"),
-			sqlchemy.NewStringField("").Label("mac_addr"),
-			sqlchemy.NewStringField(ElasticipManager.KeywordPlural()).Label("owner_type"),
-			ownerEips.Field("id").Label("owner_id"),
-			ownerEips.Field("name").Label("owner"),
-			ownerEips.Field("associate_id"),
-			ownerEips.Field("associate_type"),
-			elasticips.Field("created_at"),
-		).LeftJoin(
-			ownerEips,
-			sqlchemy.Equals(
-				elasticips.Field("id"),
-				ownerEips.Field("id"),
-			),
-		)
-	}
-
-	netifnetworks := NetworkinterfacenetworkManager.Query().Equals("network_id", network.Id).SubQuery()
-	var netifsQ *sqlchemy.SQuery
-	if addrOnly {
-		netifsQ = netifnetworks.Query(
-			netifnetworks.Field("ip_addr"),
-		)
-	} else {
-		netifs := NetworkInterfaceManager.FilterByOwner(NetworkInterfaceManager.Query(), owner, scope).SubQuery()
-		netifsQ = netifnetworks.Query(
-			netifnetworks.Field("ip_addr"),
-			netifs.Field("mac").Label("mac_addr"),
-			sqlchemy.NewStringField(NetworkInterfaceManager.KeywordPlural()).Label("owner_type"),
-			netifs.Field("id").Label("owner_id"),
-			netifs.Field("name").Label("owner"),
-			netifs.Field("associate_id"),
-			netifs.Field("associate_type"),
-			netifnetworks.Field("created_at"),
-		).LeftJoin(
-			netifs,
-			sqlchemy.Equals(
-				netifnetworks.Field("networkinterface_id"),
-				netifs.Field("id"),
-			),
-		)
-	}
-
-	dbnetworks := DBInstanceNetworkManager.Query().Equals("network_id", network.Id).SubQuery()
-	var dbNetQ *sqlchemy.SQuery
-	if addrOnly {
-		dbNetQ = dbnetworks.Query(
-			dbnetworks.Field("ip_addr"),
-		)
-	} else {
-		dbinstances := DBInstanceManager.FilterByOwner(DBInstanceManager.Query(), owner, scope).SubQuery()
-		dbNetQ = dbnetworks.Query(
-			dbnetworks.Field("ip_addr"),
-			sqlchemy.NewStringField("").Label("mac_addr"),
-			sqlchemy.NewStringField(DBInstanceManager.KeywordPlural()).Label("owner_type"),
-			dbinstances.Field("id").Label("owner_id"),
-			dbinstances.Field("name").Label("owner"),
-			sqlchemy.NewStringField("").Label("associate_id"),
-			sqlchemy.NewStringField("").Label("associate_type"),
-			dbnetworks.Field("created_at"),
-		).LeftJoin(
-			dbinstances,
-			sqlchemy.Equals(
-				dbinstances.Field("id"),
-				dbnetworks.Field("dbinstance_id"),
-			),
-		)
-	}
-
-	return sqlchemy.Union(guestNetQ, groupNetQ, hostNetQ, reservedQ, lbNetQ, eipQ, netifsQ, dbNetQ).Query()
+	return sqlchemy.Union(queries...).Query()
 }
 
-type SNetworkAddressList []api.SNetworkAddress
+type SNetworkUsedAddressList []api.SNetworkUsedAddress
 
-func (a SNetworkAddressList) Len() int      { return len(a) }
-func (a SNetworkAddressList) Swap(i, j int) { a[i], a[j] = a[j], a[i] }
-func (a SNetworkAddressList) Less(i, j int) bool {
+func (a SNetworkUsedAddressList) Len() int      { return len(a) }
+func (a SNetworkUsedAddressList) Swap(i, j int) { a[i], a[j] = a[j], a[i] }
+func (a SNetworkUsedAddressList) Less(i, j int) bool {
 	ipI, _ := netutils.NewIPV4Addr(a[i].IpAddr)
 	ipJ, _ := netutils.NewIPV4Addr(a[j].IpAddr)
 	return ipI < ipJ
@@ -2676,14 +2620,14 @@ func (network *SNetwork) GetDetailsAddresses(ctx context.Context, userCred mccli
 		return output, errors.Wrapf(httperrors.ErrNotSufficientPrivilege, "require %s allow %s", scope, allowScope)
 	}
 
-	netAddrs := make([]api.SNetworkAddress, 0)
+	netAddrs := make([]api.SNetworkUsedAddress, 0)
 	q := network.getUsedAddressQuery(userCred, scope, false)
 	err := q.All(&netAddrs)
 	if err != nil {
 		return output, httperrors.NewGeneralError(err)
 	}
 
-	sort.Sort(SNetworkAddressList(netAddrs))
+	sort.Sort(SNetworkUsedAddressList(netAddrs))
 
 	output.Addresses = netAddrs
 	return output, nil
@@ -2774,4 +2718,48 @@ func (manager *SNetworkManager) AllowScope(userCred mcclient.TokenCredential) rb
 			return rbacutils.ScopeProject
 		}
 	}
+}
+
+func (self *SNetwork) AllowPerformSetBgpType(ctx context.Context, userCred mcclient.TokenCredential, query jsonutils.JSONObject, data jsonutils.JSONObject) bool {
+	return self.IsOwner(userCred) || db.IsAdminAllowPerform(userCred, self, "set-isp")
+}
+
+func (self *SNetwork) PerformSetBgpType(ctx context.Context, userCred mcclient.TokenCredential, query jsonutils.JSONObject, input *api.NetworkSetBgpTypeInput) (jsonutils.JSONObject, error) {
+	if self.BgpType == input.BgpType {
+		return nil, nil
+	}
+	if self.ServerType != api.NETWORK_TYPE_EIP {
+		return nil, httperrors.NewInputParameterError("BgpType attribute is only useful for eip network")
+	}
+	{
+		var eips []SElasticip
+		q := ElasticipManager.Query().
+			Equals("network_id", self.Id).
+			NotEquals("bgp_type", input.BgpType)
+		if err := db.FetchModelObjects(ElasticipManager, q, &eips); err != nil {
+			return nil, err
+		}
+		for i := range eips {
+			eip := &eips[i]
+			if diff, err := db.UpdateWithLock(ctx, eip, func() error {
+				eip.BgpType = input.BgpType
+				return nil
+			}); err != nil {
+				// no need to retry/restore here.  return error
+				// and retry after user resolves the error
+				return nil, err
+			} else {
+				db.OpsLog.LogEvent(eip, db.ACT_UPDATE, diff, userCred)
+			}
+		}
+	}
+	if diff, err := db.Update(self, func() error {
+		self.BgpType = input.BgpType
+		return nil
+	}); err != nil {
+		return nil, err
+	} else {
+		db.OpsLog.LogEvent(self, db.ACT_UPDATE, diff, userCred)
+	}
+	return nil, nil
 }

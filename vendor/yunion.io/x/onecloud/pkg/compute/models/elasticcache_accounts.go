@@ -187,8 +187,13 @@ func (manager *SElasticcacheAccountManager) newFromCloudElasticcacheAccount(ctx 
 	return &account, nil
 }
 
-func (manager *SElasticcacheAccountManager) FetchParentId(ctx context.Context, data jsonutils.JSONObject) string {
-	return jsonutils.GetAnyString(data, []string{"elasticcache_id", "elasticcache"})
+func (self *SElasticcacheAccount) GetUniqValues() jsonutils.JSONObject {
+	return jsonutils.Marshal(map[string]string{"elasticcache_id": self.ElasticcacheId})
+}
+
+func (manager *SElasticcacheAccountManager) FetchUniqValues(ctx context.Context, data jsonutils.JSONObject) jsonutils.JSONObject {
+	cacheId := jsonutils.GetAnyString(data, []string{"elasticcache_id", "elasticcache"})
+	return jsonutils.Marshal(map[string]string{"elasticcache_id": cacheId})
 }
 
 func (manager *SElasticcacheAccountManager) ResourceScope() rbacutils.TRbacScope {
@@ -203,9 +208,10 @@ func (manager *SElasticcacheAccountManager) FilterByOwner(q *sqlchemy.SQuery, us
 	return elasticcacheSubResourceFetchOwner(q, userCred, scope)
 }
 
-func (manager *SElasticcacheAccountManager) FilterByParentId(q *sqlchemy.SQuery, parentId string) *sqlchemy.SQuery {
-	if len(parentId) > 0 {
-		q = q.Equals("elasticcache_id", parentId)
+func (manager *SElasticcacheAccountManager) FilterByUniqValues(q *sqlchemy.SQuery, values jsonutils.JSONObject) *sqlchemy.SQuery {
+	cacheId, _ := values.GetString("elasticcache_id")
+	if len(cacheId) > 0 {
+		q = q.Equals("elasticcache_id", cacheId)
 	}
 	return q
 }
@@ -291,6 +297,29 @@ func (self *SElasticcacheAccount) GetCreateAliyunElasticcacheAccountParams() (cl
 	return ret, nil
 }
 
+func (self *SElasticcacheAccount) GetCreateQcloudElasticcacheAccountParams() (cloudprovider.SCloudElasticCacheAccountInput, error) {
+	ret := cloudprovider.SCloudElasticCacheAccountInput{}
+	ret.AccountName = self.Name
+	ret.Description = self.Description
+	passwd, err := self.GetDecodedPassword()
+	if err != nil {
+		return ret, err
+	}
+
+	ret.AccountPassword = passwd
+
+	switch self.AccountPrivilege {
+	case "read":
+		ret.AccountPrivilege = "r"
+	case "write":
+		ret.AccountPrivilege = "rw"
+	default:
+		return ret, fmt.Errorf("ElasticcacheAccount.GetUpdateQcloudElasticcacheAccountParams invalid account_privilege %s", self.AccountPrivilege)
+	}
+
+	return ret, nil
+}
+
 func (self *SElasticcacheAccount) GetUpdateAliyunElasticcacheAccountParams(data jsonutils.JSONDict) (cloudprovider.SCloudElasticCacheAccountUpdateInput, error) {
 	ret := cloudprovider.SCloudElasticCacheAccountUpdateInput{}
 
@@ -352,6 +381,45 @@ func (self *SElasticcacheAccount) GetUpdateHuaweiElasticcacheAccountParams(data 
 	if ok := data.Contains("no_password_access"); ok {
 		passwordAccess, _ := data.Bool("no_password_access")
 		ret.NoPasswordAccess = &passwordAccess
+	}
+
+	return ret, nil
+}
+
+func (self *SElasticcacheAccount) GetUpdateQcloudElasticcacheAccountParams(data jsonutils.JSONDict) (cloudprovider.SCloudElasticCacheAccountUpdateInput, error) {
+	ret := cloudprovider.SCloudElasticCacheAccountUpdateInput{}
+
+	if desc, _ := data.GetString("description"); len(desc) > 0 {
+		ret.Description = &desc
+	}
+
+	if password, _ := data.GetString("password"); len(password) > 0 {
+		ret.Password = &password
+	}
+
+	if ok := data.Contains("no_password_access"); ok {
+		passwordAccess, _ := data.Bool("no_password_access")
+		if self.AccountType == api.ELASTIC_CACHE_ACCOUNT_TYPE_ADMIN {
+			ret.NoPasswordAccess = &passwordAccess
+		} else {
+			if passwordAccess == false {
+				return ret, fmt.Errorf("ElasticcacheAccount.GetUpdateQcloudElasticcacheAccountParams normal account not support no auth access")
+			}
+		}
+	}
+
+	if privilege, _ := data.GetString("account_privilege"); len(privilege) > 0 {
+		var p string
+		switch privilege {
+		case "read":
+			p = "r"
+		case "write":
+			p = "rw"
+		default:
+			return ret, fmt.Errorf("ElasticcacheAccount.GetUpdateQcloudElasticcacheAccountParams invalid account_privilege %s", privilege)
+		}
+
+		ret.AccountPrivilege = &p
 	}
 
 	return ret, nil

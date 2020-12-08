@@ -108,8 +108,8 @@ func (manager *SWireManager) ValidateCreateData(
 		return input, httperrors.NewOutOfRangeError("mtu must be range of 0~1000000")
 	}
 
-	if input.Vpc == "" {
-		input.Vpc = api.DEFAULT_VPC_ID
+	if input.VpcId == "" {
+		input.VpcId = api.DEFAULT_VPC_ID
 	}
 
 	var vpc *SVpc
@@ -122,7 +122,7 @@ func (manager *SWireManager) ValidateCreateData(
 		return input, httperrors.NewNotSupportedError("Currently only kvm platform supports creating wire")
 	}
 
-	if len(input.Zone) == 0 {
+	if len(input.ZoneId) == 0 {
 		return input, httperrors.NewMissingParameterError("zone")
 	}
 
@@ -702,6 +702,17 @@ func (self *SWire) getGatewayNetworkQuery(ownerId mcclient.IIdentityProvider, sc
 	return q
 }
 
+func (self *SWire) getAutoAllocNetworks(ownerId mcclient.IIdentityProvider, scope rbacutils.TRbacScope) ([]SNetwork, error) {
+	q := self.getGatewayNetworkQuery(ownerId, scope)
+	q = q.IsTrue("is_auto_alloc")
+	nets := make([]SNetwork, 0)
+	err := db.FetchModelObjects(NetworkManager, q, &nets)
+	if err != nil {
+		return nil, err
+	}
+	return nets, nil
+}
+
 func (self *SWire) getPublicNetworks(ownerId mcclient.IIdentityProvider, scope rbacutils.TRbacScope) ([]SNetwork, error) {
 	q := self.getGatewayNetworkQuery(ownerId, scope)
 	q = q.IsTrue("is_public")
@@ -732,8 +743,8 @@ func (self *SWire) GetCandidatePrivateNetwork(ownerId mcclient.IIdentityProvider
 	return ChooseCandidateNetworks(nets, isExit, serverTypes), nil
 }
 
-func (self *SWire) GetCandidatePublicNetwork(ownerId mcclient.IIdentityProvider, scope rbacutils.TRbacScope, isExit bool, serverTypes []string) (*SNetwork, error) {
-	nets, err := self.getPublicNetworks(ownerId, scope)
+func (self *SWire) GetCandidateAutoAllocNetwork(ownerId mcclient.IIdentityProvider, scope rbacutils.TRbacScope, isExit bool, serverTypes []string) (*SNetwork, error) {
+	nets, err := self.getAutoAllocNetworks(ownerId, scope)
 	if err != nil {
 		return nil, err
 	}
@@ -846,6 +857,10 @@ func (manager *SWireManager) InitializeData() error {
 	return nil
 }
 
+func (wire *SWire) isOneCloudVpcWire() bool {
+	return IsOneCloudVpcResource(wire)
+}
+
 func (wire *SWire) getEnabledHosts() []SHost {
 	hosts := make([]SHost, 0)
 
@@ -855,9 +870,13 @@ func (wire *SWire) getEnabledHosts() []SHost {
 	q := hostQuery.Query()
 	q = q.Join(hostwireQuery, sqlchemy.AND(sqlchemy.Equals(hostQuery.Field("id"), hostwireQuery.Field("host_id")),
 		sqlchemy.IsFalse(hostwireQuery.Field("deleted"))))
-	q = q.Filter(sqlchemy.Equals(hostwireQuery.Field("wire_id"), wire.Id))
 	q = q.Filter(sqlchemy.IsTrue(hostQuery.Field("enabled")))
 	q = q.Filter(sqlchemy.Equals(hostQuery.Field("host_status"), api.HOST_ONLINE))
+	if wire.isOneCloudVpcWire() {
+		q = q.Filter(sqlchemy.NOT(sqlchemy.IsNullOrEmpty(hostQuery.Field("ovn_version"))))
+	} else {
+		q = q.Filter(sqlchemy.Equals(hostwireQuery.Field("wire_id"), wire.Id))
+	}
 
 	err := db.FetchModelObjects(HostManager, q, &hosts)
 	if err != nil {
@@ -872,10 +891,9 @@ func (wire *SWire) clearHostSchedDescCache() error {
 	hosts := wire.getEnabledHosts()
 	if hosts != nil {
 		for i := 0; i < len(hosts); i += 1 {
-			err := hosts[i].ClearSchedDescCache()
-			if err != nil {
-				log.Errorf("%s", err)
-				return err
+			host := hosts[i]
+			if err := host.ClearSchedDescCache(); err != nil {
+				return errors.Wrapf(err, "wire %s clear host %s sched cache", wire.GetName(), host.GetName())
 			}
 		}
 	}
@@ -949,7 +967,7 @@ func (manager *SWireManager) ListItemFilter(
 		return nil, errors.Wrap(err, "SInfrasResourceBaseManager.ListItemFilter")
 	}
 
-	hostStr := query.Host
+	hostStr := query.HostId
 	if len(hostStr) > 0 {
 		hostObj, err := HostManager.FetchByIdOrName(userCred, hostStr)
 		if err != nil {

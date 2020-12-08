@@ -75,16 +75,6 @@ func (manager *SVirtualJointResourceBaseManager) AllowAttach(ctx context.Context
 	return false
 }
 
-func (self *SVirtualJointResourceBase) AllowGetDetails(ctx context.Context, userCred mcclient.TokenCredential, query jsonutils.JSONObject) bool {
-	masterVirtual := self.Master().(IVirtualModel)
-	return masterVirtual.IsOwner(userCred) || IsAllowGet(rbacutils.ScopeSystem, userCred, self)
-}
-
-func (self *SVirtualJointResourceBase) AllowUpdateItem(ctx context.Context, userCred mcclient.TokenCredential) bool {
-	masterVirtual := self.Master().(IVirtualModel)
-	return masterVirtual.IsOwner(userCred) || IsAllowUpdate(rbacutils.ScopeSystem, userCred, self)
-}
-
 func (manager *SVirtualJointResourceBaseManager) FilterByOwner(q *sqlchemy.SQuery, owner mcclient.IIdentityProvider, scope rbacutils.TRbacScope) *sqlchemy.SQuery {
 	if owner != nil {
 		masterQ := manager.GetMasterManager().Query("id")
@@ -193,4 +183,8 @@ func (self *SVirtualJointResourceBase) ValidateUpdateData(
 		return input, errors.Wrap(err, "SJointResourceBase.ValidateUpdateData")
 	}
 	return input, nil
+}
+
+func (manager *SVirtualJointResourceBaseManager) FilterById(q *sqlchemy.SQuery, idStr string) *sqlchemy.SQuery {
+	return q.Equals("row_id", idStr)
 }

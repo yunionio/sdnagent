@@ -97,9 +97,9 @@ type SElasticip struct {
 
 	// 计费类型: 流量、带宽
 	// example: bandwidth
-	ChargeType string `name:"charge_type" list:"user" create:"required"`
-	// 目前只有华为云此字段是必需填写的
-	BgpType string `list:"user" create:"optional"`
+	ChargeType string `width:"64" name:"charge_type" list:"user" create:"required"`
+	// 线路类型
+	BgpType string `width:"64" charset:"utf8" nullable:"true" get:"user" list:"user" create:"optional"`
 
 	// 是否跟随主机删除而自动释放
 	AutoDellocate tristate.TriState `default:"false" get:"user" create:"optional" update:"user"`
@@ -509,6 +509,7 @@ func (manager *SElasticipManager) newFromCloudEip(ctx context.Context, userCred 
 	eip.ManagerId = provider.Id
 	eip.CloudregionId = region.Id
 	eip.ChargeType = extEip.GetInternetChargeType()
+	eip.Bandwidth = extEip.GetBandwidth()
 	if networkId := extEip.GetINetworkId(); len(networkId) > 0 {
 		network, err := db.FetchByExternalIdAndManagerId(NetworkManager, networkId, func(q *sqlchemy.SQuery) *sqlchemy.SQuery {
 			wire := WireManager.Query().SubQuery()
@@ -970,7 +971,7 @@ func (self *SElasticip) PerformAssociate(ctx context.Context, userCred mcclient.
 
 	// IMPORTANT: this serves as a guard against a guest to have multiple
 	// associated elastic_ips
-	seip, _ := server.GetEip()
+	seip, _ := server.GetEipOrPublicIp()
 	if seip != nil {
 		return nil, httperrors.NewInvalidStatusError("instance is already associated with eip")
 	}
@@ -1215,8 +1216,27 @@ func (self *SElasticip) getMoreDetails(out api.ElasticipDetails) api.ElasticipDe
 	return out
 }
 
-func (manager *SElasticipManager) NewEipForVMOnHost(ctx context.Context, userCred mcclient.TokenCredential, vm *SGuest,
-	host *SHost, bw int, chargeType string, autoDellocate bool, pendingUsage quotas.IQuota) (*SElasticip, error) {
+type NewEipForVMOnHostArgs struct {
+	Bandwidth     int
+	BgpType       string
+	ChargeType    string
+	AutoDellocate bool
+
+	Guest        *SGuest
+	Host         *SHost
+	PendingUsage quotas.IQuota
+}
+
+func (manager *SElasticipManager) NewEipForVMOnHost(ctx context.Context, userCred mcclient.TokenCredential, args *NewEipForVMOnHostArgs) (*SElasticip, error) {
+	var (
+		bw            = args.Bandwidth
+		bgpType       = args.BgpType
+		chargeType    = args.ChargeType
+		autoDellocate = args.AutoDellocate
+		vm            = args.Guest
+		host          = args.Host
+		pendingUsage  = args.PendingUsage
+	)
 	region := host.GetRegion()
 
 	if len(chargeType) == 0 {
@@ -1249,6 +1269,7 @@ func (manager *SElasticipManager) NewEipForVMOnHost(ctx context.Context, userCre
 		q = q.Join(hostwireq, sqlchemy.Equals(hostwireq.Field("wire_id"), wireq.Field("id")))
 		q = q.Join(hostq, sqlchemy.Equals(hostq.Field("id"), host.Id))
 		q = q.Equals("server_type", api.NETWORK_TYPE_EIP)
+		q = q.Equals("bgp_type", bgpType)
 		var nets []SNetwork
 		if err := db.FetchModelObjects(NetworkManager, q, &nets); err != nil {
 			return nil, errors.Wrapf(err, "fetch eip networks usable in host %s(%s)",
@@ -1329,7 +1350,7 @@ func (self *SElasticip) PerformChangeBandwidth(ctx context.Context, userCred mcc
 		}
 
 		if err := factory.ValidateChangeBandwidth(self.AssociateId, bandwidth); err != nil {
-			return nil, httperrors.NewInputParameterError(err.Error())
+			return nil, httperrors.NewInputParameterError("%v", err)
 		}
 	}
 

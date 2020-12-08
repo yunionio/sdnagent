@@ -33,6 +33,7 @@ import (
 	"yunion.io/x/pkg/util/fileutils"
 	"yunion.io/x/pkg/util/netutils"
 	"yunion.io/x/pkg/util/regutils"
+	"yunion.io/x/pkg/util/sets"
 	"yunion.io/x/pkg/utils"
 	"yunion.io/x/sqlchemy"
 
@@ -124,7 +125,7 @@ type SHost struct {
 	// CPUMicrocode
 	CpuMicrocode string `width:"64" charset:"ascii" nullable:"true" get:"domain" update:"domain" create:"domain_optional"`
 	// CPU架构
-	CpuArchitecture string `width:"16" charset:"ascii" nullable:"true" get:"domain" update:"domain" create:"domain_optional"`
+	CpuArchitecture string `width:"16" charset:"ascii" nullable:"true" get:"domain" list:"domain" update:"domain" create:"domain_optional"`
 
 	// 内存大小,单位Mb
 	MemSize int `nullable:"true" list:"domain" update:"domain" create:"domain_optional"`
@@ -252,7 +253,7 @@ func (manager *SHostManager) ListItemFilter(
 	}
 	// var scopeQuery *sqlchemy.SSubQuery
 
-	schedTagStr := query.Schedtag
+	schedTagStr := query.SchedtagId
 	if len(schedTagStr) > 0 {
 		schedTag, _ := SchedtagManager.FetchByIdOrName(nil, schedTagStr)
 		if schedTag == nil {
@@ -263,7 +264,7 @@ func (manager *SHostManager) ListItemFilter(
 		q = q.In("id", scopeQuery)
 	}
 
-	wireStr := query.Wire
+	wireStr := query.WireId
 	if len(wireStr) > 0 {
 		wire, _ := WireManager.FetchByIdOrName(nil, wireStr)
 		if wire == nil {
@@ -274,7 +275,7 @@ func (manager *SHostManager) ListItemFilter(
 		q = q.In("id", scopeQuery)
 	}
 
-	storageStr := query.Storage
+	storageStr := query.StorageId
 	if len(storageStr) > 0 {
 		storage, _ := StorageManager.FetchByIdOrName(nil, storageStr)
 		if storage == nil {
@@ -430,6 +431,9 @@ func (manager *SHostManager) ListItemFilter(
 	if len(query.BootMode) > 0 {
 		q = q.In("boot_mode", query.BootMode)
 	}
+	if len(query.CpuArchitecture) > 0 {
+		q = q.Equals("cpu_architecture", query.CpuArchitecture)
+	}
 
 	// for provider onecloud
 	if len(query.ServerIdForNetwork) > 0 {
@@ -525,6 +529,10 @@ func (manager *SHostManager) CustomizeFilterList(ctx context.Context, q *sqlchem
 	}
 
 	return filters, nil
+}
+
+func (self *SHost) IsArmHost() bool {
+	return self.CpuArchitecture == api.CPU_ARCH_AARCH64
 }
 
 func (self *SHost) GetZone() *SZone {
@@ -1142,8 +1150,19 @@ func (self *SHost) GetSpec(statusCheck bool) *jsonutils.JSONDict {
 	if model == "" {
 		model = "Unknown"
 	}
-	specInfo.Manufacture = manufacture
-	specInfo.Model = model
+	specInfo.Manufacture = strings.ReplaceAll(manufacture, " ", "_")
+	specInfo.Model = strings.ReplaceAll(model, " ", "_")
+	devices := IsolatedDeviceManager.FindByHost(self.Id)
+	if len(devices) > 0 {
+		specInfo.IsolatedDevices = make([]api.IsolatedDeviceSpec, len(devices))
+		for i := 0; i < len(devices); i++ {
+			specInfo.IsolatedDevices[i].DevType = devices[i].DevType
+			specInfo.IsolatedDevices[i].Model = devices[i].Model
+			specInfo.IsolatedDevices[i].PciId = devices[i].VendorDeviceId
+			specInfo.IsolatedDevices[i].Vendor = devices[i].getVendor()
+		}
+	}
+
 	return specInfo.JSON(specInfo)
 }
 
@@ -1221,10 +1240,11 @@ func (self *SHost) GetHardwareSpecification() *jsonutils.JSONDict {
 }
 
 type SStorageCapacity struct {
-	Capacity  int64 `json:"capacity,omitzero"`
-	Used      int64 `json:"used_capacity,omitzero"`
-	Wasted    int64 `json:"waste_capacity,omitzero"`
-	VCapacity int64 `json:"virtual_capacity,omitzero"`
+	Capacity   int64 `json:"capacity,omitzero"`
+	Used       int64 `json:"used_capacity,omitzero"`
+	ActualUsed int64 `json:"real_time_used_capacity,omitzero"`
+	Wasted     int64 `json:"waste_capacity,omitzero"`
+	VCapacity  int64 `json:"virtual_capacity,omitzero"`
 }
 
 func (cap *SStorageCapacity) GetFree() int64 {
@@ -1244,6 +1264,7 @@ func (cap *SStorageCapacity) Add(cap2 SStorageCapacity) {
 	cap.Used += cap2.Used
 	cap.Wasted += cap2.Wasted
 	cap.VCapacity += cap2.VCapacity
+	cap.ActualUsed += cap2.ActualUsed
 }
 
 func (cap *SStorageCapacity) toCapacityInfo() api.SStorageCapacityInfo {
@@ -1722,6 +1743,11 @@ func (self *SHost) syncWithCloudHost(ctx context.Context, userCred mcclient.Toke
 		self.SyncShareState(ctx, userCred, provider.getAccountShareInfo())
 	}
 
+	if err := self.syncSchedtags(ctx, userCred, extHost); err != nil {
+		log.Errorf("syncSchedtags fail:  %v", err)
+		return err
+	}
+
 	if err := HostManager.ClearSchedDescCache(self.Id); err != nil {
 		log.Errorf("ClearSchedDescCache for host %s error %v", self.Name, err)
 	}
@@ -1751,6 +1777,131 @@ func (self *SHost) syncWithCloudPrepaidVM(extVM cloudprovider.ICloudVM, host *SH
 	}
 
 	return err
+}
+
+var (
+	METADATA_EXT_SCHEDTAG_KEY = "ext:schedtag"
+)
+
+func (s *SHost) getAllSchedtagsWithExtSchedtagKey(ctx context.Context, userCred mcclient.TokenCredential) (map[string]*SSchedtag, error) {
+	q := SchedtagManager.Query().Equals("resource_type", HostManager.KeywordPlural())
+	sts := make([]SSchedtag, 0, 5)
+	err := db.FetchModelObjects(SchedtagManager, q, &sts)
+	if err != nil {
+		return nil, err
+	}
+	stMap := make(map[string]*SSchedtag)
+	for i := range sts {
+		extTagName := sts[i].GetMetadata(METADATA_EXT_SCHEDTAG_KEY, userCred)
+		if len(extTagName) == 0 {
+			continue
+		}
+		stMap[extTagName] = &sts[i]
+	}
+	return stMap, nil
+}
+
+func (s *SHost) syncSchedtags(ctx context.Context, userCred mcclient.TokenCredential, extHost cloudprovider.ICloudHost) error {
+	stq := SchedtagManager.Query()
+	subq := HostschedtagManager.Query("schedtag_id").Equals("host_id", s.Id).SubQuery()
+	stq = stq.Join(subq, sqlchemy.Equals(stq.Field("id"), subq.Field("schedtag_id")))
+	schedtags := make([]SSchedtag, 0)
+	err := db.FetchModelObjects(SchedtagManager, stq, &schedtags)
+	if err != nil {
+		return errors.Wrap(err, "db.FetchModelObjects")
+	}
+	extSchedtagStrs, err := extHost.GetSchedtags()
+	if err != nil {
+		return errors.Wrap(err, "extHost.GetSchedtags")
+	}
+	extStStrSet := sets.NewString(extSchedtagStrs...)
+	removed := make([]*SSchedtag, 0)
+	removedIds := make([]string, 0)
+	for i := range schedtags {
+		stag := &schedtags[i]
+		extTagName := stag.GetMetadata(METADATA_EXT_SCHEDTAG_KEY, userCred)
+		if len(extTagName) == 0 {
+			continue
+		}
+		if !extStStrSet.Has(extTagName) {
+			removed = append(removed, stag)
+			removedIds = append(removedIds, stag.GetId())
+		} else {
+			extStStrSet.Delete(extTagName)
+		}
+	}
+	added := extStStrSet.UnsortedList()
+
+	var stagMap map[string]*SSchedtag
+	if len(added) > 0 {
+		stagMap, err = s.getAllSchedtagsWithExtSchedtagKey(ctx, userCred)
+		if err != nil {
+			return errors.Wrap(err, "getAllSchedtagsWithExtSchedtagKey")
+		}
+	}
+
+	for _, stStr := range added {
+		st, ok := stagMap[stStr]
+		if !ok {
+			st = &SSchedtag{
+				ResourceType: HostManager.KeywordPlural(),
+			}
+			st.DomainId = s.DomainId
+			st.Name = stStr
+			st.Description = "Sync from cloud"
+			err := SchedtagManager.TableSpec().Insert(ctx, st)
+			if err != nil {
+				return errors.Wrapf(err, "unable to create schedtag %q", stStr)
+			}
+			st.SetModelManager(SchedtagManager, st)
+			st.SetMetadata(ctx, METADATA_EXT_SCHEDTAG_KEY, stStr, userCred)
+		}
+		// attach
+		hostschedtag := &SHostschedtag{
+			HostId: s.GetId(),
+		}
+		hostschedtag.SchedtagId = st.GetId()
+		err = HostschedtagManager.TableSpec().Insert(ctx, hostschedtag)
+		if err != nil {
+			return errors.Wrapf(err, "unable to create hostschedtag for tag %q host %q", stStr, s.GetId())
+		}
+	}
+
+	if len(removedIds) == 0 {
+		return nil
+	}
+
+	q := HostschedtagManager.Query().Equals("host_id", s.GetId()).In("schedtag_id", removedIds)
+	hostschedtags := make([]SHostschedtag, 0, len(removedIds))
+	err = db.FetchModelObjects(HostschedtagManager, q, &hostschedtags)
+	if err != nil {
+		return errors.Wrap(err, "db.FetchModelObject")
+	}
+	for i := range hostschedtags {
+		err = hostschedtags[i].Detach(ctx, userCred)
+		if err != nil {
+			return errors.Wrapf(err, "unable to detach host %q and schedtag %q", hostschedtags[i].HostId, hostschedtags[i].SchedtagId)
+		}
+	}
+
+	// try to clean
+	for _, tag := range removed {
+		cnt, err := tag.GetObjectCount()
+		if err != nil {
+			log.Errorf("unable to GetObjectCount for schedtag %q: %v", tag.GetName(), err)
+			continue
+		}
+		if cnt > 0 {
+			continue
+		}
+		err = tag.Delete(ctx, userCred)
+		if err != nil {
+			log.Errorf("unable to delete schedtag %q: %v", tag.GetName(), err)
+			continue
+		}
+	}
+
+	return nil
 }
 
 func (manager *SHostManager) newFromCloudHost(ctx context.Context, userCred mcclient.TokenCredential, extHost cloudprovider.ICloudHost, provider *SCloudprovider, izone *SZone) (*SHost, error) {
@@ -1830,6 +1981,11 @@ func (manager *SHostManager) newFromCloudHost(ctx context.Context, userCred mccl
 	db.OpsLog.LogEvent(&host, db.ACT_CREATE, host.GetShortDesc(ctx), userCred)
 
 	SyncCloudDomain(userCred, &host, provider.GetOwnerId())
+
+	if err := host.syncSchedtags(ctx, userCred, extHost); err != nil {
+		log.Errorf("newFromCloudHost fail in syncSchedtags %v", err)
+		return nil, err
+	}
 
 	if provider != nil {
 		host.SyncShareState(ctx, userCred, provider.getAccountShareInfo())
@@ -2354,33 +2510,62 @@ func (manager *SHostManager) totalCountQ(
 		q = q.Filter(cond(hosts.Field("enabled")))
 	}
 	if !isBaremetal.IsNone() {
-		cond := sqlchemy.IsFalse
 		if isBaremetal.Bool() {
-			cond = sqlchemy.IsTrue
+			q = q.Filter(sqlchemy.AND(
+				sqlchemy.IsTrue(hosts.Field("is_baremetal")),
+				sqlchemy.Equals(hosts.Field("host_type"), api.HOST_TYPE_BAREMETAL),
+			))
+		} else {
+			q = q.Filter(sqlchemy.OR(
+				sqlchemy.IsFalse(hosts.Field("is_baremetal")),
+				sqlchemy.NotEquals(hosts.Field("host_type"), api.HOST_TYPE_BAREMETAL),
+			))
 		}
-		q = q.Filter(cond(hosts.Field("is_baremetal")))
 	}
+	isolatedDevices := IsolatedDeviceManager.Query().SubQuery()
+	iq := isolatedDevices.Query(
+		isolatedDevices.Field("host_id"),
+		sqlchemy.SUM("isolated_reserved_memory", isolatedDevices.Field("reserved_memory")),
+		sqlchemy.SUM("isolated_reserved_cpu", isolatedDevices.Field("reserved_cpu")),
+		sqlchemy.SUM("isolated_reserved_storage", isolatedDevices.Field("reserved_storage")),
+	).IsNullOrEmpty("guest_id").GroupBy(isolatedDevices.Field("host_id")).SubQuery()
+	q = q.LeftJoin(iq, sqlchemy.Equals(q.Field("id"), iq.Field("host_id")))
+	q.AppendField(
+		iq.Field("isolated_reserved_memory"),
+		iq.Field("isolated_reserved_cpu"),
+		iq.Field("isolated_reserved_storage"),
+	)
 	q = AttachUsageQuery(q, hosts, hostTypes, resourceTypes, providers, brands, cloudEnv, rangeObjs)
+	log.Debugf("hostCount: %s", q.String())
 	return q
 }
 
 type HostStat struct {
-	MemSize     int
-	MemReserved int
-	MemCmtbound float32
-	CpuCount    int
-	CpuReserved int
-	CpuCmtbound float32
-	StorageSize int
+	MemSize                 int
+	MemReserved             int
+	MemCmtbound             float32
+	CpuCount                int
+	CpuReserved             int
+	CpuCmtbound             float32
+	StorageSize             int
+	IsolatedReservedMemory  int64
+	IsolatedReservedCpu     int64
+	IsolatedReservedStorage int64
 }
 
 type HostsCountStat struct {
-	StorageSize   int64
-	Count         int64
-	Memory        int64
-	MemoryVirtual float64
-	CPU           int64
-	CPUVirtual    float64
+	StorageSize             int64
+	Count                   int64
+	Memory                  int64
+	MemoryTotal             int64
+	MemoryVirtual           float64
+	MemoryReserved          int64
+	CPU                     int64
+	CPUTotal                int64
+	CPUVirtual              float64
+	IsolatedReservedMemory  int64
+	IsolatedReservedCpu     int64
+	IsolatedReservedStorage int64
 }
 
 func (manager *SHostManager) calculateCount(q *sqlchemy.SQuery) HostsCountStat {
@@ -2394,12 +2579,19 @@ func (manager *SHostManager) calculateCount(q *sqlchemy.SQuery) HostsCountStat {
 		return aSize
 	}
 	var (
-		tStore int64   = 0
-		tCnt   int64   = 0
-		tMem   int64   = 0
-		tVmem  float64 = 0.0
-		tCPU   int64   = 0
-		tVCPU  float64 = 0.0
+		tStore  int64   = 0
+		tCnt    int64   = 0
+		tMem    int64   = 0
+		tVmem   float64 = 0.0
+		rMem    int64   = 0
+		tCPU    int64   = 0
+		tVCPU   float64 = 0.0
+		irMem   int64   = 0
+		irCpu   int64   = 0
+		irStore int64   = 0
+
+		totalMem int64 = 0
+		totalCPU int64 = 0
 	)
 	stats := make([]HostStat, 0)
 	err := q.All(&stats)
@@ -2417,23 +2609,35 @@ func (manager *SHostManager) calculateCount(q *sqlchemy.SQuery) HostsCountStat {
 		aMem := usableSize(stat.MemSize, stat.MemReserved)
 		aCpu := usableSize(int(stat.CpuCount), int(stat.CpuReserved))
 		tMem += int64(aMem)
+		totalMem += int64(stat.MemSize)
 		tCPU += int64(aCpu)
+		totalCPU += int64(stat.CpuCount)
 		if stat.MemCmtbound <= 0.0 {
 			stat.MemCmtbound = options.Options.DefaultMemoryOvercommitBound
 		}
 		if stat.CpuCmtbound <= 0.0 {
 			stat.CpuCmtbound = options.Options.DefaultCPUOvercommitBound
 		}
+		rMem += int64(stat.MemReserved)
 		tVmem += float64(float32(aMem) * stat.MemCmtbound)
 		tVCPU += float64(float32(aCpu) * stat.CpuCmtbound)
+		irMem += stat.IsolatedReservedMemory
+		irCpu += stat.IsolatedReservedCpu
+		irStore += stat.IsolatedReservedStorage
 	}
 	return HostsCountStat{
-		StorageSize:   tStore,
-		Count:         tCnt,
-		Memory:        tMem,
-		MemoryVirtual: tVmem,
-		CPU:           tCPU,
-		CPUVirtual:    tVCPU,
+		StorageSize:             tStore,
+		Count:                   tCnt,
+		Memory:                  tMem,
+		MemoryTotal:             totalMem,
+		MemoryVirtual:           tVmem,
+		MemoryReserved:          rMem,
+		CPU:                     tCPU,
+		CPUTotal:                totalCPU,
+		CPUVirtual:              tVCPU,
+		IsolatedReservedCpu:     irCpu,
+		IsolatedReservedMemory:  irMem,
+		IsolatedReservedStorage: irStore,
 	}
 }
 
@@ -2654,6 +2858,7 @@ func (self *SHost) getMoreDetails(ctx context.Context, out api.HostDetails, show
 	capa := self.GetAttachedLocalStorageCapacity()
 	out.Storage = capa.Capacity
 	out.StorageUsed = capa.Used
+	out.ActualStorageUsed = capa.ActualUsed
 	out.StorageWaste = capa.Wasted
 	out.StorageVirtual = capa.VCapacity
 	out.StorageFree = capa.GetFree()
@@ -2859,7 +3064,7 @@ func (self *SHost) PostCreate(
 			return nil
 		})
 		if err != nil {
-			log.Errorln(err.Error())
+			log.Errorf("save updates: %v", err)
 		} else if len(ipmiInfo.IpAddr) > 0 {
 			self.setIpmiIp(userCred, ipmiInfo.IpAddr)
 		}
@@ -2998,7 +3203,7 @@ func (manager *SHostManager) ValidateCreateData(
 ) (api.HostCreateInput, error) {
 	var err error
 
-	if len(input.Zone) > 0 {
+	if len(input.ZoneId) > 0 {
 		_, input.ZoneResourceInput, err = ValidateZoneResourceInput(userCred, input.ZoneResourceInput)
 		if err != nil {
 			return input, errors.Wrap(err, "ValidateZoneResourceInput")
@@ -3010,7 +3215,7 @@ func (manager *SHostManager) ValidateCreateData(
 		noProbe = *input.NoProbe
 	}
 
-	input.HostAccessAttributes, err = manager.inputUniquenessCheck(input.HostAccessAttributes, input.Zone, "")
+	input.HostAccessAttributes, err = manager.inputUniquenessCheck(input.HostAccessAttributes, input.ZoneId, "")
 	if err != nil {
 		return input, errors.Wrap(err, "manager.inputUniquenessCheck")
 	}
@@ -3061,11 +3266,11 @@ func (manager *SHostManager) ValidateCreateData(
 		if zoneObj == nil {
 			return input, httperrors.NewInputParameterError("IPMI network has no zone???")
 		}
-		originZoneId := input.Zone
+		originZoneId := input.ZoneId
 		if len(originZoneId) > 0 && originZoneId != zoneObj.GetId() {
 			return input, httperrors.NewInputParameterError("IPMI address located in different zone than specified")
 		}
-		input.Zone = zoneObj.GetId()
+		input.ZoneId = zoneObj.GetId()
 		// data.Set("zone_id", jsonutils.NewString(zoneObj.GetId()))
 	}
 	if !noProbe {
@@ -3128,7 +3333,7 @@ func (manager *SHostManager) ValidateCreateData(
 			if zoneObj == nil {
 				return input, httperrors.NewInputParameterError("Access network has no zone???")
 			}
-			originZoneId := input.Zone // data.GetString("zone_id")
+			originZoneId := input.ZoneId // data.GetString("zone_id")
 			if len(originZoneId) > 0 && originZoneId != zoneObj.GetId() {
 				return input, httperrors.NewInputParameterError("Access address located in different zone than specified")
 			}
@@ -3144,7 +3349,7 @@ func (manager *SHostManager) ValidateCreateData(
 			}
 
 			input.AccessIp = accessIp
-			input.Zone = zoneObj.GetId()
+			input.ZoneId = zoneObj.GetId()
 			// data.Set("access_ip", jsonutils.NewString(accessIp))
 			// data.Set("zone_id", jsonutils.NewString(zoneObj.GetId()))
 		}
@@ -3392,7 +3597,9 @@ func (self *SHost) PerformStop(ctx context.Context, userCred mcclient.TokenCrede
 				return nil, self.InitializedGuestStop(ctx, userCred, guest)
 			}
 			self.SetStatus(userCred, api.BAREMETAL_START_MAINTAIN, "")
-			return guest.PerformStop(ctx, userCred, query, data)
+			input := api.ServerStopInput{}
+			data.Unmarshal(&input)
+			return guest.PerformStop(ctx, userCred, query, input)
 		}
 	}
 	return nil, self.StartBaremetalUnmaintenanceTask(ctx, userCred, false, "stop")
@@ -3761,7 +3968,7 @@ func (self *SHost) PerformInitialize(
 	if err != nil || self.GetBaremetalServer() != nil {
 		return nil, nil
 	}
-	err = db.NewNameValidator(GuestManager, userCred, name, "")
+	err = db.NewNameValidator(GuestManager, userCred, name, nil)
 	if err != nil {
 		return nil, err
 	}
@@ -3983,13 +4190,13 @@ func (self *SHost) addNetif(ctx context.Context, userCred mcclient.TokenCredenti
 	if netif.NicType == api.NIC_TYPE_ADMIN {
 		err := self.setAccessMac(userCred, netif.Mac)
 		if err != nil {
-			return httperrors.NewBadRequestError(err.Error())
+			return httperrors.NewBadRequestError("%v", err)
 		}
 	}
 	if len(ipAddr) > 0 {
 		err = self.EnableNetif(ctx, userCred, netif, "", ipAddr, "", "", reserve, requireDesignatedIp)
 		if err != nil {
-			return httperrors.NewBadRequestError(err.Error())
+			return httperrors.NewBadRequestError("%v", err)
 		}
 	}
 	return nil
@@ -4020,7 +4227,7 @@ func (self *SHost) PerformEnableNetif(ctx context.Context, userCred mcclient.Tok
 	requireDesignatedIp := jsonutils.QueryBoolean(data, "require_designated_ip", false)
 	err := self.EnableNetif(ctx, userCred, netif, network, ipAddr, allocDir, netType, reserve, requireDesignatedIp)
 	if err != nil {
-		return nil, httperrors.NewBadRequestError(err.Error())
+		return nil, httperrors.NewBadRequestError("%v", err)
 	}
 	return nil, nil
 }
@@ -4086,7 +4293,7 @@ func (self *SHost) EnableNetif(ctx context.Context, userCred mcclient.TokenCrede
 				return fmt.Errorf("fail to find private network %s", err)
 			}
 			if net == nil {
-				net, err = wire.GetCandidatePublicNetwork(userCred, NetworkManager.AllowScope(userCred), false, netTypes)
+				net, err = wire.GetCandidateAutoAllocNetwork(userCred, NetworkManager.AllowScope(userCred), false, netTypes)
 				if err != nil {
 					return fmt.Errorf("fail to find public network %s", err)
 				}
@@ -4127,7 +4334,7 @@ func (self *SHost) PerformDisableNetif(ctx context.Context, userCred mcclient.To
 	reserve := jsonutils.QueryBoolean(data, "reserve", false)
 	err := self.DisableNetif(ctx, userCred, netif, reserve)
 	if err != nil {
-		return nil, httperrors.NewBadRequestError(err.Error())
+		return nil, httperrors.NewBadRequestError("%v", err)
 	}
 	return nil, nil
 }
@@ -4457,8 +4664,8 @@ func (self *SHost) PerformConvertHypervisor(ctx context.Context, userCred mcclie
 		return nil, httperrors.NewNotAcceptableError("Convert error: %s", err.Error())
 	}
 	// admin delegate user to create system resource
-	input.ProjectDomain = ownerId.GetProjectDomainId()
-	input.Project = ownerId.GetProjectId()
+	input.ProjectDomainId = ownerId.GetProjectDomainId()
+	input.ProjectId = ownerId.GetProjectId()
 	params := input.JSON(input)
 	adminCred := auth.AdminCredential()
 	guest, err := db.DoCreate(GuestManager, ctx, adminCred, nil, params, ownerId)
@@ -4516,7 +4723,7 @@ func (self *SHost) PerformUndoConvert(ctx context.Context, userCred mcclient.Tok
 	}
 	err := driver.PrepareUnconvert(self)
 	if err != nil {
-		return nil, httperrors.NewNotAcceptableError(err.Error())
+		return nil, httperrors.NewNotAcceptableError("%v", err)
 	}
 	guests := self.GetGuests()
 	if len(guests) > 1 {
@@ -4905,15 +5112,16 @@ func (host *SHost) PerformHostMaintenance(ctx context.Context, userCred mcclient
 	var preferHostId string
 	preferHost, _ := data.GetString("prefer_host")
 	if len(preferHost) > 0 {
-		if !db.IsAdminAllowPerform(userCred, host, "assign-host") {
-			return nil, httperrors.NewBadRequestError("Only system admin can assign host")
-		}
 		iHost, _ := HostManager.FetchByIdOrName(userCred, preferHost)
 		if iHost == nil {
 			return nil, httperrors.NewBadRequestError("Host %s not found", preferHost)
 		}
 		host := iHost.(*SHost)
 		preferHostId = host.Id
+		err := host.IsAssignable(userCred)
+		if err != nil {
+			return nil, errors.Wrap(err, "IsAssignable")
+		}
 	}
 
 	guests := host.GetKvmGuests()
@@ -5305,10 +5513,10 @@ func (host *SHost) GetChangeOwnerRequiredDomainIds() []string {
 }
 
 func GetHostQuotaKeysFromCreateInput(input api.HostCreateInput) quotas.SDomainRegionalCloudResourceKeys {
-	ownerId := &db.SOwnerId{DomainId: input.ProjectDomain}
+	ownerId := &db.SOwnerId{DomainId: input.ProjectDomainId}
 	var zone *SZone
-	if len(input.Zone) > 0 {
-		zone = ZoneManager.FetchZoneById(input.Zone)
+	if len(input.ZoneId) > 0 {
+		zone = ZoneManager.FetchZoneById(input.ZoneId)
 	}
 	zoneKeys := fetchZonalQuotaKeys(rbacutils.ScopeDomain, ownerId, zone, nil)
 	keys := quotas.SDomainRegionalCloudResourceKeys{}
@@ -5400,7 +5608,7 @@ func (host *SHost) PerformSetReservedResourceForIsolatedDevice(
 	caps := host.GetAttachedLocalStorageCapacity()
 	if input.ReservedStorage != nil && caps.Capacity < int64(*input.ReservedStorage*len(devs)) {
 		return nil, httperrors.NewBadRequestError(
-			"host %s can't reserve %dM storage for each isolated device, not enough")
+			"host %s can't reserve %dM storage for each isolated device, not enough", host.Name, input.ReservedStorage)
 	}
 	defer func() {
 		go host.ClearSchedDescCache()
@@ -5458,5 +5666,18 @@ func (manager *SHostManager) FetchHostByExtId(extid string) *SHost {
 		return nil
 	} else {
 		return &host
+	}
+}
+
+func (host *SHost) IsAssignable(userCred mcclient.TokenCredential) error {
+	if db.IsAdminAllowPerform(userCred, host, "assign-host") {
+		return nil
+	} else if db.IsDomainAllowPerform(userCred, host, "assign-host") &&
+		(userCred.GetProjectDomainId() == host.DomainId ||
+			host.PublicScope == string(rbacutils.ScopeSystem) ||
+			(host.PublicScope == string(rbacutils.ScopeDomain) && utils.IsInStringArray(userCred.GetProjectDomainId(), host.GetSharedDomains()))) {
+		return nil
+	} else {
+		return httperrors.NewNotSufficientPrivilegeError("Only system admin can assign host")
 	}
 }

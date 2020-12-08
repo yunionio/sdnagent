@@ -68,6 +68,8 @@ type SHoststorage struct {
 
 	// 挂载点
 	MountPoint string `width:"256" charset:"ascii" nullable:"false" list:"domain" update:"domain" create:"required" json:"mount_point"`
+	// 是否是根分区
+	IsRootPartition bool `nullable:"true" default:"false" list:"domain" update:"domain" create:"optional"`
 
 	// 配置信息
 	Config *jsonutils.JSONArray `nullable:"true" get:"domain" json:"config"`
@@ -81,14 +83,6 @@ func (manager *SHoststorageManager) GetMasterFieldName() string {
 
 func (manager *SHoststorageManager) GetSlaveFieldName() string {
 	return "storage_id"
-}
-
-func (joint *SHoststorage) Master() db.IStandaloneModel {
-	return db.JointMaster(joint)
-}
-
-func (joint *SHoststorage) Slave() db.IStandaloneModel {
-	return db.JointSlave(joint)
 }
 
 func (self *SHoststorage) GetExtraDetails(
@@ -203,8 +197,8 @@ func (self *SHoststorage) syncLocalStorageShare(ctx context.Context, userCred mc
 			}
 		} else {
 			input := apis.PerformPublicDomainInput{
-				Scope:         string(shareInfo.PublicScope),
-				SharedDomains: shareInfo.SharedDomains,
+				Scope:           string(shareInfo.PublicScope),
+				SharedDomainIds: shareInfo.SharedDomains,
 			}
 			_, err := storage.performPublicInternal(ctx, userCred, nil, input)
 			if err != nil {

@@ -17,7 +17,6 @@ package server
 import (
 	"context"
 	"fmt"
-	"os/exec"
 	"strings"
 	"sync"
 	"time"
@@ -133,7 +132,7 @@ func (man *ovnMan) ensureMappedBridge(ctx context.Context) error {
 			"--", "--may-exist", "add-br", man.mappedBridge(),
 			"--", "set", "Bridge", man.mappedBridge(), fmt.Sprintf("other-config:hwaddr=%s", man.mac),
 		}
-		if err := man.exec(ctx, args); err != nil {
+		if err := utils.RunOvsctl(ctx, args); err != nil {
 			return errors.Wrap(err, "ovn: ensure mapped bridge")
 		}
 	}
@@ -208,33 +207,8 @@ func (man *ovnMan) ensureMappedBridgeVpcPort(ctx context.Context, vpcId string) 
 		"--", "--may-exist", "add-port", man.integrationBridge(), peer,
 		"--", "set", "Interface", peer, "type=patch", fmt.Sprintf("options:peer=%s", mine), fmt.Sprintf("external_ids:iface-id=%s", ifaceId),
 	}
-	if err := man.exec(ctx, args); err != nil {
+	if err := utils.RunOvsctl(ctx, args); err != nil {
 		return errors.Wrapf(err, "ovn: ensure port: vpc %s", vpcId)
-	}
-	return nil
-}
-
-func (man *ovnMan) exec(ctx context.Context, args []string) error {
-	if len(args) == 0 {
-		panic("exec: empty args")
-	}
-	tos := func(args []string) string {
-		s := ""
-		for _, arg := range args {
-			if arg != "--" {
-				s += " " + arg
-			} else {
-				s += " \\\n  " + arg
-			}
-		}
-		return s
-	}
-	cmd := exec.CommandContext(ctx, args[0], args[1:]...)
-	_, err := cmd.Output()
-	if err != nil {
-		s := tos(args)
-		err = errors.Wrap(err, s)
-		return err
 	}
 	return nil
 }

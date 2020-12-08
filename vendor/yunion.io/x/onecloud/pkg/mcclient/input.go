@@ -69,14 +69,20 @@ type SAuthenticationInputV2 struct {
 }
 
 type SAuthenticationIdentity struct {
+	// ID of identity provider, optional
+	// required:false
+	Id string `json:"id,omitempty"`
 	// 认证方式列表，支持认证方式如下：
 	//
 	// | method   | 说明                                                                |
 	// |----------|--------------------------------------------------------------------|
 	// | password | 用户名密码认证                                                       |
-	// | token    | token认证，已经通过其他方式获得token之后，可以用旧的token认证获得新的token |
+	// | token    | token认证，已经通过其他方式获得token之后，可以用旧的token认证获得新的token   |
 	// | aksk     | Access Key/Secret key认证                                           |
-	// | cas      | 通过SSO统一认证平台CAS认证                                            |
+	// | cas      | 通过SSO统一认证平台CAS认证                                             |
+	// | saml     | 作为SAML 2.0 SP通过IDP认证                                            |
+	// | oidc     | 作为OpenID Connect/OAuth2 Client认证                                 |
+	// | oauth2   | OAuth2认证                                                          |
 	//
 	Methods []string `json:"methods,omitempty"`
 	// 当认证方式为password时，通过该字段提供密码认证信息
@@ -108,8 +114,20 @@ type SAuthenticationIdentity struct {
 	// 当认证方式为cas时，通过该字段提供CAS认证的ID
 	// required:false
 	CASTicket struct {
-		Id string `json:"id,omitempty"`
+		Id      string `json:"id,omitempty"`
+		Service string `json:"service,omitempty"`
 	} `json:"cas_ticket,omitempty"`
+	// 当认证方式为saml时，通过该字段提供SAML认证的Response信息
+	SAMLAuth struct {
+		Response string `json:"response,omitempty"`
+	} `json:"saml_auth,omitempty"`
+	OIDCAuth struct {
+		Code        string `json:"code,omitempty"`
+		RedirectUri string `json:"redirect_uri,omitempty"`
+	} `json:"oidc_auth,omitempty"`
+	OAuth2 struct {
+		Code string `json:"code,omitempty"`
+	}
 }
 
 type SAuthenticationInputV3 struct {

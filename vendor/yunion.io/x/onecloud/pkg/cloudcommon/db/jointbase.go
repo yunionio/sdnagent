@@ -107,11 +107,11 @@ func (manager *SJointResourceBaseManager) AllowAttach(ctx context.Context, userC
 
 func JointModelExtra(jointModel IJointModel) (string, string) {
 	masterName, slaveName := "", ""
-	master := jointModel.Master()
+	master := JointMaster(jointModel)
 	if master != nil {
 		masterName = master.GetName()
 	}
-	slave := jointModel.Slave()
+	slave := JointSlave(jointModel)
 	if slave != nil {
 		slaveName = slave.GetName()
 	}
@@ -122,30 +122,34 @@ func (joint *SJointResourceBase) GetJointModelManager() IJointModelManager {
 	return joint.SResourceBase.GetModelManager().(IJointModelManager)
 }
 
-func getFieldValue(joint IJointModel, keyword string, alias string) string {
+func getFieldValue(joint IJointModel, keyword string, alias string, fieldIdKey string) string {
 	jointValue := reflect.Indirect(reflect.ValueOf(joint))
-	idStr, ok := reflectutils.FindStructFieldInterface(jointValue, fmt.Sprintf("%s_id", keyword))
-	if ok {
-		return idStr.(string)
-	}
-	idStr, ok = reflectutils.FindStructFieldInterface(jointValue, fmt.Sprintf("%s_id", alias))
-	if ok {
-		return idStr.(string)
+	for _, valKey := range []string{
+		fmt.Sprintf("%s_id", keyword),
+		fmt.Sprintf("%s_id", alias),
+		fieldIdKey,
+	} {
+		idStr, ok := reflectutils.FindStructFieldInterface(jointValue, valKey)
+		if ok {
+			return idStr.(string)
+		}
 	}
 	return ""
 }
 
-func JointMasterID(joint IJointModel) string { // need override
-	masterMan := joint.GetJointModelManager().GetMasterManager()
-	return getFieldValue(joint, masterMan.Keyword(), masterMan.Alias())
+func JointMasterID(joint IJointModel) string {
+	jointMan := joint.GetJointModelManager()
+	masterMan := jointMan.GetMasterManager()
+	return getFieldValue(joint, masterMan.Keyword(), masterMan.Alias(), jointMan.GetMasterFieldName())
 }
 
-func JointSlaveID(joint IJointModel) string { // need override
-	slaveMan := joint.GetJointModelManager().GetSlaveManager()
-	return getFieldValue(joint, slaveMan.Keyword(), slaveMan.Alias())
+func JointSlaveID(joint IJointModel) string {
+	jointMan := joint.GetJointModelManager()
+	slaveMan := jointMan.GetSlaveManager()
+	return getFieldValue(joint, slaveMan.Keyword(), slaveMan.Alias(), jointMan.GetSlaveFieldName())
 }
 
-func JointMaster(joint IJointModel) IStandaloneModel { // need override
+func JointMaster(joint IJointModel) IStandaloneModel {
 	masterMan := joint.GetJointModelManager().GetMasterManager()
 	masterId := JointMasterID(joint)
 	//log.Debugf("MasterID: %s %s", masterId, masterMan.KeywordPlural())
@@ -158,7 +162,7 @@ func JointMaster(joint IJointModel) IStandaloneModel { // need override
 	return nil
 }
 
-func JointSlave(joint IJointModel) IStandaloneModel { // need override
+func JointSlave(joint IJointModel) IStandaloneModel {
 	slaveMan := joint.GetJointModelManager().GetSlaveManager()
 	slaveId := JointSlaveID(joint)
 	//log.Debugf("SlaveID: %s %s", slaveId, slaveMan.KeywordPlural())
@@ -175,16 +179,8 @@ func (joint *SJointResourceBase) GetIJointModel() IJointModel {
 	return joint.GetVirtualObject().(IJointModel)
 }
 
-func (joint *SJointResourceBase) Master() IStandaloneModel {
-	return nil
-}
-
-func (joint *SJointResourceBase) Slave() IStandaloneModel {
-	return nil
-}
-
 func (self *SJointResourceBase) AllowGetJointDetails(ctx context.Context, userCred mcclient.TokenCredential, query jsonutils.JSONObject, item IJointModel) bool {
-	master := item.Master()
+	master := JointMaster(item)
 	switch master.(type) {
 	case IVirtualModel:
 		return master.(IVirtualModel).IsOwner(userCred) || IsAllowGet(rbacutils.ScopeSystem, userCred, master)
@@ -194,7 +190,7 @@ func (self *SJointResourceBase) AllowGetJointDetails(ctx context.Context, userCr
 }
 
 func (self *SJointResourceBase) AllowUpdateJointItem(ctx context.Context, userCred mcclient.TokenCredential, item IJointModel) bool {
-	master := item.Master()
+	master := JointMaster(item)
 	switch master.(type) {
 	case IVirtualModel:
 		return master.(IVirtualModel).IsOwner(userCred) || IsAllowUpdate(rbacutils.ScopeSystem, userCred, master)

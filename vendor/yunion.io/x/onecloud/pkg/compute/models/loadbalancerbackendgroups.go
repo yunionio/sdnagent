@@ -203,10 +203,10 @@ func (man *SLoadbalancerBackendGroupManager) ValidateCreateData(ctx context.Cont
 				backends[i].BackendType = api.LB_BACKEND_GUEST
 			}
 			if backends[i].Weight < 0 || backends[i].Weight > 256 {
-				return nil, httperrors.NewInputParameterError("weight %s not support, only support range 0 ~ 256")
+				return nil, httperrors.NewInputParameterError("weight %d not support, only support range 0 ~ 256", backends[i].Weight)
 			}
 			if backends[i].Port < 1 || backends[i].Port > 65535 {
-				return nil, httperrors.NewInputParameterError("port %s not support, only support range 1 ~ 65535")
+				return nil, httperrors.NewInputParameterError("port %d not support, only support range 1 ~ 65535", backends[i].Port)
 			}
 			if len(backends[i].ID) == 0 {
 				return nil, httperrors.NewMissingParameterError("Missing backend id")
@@ -535,6 +535,15 @@ func (lbbg *SLoadbalancerBackendGroup) StartAwsLoadBalancerBackendGroupCreateTas
 	return nil
 }
 
+func (lbbg *SLoadbalancerBackendGroup) StartOpenstackLoadBalancerBackendGroupCreateTask(ctx context.Context, userCred mcclient.TokenCredential, params *jsonutils.JSONDict, parentTaskId string) error {
+	task, err := taskman.TaskManager.NewTask(ctx, "OpenstackLoadbalancerLoadbalancerBackendGroupCreateTask", lbbg, userCred, params, parentTaskId, "", nil)
+	if err != nil {
+		return err
+	}
+	task.ScheduleRun(nil)
+	return nil
+}
+
 func (lbbg *SLoadbalancerBackendGroup) LBPendingDelete(ctx context.Context, userCred mcclient.TokenCredential) {
 	if lb := lbbg.GetLoadbalancer(); lb != nil && lb.BackendGroupId == lbbg.Id {
 		if _, err := db.UpdateWithLock(ctx, lb, func() error {
@@ -756,6 +765,52 @@ func (lbbg *SLoadbalancerBackendGroup) GetQcloudBackendGroupParams(lblis *SLoadb
 	} else {
 		ret.ListenerID = lblis.GetExternalId()
 	}
+
+	return ret, nil
+}
+
+func (lbbg *SLoadbalancerBackendGroup) GetOpenstackBackendGroupParams(lblis *SLoadbalancerListener, lbr *SLoadbalancerListenerRule) (*cloudprovider.SLoadbalancerBackendGroup, error) {
+	ret, err := lbbg.GetBackendGroupParams()
+	if err != nil {
+		return nil, errors.Wrap(err, "lbbg.GetBackendGroupParams()")
+	}
+
+	var stickySession *cloudprovider.SLoadbalancerStickySession
+	if lblis.StickySession == api.LB_BOOL_ON {
+		stickySession = &cloudprovider.SLoadbalancerStickySession{
+			StickySession:              lblis.StickySession,
+			StickySessionCookie:        lblis.StickySessionCookie,
+			StickySessionType:          lblis.StickySessionType,
+			StickySessionCookieTimeout: lblis.StickySessionCookieTimeout,
+		}
+	}
+
+	var healthCheck *cloudprovider.SLoadbalancerHealthCheck
+	if lblis.HealthCheck == api.LB_BOOL_ON {
+		healthCheck = &cloudprovider.SLoadbalancerHealthCheck{
+			HealthCheckType:     lblis.HealthCheckType,
+			HealthCheckReq:      lblis.HealthCheckReq,
+			HealthCheckExp:      lblis.HealthCheckExp,
+			HealthCheck:         lblis.HealthCheck,
+			HealthCheckTimeout:  lblis.HealthCheckTimeout,
+			HealthCheckDomain:   lblis.HealthCheckDomain,
+			HealthCheckHttpCode: lblis.HealthCheckHttpCode,
+			HealthCheckURI:      lblis.HealthCheckURI,
+			HealthCheckInterval: lblis.HealthCheckInterval,
+			HealthCheckRise:     lblis.HealthCheckRise,
+			HealthCheckFail:     lblis.HealthCheckFall,
+		}
+	}
+
+	if lbr != nil {
+		ret.ListenerID = lbr.GetExternalId()
+	} else {
+		ret.ListenerID = lblis.GetExternalId()
+	}
+	ret.ListenType = lblis.ListenerType
+	ret.Scheduler = lblis.Scheduler
+	ret.StickySession = stickySession
+	ret.HealthCheck = healthCheck
 
 	return ret, nil
 }

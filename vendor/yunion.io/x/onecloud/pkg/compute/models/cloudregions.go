@@ -34,6 +34,7 @@ import (
 	"yunion.io/x/onecloud/pkg/compute/options"
 	"yunion.io/x/onecloud/pkg/httperrors"
 	"yunion.io/x/onecloud/pkg/mcclient"
+	"yunion.io/x/onecloud/pkg/util/rbacutils"
 	"yunion.io/x/onecloud/pkg/util/stringutils2"
 )
 
@@ -479,6 +480,7 @@ func (self *SCloudregion) syncWithCloudRegion(ctx context.Context, userCred mccl
 		self.SGeographicInfo = cloudRegion.GetGeographicInfo()
 		self.Provider = cloudRegion.GetProvider()
 		self.Environment = cloudRegion.GetCloudEnv()
+		self.SetEnabled(true)
 
 		self.IsEmulated = cloudRegion.IsEmulated()
 
@@ -741,12 +743,12 @@ func (manager *SCloudregionManager) ListItemFilter(
 		}
 	}
 
-	managerStr := query.Cloudprovider
+	managerStr := query.CloudproviderId
 	if len(managerStr) > 0 {
 		subq := CloudproviderRegionManager.QueryRelatedRegionIds(nil, managerStr)
 		q = q.In("id", subq)
 	}
-	accountArr := query.Cloudaccount
+	accountArr := query.CloudaccountId
 	if len(accountArr) > 0 {
 		subq := CloudproviderRegionManager.QueryRelatedRegionIds(accountArr)
 		q = q.In("id", subq)
@@ -906,7 +908,7 @@ func (self *SCloudregion) GetDetailsCapability(ctx context.Context, userCred mcc
 }
 
 func (self *SCloudregion) GetNetworkCount() (int, error) {
-	return getNetworkCount(self, nil, "")
+	return getNetworkCount(nil, rbacutils.ScopeSystem, self, nil)
 }
 
 func (self *SCloudregion) getMinNicCount() int {
@@ -934,4 +936,37 @@ func (manager *SCloudregionManager) FetchDefaultRegion() *SCloudregion {
 
 func (self *SCloudregion) GetCloudEnv() string {
 	return cloudprovider.GetProviderCloudEnv(self.Provider)
+}
+
+func (self *SCloudregion) GetSchedtags() []SSchedtag {
+	return GetSchedtags(CloudregionschedtagManager, self.Id)
+}
+
+func (self *SCloudregion) GetDynamicConditionInput() *jsonutils.JSONDict {
+	return jsonutils.Marshal(self).(*jsonutils.JSONDict)
+}
+
+func (self *SCloudregion) AllowPerformSetSchedtag(ctx context.Context, userCred mcclient.TokenCredential, query jsonutils.JSONObject, data jsonutils.JSONObject) bool {
+	return AllowPerformSetResourceSchedtag(self, ctx, userCred, query, data)
+}
+
+func (self *SCloudregion) PerformSetSchedtag(ctx context.Context, userCred mcclient.TokenCredential, query jsonutils.JSONObject, data jsonutils.JSONObject) (jsonutils.JSONObject, error) {
+	return PerformSetResourceSchedtag(self, ctx, userCred, query, data)
+}
+
+func (self *SCloudregion) GetSchedtagJointManager() ISchedtagJointManager {
+	return CloudregionschedtagManager
+}
+
+func (self *SCloudregion) ClearSchedDescCache() error {
+	zones, err := self.GetZones()
+	if err != nil {
+		return errors.Wrap(err, "get zones")
+	}
+	for i := range zones {
+		if err := zones[i].ClearSchedDescCache(); err != nil {
+			return errors.Wrapf(err, "clean zone %s sched cache", zones[i].GetName())
+		}
+	}
+	return nil
 }

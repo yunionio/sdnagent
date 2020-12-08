@@ -25,7 +25,9 @@ import (
 
 	"github.com/fsnotify/fsnotify"
 
+	"yunion.io/x/jsonutils"
 	"yunion.io/x/log"
+
 	"yunion.io/x/sdnagent/pkg/agent/utils"
 )
 
@@ -36,15 +38,36 @@ type pendingGuest struct {
 	firstSeen time.Time
 }
 
+type wCmd int
+
+const (
+	wCmdFindGuestDescByIdIP wCmd = iota
+)
+
+type wCmdFindGuestDescByIdIPData struct {
+	NetId  string
+	IP     string
+	RespCh chan<- jsonutils.JSONObject
+}
+
+type wCmdReq struct {
+	cmd  wCmd
+	data interface{}
+}
+
 type serversWatcher struct {
-	agent      *AgentServer
-	tcMan      *TcMan
-	ovnMan     *ovnMan
+	agent    *AgentServer
+	tcMan    *TcMan
+	ovnMan   *ovnMan
+	ovnMdMan *ovnMdMan
+
 	hostConfig *utils.HostConfig
 	watcher    *fsnotify.Watcher
 	hostLocal  *HostLocal
 	guests     map[string]*Guest
 	zoneMan    *utils.ZoneMan
+
+	cmdCh chan wCmdReq
 }
 
 func newServersWatcher() (*serversWatcher, error) {
@@ -52,8 +75,11 @@ func newServersWatcher() (*serversWatcher, error) {
 		guests:  map[string]*Guest{},
 		zoneMan: utils.NewZoneMan(GuestCtZoneBase),
 		tcMan:   NewTcMan(),
+
+		cmdCh: make(chan wCmdReq),
 	}
 	w.ovnMan = newOvnMan(w)
+	w.ovnMdMan = newOvnMdMan(w)
 	return w, nil
 }
 
@@ -160,6 +186,9 @@ func (w *serversWatcher) Start(ctx context.Context, agent *AgentServer) {
 	wg.Add(1)
 	go w.ovnMan.Start(ctx)
 
+	wg.Add(1)
+	go w.ovnMdMan.Start(ctx)
+
 	// init scan
 	w.hostLocal = NewHostLocal(w)
 	w.withWait(ctx, func(ctx context.Context) {
@@ -235,12 +264,48 @@ func (w *serversWatcher) Start(ctx context.Context, agent *AgentServer) {
 			// fail fast and recover fresh
 			panic("watcher error: %s" + err.Error())
 			return
+		case cmd := <-w.cmdCh:
+			switch cmd.cmd {
+			case wCmdFindGuestDescByIdIP:
+				var (
+					data  = cmd.data.(wCmdFindGuestDescByIdIPData)
+					netId = data.NetId
+					ip    = data.IP
+					robj  jsonutils.JSONObject
+				)
+				for guestId, guest := range w.guests {
+					if nic := guest.FindNicByNetIdIP(netId, ip); nic != nil {
+						obj, err := guest.GetJSONObjectDesc()
+						if err != nil {
+							log.Errorf("guest %s: GetJSONObjectDesc: %v", guestId, err)
+						}
+						robj = obj
+					}
+				}
+				data.RespCh <- robj
+			}
 		case <-ctx.Done():
 			log.Infof("watcher bye")
 			goto out
 		}
 	}
 out:
+}
+
+func (w *serversWatcher) FindGuestDescByNetIdIP(netId, ip string) jsonutils.JSONObject {
+	respCh := make(chan jsonutils.JSONObject)
+	reqData := wCmdFindGuestDescByIdIPData{
+		NetId:  netId,
+		IP:     ip,
+		RespCh: respCh,
+	}
+	req := wCmdReq{
+		cmd:  wCmdFindGuestDescByIdIP,
+		data: reqData,
+	}
+	w.cmdCh <- req
+	obj := <-respCh
+	return obj
 }
 
 func (w *serversWatcher) watchEvent(ev *fsnotify.Event) (wev *watchEvent) {

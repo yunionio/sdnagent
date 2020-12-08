@@ -76,6 +76,84 @@ type SBucketAccessUrl struct {
 	Primary     bool
 }
 
+type SBucketWebsiteRoutingRule struct {
+	ConditionErrorCode string
+	ConditionPrefix    string
+
+	RedirectProtocol         string
+	RedirectReplaceKey       string
+	RedirectReplaceKeyPrefix string
+}
+
+type SBucketWebsiteConf struct {
+	// 主页
+	Index string
+	// 错误时返回的文档
+	ErrorDocument string
+	// http或https
+	Protocol string
+
+	Rules []SBucketWebsiteRoutingRule
+	// 网站访问url,一般由bucketid，region等组成
+	Url string
+}
+
+type SBucketCORSRule struct {
+	AllowedMethods []string
+	// 允许的源站，可以设为*
+	AllowedOrigins []string
+	AllowedHeaders []string
+	MaxAgeSeconds  int
+	ExposeHeaders  []string
+	// 规则区别标识
+	Id string
+}
+
+type SBucketRefererConf struct {
+	// 白名单域名列表
+	WhiteList []string
+	// 黑名单域名列表
+	BlackList []string
+	// 是否允许空referer 访问
+	AllowEmptyRefer bool
+}
+
+type SBucketPolicyStatement struct {
+	// 授权的目标主体
+	Principal map[string][]string `json:"Principal,omitempty"`
+	// 授权的行为
+	Action []string `json:"Action,omitempty"`
+	// Allow|Deny
+	Effect string `json:"Effect,omitempty"`
+	// 被授权的资源
+	Resource []string `json:"Resource,omitempty"`
+	// 触发授权的条件
+	Condition map[string]map[string]interface{} `json:"Condition,omitempty"`
+
+	// 解析字段，主账号id:子账号id
+	PrincipalId []string
+	// Read|ReadWrite|FullControl
+	CannedAction string
+	// 资源路径
+	ResourcePath []string
+	// 根据index 生成
+	Id string
+}
+
+type SBucketPolicyStatementInput struct {
+	// 主账号id:子账号id
+	PrincipalId []string
+	// Read|ReadWrite|FullControl
+	CannedAction string
+	// Allow|Deny
+	Effect string
+	// 被授权的资源地址,/*
+	ResourcePath []string
+	// ip 条件
+	IpEquals    []string
+	IpNotEquals []string
+}
+
 type SBaseCloudObject struct {
 	Key          string
 	SizeBytes    int64
@@ -165,6 +243,23 @@ type ICloudBucket interface {
 	CopyPart(ctx context.Context, key string, uploadId string, partIndex int, srcBucketName string, srcKey string, srcOffset int64, srcLength int64) (string, error)
 	CompleteMultipartUpload(ctx context.Context, key string, uploadId string, partEtags []string) error
 	AbortMultipartUpload(ctx context.Context, key string, uploadId string) error
+
+	SetWebsite(conf SBucketWebsiteConf) error
+	GetWebsiteConf() (SBucketWebsiteConf, error)
+	DeleteWebSiteConf() error
+
+	SetCORS(rules []SBucketCORSRule) error
+	GetCORSRules() ([]SBucketCORSRule, error)
+	DeleteCORS() error
+
+	SetReferer(conf SBucketRefererConf) error
+	GetReferer() (SBucketRefererConf, error)
+
+	GetCdnDomains() ([]SCdnDomain, error)
+
+	GetPolicy() ([]SBucketPolicyStatement, error)
+	SetPolicy(policy SBucketPolicyStatementInput) error
+	DeletePolicy(id []string) ([]SBucketPolicyStatement, error)
 }
 
 type ICloudObject interface {
@@ -642,4 +737,88 @@ func FetchMetaFromHttpHeader(metaPrefix string, headers http.Header) http.Header
 		}
 	}
 	return meta
+}
+
+func SetBucketCORS(ibucket ICloudBucket, rules []SBucketCORSRule) error {
+	if len(rules) == 0 {
+		return nil
+	}
+
+	oldRules, err := ibucket.GetCORSRules()
+	if err != nil {
+		return errors.Wrap(err, "ibucket.GetCORSRules()")
+	}
+
+	newSet := []SBucketCORSRule{}
+	updateSet := map[int]SBucketCORSRule{}
+	for i := range rules {
+		index, err := strconv.Atoi(rules[i].Id)
+		if err == nil && index < len(oldRules) {
+			updateSet[index] = rules[i]
+		} else {
+			newSet = append(newSet, rules[i])
+		}
+	}
+
+	updatedRules := []SBucketCORSRule{}
+	for i := range oldRules {
+		if _, ok := updateSet[i]; !ok {
+			updatedRules = append(updatedRules, oldRules[i])
+		} else {
+			updatedRules = append(updatedRules, updateSet[i])
+		}
+	}
+	updatedRules = append(updatedRules, newSet...)
+
+	err = ibucket.SetCORS(updatedRules)
+	if err != nil {
+		return errors.Wrap(err, "ibucket.SetCORS(updatedRules)")
+	}
+	return nil
+}
+
+func DeleteBucketCORS(ibucket ICloudBucket, id []string) ([]SBucketCORSRule, error) {
+	if len(id) == 0 {
+		return nil, nil
+	}
+	deletedRules := []SBucketCORSRule{}
+
+	oldRules, err := ibucket.GetCORSRules()
+	if err != nil {
+		return nil, errors.Wrap(err, "ibucket.GetCORSRules()")
+	}
+
+	excludeMap := map[int]bool{}
+	for i := range id {
+		index, err := strconv.Atoi(id[i])
+		if err == nil && index < len(oldRules) {
+			excludeMap[index] = true
+		}
+	}
+	if len(excludeMap) == 0 {
+		return nil, nil
+	}
+
+	newRules := []SBucketCORSRule{}
+	for i := range oldRules {
+		if _, ok := excludeMap[i]; !ok {
+			newRules = append(newRules, oldRules[i])
+		} else {
+			deletedRules = append(deletedRules, oldRules[i])
+		}
+	}
+
+	if len(newRules) == 0 {
+		err = ibucket.DeleteCORS()
+		if err != nil {
+			return nil, errors.Wrapf(err, "ibucket.DeleteCORS()")
+		}
+	} else {
+		err = ibucket.SetCORS(newRules)
+		if err != nil {
+			return nil, errors.Wrapf(err, "ibucket.SetBucketCORS(newRules)")
+		}
+	}
+
+	return deletedRules, nil
 }
