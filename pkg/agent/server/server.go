@@ -16,15 +16,8 @@ package server
 
 import (
 	"context"
-	"net"
 	"sync"
 
-	"google.golang.org/grpc"
-	"google.golang.org/grpc/reflection"
-
-	"yunion.io/x/log"
-	"yunion.io/x/sdnagent/pkg/agent/common"
-	pb "yunion.io/x/sdnagent/pkg/agent/proto"
 	"yunion.io/x/sdnagent/pkg/agent/utils"
 )
 
@@ -38,8 +31,6 @@ type AgentServer struct {
 	ctx        context.Context
 	ctxCancel  context.CancelFunc
 	hostConfig *utils.HostConfig
-
-	rpcServer *grpc.Server
 }
 
 func (s *AgentServer) GetFlowMan(bridge string) *FlowMan {
@@ -74,29 +65,9 @@ func (s *AgentServer) Start(ctx context.Context) error {
 		watcher.agent = s
 		ifaceJanitor := newIfaceJanitor()
 
-		vSwitchService := newVSwitchService(s)
-		openflowService := newOpenflowService(s)
-		rpcServer := grpc.NewServer()
-		pb.RegisterVSwitchServer(rpcServer, vSwitchService)
-		pb.RegisterOpenflowServer(rpcServer, openflowService)
-		reflection.Register(rpcServer)
-		s.rpcServer = rpcServer
-
-		lis, err := net.Listen("unix", common.UnixSocketFile)
-		if err != nil {
-			log.Fatalf("listen %s failed: %s", common.UnixSocketFile, err)
-		}
-		defer lis.Close()
-
 		s.wg.Add(2)
 		go watcher.Start(s.ctx, s)
 		go ifaceJanitor.Start(s.ctx)
-		go func() {
-			err := rpcServer.Serve(lis)
-			if err != nil {
-				log.Warningf("rpc server serve returned: %v", err)
-			}
-		}()
 	}
 
 	if s.hostConfig.SdnEnableEipMan {
@@ -110,9 +81,6 @@ func (s *AgentServer) Start(ctx context.Context) error {
 
 func (s *AgentServer) Stop() {
 	s.once.Do(func() {
-		if s.rpcServer != nil {
-			s.rpcServer.GracefulStop()
-		}
 		s.ctxCancel()
 	})
 }

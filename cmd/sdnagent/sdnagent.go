@@ -24,7 +24,6 @@ import (
 	"yunion.io/x/log"
 	"yunion.io/x/pkg/errors"
 
-	"yunion.io/x/sdnagent/pkg/agent/common"
 	"yunion.io/x/sdnagent/pkg/agent/server"
 	"yunion.io/x/sdnagent/pkg/agent/utils"
 )
@@ -70,11 +69,6 @@ func main() {
 			return
 		}
 		defer UnlockPidFile(f)
-		err = os.Remove(common.UnixSocketFile)
-		if err != nil && !os.IsNotExist(err) {
-			log.Errorf("remove %s failed: %s", common.UnixSocketFile, err)
-			return
-		}
 	}
 
 	s := server.Server().HostConfig(hc)

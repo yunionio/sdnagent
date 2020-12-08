@@ -6,10 +6,8 @@ GO_TEST:=go test $(GO_BUILD_FLAGS)
 export GO111MODULE:=on
 
 sdnagent:=$(BINDIR)/sdnagent
-sdncli:=$(BINDIR)/sdncli
 bins:= \
 	$(sdnagent) \
-	$(sdncli)
 
 all: $(bins)
 
@@ -18,19 +16,8 @@ $(bins): | $(BINDIR)
 $(BINDIR):
 	mkdir -p $(BINDIR)
 
-$(sdncli):
-	$(GO_BUILD) -o $(BINDIR)/sdnagent yunion.io/x/sdnagent/cmd/sdnagent
-
 $(sdnagent):
-	$(GO_BUILD) -o $(BINDIR)/sdncli yunion.io/x/sdnagent/cmd/sdncli
-
-proto-gen: pkg/agent/proto/agent.pb.go
-
-pkg/agent/proto/agent.pb.go: pkg/agent/proto/agent.proto
-	protoc -I pkg/agent/proto pkg/agent/proto/agent.proto --go_out=plugins=grpc:pkg/agent/proto
-
-pkg/agent/proto/agent_pb2.py: pkg/agent/proto/agent.proto
-	python -m grpc_tools.protoc -Ipkg/agent/proto --python_out=pkg/agent/proto --grpc_python_out=pkg/agent/proto pkg/agent/proto/agent.proto
+	$(GO_BUILD) -o $(BINDIR)/$(notdir $@) yunion.io/x/sdnagent/cmd/$(notdir $@)
 
 mod:
 	GOPROXY=direct go get -v yunion.io/x/onecloud@master
@@ -42,8 +29,7 @@ test:
 	$(GO_TEST)  -v ./...
 
 rpm: $(bins)
-	EXTRA_BINS=sdncli \
-		 $(CURDIR)/build/build.sh sdnagent
+	$(CURDIR)/build/build.sh sdnagent
 
 REGISTRY ?= registry.cn-beijing.aliyuncs.com/yunionio
 VERSION ?= $(shell git describe --exact-match 2> /dev/null || \
