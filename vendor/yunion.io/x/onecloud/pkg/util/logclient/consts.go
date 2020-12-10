@@ -184,6 +184,7 @@ const (
 	ACT_PULL_SUBCONTACT   = "pull_subcontact"
 	ACT_SEND_NOTIFICATION = "send_notification"
 	ACT_SEND_VERIFICATION = "send_verification"
+	ACT_REPULL_SUBCONTACT = "repull_subcontact"
 
 	ACT_SYNC_VPCS        = "sync_vpcs"
 	ACT_SYNC_RECORD_SETS = "sync_record_sets"
@@ -194,4 +195,5 @@ const (
 	ACT_NETWORK_MODIFY_ROUTE = "network_modify_route"
 
 	ACT_UPDATE_RULE = "update_config"
+	ACT_UPDATE_TAGS = "update_tags"
 )

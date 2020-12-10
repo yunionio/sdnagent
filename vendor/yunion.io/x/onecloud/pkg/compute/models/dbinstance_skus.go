@@ -210,6 +210,9 @@ func (manager *SDBInstanceSkuManager) FetchCustomizeColumns(
 			EnabledStatusStandaloneResourceDetails: enableRows[i],
 			CloudregionResourceInfo:                regionRows[i],
 		}
+
+		rows[i].CloudEnv = strings.Split(regionRows[i].RegionExternalId, "/")[0]
+
 		sku := objs[i].(*SDBInstanceSku)
 		for _, zoneId := range []string{sku.Zone1, sku.Zone2, sku.Zone3} {
 			if _, ok := zoneIds[zoneId]; !ok {
@@ -652,4 +655,20 @@ func (self *SDBInstanceSku) GetZoneInfo() (cloudprovider.SZoneInfo, error) {
 	zoneInfo.Zone2, _ = cloudZoneId(self.Zone2)
 	zoneInfo.Zone3, _ = cloudZoneId(self.Zone3)
 	return zoneInfo, nil
+}
+
+func (manager *SDBInstanceSkuManager) AllowSyncSkus(ctx context.Context, userCred mcclient.TokenCredential, query jsonutils.JSONObject) bool {
+	return db.IsAdminAllowPerform(userCred, manager, "sync-skus")
+}
+
+func (manager *SDBInstanceSkuManager) PerformSyncSkus(ctx context.Context, userCred mcclient.TokenCredential, query jsonutils.JSONObject, input api.SkuSyncInput) (jsonutils.JSONObject, error) {
+	return PerformActionSyncSkus(ctx, userCred, manager.Keyword(), input)
+}
+
+func (manager *SDBInstanceSkuManager) AllowGetPropertySyncTasks(ctx context.Context, userCred mcclient.TokenCredential, query jsonutils.JSONObject) bool {
+	return db.IsAdminAllowGetSpec(userCred, manager, "sync-tasks")
+}
+
+func (manager *SDBInstanceSkuManager) GetPropertySyncTasks(ctx context.Context, userCred mcclient.TokenCredential, query api.SkuTaskQueryInput) (jsonutils.JSONObject, error) {
+	return GetPropertySkusSyncTasks(ctx, userCred, query)
 }

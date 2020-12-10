@@ -91,6 +91,8 @@ type IRegionDriver interface {
 
 	ValidateCreateVpcData(ctx context.Context, userCred mcclient.TokenCredential, input api.VpcCreateInput) (api.VpcCreateInput, error)
 	IsVpcCreateNeedInputCidr() bool
+	GetEipDefaultChargeType() string
+	ValidateEipChargeType(chargeType string) error
 	ValidateCreateEipData(ctx context.Context, userCred mcclient.TokenCredential, input *api.SElasticipCreateInput) error
 	RequestCreateVpc(ctx context.Context, userCred mcclient.TokenCredential, region *SCloudregion, vpc *SVpc, task taskman.ITask) error
 	RequestDeleteVpc(ctx context.Context, userCred mcclient.TokenCredential, region *SCloudregion, vpc *SVpc, task taskman.ITask) error
@@ -126,7 +128,7 @@ type IRegionDriver interface {
 	BindIPToNatgatewayRollback(ctx context.Context, eipId string) error
 
 	RequestCacheSecurityGroup(ctx context.Context, userCred mcclient.TokenCredential, region *SCloudregion, vpc *SVpc, secgroup *SSecurityGroup, classic bool, removeProjectId string, task taskman.ITask) error
-	RequestSyncSecurityGroup(ctx context.Context, userCred mcclient.TokenCredential, vpcId string, vpc *SVpc, secgroup *SSecurityGroup, removeProjectId string) (string, error)
+	RequestSyncSecurityGroup(ctx context.Context, userCred mcclient.TokenCredential, vpcId string, vpc *SVpc, secgroup *SSecurityGroup, removeProjectId, service string) (string, error)
 	GetSecurityGroupRuleOrder() cloudprovider.TPriorityOrder // Desc(priority值越大,优先级越高) Asc(priority值越小,优先级越高)
 	GetDefaultSecurityGroupInRule() cloudprovider.SecurityRule
 	GetDefaultSecurityGroupOutRule() cloudprovider.SecurityRule
@@ -139,7 +141,7 @@ type IRegionDriver interface {
 	IsSecurityGroupBelongGlobalVpc() bool //安全组子账号范围内可用
 	GetDefaultSecurityGroupVpcId() string
 	GetSecurityGroupVpcId(ctx context.Context, userCred mcclient.TokenCredential, region *SCloudregion, host *SHost, vpc *SVpc, classic bool) (string, error)
-	GetSecurityGroupPublicScope() rbacutils.TRbacScope
+	GetSecurityGroupPublicScope(service string) rbacutils.TRbacScope
 
 	IsSupportedBillingCycle(bc billing.SBillingCycle, resource string) bool
 	GetSecgroupVpcid(vpcId string) string

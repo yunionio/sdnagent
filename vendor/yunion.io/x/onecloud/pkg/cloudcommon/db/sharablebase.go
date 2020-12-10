@@ -456,7 +456,7 @@ func SharablePerformPublic(model ISharableBaseModel, ctx context.Context, userCr
 		}
 	case rbacutils.ScopeSystem:
 		if len(candidateIds) > 0 {
-			return errors.Wrapf(httperrors.ErrForbidden, "sharing is limited to domains %s", jsonutils.Marshal(candidateIds))
+			return httperrors.NewForbiddenError("sharing is limited to domains %s", jsonutils.Marshal(candidateIds))
 		}
 		_, err = SharedResourceManager.shareToTarget(ctx, userCred, model, SharedTargetProject, nil, nil, nil)
 		if err != nil {
@@ -471,6 +471,10 @@ func SharablePerformPublic(model ISharableBaseModel, ctx context.Context, userCr
 	allowScope := policy.PolicyManager.AllowScope(userCred, consts.GetServiceType(), model.KeywordPlural(), policy.PolicyActionPerform, "public")
 	if targetScope.HigherThan(allowScope) {
 		return errors.Wrapf(httperrors.ErrNotSufficientPrivilege, "require %s allow %s", targetScope, allowScope)
+	}
+	requireScope := model.GetPublicScope()
+	if requireScope.HigherThan(allowScope) {
+		return errors.Wrapf(httperrors.ErrNotSufficientPrivilege, "require %s allow %s", requireScope, allowScope)
 	}
 
 	_, err = Update(model, func() error {

@@ -3463,6 +3463,17 @@ func (self *SHost) PostUpdate(ctx context.Context, userCred mcclient.TokenCreden
 			return
 		}
 	}
+
+	// update baremetal host related server
+	if guest := self.GetBaremetalServer(); guest != nil && self.HostType == api.HOST_TYPE_BAREMETAL {
+		if _, err := db.Update(guest, func() error {
+			guest.VmemSize = self.MemSize
+			guest.VcpuCount = self.CpuCount
+			return nil
+		}); err != nil {
+			log.Errorf("baremetal host %s update related server %s spec error: %v", self.GetName(), guest.GetName(), err)
+		}
+	}
 }
 
 func (self *SHost) UpdateDnsRecords(isAdd bool) {
@@ -4001,6 +4012,17 @@ func (self *SHost) PerformInitialize(
 	err = guest.CreateDisksOnHost(ctx, userCred, self, []*api.DiskConfig{diskConfig}, nil, true, true, nil, nil, true)
 	if err != nil {
 		log.Errorf("Host perform initialize failed on create disk %s", err)
+	}
+	net, err := self.getNetworkOfIPOnHost(self.AccessIp)
+	if err != nil {
+		log.Errorf("host perfrom initialize failed fetch net of access ip %s", err)
+	} else {
+		if options.Options.BaremetalServerReuseHostIp {
+			_, err = guest.attach2NetworkDesc(ctx, userCred, self, &api.NetworkConfig{Network: net.Id}, nil, nil)
+			if err != nil {
+				log.Errorf("host perform initialize failed on attach network %s", err)
+			}
+		}
 	}
 	return nil, nil
 }

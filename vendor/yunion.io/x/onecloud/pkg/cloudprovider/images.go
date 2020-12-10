@@ -18,6 +18,8 @@ import (
 	"time"
 )
 
+type TImageType string
+
 const (
 	IMAGE_STATUS_ACTIVE  = "active"
 	IMAGE_STATUS_QUEUED  = "queued"
@@ -25,10 +27,10 @@ const (
 	IMAGE_STATUS_KILLED  = "killed"
 	IMAGE_STATUS_DELETED = "deleted"
 
-	CachedImageTypeSystem     = "system"
-	CachedImageTypeCustomized = "customized"
-	CachedImageTypeShared     = "shared"
-	CachedImageTypeMarket     = "market"
+	ImageTypeSystem     = TImageType("system")
+	ImageTypeCustomized = TImageType("customized")
+	ImageTypeShared     = TImageType("shared")
+	ImageTypeMarket     = TImageType("market")
 )
 
 type SImage struct {
@@ -63,13 +65,18 @@ type SSubImage struct {
 	SizeBytes int64
 }
 
+type SaveImageOptions struct {
+	Name  string
+	Notes string
+}
+
 func CloudImage2Image(image ICloudImage) SImage {
 	return SImage{
 		CreatedAt:  image.GetCreatedAt(),
 		Deleted:    false,
 		DiskFormat: image.GetImageFormat(),
 		Id:         image.GetId(),
-		IsPublic:   image.GetImageType() != CachedImageTypeCustomized,
+		IsPublic:   image.GetImageType() != ImageTypeCustomized,
 		MinDiskMB:  image.GetMinOsDiskSizeGb() * 1024,
 		MinRamMB:   image.GetMinRamSizeMb(),
 		Name:       image.GetName(),

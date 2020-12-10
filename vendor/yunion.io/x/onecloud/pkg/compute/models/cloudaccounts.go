@@ -357,6 +357,71 @@ func (scm *SCloudaccountManager) AllowPerformPrepareNets(_ context.Context, user
 	return db.IsAdminAllowPerform(userCred, scm, "prepare-nets")
 }
 
+type sNetworkInfo struct {
+	esxi.SNetworkInfo
+	prefix string
+}
+
+func (scm *SCloudaccountManager) hostVMIPsPrepareNets(ctx context.Context, client *esxi.SESXiClient,
+	input api.CloudaccountPerformPrepareNetsInput) ([]sNetworkInfo, error) {
+	caName := input.Name
+	wireLevel := input.WireLevelForVmware
+	ret := make([]sNetworkInfo, 0)
+	if len(wireLevel) == 0 {
+		wireLevel = api.CLOUD_ACCOUNT_WIRE_LEVEL_VCENTER
+	}
+	switch wireLevel {
+	case api.CLOUD_ACCOUNT_WIRE_LEVEL_VCENTER:
+		nInfo, err := client.HostVmIPs(ctx)
+		if err != nil {
+			return nil, errors.Wrap(err, "unable to fetch ips of hosts and vms")
+		}
+		ret = append(ret, sNetworkInfo{
+			SNetworkInfo: nInfo,
+			prefix:       caName,
+		})
+	case api.CLOUD_ACCOUNT_WIRE_LEVEL_DATACENTER:
+		dcs, err := client.GetDatacenters()
+		if err != nil {
+			return ret, errors.Wrap(err, "GetDatacenters")
+		}
+		for _, dc := range dcs {
+			nInfo, err := client.HostVmIPsInDc(ctx, dc)
+			if err != nil {
+				return ret, errors.Wrapf(err, "unable to fetch ips of hosts and vms for dc %q", dc.GetName())
+			}
+			ret = append(ret, sNetworkInfo{
+				SNetworkInfo: nInfo,
+				prefix:       fmt.Sprintf("%s/%s", caName, dc.GetName()),
+			})
+		}
+	case api.CLOUD_ACCOUNT_WIRE_LEVEL_CLUSTER:
+		dcs, err := client.GetDatacenters()
+		if err != nil {
+			return ret, errors.Wrap(err, "GetDatacenters")
+		}
+		for _, dc := range dcs {
+			clusters, err := dc.ListClusters()
+			if err != nil {
+				return nil, errors.Wrapf(err, "unable to ListCluster for dc %q", dc.GetName())
+			}
+			for _, cluster := range clusters {
+				nInfo, err := client.HostVmIPsInCluster(ctx, cluster)
+				if err != nil {
+					return ret, errors.Wrapf(err, "unable to fetch ips of hosts and vms for dc %q cluster %q", dc.GetName(), cluster.GetName())
+				}
+				ret = append(ret, sNetworkInfo{
+					SNetworkInfo: nInfo,
+					prefix:       fmt.Sprintf("%s/%s/%s", caName, dc.GetName(), cluster.GetName()),
+				})
+			}
+		}
+	default:
+		return nil, httperrors.NewInputParameterError("valid wire_level_for_vmware, accept vcenter, datacenter, cluster")
+	}
+	return ret, nil
+}
+
 // Performpreparenets searches for suitable network facilities for physical and virtual machines under the cloud account or provides configuration recommendations for network facilities before importing a cloud account.
 func (scm *SCloudaccountManager) PerformPrepareNets(ctx context.Context, userCred mcclient.TokenCredential, query jsonutils.JSONObject, input api.CloudaccountPerformPrepareNetsInput) (api.CloudaccountPerformPrepareNetsOutput, error) {
 	var (
@@ -374,10 +439,6 @@ func (scm *SCloudaccountManager) PerformPrepareNets(ctx context.Context, userCre
 	if ownerId == nil {
 		ownerId = userCred
 	}
-	input.CloudaccountCreateInput, err = scm.validateCreateData(ctx, userCred, ownerId, query, input.CloudaccountCreateInput)
-	if err != nil {
-		return output, err
-	}
 	// validate domain
 	if len(input.ProjectDomainId) > 0 {
 		_, input.DomainizedResourceInput, err = db.ValidateDomainizedResourceInput(ctx, input.DomainizedResourceInput)
@@ -385,7 +446,6 @@ func (scm *SCloudaccountManager) PerformPrepareNets(ctx context.Context, userCre
 			return output, err
 		}
 	}
-
 	domainId := input.ProjectDomainId
 	if len(input.ProjectId) > 0 {
 		var tenent *db.STenant
@@ -396,6 +456,9 @@ func (scm *SCloudaccountManager) PerformPrepareNets(ctx context.Context, userCre
 		if len(domainId) == 0 {
 			domainId = tenent.DomainId
 		}
+	}
+	if len(domainId) == 0 {
+		domainId = ownerId.GetProjectDomainId()
 	}
 
 	// Determine the zoneids according to esxiagent. If there is no esxiagent, zone0 is used by default. And the wires are filtered according to the specified domain and zoneids
@@ -412,7 +475,7 @@ func (scm *SCloudaccountManager) PerformPrepareNets(ctx context.Context, userCre
 		zoneids = append(zoneids, id)
 	}
 	// fetch all wire candidate
-	wires, err := scm.fetchWires(zoneids, domainId)
+	wires, err := scm.fetchWires(userCred, zoneids, domainId)
 	if err != nil {
 		return output, errors.Wrap(err, "unable to fetch wires")
 	}
@@ -423,8 +486,22 @@ func (scm *SCloudaccountManager) PerformPrepareNets(ctx context.Context, userCre
 	if err != nil {
 		return output, errors.Wrap(err, "cloudprovider.GetProviderFactory")
 	}
-	proxySetting, _, _ := proxy.ValidateProxySettingResourceInput(userCred, input.ProxySettingResourceInput)
-	proxyFunc := proxySetting.HttpTransportProxyFunc()
+	input.SCloudaccount, err = factory.ValidateCreateCloudaccountData(ctx, userCred, input.SCloudaccountCredential)
+	if err != nil {
+		return output, errors.Wrap(err, "providerDriver.ValidateCreateCloudaccountData")
+	}
+	var proxyFunc httputils.TransportProxyFunc
+	{
+		if input.ProxySettingId == "" {
+			input.ProxySettingId = proxyapi.ProxySettingId_DIRECT
+		}
+		var proxySetting *proxy.SProxySetting
+		proxySetting, input.ProxySettingResourceInput, err = proxy.ValidateProxySettingResourceInput(userCred, input.ProxySettingResourceInput)
+		if err != nil {
+			return output, errors.Wrap(err, "ValidateProxySettingResourceInput")
+		}
+		proxyFunc = proxySetting.HttpTransportProxyFunc()
+	}
 	provider, err := factory.GetProvider(cloudprovider.ProviderConfig{
 		Vendor:    input.Provider,
 		URL:       input.AccessUrl,
@@ -432,15 +509,18 @@ func (scm *SCloudaccountManager) PerformPrepareNets(ctx context.Context, userCre
 		Secret:    input.Secret,
 		ProxyFunc: proxyFunc,
 	})
+	if err != nil {
+		return output, errors.Wrap(err, "factory.GetProvider")
+	}
 	iregion, err := provider.GetOnPremiseIRegion()
 	if err != nil {
 		return output, errors.Wrap(err, "provider.GetOnPremiseIRegion")
 	}
 	// hack
 	client := iregion.(*esxi.SESXiClient)
-	hostIps, simpleVms, err := client.HostVmIPs(ctx)
+	nInfos, err := scm.hostVMIPsPrepareNets(ctx, client, input)
 	if err != nil {
-		return output, errors.Wrap(err, "unable to fetch ips of hosts and vms")
+		return output, err
 	}
 	// fetch networks
 	networks := make([][]SNetwork, len(wires))
@@ -451,298 +531,216 @@ func (scm *SCloudaccountManager) PerformPrepareNets(ctx context.Context, userCre
 		}
 		networks[i] = nets
 	}
-
-	// key of ipHosts is host's ip
-	ipHosts := make(map[netutils.IPV4Addr]string, len(hostIps))
-	for name, ip := range hostIps {
-		addr, err := netutils.NewIPV4Addr(ip)
-		if err != nil {
-			return output, err
-		}
-		ipHosts[addr] = name
-	}
-	// Find suitable wire and the network containing the Host IP in suitable wire.
-	var (
-		tmpSocre         int
-		maxScore         = len(ipHosts)
-		suitableWire     *SWire
-		suitableNetworks map[netutils.IPV4Addr]*SNetwork
-	)
-	for i, nets := range networks {
-		score := 0
-		tmpSNs := make(map[netutils.IPV4Addr]*SNetwork)
-		ipRanges := make([]netutils.IPV4AddrRange, len(nets))
-		for i2 := range ipRanges {
-			ipRanges[i2] = nets[i2].GetIPRange()
-		}
-		for ip := range ipHosts {
-			for i := range ipRanges {
-				if !ipRanges[i].Contains(ip) {
-					continue
-				}
-				tmpSNs[ip] = &nets[i]
-				score += 1
-				break
-			}
-		}
-		if score > tmpSocre {
-			tmpSocre = score
-			suitableWire = &wires[i]
-			suitableNetworks = tmpSNs
-		}
-		if tmpSocre == maxScore {
-			break
-		}
-	}
-	if suitableWire != nil {
-		output.SuitableWire = suitableWire.GetId()
-	} else {
-		output.SuggestedWire = api.CAWireConf{
-			ZoneIds:     zoneids,
-			Name:        input.Name + "-wire",
-			Description: fmt.Sprintf("Auto created Wire for VMware account %q", input.Name),
-		}
-	}
-
-	// Give the suggested network configuration for the Host IP that does not have a corresponding suitable network.
-	noNetHostIP := make([]netutils.IPV4Addr, 0, len(ipHosts))
-	for ip, name := range ipHosts {
-		rnet := api.CAHostNet{
-			Name: name,
-			IP:   ip.String(),
-		}
-		if net, ok := suitableNetworks[ip]; ok {
-			rnet.SuitableNetwork = net.GetId()
-		} else {
-			noNetHostIP = append(noNetHostIP, ip)
-		}
-		output.Hosts = append(output.Hosts, rnet)
-	}
-
-	if len(noNetHostIP) > 0 {
-		sConfs := scm.suggestHostNetworks(noNetHostIP)
-		confs := make([]api.CANetConf, len(sConfs))
-		for i := range confs {
-			confs[i].CASimpleNetConf = sConfs[i]
-			confs[i].Name = fmt.Sprintf("%s-host-network-%d", input.Name, i+1)
-		}
-		output.HostSuggestedNetworks = confs
-	}
-
-	// Find the suitable network containing the VM IP, and if not, give the corresponding suggested network configuration in this project.
-	var allNets []SNetwork
-	if suitableWire != nil {
-		allNets, err = suitableWire.getNetworks(userCred, rbacutils.ScopeSystem)
-		if err != nil {
-			return output, err
-		}
-	}
-
-	type vm struct {
-		FakeID int
-		IP     netutils.IPV4Addr
-		Name   string
-		VlanID int32
-	}
-	vms := make([]vm, 0, len(simpleVms))
-	var nip netutils.IPV4Addr
-	guestMap := make(map[int]*api.CAGuestNet)
-	for i := range simpleVms {
-		id := i
-		if len(simpleVms[i].IPVlans) == 0 {
-			if _, ok := guestMap[id]; !ok {
-				guestMap[id] = &api.CAGuestNet{
-					Name:   simpleVms[i].Name,
-					IPNets: []api.CAIPNet{},
-				}
-			}
-		}
-		for _, ipVlan := range simpleVms[i].IPVlans {
-			nip, err = netutils.NewIPV4Addr(ipVlan.IP)
-			if err != nil {
-				return output, err
-			}
-			vms = append(vms, vm{
-				FakeID: i,
-				IP:     nip,
-				Name:   simpleVms[i].Name,
-				VlanID: ipVlan.VlanID,
-			})
-		}
-	}
-	// sort vms via vm's ip
-	sort.Slice(vms, func(i, j int) bool {
-		return vms[i].IP < vms[j].IP
-	})
-
-	type sExcludeNet struct {
-		StartIp netutils.IPV4Addr
-		EndIp   netutils.IPV4Addr
-		Id      string
-	}
-	excludeNets := make([]sExcludeNet, 0, len(allNets)+len(output.HostSuggestedNetworks))
-	for i := range allNets {
-		startIp, _ := netutils.NewIPV4Addr(allNets[i].GuestIpStart)
-		endIp, _ := netutils.NewIPV4Addr(allNets[i].GuestIpEnd)
-		excludeNets = append(excludeNets, sExcludeNet{
-			StartIp: startIp,
-			EndIp:   endIp,
-			Id:      allNets[i].GetId(),
-		})
-	}
-	for i := range output.HostSuggestedNetworks {
-		startIp, _ := netutils.NewIPV4Addr(output.HostSuggestedNetworks[i].GuestIpStart)
-		endIp, _ := netutils.NewIPV4Addr(output.HostSuggestedNetworks[i].GuestIpEnd)
-		excludeNets = append(excludeNets, sExcludeNet{
-			StartIp: startIp,
-			EndIp:   endIp,
-		})
-	}
-	// sort excludeNets via their GuestIpStart
-	sort.Slice(excludeNets, func(i, j int) bool {
-		return excludeNets[i].StartIp < excludeNets[j].StartIp
-	})
-
-	svNets := make([]api.CASimpleNetConf, 0, 5)
-	var vmi, neti int
-
-Loop:
-	for neti = 0; neti < len(excludeNets); {
-		if vmi >= len(vms) {
-			break
-		}
-		startIp := excludeNets[neti].StartIp
-		endIp := excludeNets[neti].EndIp
-		switch {
-		case vms[vmi].IP > endIp:
-			neti++
-		case vms[vmi].IP >= startIp:
-			for vms[vmi].IP <= endIp {
-				id := vms[vmi].FakeID
-				if _, ok := guestMap[id]; !ok {
-					guestMap[id] = &api.CAGuestNet{
-						Name:   vms[vmi].Name,
-						IPNets: []api.CAIPNet{},
-					}
-				}
-				guestMap[id].IPNets = append(guestMap[id].IPNets, api.CAIPNet{
-					IP:              vms[vmi].IP.String(),
-					SuitableNetwork: excludeNets[neti].Id,
-					VlanID:          vms[vmi].VlanID,
-				})
-				vmi += 1
-				if vmi == len(vms) {
-					break Loop
-				}
-			}
-			neti++
-		default:
-			for vms[vmi].IP < startIp {
-				suggestStartIp := vms[vmi].IP
-				suggestEndIp := vms[vmi].IP
-				endLimitIp := suggestStartIp.NetAddr(24) + 255
-				vlanId := vms[vmi].VlanID
-				for {
-					id := vms[vmi].FakeID
-					if _, ok := guestMap[id]; !ok {
-						guestMap[id] = &api.CAGuestNet{
-							Name:   vms[vmi].Name,
-							IPNets: []api.CAIPNet{},
-						}
-					}
-					guestMap[id].IPNets = append(guestMap[id].IPNets, api.CAIPNet{
-						IP:     vms[vmi].IP.String(),
-						VlanID: vms[vmi].VlanID,
-					})
-					vmi++
-					if vmi == len(vms) {
-						break
-					}
-					if suggestEndIp == endLimitIp {
-						break
-					}
-					if vms[vmi].IP > suggestEndIp+1 {
-						break
-					}
-					if vms[vmi].IP >= startIp {
-						break
-					}
-					if vms[vmi].VlanID != vlanId {
-						break
-					}
-					suggestEndIp = vms[vmi].IP
-				}
-				svNets = append(svNets, api.CASimpleNetConf{
-					GuestIpStart: suggestStartIp.String(),
-					GuestIpEnd:   suggestEndIp.String(),
-					VlanID:       vlanId,
-					GuestIpMask:  24,
-					GuestGateway: (suggestStartIp.NetAddr(24) + netutils.IPV4Addr(options.Options.DefaultNetworkGatewayAddressEsxi)).String(),
-				})
-				if vmi == len(vms) {
-					break Loop
-				}
-			}
-		}
-	}
-
-	for vmi < len(vms) {
-		suggestStartIp := vms[vmi].IP
-		endLimitIp := suggestStartIp.NetAddr(24) + 255
-		suggestEndIp := suggestStartIp
-		vlanId := vms[vmi].VlanID
-		for {
-			id := vms[vmi].FakeID
-			if _, ok := guestMap[id]; !ok {
-				guestMap[id] = &api.CAGuestNet{
-					Name:   vms[vmi].Name,
-					IPNets: []api.CAIPNet{},
-				}
-			}
-			guestMap[id].IPNets = append(guestMap[id].IPNets, api.CAIPNet{
-				IP: vms[vmi].IP.String(),
-			})
-			vmi++
-			if vmi == len(vms) {
-				break
-			}
-			if suggestEndIp == endLimitIp {
-				break
-			}
-			if vms[vmi].IP > suggestEndIp+1 {
-				break
-			}
-			if vms[vmi].VlanID != vlanId {
-				break
-			}
-			suggestEndIp = vms[vmi].IP
-		}
-		svNets = append(svNets, api.CASimpleNetConf{
-			GuestIpStart: suggestStartIp.String(),
-			GuestIpEnd:   suggestEndIp.String(),
-			VlanID:       vlanId,
-			GuestIpMask:  24,
-			GuestGateway: (suggestStartIp.NetAddr(24) + netutils.IPV4Addr(options.Options.DefaultNetworkGatewayAddressEsxi)).String(),
-		})
-	}
-
-	for _, guest := range guestMap {
-		output.Guests = append(output.Guests, *guest)
-	}
-
-	if len(svNets) > 0 {
-		confs := make([]api.CANetConf, len(svNets))
-		for i := range confs {
-			confs[i].CASimpleNetConf = svNets[i]
-			confs[i].Name = fmt.Sprintf("%s-guest-network-%d", input.Name, i+1)
-		}
-		output.GuestSuggestedNetworks = confs
-	}
-	return output, nil
+	return scm.parseAndSuggest(sParseAndSuggest{
+		NInfos:      nInfos,
+		AccountName: input.Name,
+		ZoneIds:     zoneids,
+		Wires:       wires,
+		Networks:    networks,
+	}), nil
 }
 
-func (manager *SCloudaccountManager) fetchWires(zoneIds []string, domainId string) ([]SWire, error) {
+type sParseAndSuggest struct {
+	NInfos      []sNetworkInfo
+	AccountName string
+	ZoneIds     []string
+	Wires       []SWire
+	Networks    [][]SNetwork
+}
+
+func (scm *SCloudaccountManager) parseAndSuggest(params sParseAndSuggest) api.CloudaccountPerformPrepareNetsOutput {
+	var (
+		output   api.CloudaccountPerformPrepareNetsOutput
+		nInfos   = params.NInfos
+		wires    = params.Wires
+		networks = params.Networks
+	)
+	output.CAWireNets = make([]api.CAWireNet, 0, len(nInfos))
+	for _, ni := range nInfos {
+		var (
+			wireNet api.CAWireNet
+			hostIps = ni.HostIps
+		)
+
+		// key of ipHosts is host's ip
+		ipHosts := make(map[netutils.IPV4Addr]string, len(hostIps))
+		for name, ip := range hostIps {
+			ipHosts[ip] = name
+		}
+		// Find suitable wire and the network containing the Host IP in suitable wire.
+		var (
+			tmpSocre          int
+			maxScore          = len(ipHosts)
+			suitableWire      *SWire
+			suitableWireIndex = -1
+			suitableNetworks  map[netutils.IPV4Addr]*SNetwork
+		)
+		for i, nets := range networks {
+			score := 0
+			tmpSNs := make(map[netutils.IPV4Addr]*SNetwork)
+			ipRanges := make([]netutils.IPV4AddrRange, len(nets))
+			for i2 := range ipRanges {
+				ipRanges[i2] = nets[i2].GetIPRange()
+			}
+			for ip := range ipHosts {
+				for i := range ipRanges {
+					if !ipRanges[i].Contains(ip) {
+						continue
+					}
+					tmpSNs[ip] = &nets[i]
+					score += 1
+					break
+				}
+			}
+			if score > tmpSocre {
+				tmpSocre = score
+				suitableWire = &wires[i]
+				suitableWireIndex = i
+				suitableNetworks = tmpSNs
+			}
+			if tmpSocre == maxScore {
+				break
+			}
+		}
+		if suitableWire != nil {
+			wireNet.SuitableWire = suitableWire.GetId()
+		} else {
+			wireNet.SuggestedWire = api.CAWireConf{
+				ZoneIds:     params.ZoneIds,
+				Name:        ni.prefix + "-wire",
+				Description: fmt.Sprintf("Auto created Wire for VMware account %q", params.AccountName),
+			}
+		}
+
+		// Give the suggested network configuration for the Host IP that does not have a corresponding suitable network.
+		noNetHostIP := make([]netutils.IPV4Addr, 0, len(ipHosts))
+		for ip, name := range ipHosts {
+			rnet := api.CAHostNet{
+				Name: name,
+				IP:   ip.String(),
+			}
+			if net, ok := suitableNetworks[ip]; ok {
+				rnet.SuitableNetwork = net.GetId()
+			} else {
+				noNetHostIP = append(noNetHostIP, ip)
+			}
+			wireNet.Hosts = append(wireNet.Hosts, rnet)
+		}
+
+		if len(noNetHostIP) > 0 {
+			sConfs := scm.suggestHostNetworks(noNetHostIP)
+			confs := make([]api.CANetConf, len(sConfs))
+			for i := range confs {
+				confs[i].CASimpleNetConf = sConfs[i]
+				confs[i].Name = fmt.Sprintf("%s-host-network-%d", ni.prefix, i+1)
+			}
+			wireNet.HostSuggestedNetworks = confs
+		}
+
+		// Find the suitable network containing the VM IP, and if not, give the corresponding suggested network configuration in this project.
+		var allNets []SNetwork
+		if suitableWire != nil {
+			allNets = networks[suitableWireIndex]
+		}
+		type simpleNet struct {
+			Id   string
+			Vlan int32
+		}
+		existedNetMap := make(map[netutils.IPV4Addr]simpleNet, len(allNets))
+		for i := range allNets {
+			ipStart, _ := netutils.NewIPV4Addr(allNets[i].GuestIpStart)
+			ipEnd, _ := netutils.NewIPV4Addr(allNets[i].GuestIpEnd)
+			for ip := ipStart; ip <= ipEnd; ip++ {
+				existedNetMap[ip] = simpleNet{Id: allNets[i].Id, Vlan: int32(allNets[i].VlanId)}
+			}
+		}
+
+		for i := range wireNet.HostSuggestedNetworks {
+			ipStart, _ := netutils.NewIPV4Addr(wireNet.HostSuggestedNetworks[i].GuestIpStart)
+			ipEnd, _ := netutils.NewIPV4Addr(wireNet.HostSuggestedNetworks[i].GuestIpEnd)
+			existedNetMap[ipStart] = simpleNet{}
+			if ipEnd != ipStart {
+				existedNetMap[ipEnd] = simpleNet{}
+			}
+		}
+
+		guests := make([]api.CAGuestNet, len(ni.VMs))
+		for i := range guests {
+			guests[i].Name = ni.VMs[i].Name
+			for _, ipvlan := range ni.VMs[i].IPVlans {
+				var suitableNetId string
+				sn, ok := existedNetMap[ipvlan.IP]
+				if ok {
+					suitableNetId = sn.Id
+				}
+				guests[i].IPNets = append(guests[i].IPNets, api.CAIPNet{
+					IP:              ipvlan.IP.String(),
+					VlanID:          ipvlan.VlanId,
+					SuitableNetwork: suitableNetId,
+				})
+			}
+		}
+		wireNet.Guests = guests
+
+		for vlan, ips := range ni.VlanIps {
+			for i := 0; i < len(ips); i++ {
+				ip := ips[i]
+				if _, ok := existedNetMap[ip]; ok {
+					continue
+				}
+				net := ip.NetAddr(24)
+				netLimitLow := net + 1
+				netLimitUp := net + 254
+				// find startip
+				startIp := ip - 1
+				for ; startIp >= netLimitLow; startIp-- {
+					if _, ok := existedNetMap[startIp]; ok {
+						break
+					}
+					if _, ok := ni.IPPool.Get(startIp); ok {
+						break
+					}
+				}
+				endIp := ip + 1
+				for ; endIp <= netLimitUp; endIp++ {
+					if _, ok := existedNetMap[endIp]; ok {
+						break
+					}
+					if proc, ok := ni.IPPool.Get(endIp); ok {
+						if proc.VlanId == vlan {
+							// find one in ips
+							i++
+							continue
+						}
+						break
+					}
+				}
+				slen := len(wireNet.GuestSuggestedNetworks)
+				wireNet.GuestSuggestedNetworks = append(wireNet.GuestSuggestedNetworks, api.CANetConf{
+					Name:        fmt.Sprintf("%s-guest-network-%d", ni.prefix, slen+1),
+					Description: "",
+					CASimpleNetConf: api.CASimpleNetConf{
+						VlanID:       vlan,
+						GuestIpStart: (startIp + 1).String(),
+						GuestIpEnd:   (endIp - 1).String(),
+						GuestIpMask:  24,
+						GuestGateway: (net + netutils.IPV4Addr(options.Options.DefaultNetworkGatewayAddressEsxi)).
+							String(),
+					},
+				})
+				// Avoid assigning already assigned ip subnet
+				existedNetMap[startIp+1] = simpleNet{}
+				existedNetMap[endIp-1] = simpleNet{}
+			}
+		}
+		output.CAWireNets = append(output.CAWireNets, wireNet)
+	}
+	return output
+}
+
+func (manager *SCloudaccountManager) fetchWires(userCred mcclient.TokenCredential, zoneIds []string, domainId string) ([]SWire, error) {
 	q := WireManager.Query().Equals("domain_id", domainId).In("zone_id", zoneIds)
+	q = WireManager.FilterByOwner(q, userCred, rbacutils.ScopeDomain)
 	wires := make([]SWire, 0, 1)
 	err := db.FetchModelObjects(WireManager, q, &wires)
 	return wires, err
@@ -2471,6 +2469,9 @@ func (account *SCloudaccount) probeAccountStatus(ctx context.Context, userCred m
 		account.Balance = balance
 		if !options.Options.CloudaccountHealthStatusCheck {
 			status = api.CLOUD_PROVIDER_HEALTH_NORMAL
+		}
+		if len(account.AccountId) == 0 {
+			account.AccountId = manager.GetAccountId()
 		}
 		account.HealthStatus = status
 		account.ProbeAt = timeutils.UtcNow()

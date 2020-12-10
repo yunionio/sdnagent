@@ -401,7 +401,7 @@ func (manager *SGuestManager) ListItemFilter(
 	}
 
 	withEip := (query.WithEip != nil && *query.WithEip)
-	withoutEip := (query.WithoutEip != nil && *query.WithoutEip)
+	withoutEip := (query.WithoutEip != nil && *query.WithoutEip) || (query.EipAssociable != nil && *query.EipAssociable)
 	if withEip || withoutEip {
 		eips := ElasticipManager.Query().SubQuery()
 		sq := eips.Query(eips.Field("associate_id")).Equals("associate_type", api.EIP_ASSOCIATE_TYPE_SERVER)
@@ -413,6 +413,23 @@ func (manager *SGuestManager) ListItemFilter(
 			q = q.NotIn("id", sq)
 		}
 	}
+
+	if query.EipAssociable != nil {
+		sq1 := NetworkManager.Query("id")
+		sq2 := WireManager.Query().SubQuery()
+		sq3 := VpcManager.Query().SubQuery()
+		sq1 = sq1.Join(sq2, sqlchemy.Equals(sq1.Field("wire_id"), sq2.Field("id")))
+		sq1 = sq1.Join(sq3, sqlchemy.Equals(sq2.Field("vpc_id"), sq3.Field("id")))
+		cond1 := []string{api.VPC_EXTERNAL_ACCESS_MODE_EIP, api.VPC_EXTERNAL_ACCESS_MODE_EIP_DISTGW}
+		if *query.EipAssociable {
+			sq1 = sq1.Filter(sqlchemy.In(sq3.Field("external_access_mode"), cond1))
+		} else {
+			sq1 = sq1.Filter(sqlchemy.NotIn(sq3.Field("external_access_mode"), cond1))
+		}
+		sq := GuestnetworkManager.Query("guest_id").In("network_id", sq1)
+		q = q.In("id", sq)
+	}
+
 	if len(query.ServerType) > 0 {
 		var trueVal, falseVal = true, false
 		switch query.ServerType {
@@ -1118,8 +1135,9 @@ func (manager *SGuestManager) validateCreateData(
 
 	passwd := input.Password
 	if len(passwd) > 0 {
-		if !seclib2.MeetComplxity(passwd) {
-			return nil, httperrors.NewWeakPasswordError()
+		err = seclib2.ValidatePassword(passwd)
+		if err != nil {
+			return nil, err
 		}
 		resetPassword = true
 		input.ResetPassword = &resetPassword
@@ -1997,21 +2015,6 @@ func (manager *SGuestManager) ListItemExportKeys(ctx context.Context, q *sqlchem
 		q.AppendField(ipsSubQuery.Field("concat_ip_addr"))
 	}
 
-	if keys.Contains("user_tags") {
-		guestUserTagsQuery := db.Metadata.Query().Startswith("id", "server::").
-			Startswith("key", db.USER_TAG_PREFIX).GroupBy("id")
-		guestUserTagsQuery.AppendField(sqlchemy.SubStr("guest_id", guestUserTagsQuery.Field("id"), len("server::")+1, 0))
-		guestUserTagsQuery.AppendField(
-			sqlchemy.GROUP_CONCAT("user_tags", sqlchemy.CONCAT("",
-				sqlchemy.SubStr("", guestUserTagsQuery.Field("key"), len(db.USER_TAG_PREFIX)+1, 0),
-				sqlchemy.NewStringField(":"),
-				guestUserTagsQuery.Field("value"),
-			)))
-		subQ := guestUserTagsQuery.SubQuery()
-		q.LeftJoin(subQ, sqlchemy.Equals(q.Field("id"), subQ.Field("guest_id")))
-		q.AppendField(subQ.Field("user_tags"))
-	}
-
 	if keys.Contains("disk") {
 		guestDisksQuery := GuestdiskManager.Query("guest_id", "disk_id").GroupBy("guest_id")
 		diskQuery := DiskManager.Query("id", "disk_size").SubQuery()
@@ -2062,9 +2065,6 @@ func (manager *SGuestManager) GetExportExtraKeys(ctx context.Context, keys strin
 	}
 	if manager, ok := rowMap["manager"]; ok && len(manager) > 0 {
 		res.Set("manager", jsonutils.NewString(manager))
-	}
-	if userTags, ok := rowMap["user_tags"]; ok && len(userTags) > 0 {
-		res.Set("user_tags", jsonutils.NewString(userTags))
 	}
 	if keys.Contains("tenant") {
 		if projectId, ok := rowMap["tenant_id"]; ok {
