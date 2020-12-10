@@ -28,6 +28,8 @@ import (
 	"yunion.io/x/jsonutils"
 	"yunion.io/x/log"
 
+	fwdpb "yunion.io/x/onecloud/pkg/hostman/guestman/forwarder/api"
+
 	"yunion.io/x/sdnagent/pkg/agent/utils"
 )
 
@@ -81,6 +83,10 @@ func newServersWatcher() (*serversWatcher, error) {
 	w.ovnMan = newOvnMan(w)
 	w.ovnMdMan = newOvnMdMan(w)
 	return w, nil
+}
+
+func (w *serversWatcher) newForwardService() fwdpb.ForwarderServer {
+	return newOvnMdFwdService(w.ovnMdMan)
 }
 
 type watchEventType int

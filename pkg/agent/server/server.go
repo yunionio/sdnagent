@@ -22,6 +22,8 @@ import (
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/reflection"
 
+	fwdpb "yunion.io/x/onecloud/pkg/hostman/guestman/forwarder/api"
+
 	"yunion.io/x/log"
 	pb "yunion.io/x/sdnagent/pkg/agent/proto"
 	"yunion.io/x/sdnagent/pkg/agent/utils"
@@ -75,9 +77,11 @@ func (s *AgentServer) Start(ctx context.Context) error {
 
 		vSwitchService := newVSwitchService(s)
 		openflowService := newOpenflowService(s)
+		forwardService := watcher.newForwardService()
 		rpcServer := grpc.NewServer()
 		pb.RegisterVSwitchServer(rpcServer, vSwitchService)
 		pb.RegisterOpenflowServer(rpcServer, openflowService)
+		fwdpb.RegisterForwarderServer(rpcServer, forwardService)
 		reflection.Register(rpcServer)
 		s.rpcServer = rpcServer
 
