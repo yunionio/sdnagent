@@ -105,7 +105,7 @@ func NewQdiscTree(qs []IQdisc) (*QdiscTree, error) {
 					qdisc:    q,
 					children: map[uint32]*QdiscTree{},
 				}
-				currentTree.children[h] = qtt
+				currentTree.children[qbase.Handle] = qtt
 				trees = append(trees, qtt)
 			} else {
 				qs0 = append(qs0, q)
