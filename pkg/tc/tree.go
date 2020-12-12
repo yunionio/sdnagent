@@ -32,6 +32,10 @@ func (qt *QdiscTree) IsRoot() bool {
 	return qt.qdisc.IsRoot()
 }
 
+func (qt *QdiscTree) Root() IQdisc {
+	return qt.qdisc
+}
+
 func (qt *QdiscTree) String() string {
 	lines := qt.BatchReplaceLines("dummy0")
 	return strings.Join(lines, "\n")
