@@ -96,13 +96,13 @@ func NewQdiscTree(qs []IQdisc) (*QdiscTree, error) {
 				// NOTE ingress is singleton
 				continue
 			}
-			h := r.qdisc.BaseQdisc().Handle
+			h := qt.qdisc.BaseQdisc().Handle
 			if q.BaseQdisc().Parent == h {
 				qtt := &QdiscTree{
 					qdisc:    q,
 					children: map[uint32]*QdiscTree{},
 				}
-				r.children[h] = qtt
+				qt.children[h] = qtt
 				queue = append(queue, qtt)
 			} else {
 				qs0 = append(qs0, q)
