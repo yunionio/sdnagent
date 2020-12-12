@@ -150,6 +150,10 @@ func (tm *TcMan) doCheckPage(ctx context.Context, page *TcManPage) {
 		log.Errorf("tcman: qdisc show %s failed: %s", ifname, err)
 		return
 	}
+	if root := qt.Root(); root.BaseQdisc().Kind == "mq" {
+		log.Infof("skip %s: it uses mq", ifname)
+		return
+	}
 	if qt.Equals(page.qtWant) {
 		if page.qtGot == nil {
 			page.qtGot = qt
