@@ -94,12 +94,13 @@ func NewQdiscTree(qs []IQdisc) (*QdiscTree, error) {
 		trees = trees[1:]
 		qs0 := qs[:0]
 		for _, q := range qs {
-			if q.BaseQdisc().Kind == "ingress" {
+			qbase := q.BaseQdisc()
+			if qbase.Kind == "ingress" {
 				// NOTE ingress is singleton
 				continue
 			}
 			h := currentTree.qdisc.BaseQdisc().Handle
-			if q.BaseQdisc().Parent == h {
+			if qbase.Parent == h {
 				qtt := &QdiscTree{
 					qdisc:    q,
 					children: map[uint32]*QdiscTree{},
