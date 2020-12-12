@@ -88,19 +88,27 @@ func NewQdiscTree(qs []IQdisc) (*QdiscTree, error) {
 	var (
 		trees       = []*QdiscTree{root}
 		currentTree *QdiscTree
+		rootqbase   = root.qdisc.BaseQdisc()
+		rootqkind   = rootqbase.Kind
+		rootqmaj    = rootqbase.Handle & 0xff00
 	)
 	for len(trees) > 0 {
 		currentTree = trees[0]
 		trees = trees[1:]
-		qs0 := qs[:0]
+
+		var (
+			qs0               = qs[:0]
+			currentTreeHandle = currentTree.qdisc.BaseQdisc().Handle
+		)
 		for _, q := range qs {
 			qbase := q.BaseQdisc()
+
 			if qbase.Kind == "ingress" {
 				// NOTE ingress is singleton
 				continue
 			}
-			h := currentTree.qdisc.BaseQdisc().Handle
-			if qbase.Parent == h {
+			// mq is classful
+			if qbase.Parent == currentTreeHandle || (rootqkind == "mq" && qbase.Parent&0xff00 == rootqmaj) {
 				qtt := &QdiscTree{
 					qdisc:    q,
 					children: map[uint32]*QdiscTree{},
