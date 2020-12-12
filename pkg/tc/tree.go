@@ -32,6 +32,10 @@ func (qt *QdiscTree) IsRoot() bool {
 	return qt.qdisc.IsRoot()
 }
 
+func (qt *QdiscTree) Root() IQdisc {
+	return qt.qdisc
+}
+
 func (qt *QdiscTree) String() string {
 	lines := qt.BatchReplaceLines("dummy0")
 	return strings.Join(lines, "\n")
@@ -71,39 +75,50 @@ func (qt *QdiscTree) Equals(qt2 *QdiscTree) bool {
 }
 
 func NewQdiscTree(qs []IQdisc) (*QdiscTree, error) {
-	qt := &QdiscTree{
+	root := &QdiscTree{
 		children: map[uint32]*QdiscTree{},
 	}
 	for i, q := range qs {
 		if q.IsRoot() {
-			qt.qdisc = q
+			root.qdisc = q
 			qs = append(qs[:i], qs[i+1:]...)
 			break
 		}
 	}
-	if qt.qdisc == nil {
+	if root.qdisc == nil {
 		err := fmt.Errorf("cannot find root qdisc")
 		return nil, err
 	}
-	r := qt
-	queue := []*QdiscTree{qt}
-	for len(queue) > 0 {
-		qt = queue[0]
-		queue = queue[1:]
-		qs0 := qs[:0]
+	var (
+		trees       = []*QdiscTree{root}
+		currentTree *QdiscTree
+		rootqbase   = root.qdisc.BaseQdisc()
+		rootqkind   = rootqbase.Kind
+		rootqmaj    = rootqbase.Handle & 0xff00
+	)
+	for len(trees) > 0 {
+		currentTree = trees[0]
+		trees = trees[1:]
+
+		var (
+			qs0               = qs[:0]
+			currentTreeHandle = currentTree.qdisc.BaseQdisc().Handle
+		)
 		for _, q := range qs {
-			if q.BaseQdisc().Kind == "ingress" {
+			qbase := q.BaseQdisc()
+
+			if qbase.Kind == "ingress" {
 				// NOTE ingress is singleton
 				continue
 			}
-			h := r.qdisc.BaseQdisc().Handle
-			if q.BaseQdisc().Parent == h {
+			// mq is classful
+			if qbase.Parent == currentTreeHandle || (rootqkind == "mq" && qbase.Parent&0xff00 == rootqmaj) {
 				qtt := &QdiscTree{
 					qdisc:    q,
 					children: map[uint32]*QdiscTree{},
 				}
-				r.children[h] = qtt
-				queue = append(queue, qtt)
+				currentTree.children[qbase.Handle] = qtt
+				trees = append(trees, qtt)
 			} else {
 				qs0 = append(qs0, q)
 			}
@@ -114,7 +129,7 @@ func NewQdiscTree(qs []IQdisc) (*QdiscTree, error) {
 		err := fmt.Errorf("exist orphan qdisc without parent")
 		return nil, err
 	}
-	return r, nil
+	return root, nil
 }
 
 func NewQdiscTreeFromString(s string) (*QdiscTree, error) {
