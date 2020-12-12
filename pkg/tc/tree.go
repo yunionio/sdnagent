@@ -71,39 +71,41 @@ func (qt *QdiscTree) Equals(qt2 *QdiscTree) bool {
 }
 
 func NewQdiscTree(qs []IQdisc) (*QdiscTree, error) {
-	qt := &QdiscTree{
+	root := &QdiscTree{
 		children: map[uint32]*QdiscTree{},
 	}
 	for i, q := range qs {
 		if q.IsRoot() {
-			qt.qdisc = q
+			root.qdisc = q
 			qs = append(qs[:i], qs[i+1:]...)
 			break
 		}
 	}
-	if qt.qdisc == nil {
+	if root.qdisc == nil {
 		err := fmt.Errorf("cannot find root qdisc")
 		return nil, err
 	}
-	r := qt
-	queue := []*QdiscTree{qt}
-	for len(queue) > 0 {
-		qt = queue[0]
-		queue = queue[1:]
+	var (
+		trees       = []*QdiscTree{root}
+		currentTree *QdiscTree
+	)
+	for len(trees) > 0 {
+		currentTree = trees[0]
+		trees = trees[1:]
 		qs0 := qs[:0]
 		for _, q := range qs {
 			if q.BaseQdisc().Kind == "ingress" {
 				// NOTE ingress is singleton
 				continue
 			}
-			h := qt.qdisc.BaseQdisc().Handle
+			h := currentTree.qdisc.BaseQdisc().Handle
 			if q.BaseQdisc().Parent == h {
 				qtt := &QdiscTree{
 					qdisc:    q,
 					children: map[uint32]*QdiscTree{},
 				}
-				qt.children[h] = qtt
-				queue = append(queue, qtt)
+				currentTree.children[h] = qtt
+				trees = append(trees, qtt)
 			} else {
 				qs0 = append(qs0, q)
 			}
@@ -114,7 +116,7 @@ func NewQdiscTree(qs []IQdisc) (*QdiscTree, error) {
 		err := fmt.Errorf("exist orphan qdisc without parent")
 		return nil, err
 	}
-	return r, nil
+	return root, nil
 }
 
 func NewQdiscTreeFromString(s string) (*QdiscTree, error) {
