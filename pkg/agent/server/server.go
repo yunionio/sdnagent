@@ -85,12 +85,13 @@ func (s *AgentServer) Start(ctx context.Context) error {
 		if err != nil {
 			log.Fatalf("listen %s failed: %s", s.hostConfig.SdnSocketPath, err)
 		}
-		defer lis.Close()
 
 		s.wg.Add(2)
 		go watcher.Start(s.ctx, s)
 		go ifaceJanitor.Start(s.ctx)
 		go func() {
+			defer lis.Close()
+
 			err := rpcServer.Serve(lis)
 			if err != nil {
 				log.Warningf("rpc server serve returned: %v", err)
