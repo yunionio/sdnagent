@@ -85,7 +85,7 @@ type SElasticip struct {
 	Mode string `width:"32" charset:"ascii" get:"user" list:"user" create:"optional"`
 
 	// IP地址
-	IpAddr string `width:"17" charset:"ascii" list:"user" create:"optional"`
+	IpAddr string `width:"17" charset:"ascii" list:"user"`
 
 	// 绑定资源类型
 	AssociateType string `width:"32" charset:"ascii" list:"user"`
@@ -800,14 +800,17 @@ func (manager *SElasticipManager) ValidateCreateData(ctx context.Context, userCr
 		}
 		return input, httperrors.NewResourceNotFoundError2("cloudregion", input.CloudregionId)
 	}
-	region := obj.(*SCloudregion)
+	var (
+		region       = obj.(*SCloudregion)
+		regionDriver = region.GetDriver()
+	)
 	input.CloudregionId = region.GetId()
 
 	// publicIp cannot be created standalone
 	input.Mode = api.EIP_MODE_STANDALONE_EIP
 
-	if len(input.ChargeType) == 0 {
-		input.ChargeType = api.EIP_CHARGE_TYPE_DEFAULT
+	if input.ChargeType == "" {
+		input.ChargeType = regionDriver.GetEipDefaultChargeType()
 	}
 
 	if !utils.IsInStringArray(input.ChargeType, []string{api.EIP_CHARGE_TYPE_BY_BANDWIDTH, api.EIP_CHARGE_TYPE_BY_TRAFFIC}) {
@@ -819,7 +822,7 @@ func (manager *SElasticipManager) ValidateCreateData(ctx context.Context, userCr
 		return input, err
 	}
 
-	err = region.GetDriver().ValidateCreateEipData(ctx, userCred, &input)
+	err = regionDriver.ValidateCreateEipData(ctx, userCred, &input)
 	if err != nil {
 		return input, err
 	}
@@ -978,6 +981,11 @@ func (self *SElasticip) PerformAssociate(ctx context.Context, userCred mcclient.
 
 	if ok, _ := utils.InStringArray(server.Status, []string{api.VM_READY, api.VM_RUNNING}); !ok {
 		return nil, httperrors.NewInvalidStatusError("cannot associate server in status %s", server.Status)
+	}
+
+	err = ValidateAssociateEip(server)
+	if err != nil {
+		return nil, err
 	}
 
 	if len(self.NetworkId) > 0 {
@@ -1237,10 +1245,16 @@ func (manager *SElasticipManager) NewEipForVMOnHost(ctx context.Context, userCre
 		host          = args.Host
 		pendingUsage  = args.PendingUsage
 	)
-	region := host.GetRegion()
+	var (
+		region       = host.GetRegion()
+		regionDriver = region.GetDriver()
+	)
 
-	if len(chargeType) == 0 {
-		chargeType = api.EIP_CHARGE_TYPE_BY_TRAFFIC
+	if chargeType == "" {
+		chargeType = regionDriver.GetEipDefaultChargeType()
+	}
+	if err := regionDriver.ValidateEipChargeType(chargeType); err != nil {
+		return nil, err
 	}
 
 	eip := &SElasticip{}
@@ -1258,7 +1272,9 @@ func (manager *SElasticipManager) NewEipForVMOnHost(ctx context.Context, userCre
 	eip.ManagerId = host.ManagerId
 	eip.CloudregionId = region.Id
 	eip.Name = fmt.Sprintf("eip-for-%s", vm.GetName())
+
 	if host.ManagerId == "" {
+
 		hostq := HostManager.Query().SubQuery()
 		wireq := WireManager.Query().SubQuery()
 		hostwireq := HostwireManager.Query().SubQuery()
@@ -1319,6 +1335,11 @@ func (manager *SElasticipManager) NewEipForVMOnHost(ctx context.Context, userCre
 }
 
 func (eip *SElasticip) AllocateAndAssociateVM(ctx context.Context, userCred mcclient.TokenCredential, vm *SGuest, parentTaskId string) error {
+	err := ValidateAssociateEip(vm)
+	if err != nil {
+		return err
+	}
+
 	params := jsonutils.NewDict()
 	params.Add(jsonutils.NewString(vm.ExternalId), "instance_external_id")
 	params.Add(jsonutils.NewString(vm.Id), "instance_id")

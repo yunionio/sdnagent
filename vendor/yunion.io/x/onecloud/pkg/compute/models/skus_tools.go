@@ -25,6 +25,7 @@ import (
 	"yunion.io/x/jsonutils"
 	"yunion.io/x/log"
 	"yunion.io/x/pkg/errors"
+	"yunion.io/x/pkg/util/compare"
 	v "yunion.io/x/pkg/util/version"
 
 	apis "yunion.io/x/onecloud/pkg/apis/compute"
@@ -33,6 +34,7 @@ import (
 	"yunion.io/x/onecloud/pkg/mcclient"
 	"yunion.io/x/onecloud/pkg/mcclient/auth"
 	"yunion.io/x/onecloud/pkg/mcclient/modules"
+	"yunion.io/x/onecloud/pkg/util/httputils"
 )
 
 /*
@@ -44,6 +46,7 @@ type SSkuResourcesMeta struct {
 	DBInstanceBase   string `json:"dbinstance_base"`
 	ServerBase       string `json:"server_base"`
 	ElasticCacheBase string `json:"elastic_cache_base"`
+	ImageBase        string `json:"image_base"`
 }
 
 func (self *SSkuResourcesMeta) getZoneIdBySuffix(zoneMaps map[string]string, suffix string) string {
@@ -55,13 +58,26 @@ func (self *SSkuResourcesMeta) getZoneIdBySuffix(zoneMaps map[string]string, suf
 	return ""
 }
 
+func (self *SSkuResourcesMeta) GetCloudimages(regionExternalId string) ([]SCachedimage, error) {
+	objs, err := self.getObjsByRegion(self.ImageBase, regionExternalId)
+	if err != nil {
+		return nil, errors.Wrapf(err, "getObjsByRegion")
+	}
+	images := []SCachedimage{}
+	err = jsonutils.Update(&images, objs)
+	if err != nil {
+		return nil, errors.Wrapf(err, "jsonutils.Update")
+	}
+	return images, nil
+}
+
 func (self *SSkuResourcesMeta) GetDBInstanceSkusByRegionExternalId(regionExternalId string) ([]SDBInstanceSku, error) {
 	regionId, zoneMaps, err := self.GetRegionIdAndZoneMaps(regionExternalId)
 	if err != nil {
 		return nil, errors.Wrap(err, "GetRegionIdAndZoneMaps")
 	}
 	result := []SDBInstanceSku{}
-	objs, err := self.getSkusByRegion(self.DBInstanceBase, regionExternalId)
+	objs, err := self.getObjsByRegion(self.DBInstanceBase, regionExternalId)
 	if err != nil {
 		return nil, errors.Wrapf(err, "getSkusByRegion")
 	}
@@ -75,7 +91,7 @@ func (self *SSkuResourcesMeta) GetDBInstanceSkusByRegionExternalId(regionExterna
 		if len(sku.Zone1) > 0 {
 			zoneId := self.getZoneIdBySuffix(zoneMaps, sku.Zone1) // Huawei rds sku zone1 maybe is cn-north-4f
 			if len(zoneId) == 0 {
-				log.Errorf("invalid sku %s(%s) %s zone1: %s", sku.Name, sku.Id, sku.CloudregionId, sku.Zone1)
+				log.Warningf("invalid sku %s(%s) %s zone1: %s", sku.Name, sku.Id, sku.CloudregionId, sku.Zone1)
 				continue
 			}
 			sku.Zone1 = zoneId
@@ -84,7 +100,7 @@ func (self *SSkuResourcesMeta) GetDBInstanceSkusByRegionExternalId(regionExterna
 		if len(sku.Zone2) > 0 {
 			zoneId := self.getZoneIdBySuffix(zoneMaps, sku.Zone2)
 			if len(zoneId) == 0 {
-				log.Errorf("invalid sku %s(%s) %s zone2: %s", sku.Name, sku.Id, sku.CloudregionId, sku.Zone2)
+				log.Warningf("invalid sku %s(%s) %s zone2: %s", sku.Name, sku.Id, sku.CloudregionId, sku.Zone2)
 				continue
 			}
 			sku.Zone2 = zoneId
@@ -93,7 +109,7 @@ func (self *SSkuResourcesMeta) GetDBInstanceSkusByRegionExternalId(regionExterna
 		if len(sku.Zone3) > 0 {
 			zoneId := self.getZoneIdBySuffix(zoneMaps, sku.Zone3)
 			if len(zoneId) == 0 {
-				log.Errorf("invalid sku %s(%s) %s zone3: %s", sku.Name, sku.Id, sku.CloudregionId, sku.Zone3)
+				log.Warningf("invalid sku %s(%s) %s zone3: %s", sku.Name, sku.Id, sku.CloudregionId, sku.Zone3)
 				continue
 			}
 			sku.Zone3 = zoneId
@@ -137,7 +153,7 @@ func (self *SSkuResourcesMeta) GetServerSkusByRegionExternalId(regionExternalId 
 		return nil, errors.Wrap(err, "GetRegionIdAndZoneMaps")
 	}
 	result := []SServerSku{}
-	objs, err := self.getSkusByRegion(self.ServerBase, regionExternalId)
+	objs, err := self.getObjsByRegion(self.ServerBase, regionExternalId)
 	if err != nil {
 		return nil, errors.Wrap(err, "getSkusByRegion")
 	}
@@ -191,9 +207,9 @@ func (self *SSkuResourcesMeta) GetElasticCacheSkusByRegionExternalId(regionExter
 
 	// aliyun finance cloud
 	remoteRegion := getElaticCacheSkuRegionExtId(regionExternalId)
-	objs, err := self.getSkusByRegion(self.ElasticCacheBase, remoteRegion)
+	objs, err := self.getObjsByRegion(self.ElasticCacheBase, remoteRegion)
 	if err != nil {
-		return nil, errors.Wrap(err, "getSkusByRegion")
+		return nil, errors.Wrap(err, "getObjsByRegion")
 	}
 	for _, obj := range objs {
 		sku := SElasticcacheSku{}
@@ -223,7 +239,7 @@ func (self *SSkuResourcesMeta) GetElasticCacheSkusByRegionExternalId(regionExter
 	return result, nil
 }
 
-func (self *SSkuResourcesMeta) getSkusByRegion(base string, region string) ([]jsonutils.JSONObject, error) {
+func (self *SSkuResourcesMeta) getObjsByRegion(base string, region string) ([]jsonutils.JSONObject, error) {
 	url := fmt.Sprintf("%s/%s.json", base, region)
 	items, err := self._get(url)
 	if err != nil {
@@ -245,7 +261,12 @@ func (self *SSkuResourcesMeta) _get(url string) ([]jsonutils.JSONObject, error) 
 	userAgent := "vendor/yunion-OneCloud@" + v.Get().GitVersion
 	req.Header.Set("User-Agent", userAgent)
 
-	client := &http.Client{}
+	transport := httputils.GetTransport(true)
+	transport.Proxy = options.Options.HttpTransportProxyFunc()
+	client := &http.Client{
+		Transport: transport,
+	}
+
 	resp, err := client.Do(req)
 	if err != nil {
 		return nil, fmt.Errorf("SkuResourcesMeta.get.Get %s", err)
@@ -367,16 +388,28 @@ func SyncServerSkus(ctx context.Context, userCred mcclient.TokenCredential, isSt
 }
 
 // 同步指定region sku列表
-func SyncServerSkusByRegion(ctx context.Context, userCred mcclient.TokenCredential, region *SCloudregion) error {
-	meta, err := FetchSkuResourcesMeta()
-	if err != nil {
-		return errors.Wrap(err, "SyncServerSkusByRegion.FetchSkuResourcesMeta")
+func SyncServerSkusByRegion(ctx context.Context, userCred mcclient.TokenCredential, region *SCloudregion, extSkuMeta *SSkuResourcesMeta) compare.SyncResult {
+	result := compare.SyncResult{}
+	var err error
+	if extSkuMeta == nil {
+		extSkuMeta, err = FetchSkuResourcesMeta()
+		if err != nil {
+			result.AddError(errors.Wrap(err, "SyncServerSkusByRegion.FetchSkuResourcesMeta"))
+			return result
+		}
 	}
 
-	result := ServerSkuManager.SyncServerSkus(ctx, userCred, region, meta)
+	result = ServerSkuManager.SyncServerSkus(ctx, userCred, region, extSkuMeta)
 	notes := fmt.Sprintf("SyncServerSkusByRegion %s result: %s", region.Name, result.Result())
 	log.Infof(notes)
-	return nil
+
+	// notfiy sched manager
+	_, err = modules.SchedManager.SyncSku(auth.GetAdminSession(ctx, options.Options.Region, ""), false)
+	if err != nil {
+		log.Errorf("SchedManager SyncSku %s", err)
+	}
+
+	return result
 }
 
 func FetchSkuResourcesMeta() (*SSkuResourcesMeta, error) {

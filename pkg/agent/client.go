@@ -19,7 +19,6 @@ import (
 
 	"google.golang.org/grpc"
 
-	"yunion.io/x/sdnagent/pkg/agent/common"
 	pb "yunion.io/x/sdnagent/pkg/agent/proto"
 )
 
@@ -38,8 +37,8 @@ func (c *AgentClient) W(resp pb.CommonResponse, err error) error {
 	return nil
 }
 
-func NewClient() (*AgentClient, error) {
-	conn, err := grpc.Dial("unix://"+common.UnixSocketFile, grpc.WithInsecure())
+func NewClient(sockPath string) (*AgentClient, error) {
+	conn, err := grpc.Dial("unix://"+sockPath, grpc.WithInsecure())
 	if err != nil {
 		return nil, err
 	}

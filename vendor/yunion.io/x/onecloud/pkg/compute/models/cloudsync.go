@@ -69,12 +69,13 @@ func (manager *SSyncableBaseResourceManager) ListItemFilter(
 
 type sStoragecacheSyncPair struct {
 	local  *SStoragecache
+	region *SCloudregion
 	remote cloudprovider.ICloudStoragecache
 	isNew  bool
 }
 
 func (pair *sStoragecacheSyncPair) syncCloudImages(ctx context.Context, userCred mcclient.TokenCredential) compare.SyncResult {
-	return pair.local.SyncCloudImages(ctx, userCred, pair.remote)
+	return pair.local.SyncCloudImages(ctx, userCred, pair.remote, pair.region)
 }
 
 func isInCache(pairs []sStoragecacheSyncPair, localCacheId string) bool {
@@ -145,8 +146,8 @@ func syncRegionSkus(ctx context.Context, userCred mcclient.TokenCredential, loca
 
 	if cnt == 0 {
 		// 提前同步instance type.如果同步失败可能导致vm 内存显示为0
-		if err = SyncServerSkusByRegion(ctx, userCred, localRegion); err != nil {
-			msg := fmt.Sprintf("Get Skus for region %s failed %s", localRegion.GetName(), err)
+		if ret := SyncServerSkusByRegion(ctx, userCred, localRegion, nil); ret.IsError() {
+			msg := fmt.Sprintf("Get Skus for region %s failed %s", localRegion.GetName(), ret.Result())
 			log.Errorln(msg)
 			// 暂时不终止同步
 			// logSyncFailed(provider, task, msg)
@@ -537,6 +538,7 @@ func syncStorageCaches(ctx context.Context, userCred mcclient.TokenCredential, p
 	cachePair.local = localCache
 	cachePair.remote = remoteCache
 	cachePair.isNew = isNew
+	cachePair.region = localStorage.GetRegion()
 	return
 }
 

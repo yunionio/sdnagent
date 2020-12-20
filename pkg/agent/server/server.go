@@ -22,8 +22,9 @@ import (
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/reflection"
 
+	fwdpb "yunion.io/x/onecloud/pkg/hostman/guestman/forwarder/api"
+
 	"yunion.io/x/log"
-	"yunion.io/x/sdnagent/pkg/agent/common"
 	pb "yunion.io/x/sdnagent/pkg/agent/proto"
 	"yunion.io/x/sdnagent/pkg/agent/utils"
 )
@@ -76,22 +77,25 @@ func (s *AgentServer) Start(ctx context.Context) error {
 
 		vSwitchService := newVSwitchService(s)
 		openflowService := newOpenflowService(s)
+		forwardService := watcher.newForwardService()
 		rpcServer := grpc.NewServer()
 		pb.RegisterVSwitchServer(rpcServer, vSwitchService)
 		pb.RegisterOpenflowServer(rpcServer, openflowService)
+		fwdpb.RegisterForwarderServer(rpcServer, forwardService)
 		reflection.Register(rpcServer)
 		s.rpcServer = rpcServer
 
-		lis, err := net.Listen("unix", common.UnixSocketFile)
+		lis, err := net.Listen("unix", s.hostConfig.SdnSocketPath)
 		if err != nil {
-			log.Fatalf("listen %s failed: %s", common.UnixSocketFile, err)
+			log.Fatalf("listen %s failed: %s", s.hostConfig.SdnSocketPath, err)
 		}
-		defer lis.Close()
 
 		s.wg.Add(2)
 		go watcher.Start(s.ctx, s)
 		go ifaceJanitor.Start(s.ctx)
 		go func() {
+			defer lis.Close()
+
 			err := rpcServer.Serve(lis)
 			if err != nil {
 				log.Warningf("rpc server serve returned: %v", err)

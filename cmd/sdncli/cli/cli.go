@@ -21,9 +21,10 @@ import (
 	"github.com/spf13/cobra"
 	"github.com/spf13/pflag"
 
+	"yunion.io/x/log"
+
 	"yunion.io/x/sdnagent/pkg/agent"
 	pb "yunion.io/x/sdnagent/pkg/agent/proto"
-	"yunion.io/x/log"
 )
 
 func flagSetMustGet(v interface{}, err error) interface{} {
@@ -73,8 +74,11 @@ func handleResponse(resp pb.CommonResponse, err error, fmt string) bool {
 }
 
 func DoCmd(cmd *cobra.Command) {
-	var err error
-	c, err := agent.NewClient()
+	sockPath, err := cmd.Flags().GetString("sock")
+	if err != nil {
+		log.Fatalf("get sock option: %v", err)
+	}
+	c, err := agent.NewClient(sockPath)
 	if err != nil {
 		log.Fatalf("client failure: %s", err)
 	}

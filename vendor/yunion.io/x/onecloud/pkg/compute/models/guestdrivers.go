@@ -25,6 +25,7 @@ import (
 	"yunion.io/x/onecloud/pkg/cloudcommon/db/quotas"
 	"yunion.io/x/onecloud/pkg/cloudcommon/db/taskman"
 	"yunion.io/x/onecloud/pkg/cloudprovider"
+	guestdriver_types "yunion.io/x/onecloud/pkg/compute/guestdrivers/types"
 	"yunion.io/x/onecloud/pkg/mcclient"
 	"yunion.io/x/onecloud/pkg/util/billing"
 	"yunion.io/x/onecloud/pkg/util/rbacutils"
@@ -116,6 +117,7 @@ type IGuestDriver interface {
 	StartGuestSaveImage(ctx context.Context, userCred mcclient.TokenCredential, guest *SGuest, params *jsonutils.JSONDict, parentTaskId string) error
 
 	StartGuestSaveGuestImage(ctx context.Context, userCred mcclient.TokenCredential, guest *SGuest, params *jsonutils.JSONDict, parentTaskId string) error
+	RequestSaveImage(ctx context.Context, userCred mcclient.TokenCredential, guest *SGuest, task taskman.ITask) error
 
 	RequestStopGuestForDelete(ctx context.Context, guest *SGuest, host *SHost, task taskman.ITask) error
 
@@ -145,6 +147,7 @@ type IGuestDriver interface {
 	IsRebuildRootSupportChangeUEFI() bool
 
 	ValidateRebuildRoot(ctx context.Context, userCred mcclient.TokenCredential, guest *SGuest, input *api.ServerRebuildRootInput) (*api.ServerRebuildRootInput, error)
+	ValidateDetachNetwork(ctx context.Context, userCred mcclient.TokenCredential, guest *SGuest) error
 
 	IsSupportdDcryptPasswordFromSecretKey() bool
 
@@ -205,6 +208,10 @@ type IGuestDriver interface {
 	RequestLiveMigrate(ctx context.Context, guest *SGuest, userCred mcclient.TokenCredential, data *jsonutils.JSONDict, task taskman.ITask) error
 
 	RequestRemoteUpdate(ctx context.Context, guest *SGuest, userCred mcclient.TokenCredential, replaceTags bool) error
+
+	RequestOpenForward(ctx context.Context, userCred mcclient.TokenCredential, guest *SGuest, req *guestdriver_types.OpenForwardRequest) (*guestdriver_types.OpenForwardResponse, error)
+	RequestListForward(ctx context.Context, userCred mcclient.TokenCredential, guest *SGuest, req *guestdriver_types.ListForwardRequest) (*guestdriver_types.ListForwardResponse, error)
+	RequestCloseForward(ctx context.Context, userCred mcclient.TokenCredential, guest *SGuest, req *guestdriver_types.CloseForwardRequest) (*guestdriver_types.CloseForwardResponse, error)
 }
 
 var guestDrivers map[string]IGuestDriver

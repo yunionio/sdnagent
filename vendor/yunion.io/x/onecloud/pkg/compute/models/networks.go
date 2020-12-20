@@ -134,6 +134,21 @@ func (manager *SNetworkManager) AllowCreateItem(ctx context.Context, userCred mc
 	return db.IsAdminAllowCreate(userCred, manager)
 }
 
+func (self *SNetwork) getMtu() int {
+	baseMtu := options.Options.DefaultMtu
+
+	wire := self.GetWire()
+	if wire != nil {
+		baseMtu = wire.Mtu
+		if IsOneCloudVpcResource(wire) {
+			baseMtu -= api.VPC_OVN_ENCAP_COST
+		}
+		return baseMtu
+	}
+
+	return baseMtu
+}
+
 func (self *SNetwork) GetNetworkInterfaces() ([]SNetworkInterface, error) {
 	sq := NetworkinterfacenetworkManager.Query().SubQuery()
 	q := NetworkInterfaceManager.Query()
@@ -145,16 +160,6 @@ func (self *SNetwork) GetNetworkInterfaces() ([]SNetworkInterface, error) {
 		return nil, err
 	}
 	return networkinterfaces, nil
-}
-
-func (self *SNetwork) GetReservedIPs() ([]SReservedip, error) {
-	reservedIps := []SReservedip{}
-	q := ReservedipManager.Query().Equals("network_id", self.Id)
-	err := db.FetchModelObjects(ReservedipManager, q, &reservedIps)
-	if err != nil {
-		return nil, errors.Wrap(err, "db.FetchModelObjects")
-	}
-	return reservedIps, nil
 }
 
 func (self *SNetwork) ValidateDeleteCondition(ctx context.Context) error {
@@ -306,7 +311,9 @@ func (self *SNetwork) GetBaremetalNicsCount() (int, error) {
 }
 
 func (self *SNetwork) GetReservedNicsCount() (int, error) {
-	return ReservedipManager.Query().Equals("network_id", self.Id).CountWithError()
+	q := ReservedipManager.Query().Equals("network_id", self.Id)
+	q = filterExpiredReservedIps(q)
+	return q.CountWithError()
 }
 
 func (self *SNetwork) GetLoadbalancerIpsCount() (int, error) {
@@ -1384,6 +1391,9 @@ func (manager *SNetworkManager) ValidateCreateData(ctx context.Context, userCred
 		masklen = prefix.MaskLen
 		netAddr = prefix.Address.NetAddr(masklen)
 		input.GuestIpMask = int64(prefix.MaskLen)
+		if masklen >= 30 {
+			return input, httperrors.NewInputParameterError("subnet masklen should be smaller than 30")
+		}
 		// 根据掩码得到合法的GuestIpPrefix
 		input.GuestIpPrefix = prefix.String()
 	} else {
@@ -1480,9 +1490,6 @@ func (manager *SNetworkManager) ValidateCreateData(ctx context.Context, userCred
 		// reserve addresses for onecloud vpc networks
 		masklen := int8(input.GuestIpMask)
 		netAddr := ipStart.NetAddr(masklen)
-		if masklen >= 30 {
-			return input, httperrors.NewInputParameterError("subnet masklen should be smaller than 30")
-		}
 		if netAddr != ipEnd.NetAddr(masklen) {
 			return input, httperrors.NewInputParameterError("start and end ip when masked are not in the same cidr subnet")
 		}
@@ -1777,10 +1784,7 @@ func (self *SNetwork) RealDelete(ctx context.Context, userCred mcclient.TokenCre
 			return errors.Wrapf(err, "networkinterface.purge %s(%s)", networkinterfaces[i].Name, networkinterfaces[i].Id)
 		}
 	}
-	reservedIps, err := self.GetReservedIPs()
-	if err != nil {
-		return errors.Wrap(err, "GetReservedNicsCount")
-	}
+	reservedIps := ReservedipManager.GetReservedIPs(self)
 	for i := range reservedIps {
 		err = reservedIps[i].Release(ctx, userCred, self)
 		if err != nil {

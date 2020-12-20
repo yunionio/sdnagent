@@ -5,8 +5,8 @@ go 1.12
 require (
 	github.com/coreos/go-iptables v0.4.5
 	github.com/digitalocean/go-openvswitch v0.0.0-20190515160856-1141932ed5cf
-	github.com/fsnotify/fsnotify v1.4.7
-	github.com/golang/protobuf v1.3.2
+	github.com/fsnotify/fsnotify v1.4.9
+	github.com/golang/protobuf v1.4.2
 	github.com/mitchellh/go-homedir v1.1.0
 	github.com/pkg/errors v0.9.1
 	github.com/spf13/cobra v0.0.5
@@ -14,11 +14,12 @@ require (
 	github.com/spf13/viper v1.3.2
 	github.com/vishvananda/netlink v1.0.0
 	github.com/vishvananda/netns v0.0.0-20191106174202-0a2b9b5464df
-	golang.org/x/net v0.0.0-20200226121028-0de0cce0169b
-	google.golang.org/grpc v1.26.0
+	golang.org/x/net v0.0.0-20200707034311-ab3426394381
+	google.golang.org/grpc v1.29.0
+	google.golang.org/protobuf v1.24.0
 	yunion.io/x/jsonutils v0.0.0-20201110084044-3e4e1cb49769
-	yunion.io/x/log v0.0.0-20200313080802-57a4ce5966b3
-	yunion.io/x/onecloud v0.0.0-20201204022325-beb7661b9fc4
+	yunion.io/x/log v0.0.0-20201210064738-43181789dc74
+	yunion.io/x/onecloud v0.0.0-20201219023906-3eb25e6dd1cd
 	yunion.io/x/pkg v0.0.0-20201123083159-ca3aea986ff2
 )
 
