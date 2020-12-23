@@ -508,17 +508,32 @@ func (mdf *ovnMdForward) dial() (net.Conn, error) {
 }
 
 func (mdf *ovnMdForward) Serve(ctx context.Context) error {
+	const idleD = 24 * time.Hour
+	notifyC := make(chan utils.Empty)
 	go func() {
-		select {
-		case <-ctx.Done():
-			mdf.listener.Close()
-			return
+		idleT := time.NewTimer(idleD)
+		for {
+			select {
+			case <-ctx.Done():
+				mdf.listener.Close()
+				return
+			case <-idleT.C:
+				log.Infof("Serve idle timeout %s:%d -> %s:%d", mdf.BindAddr(), mdf.BindPort(), mdf.RemoteAddr, mdf.RemotePort)
+				mdf.listener.Close()
+				return
+			case <-notifyC:
+				idleT.Reset(idleD)
+			}
 		}
 	}()
 	for {
 		conn, err := mdf.listener.Accept()
 		if err != nil {
 			return errors.Wrap(err, "accept")
+		}
+		select {
+		case notifyC <- utils.Empty{}:
+		default:
 		}
 		go func() {
 			err := mdf.serveConn(ctx, conn)
