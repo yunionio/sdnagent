@@ -19,8 +19,8 @@ require (
 	google.golang.org/protobuf v1.24.0
 	yunion.io/x/jsonutils v0.0.0-20201110084044-3e4e1cb49769
 	yunion.io/x/log v0.0.0-20201210064738-43181789dc74
-	yunion.io/x/onecloud v0.0.0-20201219023906-3eb25e6dd1cd
-	yunion.io/x/pkg v0.0.0-20201123083159-ca3aea986ff2
+	yunion.io/x/onecloud v0.0.0-20210128125021-0f028562876e
+	yunion.io/x/pkg v0.0.0-20210109071527-7e72daf56747
 )
 
 replace github.com/digitalocean/go-openvswitch => github.com/yousong/go-openvswitch v0.0.0-20200422025222-6b2d502be872

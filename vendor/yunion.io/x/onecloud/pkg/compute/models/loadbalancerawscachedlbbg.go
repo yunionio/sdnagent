@@ -184,9 +184,9 @@ func (man *SAwsCachedLbbgManager) GetCachedBackendGroups(backendGroupId string) 
 	return ret, nil
 }
 
-func (man *SAwsCachedLbbgManager) getLoadbalancerBackendgroupsByRegion(regionId string) ([]SAwsCachedLbbg, error) {
+func (man *SAwsCachedLbbgManager) getLoadbalancerBackendgroupsByRegion(managerId string, regionId string) ([]SAwsCachedLbbg, error) {
 	lbbgs := []SAwsCachedLbbg{}
-	q := man.Query().Equals("cloudregion_id", regionId).IsFalse("pending_deleted")
+	q := man.Query().Equals("cloudregion_id", regionId).Equals("manager_id", managerId).IsFalse("pending_deleted")
 	if err := db.FetchModelObjects(man, q, &lbbgs); err != nil {
 		log.Errorf("failed to get lbbgs for region: %s error: %v", regionId, err)
 		return nil, err
@@ -204,7 +204,7 @@ func (man *SAwsCachedLbbgManager) SyncLoadbalancerBackendgroups(ctx context.Cont
 	remoteLbbgs := []cloudprovider.ICloudLoadbalancerBackendGroup{}
 	syncResult := compare.SyncResult{}
 
-	dbLbbgs, err := man.getLoadbalancerBackendgroupsByRegion(region.GetId())
+	dbLbbgs, err := man.getLoadbalancerBackendgroupsByRegion(provider.GetId(), region.GetId())
 	if err != nil {
 		syncResult.Error(err)
 		return nil, nil, syncResult
@@ -359,15 +359,21 @@ func (lbbg *SAwsCachedLbbg) SyncWithCloudLoadbalancerBackendgroup(ctx context.Co
 
 	diff, err := db.UpdateWithLock(ctx, lbbg, func() error {
 		lbbg.Status = extLoadbalancerBackendgroup.GetStatus()
-		metadata := extLoadbalancerBackendgroup.GetMetadata()
-		if port, _ := metadata.Int("port"); port > 0 {
-			lbbg.Port = int(port)
+		metadata := extLoadbalancerBackendgroup.GetSysTags()
+		if port, ok := metadata["port"]; ok {
+			portNum, err := strconv.Atoi(port)
+			if err == nil {
+				lbbg.Port = portNum
+			}
 		}
-		if protocol, _ := metadata.GetString("health_check_protocol"); len(protocol) > 0 {
+		if protocol, ok := metadata["health_check_protocol"]; ok {
 			lbbg.HealthCheckProtocol = protocol
 		}
-		if interval, _ := metadata.Int("health_check_interval"); interval > 0 {
-			lbbg.HealthCheckInterval = int(interval)
+		if interval, ok := metadata["health_check_interval"]; ok {
+			intervalNum, err := strconv.Atoi(interval)
+			if err == nil {
+				lbbg.HealthCheckInterval = intervalNum
+			}
 		}
 		if newLocalLbbg != nil {
 			lbbg.BackendGroupId = newLocalLbbg.GetId()
@@ -399,21 +405,27 @@ func (man *SAwsCachedLbbgManager) newFromCloudLoadbalancerBackendgroup(ctx conte
 	lbbg.ExternalId = extLoadbalancerBackendgroup.GetGlobalId()
 	lbbg.ProtocolType = extLoadbalancerBackendgroup.GetProtocolType()
 
-	metadata := extLoadbalancerBackendgroup.GetMetadata()
-	if t, _ := metadata.GetString("target_type"); len(t) > 0 {
+	metadata := extLoadbalancerBackendgroup.GetSysTags()
+	if t, ok := metadata["target_type"]; ok {
 		lbbg.TargetType = t
 	}
 
-	if p, _ := metadata.Int("port"); p > 0 {
-		lbbg.Port = int(p)
+	if p, ok := metadata["port"]; ok {
+		portNum, err := strconv.Atoi(p)
+		if err == nil {
+			lbbg.Port = portNum
+		}
 	}
 
-	if protocol, _ := metadata.GetString("health_check_protocol"); len(protocol) > 0 {
+	if protocol, ok := metadata["health_check_protocol"]; ok {
 		lbbg.HealthCheckProtocol = protocol
 	}
 
-	if interval, _ := metadata.Int("health_check_interval"); interval > 0 {
-		lbbg.HealthCheckInterval = int(interval)
+	if interval, ok := metadata["health_check_interval"]; ok {
+		intervalNum, err := strconv.Atoi(interval)
+		if err == nil {
+			lbbg.HealthCheckInterval = intervalNum
+		}
 	}
 	newName, err := db.GenerateName(man, syncOwnerId, LocalLbbg.GetName())
 	if err != nil {
