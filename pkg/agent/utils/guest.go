@@ -29,7 +29,6 @@ type guestDesc struct {
 	NICs               []*GuestNIC `json:"nics"`
 	SecurityRules      string      `json:"security_rules"`
 	AdminSecurityRules string      `json:"admin_security_rules"`
-	Secgroup           string
 	Name               string
 
 	IsMaster bool   `json:"is_master"`
@@ -238,9 +237,6 @@ func (g *Guest) LoadDesc() error {
 	}
 
 	{
-		if len(desc.Secgroup) == 0 {
-			desc.SecurityRules = "out:allow any; in:allow any"
-		}
 		rstr := desc.AdminSecurityRules + "; " + desc.SecurityRules
 		rs, err := NewSecurityRules(rstr)
 		if err != nil {
