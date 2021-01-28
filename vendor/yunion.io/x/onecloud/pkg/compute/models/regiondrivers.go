@@ -129,7 +129,6 @@ type IRegionDriver interface {
 
 	RequestCacheSecurityGroup(ctx context.Context, userCred mcclient.TokenCredential, region *SCloudregion, vpc *SVpc, secgroup *SSecurityGroup, classic bool, removeProjectId string, task taskman.ITask) error
 	RequestSyncSecurityGroup(ctx context.Context, userCred mcclient.TokenCredential, vpcId string, vpc *SVpc, secgroup *SSecurityGroup, removeProjectId, service string) (string, error)
-	GetSecurityGroupRuleOrder() cloudprovider.TPriorityOrder // Desc(priority值越大,优先级越高) Asc(priority值越小,优先级越高)
 	GetDefaultSecurityGroupInRule() cloudprovider.SecurityRule
 	GetDefaultSecurityGroupOutRule() cloudprovider.SecurityRule
 	GetSecurityGroupRuleMaxPriority() int
@@ -178,6 +177,7 @@ type IDBInstanceDriver interface {
 	ValidateDBInstanceRecovery(ctx context.Context, userCred mcclient.TokenCredential, instance *SDBInstance, backup *SDBInstanceBackup, input api.SDBInstanceRecoveryConfigInput) error
 
 	RequestRemoteUpdateDBInstance(ctx context.Context, userCred mcclient.TokenCredential, instance *SDBInstance, replaceTags bool, task taskman.ITask) error
+	RequestSyncRdsSecurityGroups(ctx context.Context, userCred mcclient.TokenCredential, rds *SDBInstance, task taskman.ITask) error
 }
 
 type IElasticcacheDriver interface {

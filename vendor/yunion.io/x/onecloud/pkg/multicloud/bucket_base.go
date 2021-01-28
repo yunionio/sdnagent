@@ -15,13 +15,13 @@
 package multicloud
 
 import (
-	"yunion.io/x/jsonutils"
-
 	api "yunion.io/x/onecloud/pkg/apis/compute"
 	"yunion.io/x/onecloud/pkg/cloudprovider"
 )
 
-type SBaseBucket struct{}
+type SBaseBucket struct {
+	SResourceBase
+}
 
 func (b *SBaseBucket) MaxPartCount() int {
 	return 10000
@@ -53,10 +53,6 @@ func (b *SBaseBucket) Refresh() error {
 
 func (b *SBaseBucket) IsEmulated() bool {
 	return false
-}
-
-func (b *SBaseBucket) GetMetadata() *jsonutils.JSONDict {
-	return nil
 }
 
 func (b *SBaseBucket) LimitSupport() cloudprovider.SBucketStats {
@@ -122,14 +118,10 @@ func (b *SBaseBucket) DeletePolicy(id []string) ([]cloudprovider.SBucketPolicySt
 	return nil, cloudprovider.ErrNotImplemented
 }
 
-func (b *SBaseBucket) GetTags() (map[string]string, error) {
-	return nil, cloudprovider.ErrNotImplemented
-}
-
-func (b *SBaseBucket) SetTags(tags map[string]string) error {
-	return cloudprovider.ErrNotImplemented
-}
-
 func (b *SBaseBucket) DeleteTags() error {
 	return cloudprovider.ErrNotImplemented
+}
+
+func (b *SBaseBucket) ListMultipartUploads() ([]cloudprovider.SBucketMultipartUploads, error) {
+	return nil, cloudprovider.ErrNotImplemented
 }
