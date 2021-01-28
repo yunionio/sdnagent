@@ -331,9 +331,20 @@ func (sr *SecurityRules) Flows(g *Guest, data map[string]interface{}) []*ovs.Flo
 	}
 	flows = append(flows,
 		F(0, 25600, T("in_port={{.PortNo}},dl_src={{.MAC}}"), "normal"),
+	)
 
+	if !g.HostConfig.SdnAllowConntrackInvalid {
 		// ct_state= flags order matters
-		F(1, 7900, "ip,ct_state=+inv+trk", "drop"),
+		flows = append(flows,
+			F(1, 7900, "ip,ct_state=+inv+trk", "drop"),
+		)
+	} else {
+		flows = append(flows,
+			F(1, 7650, T("ip,ct_state=+inv+trk,{{._in_port_not_vm}}"), "resubmit(,3)"),
+			F(1, 7640, T("ip,ct_state=+inv+trk,{{._in_port_vm}}"), "resubmit(,2)"),
+		)
+	}
+	flows = append(flows,
 		F(1, 7800, T("ip,ct_state=+new+trk,{{._in_port_not_vm}}"), "resubmit(,3)"),
 		F(1, 7700, T("ip,ct_state=+new+trk,{{._in_port_vm}}"), "resubmit(,2)"),
 		F(1, 7600, "ip", "resubmit(,4)"),
@@ -434,9 +445,11 @@ func (sr *SecurityRules) Flows(g *Guest, data map[string]interface{}) []*ovs.Flo
 // 23500 in_port=PORT_PHY,{ SrcMacCheck},actions=drop
 //
 // Table 1 sec_CT
-//  7900 ip,ct_state=+trk+inv,actions=drop
+//  7900 ip,ct_state=+trk+inv,actions=drop						!allowInvalid
 //  7800 ip,ct_state=+trk+new,{{!in_port_vm}},actions=resubmit(,sec_IN)
 //  7700 ip,ct_state=+trk+new,{{ in_port_vm}},actions=resubmit(,sec_OUT)
+//  7650 ip,ct_state=+trk+inv,{{!in_port_vm}},actions=resubmit(,sec_IN)			 allowInvalid
+//  7640 ip,ct_state=+trk+inv,{{ in_port_vm}},actions=resubmit(,sec_OUT)		 allowInvalid
 //  7600 ip,actions=resubmit(,sec_CT_OkayEd)
 //
 // Table 2 sec_OUT
