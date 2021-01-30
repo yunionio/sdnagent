@@ -22,6 +22,7 @@ import (
 	"yunion.io/x/jsonutils"
 	"yunion.io/x/log"
 	"yunion.io/x/pkg/errors"
+	"yunion.io/x/pkg/gotypes"
 	"yunion.io/x/pkg/tristate"
 	"yunion.io/x/pkg/util/compare"
 	"yunion.io/x/pkg/util/netutils"
@@ -361,6 +362,17 @@ func (self *SWire) syncWithCloudWire(ctx context.Context, userCred mcclient.Toke
 
 		self.IsEmulated = extWire.IsEmulated()
 
+		vpc := self.GetVpc()
+		if vpc != nil {
+			region, err := vpc.GetRegion()
+			if err != nil {
+				return errors.Wrapf(err, "vpc.GetRegion")
+			}
+			if utils.IsInStringArray(region.Provider, api.REGIONAL_NETWORK_PROVIDERS) {
+				self.ZoneId = ""
+			}
+		}
+
 		if self.IsEmulated {
 			self.DomainId = vpc.DomainId
 			// self.IsPublic = vpc.IsPublic
@@ -408,8 +420,15 @@ func (manager *SWireManager) newFromCloudWire(ctx context.Context, userCred mccl
 	wire.ExternalId = extWire.GetGlobalId()
 	wire.Bandwidth = extWire.GetBandwidth()
 	wire.VpcId = vpc.Id
-	izone := extWire.GetIZone()
-	if izone != nil {
+	region, err := vpc.GetRegion()
+	if err != nil {
+		return nil, errors.Wrapf(err, "GetRegion for vpc %s(%s)", vpc.Name, vpc.Id)
+	}
+	if !utils.IsInStringArray(region.Provider, api.REGIONAL_NETWORK_PROVIDERS) {
+		izone := extWire.GetIZone()
+		if gotypes.IsNil(izone) {
+			return nil, fmt.Errorf("missing zone for wire %s(%s)", wire.Name, wire.ExternalId)
+		}
 		zone, err := vpc.getZoneByExternalId(izone.GetGlobalId())
 		if err != nil {
 			return nil, errors.Wrapf(err, "newFromCloudWire.getZoneByExternalId")
@@ -804,12 +823,28 @@ func chooseNetworkByAddressCount(nets []*SNetwork) (*SNetwork, *SNetwork) {
 }
 
 func ChooseCandidateNetworks(nets []SNetwork, isExit bool, serverTypes []string) *SNetwork {
+	matchingNets := make([]*SNetwork, 0)
+	notMatchingNets := make([]*SNetwork, 0)
+
 	for _, s := range serverTypes {
 		net := chooseCandidateNetworksByNetworkType(nets, isExit, s)
 		if net != nil {
-			return net
+			if utils.IsInStringArray(net.ServerType, serverTypes) {
+				matchingNets = append(matchingNets, net)
+			} else {
+				notMatchingNets = append(notMatchingNets, net)
+			}
 		}
 	}
+
+	if len(matchingNets) >= 1 {
+		return matchingNets[0]
+	}
+
+	if len(notMatchingNets) >= 1 {
+		return notMatchingNets[0]
+	}
+
 	return nil
 }
 
@@ -975,6 +1010,10 @@ func (manager *SWireManager) ListItemFilter(
 		}
 		sq := HostwireManager.Query("wire_id").Equals("host_id", hostObj.GetId())
 		q = q.Filter(sqlchemy.In(q.Field("id"), sq.SubQuery()))
+	}
+
+	if query.Bandwidth != nil {
+		q = q.Equals("bandwidth", *query.Bandwidth)
 	}
 
 	return q, nil

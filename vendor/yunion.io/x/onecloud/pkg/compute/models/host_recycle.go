@@ -90,7 +90,10 @@ func (self *SGuest) DoPerformPrepaidRecycle(ctx context.Context, userCred mcclie
 	logclient.AddActionLogWithContext(ctx, self, logclient.ACT_RECYCLE_PREPAID, self.GetShortDesc(ctx), userCred, true)
 
 	if autoDelete {
-		self.StartDeleteGuestTask(ctx, userCred, "", false, true, false)
+		opts := api.ServerDeleteInput{
+			OverridePendingDelete: true,
+		}
+		self.StartDeleteGuestTask(ctx, userCred, "", opts)
 	}
 
 	return nil, nil
@@ -344,7 +347,10 @@ func (self *SHost) PerformUndoPrepaidRecycle(ctx context.Context, userCred mccli
 		return nil, httperrors.NewInvalidStatusError("host is not a prepaid recycle host")
 	}
 
-	guests := self.GetGuests()
+	guests, err := self.GetGuests()
+	if err != nil {
+		return nil, httperrors.NewGeneralError(errors.Wrapf(err, "GetGuests"))
+	}
 
 	if len(guests) == 0 {
 		return nil, httperrors.NewInvalidStatusError("cannot delete a recycle host without active instance")
@@ -362,7 +368,7 @@ func (self *SHost) PerformUndoPrepaidRecycle(ctx context.Context, userCred mccli
 		return nil, httperrors.NewInvalidStatusError("cannot undo a recycle host with pending_deleted guest")
 	}
 
-	err := doUndoPrepaidRecycleLockGuest(ctx, userCred, self, &guests[0])
+	err = doUndoPrepaidRecycleLockGuest(ctx, userCred, self, &guests[0])
 	if err != nil {
 		logclient.AddActionLogWithContext(ctx, self, logclient.ACT_UNDO_RECYCLE_PREPAID, self.GetShortDesc(ctx), userCred, false)
 		return nil, httperrors.NewGeneralError(err)

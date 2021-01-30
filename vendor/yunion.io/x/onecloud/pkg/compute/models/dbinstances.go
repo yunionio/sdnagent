@@ -38,6 +38,7 @@ import (
 	"yunion.io/x/onecloud/pkg/cloudcommon/db/lockman"
 	"yunion.io/x/onecloud/pkg/cloudcommon/db/quotas"
 	"yunion.io/x/onecloud/pkg/cloudcommon/db/taskman"
+	"yunion.io/x/onecloud/pkg/cloudcommon/policy"
 	"yunion.io/x/onecloud/pkg/cloudcommon/validators"
 	"yunion.io/x/onecloud/pkg/cloudprovider"
 	"yunion.io/x/onecloud/pkg/compute/options"
@@ -537,6 +538,7 @@ func (manager *SDBInstanceManager) FetchCustomizeColumns(
 	manRows := manager.SManagedResourceBaseManager.FetchCustomizeColumns(ctx, userCred, query, objs, fields, isList)
 	regRows := manager.SCloudregionResourceBaseManager.FetchCustomizeColumns(ctx, userCred, query, objs, fields, isList)
 
+	rdsIds := make([]string, len(rows))
 	vpcIds := make([]string, len(rows))
 	zone1Ids := make([]string, len(rows))
 	zone2Ids := make([]string, len(rows))
@@ -548,6 +550,7 @@ func (manager *SDBInstanceManager) FetchCustomizeColumns(
 			CloudregionResourceInfo: regRows[i],
 		}
 		instance := objs[i].(*SDBInstance)
+		rdsIds[i] = instance.Id
 		vpcIds[i] = instance.VpcId
 		zone1Ids[i] = instance.Zone1
 		zone2Ids[i] = instance.Zone2
@@ -569,6 +572,42 @@ func (manager *SDBInstanceManager) FetchCustomizeColumns(
 		}
 	}
 
+	q := SecurityGroupManager.Query()
+	ownerId, queryScope, err := db.FetchCheckQueryOwnerScope(ctx, userCred, query, SecurityGroupManager, policy.PolicyActionList, true)
+	if err != nil {
+		log.Errorf("FetchCheckQueryOwnerScope error: %v", err)
+		return rows
+	}
+	secgroups := SecurityGroupManager.FilterByOwner(q, ownerId, queryScope).SubQuery()
+	rdssecgroups := DBInstanceSecgroupManager.Query().SubQuery()
+
+	secQ := rdssecgroups.Query(rdssecgroups.Field("dbinstance_id"), rdssecgroups.Field("secgroup_id"), secgroups.Field("name").Label("secgroup_name")).Join(secgroups, sqlchemy.Equals(rdssecgroups.Field("secgroup_id"), secgroups.Field("id"))).Filter(sqlchemy.In(rdssecgroups.Field("dbinstance_id"), rdsIds))
+
+	type sRdsSecgroupInfo struct {
+		DBInstanceId string `json:"dbinstance_id"`
+		SecgroupName string
+		SecgroupId   string
+	}
+	rsgs := []sRdsSecgroupInfo{}
+	err = secQ.All(&rsgs)
+	if err != nil {
+		log.Errorf("secQ.All error: %v", err)
+		return rows
+	}
+
+	ret := make(map[string][]apis.StandaloneShortDesc)
+	for i := range rsgs {
+		rsg, ok := ret[rsgs[i].DBInstanceId]
+		if !ok {
+			rsg = make([]apis.StandaloneShortDesc, 0)
+		}
+		rsg = append(rsg, apis.StandaloneShortDesc{
+			Id:   rsgs[i].SecgroupId,
+			Name: rsgs[i].SecgroupName,
+		})
+		ret[rsgs[i].DBInstanceId] = rsg
+	}
+
 	zone1, err := db.FetchIdNameMap2(ZoneManager, zone1Ids)
 	if err != nil {
 		return rows
@@ -588,6 +627,7 @@ func (manager *SDBInstanceManager) FetchCustomizeColumns(
 		rows[i].Zone1Name = zone1[zone1Ids[i]]
 		rows[i].Zone2Name = zone2[zone2Ids[i]]
 		rows[i].Zone3Name = zone3[zone3Ids[i]]
+		rows[i].Secgroups, _ = ret[rdsIds[i]]
 	}
 
 	return rows
@@ -2003,6 +2043,7 @@ func (self *SDBInstance) StartRemoteUpdateTask(ctx context.Context, userCred mcc
 		log.Errorln(err)
 		return errors.Wrap(err, "Start ElasticcacheRemoteUpdateTask")
 	} else {
+		self.SetStatus(userCred, api.DBINSTANCE_UPDATE_TAGS, "StartRemoteUpdateTask")
 		task.ScheduleRun(nil)
 	}
 	return nil
@@ -2012,8 +2053,70 @@ func (self *SDBInstance) OnMetadataUpdated(ctx context.Context, userCred mcclien
 	if len(self.ExternalId) == 0 {
 		return
 	}
-	err := self.StartRemoteUpdateTask(ctx, userCred, false, "")
+	err := self.StartRemoteUpdateTask(ctx, userCred, true, "")
 	if err != nil {
 		log.Errorf("StartRemoteUpdateTask fail: %s", err)
 	}
+}
+
+func (self *SDBInstance) AllowPerformSetSecgroup(ctx context.Context, userCred mcclient.TokenCredential, query jsonutils.JSONObject, data jsonutils.JSONObject) bool {
+	return self.IsOwner(userCred) || db.IsAdminAllowPerform(userCred, self, "set-secgroup")
+}
+
+func (self *SDBInstance) PerformSetSecgroup(ctx context.Context, userCred mcclient.TokenCredential, query jsonutils.JSONObject, input api.DBInstanceSetSecgroupInput) (jsonutils.JSONObject, error) {
+	if self.Status != api.DBINSTANCE_RUNNING {
+		return nil, httperrors.NewInvalidStatusError("this operation requires rds state to be %s", api.DBINSTANCE_RUNNING)
+	}
+	if len(input.SecgroupIds) == 0 {
+		return nil, httperrors.NewMissingParameterError("secgroup_ids")
+	}
+	for i := range input.SecgroupIds {
+		_, err := validators.ValidateModel(userCred, SecurityGroupManager, &input.SecgroupIds[i])
+		if err != nil {
+			return nil, err
+		}
+	}
+	driver, err := self.GetRegionDriver()
+	if err != nil {
+		return nil, httperrors.NewGeneralError(errors.Wrapf(err, "GetRegionDriver"))
+	}
+	max := driver.GetRdsSupportSecgroupCount()
+	if len(input.SecgroupIds) > max {
+		return nil, httperrors.NewUnsupportOperationError("%s supported secgroup count is %d", driver.GetProvider(), max)
+	}
+
+	secgroups, err := self.GetSecgroups()
+	if err != nil {
+		return nil, httperrors.NewGeneralError(errors.Wrapf(err, "GetSecgroups"))
+	}
+	secMaps := map[string]bool{}
+	for i := range secgroups {
+		if !utils.IsInStringArray(secgroups[i].Id, input.SecgroupIds) {
+			err := self.RevokeSecgroup(ctx, userCred, secgroups[i].Id)
+			if err != nil {
+				return nil, httperrors.NewGeneralError(errors.Wrapf(err, "RevokeSecgroup(%s)", secgroups[i].Id))
+			}
+		}
+		secMaps[secgroups[i].Id] = true
+	}
+	for _, id := range input.SecgroupIds {
+		if _, ok := secMaps[id]; !ok {
+			err = self.AssignSecgroup(ctx, userCred, id)
+			if err != nil {
+				return nil, httperrors.NewGeneralError(errors.Wrapf(err, "AssignSecgroup(%s)", id))
+			}
+		}
+	}
+
+	return nil, self.StartSyncSecgroupsTask(ctx, userCred, "")
+}
+
+func (self *SDBInstance) StartSyncSecgroupsTask(ctx context.Context, userCred mcclient.TokenCredential, parentTaskId string) error {
+	task, err := taskman.TaskManager.NewTask(ctx, "DBInstanceSyncSecgroupsTask", self, userCred, nil, parentTaskId, "", nil)
+	if err != nil {
+		return errors.Wrap(err, "NewTask")
+	}
+	self.SetStatus(userCred, api.DBINSTANCE_DEPLOYING, "sync secgroups")
+	task.ScheduleRun(nil)
+	return nil
 }

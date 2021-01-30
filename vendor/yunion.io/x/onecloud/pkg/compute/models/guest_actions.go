@@ -806,6 +806,16 @@ func (self *SGuest) AllowPerformStart(ctx context.Context,
 func (self *SGuest) PerformStart(ctx context.Context, userCred mcclient.TokenCredential, query jsonutils.JSONObject,
 	data jsonutils.JSONObject) (jsonutils.JSONObject, error) {
 	if utils.IsInStringArray(self.Status, []string{api.VM_READY, api.VM_START_FAILED, api.VM_SAVE_DISK_FAILED, api.VM_SUSPEND}) {
+		if !self.guestDisksStorageTypeIsShared() {
+			host := self.GetHost()
+			guestsMem, err := host.GetNotReadyGuestsMemorySize()
+			if err != nil {
+				return nil, err
+			}
+			if float32(guestsMem+self.VmemSize) > host.GetVirtualMemorySize() {
+				return nil, httperrors.NewInsufficientResourceError("host virtual memory not enough")
+			}
+		}
 		if self.isAllDisksReady() {
 			var kwargs *jsonutils.JSONDict
 			if data != nil {
@@ -1074,24 +1084,17 @@ func (self *SGuest) StartSyncstatus(ctx context.Context, userCred mcclient.Token
 
 func (self *SGuest) StartAutoDeleteGuestTask(ctx context.Context, userCred mcclient.TokenCredential, parentTaskId string) error {
 	db.OpsLog.LogEvent(self, db.ACT_DELETE, "auto-delete after stop", userCred)
-	return self.StartDeleteGuestTask(ctx, userCred, parentTaskId, false, false, false)
+	opts := api.ServerDeleteInput{}
+	return self.StartDeleteGuestTask(ctx, userCred, parentTaskId, opts)
 }
 
 func (self *SGuest) StartDeleteGuestTask(
 	ctx context.Context, userCred mcclient.TokenCredential, parentTaskId string,
-	isPurge, overridePendingDelete, deleteSnapshots bool,
+	opts api.ServerDeleteInput,
 ) error {
 	params := jsonutils.NewDict()
 	params.Add(jsonutils.NewString(self.Status), "guest_status")
-	if isPurge {
-		params.Add(jsonutils.JSONTrue, "purge")
-	}
-	if overridePendingDelete {
-		params.Add(jsonutils.JSONTrue, "override_pending_delete")
-	}
-	if deleteSnapshots {
-		params.Add(jsonutils.JSONTrue, "delete_snapshots")
-	}
+	params.Update(jsonutils.Marshal(opts))
 	self.SetStatus(userCred, api.VM_START_DELETE, "")
 	return self.GetDriver().StartDeleteGuestTask(ctx, userCred, self, params, parentTaskId)
 }
@@ -1388,7 +1391,10 @@ func (self *SGuest) PerformPurge(ctx context.Context, userCred mcclient.TokenCre
 	if host != nil && host.GetEnabled() {
 		return nil, httperrors.NewInvalidStatusError("Cannot purge server on enabled host")
 	}
-	err = self.StartDeleteGuestTask(ctx, userCred, "", true, false, false)
+	opts := api.ServerDeleteInput{
+		Purge: true,
+	}
+	err = self.StartDeleteGuestTask(ctx, userCred, "", opts)
 	return nil, err
 }
 
@@ -2727,7 +2733,7 @@ func (self *SGuest) PerformStatus(ctx context.Context, userCred mcclient.TokenCr
 	}
 
 	status := input.Status
-	if len(self.BackupHostId) > 0 && status == api.VM_RUNNING {
+	if len(self.BackupHostId) > 0 && status == api.VM_RUNNING && input.BlockJobsCount > 0 {
 		self.SetMetadata(ctx, api.MIRROR_JOB, api.MIRROR_JOB_READY, userCred)
 	} else if ispId := self.GetMetadata(api.BASE_INSTANCE_SNAPSHOT_ID, userCred); len(ispId) > 0 {
 		ispM, err := InstanceSnapshotManager.FetchById(ispId)
@@ -2762,6 +2768,27 @@ func (self *SGuest) PerformStop(ctx context.Context, userCred mcclient.TokenCred
 		return nil, self.StartGuestStopTask(ctx, userCred, input.IsForce, input.StopCharging, "")
 	}
 	return nil, httperrors.NewInvalidStatusError("Cannot stop server in status %s", self.Status)
+}
+
+func (self *SGuest) PerformFreeze(ctx context.Context, userCred mcclient.TokenCredential, query jsonutils.JSONObject, input apis.PerformFreezeInput) (jsonutils.JSONObject, error) {
+	if self.Freezed {
+		return nil, httperrors.NewBadRequestError("virtual resource already freezed")
+	}
+	if utils.IsInStringArray(self.Status, []string{api.VM_RUNNING, api.VM_STOP_FAILED}) {
+		return nil, self.StartGuestStopAndFreezeTask(ctx, userCred)
+	} else {
+		return self.SVirtualResourceBase.PerformFreeze(ctx, userCred, query, input)
+	}
+}
+
+func (self *SGuest) StartGuestStopAndFreezeTask(ctx context.Context, userCred mcclient.TokenCredential) error {
+	self.SetStatus(userCred, api.VM_START_STOP, "")
+	task, err := taskman.TaskManager.NewTask(ctx, "GuestStopAndFreezeTask", self, userCred, nil, "", "", nil)
+	if err != nil {
+		return err
+	}
+	task.ScheduleRun(nil)
+	return nil
 }
 
 func (self *SGuest) AllowPerformRestart(ctx context.Context,
@@ -3206,7 +3233,7 @@ func (manager *SGuestManager) getUserMetadata(data jsonutils.JSONObject) (map[st
 	}
 	dictStore := map[string]interface{}{}
 	for k, v := range metadata {
-		dictStore["user:"+k], _ = v.GetString()
+		dictStore[db.USER_TAG_PREFIX+k], _ = v.GetString()
 	}
 	return dictStore, nil
 }

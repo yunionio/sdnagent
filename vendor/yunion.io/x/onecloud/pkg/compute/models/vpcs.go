@@ -866,7 +866,7 @@ func (manager *SVpcManager) ValidateCreateData(
 		return input, httperrors.NewMissingParameterError("cidr")
 	}
 
-	keys := GetVpcQuotaKeysFromCreateInput(input)
+	keys := GetVpcQuotaKeysFromCreateInput(ownerId, input)
 	quota := &SInfrasQuota{Vpc: 1}
 	quota.SetKeys(keys)
 	err = quotas.CheckSetPendingQuota(ctx, userCred, quota)
@@ -884,7 +884,7 @@ func (self *SVpc) PostCreate(ctx context.Context, userCred mcclient.TokenCredent
 		log.Errorf("input unmarshal error %s", err)
 	} else {
 		pendingUsage := &SInfrasQuota{Vpc: 1}
-		keys := GetVpcQuotaKeysFromCreateInput(input)
+		keys := GetVpcQuotaKeysFromCreateInput(ownerId, input)
 		pendingUsage.SetKeys(keys)
 		quotas.CancelPendingUsage(ctx, userCred, pendingUsage, pendingUsage, true)
 	}
@@ -1225,6 +1225,43 @@ func (manager *SVpcManager) OrderByExtraFields(
 	if err != nil {
 		return nil, errors.Wrap(err, "SGlobalVpcResourceBaseManager.OrderByExtraFields")
 	}
+
+	if db.NeedOrderQuery([]string{query.OrderByNetworkCount}) {
+		var (
+			wireq = WireManager.Query().SubQuery()
+			netq  = NetworkManager.Query().SubQuery()
+			vpcq  = VpcManager.Query().SubQuery()
+		)
+		countq := vpcq.Query(
+			vpcq.Field("id"),
+			sqlchemy.COUNT("network_count", netq.Field("id")),
+		)
+		countq = countq.Join(wireq, sqlchemy.OR(
+			sqlchemy.Equals(countq.Field("id"), wireq.Field("vpc_id")),
+			sqlchemy.AND(
+				sqlchemy.Equals(countq.Field("id"), api.DEFAULT_VPC_ID),
+				sqlchemy.IsNullOrEmpty(wireq.Field("vpc_id")),
+			),
+		))
+		countq = countq.Join(netq, sqlchemy.Equals(
+			netq.Field("wire_id"), wireq.Field("id"),
+		))
+		countq = countq.GroupBy(vpcq.Field("id"))
+		countSubq := countq.SubQuery()
+		q = q.LeftJoin(countSubq, sqlchemy.Equals(
+			q.Field("id"), countSubq.Field("id"),
+		))
+		q.AppendField(q.QueryFields()...)
+		q = q.AppendField(countSubq.Field("network_count"))
+		q = db.OrderByFields(q,
+			[]string{
+				query.OrderByNetworkCount,
+			},
+			[]sqlchemy.IQueryField{
+				countSubq.Field("network_count"),
+			},
+		)
+	}
 	return q, nil
 }
 
@@ -1290,8 +1327,8 @@ func (self *SVpc) initWire(ctx context.Context, zone *SZone) (*SWire, error) {
 	return wire, nil
 }
 
-func GetVpcQuotaKeysFromCreateInput(input api.VpcCreateInput) quotas.SDomainRegionalCloudResourceKeys {
-	ownerId := &db.SOwnerId{DomainId: input.ProjectDomainId}
+func GetVpcQuotaKeysFromCreateInput(owner mcclient.IIdentityProvider, input api.VpcCreateInput) quotas.SDomainRegionalCloudResourceKeys {
+	ownerId := &db.SOwnerId{DomainId: owner.GetProjectDomainId()}
 	var region *SCloudregion
 	if len(input.CloudregionId) > 0 {
 		region = CloudregionManager.FetchRegionById(input.CloudregionId)
@@ -1417,7 +1454,7 @@ func (manager *SVpcManager) ListItemExportKeys(ctx context.Context,
 	if keys.Contains("wire_count") {
 		wires := WireManager.Query("vpc_id").SubQuery()
 		subq := wires.Query(sqlchemy.COUNT("wire_count"), wires.Field("vpc_id")).GroupBy(wires.Field("vpc_id")).SubQuery()
-		q = q.Join(subq, sqlchemy.Equals(q.Field("id"), subq.Field("vpc_id")))
+		q = q.LeftJoin(subq, sqlchemy.Equals(q.Field("id"), subq.Field("vpc_id")))
 		q = q.AppendField(subq.Field("wire_count"))
 	}
 
@@ -1425,10 +1462,10 @@ func (manager *SVpcManager) ListItemExportKeys(ctx context.Context,
 		wires := WireManager.Query("id", "vpc_id").SubQuery()
 		networks := NetworkManager.Query("wire_id").SubQuery()
 		subq := networks.Query(sqlchemy.COUNT("network_count"), wires.Field("vpc_id"))
-		subq = subq.Join(wires, sqlchemy.Equals(networks.Field("wire_id"), wires.Field("id")))
+		subq = subq.LeftJoin(wires, sqlchemy.Equals(networks.Field("wire_id"), wires.Field("id")))
 		subq = subq.GroupBy(wires.Field("vpc_id"))
 		subqQ := subq.SubQuery()
-		q = q.Join(subqQ, sqlchemy.Equals(q.Field("id"), subqQ.Field("vpc_id")))
+		q = q.LeftJoin(subqQ, sqlchemy.Equals(q.Field("id"), subqQ.Field("vpc_id")))
 		q = q.AppendField(subqQ.Field("network_count"))
 	}
 

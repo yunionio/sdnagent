@@ -39,9 +39,11 @@ const (
 	STORAGE_EPHEMERAL_SSD    = "ephemeral_ssd"  //单块本地SSD盘, 容量最大不能超过800 GiB
 
 	//Azure hdd and ssd storagetype
-	STORAGE_STANDARD_LRS    = "standard_lrs"
-	STORAGE_STANDARDSSD_LRS = "standardssd_lrs"
-	STORAGE_PREMIUM_LRS     = "premium_lrs"
+	STORAGE_STANDARD_LRS          = "standard_lrs"
+	STORAGE_STANDARDSSD_LRS       = "standardssd_lrs"
+	STORAGE_PREMIUM_LRS           = "premium_lrs"
+	STORAGE_AZURE_BASIC           = "basic_storage"
+	STORAGE_AZURE_GENERAL_PURPOSE = "general_purpose_storage"
 
 	// aws storage type
 	STORAGE_GP2_SSD      = "gp2"      // aws general purpose ssd
@@ -62,9 +64,10 @@ const (
 	STORAGE_CLOUD_HSSD    = "cloud_hssd"    //增强型SSD云硬盘
 
 	// huawei storage type
-	STORAGE_HUAWEI_SSD  = "SSD"  // 超高IO云硬盘
-	STORAGE_HUAWEI_SAS  = "SAS"  // 高IO云硬盘
-	STORAGE_HUAWEI_SATA = "SATA" // 普通IO云硬盘
+	STORAGE_HUAWEI_SSD   = "SSD"   // 超高IO云硬盘
+	STORAGE_HUAWEI_SAS   = "SAS"   // 高IO云硬盘
+	STORAGE_HUAWEI_SATA  = "SATA"  // 普通IO云硬盘
+	STORAGE_HUAWEI_GPSSD = "GPSSD" // 通用型SSD
 
 	// openstack
 	STORAGE_OPENSTACK_ISCSI = "iscsi"

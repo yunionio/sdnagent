@@ -30,6 +30,7 @@ import (
 	api "yunion.io/x/onecloud/pkg/apis/compute"
 	"yunion.io/x/onecloud/pkg/cloudcommon/db"
 	"yunion.io/x/onecloud/pkg/cloudcommon/db/lockman"
+	"yunion.io/x/onecloud/pkg/cloudcommon/db/taskman"
 	"yunion.io/x/onecloud/pkg/cloudprovider"
 	"yunion.io/x/onecloud/pkg/compute/options"
 	"yunion.io/x/onecloud/pkg/httperrors"
@@ -41,6 +42,7 @@ import (
 type SCloudregionManager struct {
 	db.SEnabledStatusStandaloneResourceBaseManager
 	db.SExternalizedResourceBaseManager
+	SI18nResourceBaseManager
 }
 
 var CloudregionManager *SCloudregionManager
@@ -59,6 +61,7 @@ func init() {
 
 type SCloudregion struct {
 	db.SEnabledStatusStandaloneResourceBase
+	SI18nResourceBase
 	SManagedResourceBase
 	db.SExternalizedResourceBase
 
@@ -323,7 +326,7 @@ func (manager *SCloudregionManager) FetchCustomizeColumns(
 	return rows
 }
 
-func (self *SCloudregion) GetSkus() ([]SServerSku, error) {
+func (self *SCloudregion) GetServerSkus() ([]SServerSku, error) {
 	skus := []SServerSku{}
 	q := ServerSkuManager.Query().Equals("cloudregion_id", self.Id)
 	err := db.FetchModelObjects(ServerSkuManager, q, &skus)
@@ -445,12 +448,17 @@ func (self *SCloudregion) syncRemoveCloudRegion(ctx context.Context, userCred mc
 	lockman.LockObject(ctx, self)
 	defer lockman.ReleaseObject(ctx, self)
 
+	err := self.RemoveI18ns(ctx, userCred, self)
+	if err != nil {
+		return err
+	}
+
 	// err := self.ValidateDeleteCondition(ctx)
 	// if err == nil {
 	// 	err = self.Delete(ctx, userCred)
 	// }
 
-	err := self.SetStatus(userCred, api.CLOUD_REGION_STATUS_OUTOFSERVICE, "Out of sync")
+	err = self.SetStatus(userCred, api.CLOUD_REGION_STATUS_OUTOFSERVICE, "Out of sync")
 	if err == nil {
 		_, err = self.PerformDisable(ctx, userCred, nil, apis.PerformDisableInput{})
 	}
@@ -467,6 +475,11 @@ func (self *SCloudregion) syncRemoveCloudRegion(ctx context.Context, userCred mc
 }
 
 func (self *SCloudregion) syncWithCloudRegion(ctx context.Context, userCred mcclient.TokenCredential, cloudRegion cloudprovider.ICloudRegion, provider *SCloudprovider) error {
+	err := CloudregionManager.SyncI18ns(ctx, userCred, self, cloudRegion.GetI18n())
+	if err != nil {
+		return errors.Wrap(err, "SyncI18ns")
+	}
+
 	factory, err := provider.GetProviderFactory()
 	if err != nil {
 		return err
@@ -529,6 +542,12 @@ func (manager *SCloudregionManager) newFromCloudRegion(ctx context.Context, user
 		log.Errorf("newFromCloudRegion fail %s", err)
 		return nil, err
 	}
+
+	err = manager.SyncI18ns(ctx, userCred, &region, cloudRegion.GetI18n())
+	if err != nil {
+		return nil, errors.Wrap(err, "SyncI18ns")
+	}
+
 	db.OpsLog.LogEvent(&region, db.ACT_CREATE, region.GetShortDesc(ctx), userCred)
 	return &region, nil
 }
@@ -872,10 +891,19 @@ func (self *SCloudregion) GetRegionCloudenvInfo() api.CloudenvResourceInfo {
 	return info
 }
 
-func (self *SCloudregion) GetRegionInfo() api.CloudregionResourceInfo {
+func (self *SCloudregion) GetI18N(ctx context.Context) *jsonutils.JSONDict {
+	return self.GetModelI18N(ctx, self)
+}
+
+func (self *SCloudregion) GetRegionInfo(ctx context.Context) api.CloudregionResourceInfo {
+	name := self.Name
+	if v, ok := self.GetModelKeyI18N(ctx, self, "name"); ok {
+		name = v
+	}
+
 	return api.CloudregionResourceInfo{
-		Region:           self.Name,
-		Cloudregion:      self.Name,
+		Region:           name,
+		Cloudregion:      name,
 		RegionId:         self.Id,
 		RegionExtId:      fetchExternalId(self.ExternalId),
 		RegionExternalId: self.ExternalId,
@@ -981,15 +1009,26 @@ func (self *SCloudregion) GetCloudimages() ([]SCloudimage, error) {
 	return images, nil
 }
 
+func (self *SCloudregion) GetSystemImageCount() (int, error) {
+	sq := CloudimageManager.Query("external_id").Equals("cloudregion_id", self.Id)
+	q := CachedimageManager.Query().Equals("image_type", cloudprovider.ImageTypeSystem).In("external_id", sq.SubQuery())
+	return q.CountWithError()
+}
+
 func (self *SCloudregion) SyncCloudImages(ctx context.Context, userCred mcclient.TokenCredential, refresh bool) error {
 	lockman.LockRawObject(ctx, "cloudimages", self.Id)
 	defer lockman.ReleaseRawObject(ctx, "cloudimages", self.Id)
+
+	systemImageCount, err := self.GetSystemImageCount()
+	if err != nil {
+		return errors.Wrapf(err, "GetSystemImageCount")
+	}
 
 	dbImages, err := self.GetCloudimages()
 	if err != nil {
 		return errors.Wrapf(err, "GetCloudimages")
 	}
-	if len(dbImages) > 0 && !refresh {
+	if len(dbImages) > 0 && systemImageCount > 0 && !refresh {
 		return nil
 	}
 	meta, err := FetchSkuResourcesMeta()
@@ -1011,7 +1050,6 @@ func (self *SCloudregion) SyncCloudImages(ctx context.Context, userCred mcclient
 	}
 
 	result := compare.SyncResult{}
-	result.UpdateCnt = len(commondb)
 
 	for i := 0; i < len(removed); i++ {
 		err := removed[i].syncRemove(ctx, userCred)
@@ -1020,6 +1058,15 @@ func (self *SCloudregion) SyncCloudImages(ctx context.Context, userCred mcclient
 			continue
 		}
 		result.Delete()
+	}
+
+	for i := 0; i < len(commonext); i++ {
+		err := commondb[i].syncWithImage(ctx, userCred, commonext[i])
+		if err != nil {
+			result.UpdateError(errors.Wrapf(err, "updateCachedImage"))
+			continue
+		}
+		result.Update()
 	}
 
 	for i := 0; i < len(added); i++ {
@@ -1088,4 +1135,32 @@ func (manager *SCloudregionManager) AllowGetPropertySyncTasks(ctx context.Contex
 
 func (manager *SCloudregionManager) GetPropertySyncTasks(ctx context.Context, userCred mcclient.TokenCredential, query api.SkuTaskQueryInput) (jsonutils.JSONObject, error) {
 	return GetPropertySkusSyncTasks(ctx, userCred, query)
+}
+
+func (self *SCloudregion) AllowSyncImages(ctx context.Context, userCred mcclient.TokenCredential, query jsonutils.JSONObject) bool {
+	return db.IsAdminAllowPerform(userCred, self, "sync-images")
+}
+
+func (self *SCloudregion) PerformSyncImages(ctx context.Context, userCred mcclient.TokenCredential, query jsonutils.JSONObject, input api.SyncImagesInput) (jsonutils.JSONObject, error) {
+	return nil, self.StartSyncImagesTask(ctx, userCred, "")
+}
+
+func (self *SCloudregion) StartSyncImagesTask(ctx context.Context, userCred mcclient.TokenCredential, parentId string) error {
+	task, err := taskman.TaskManager.NewTask(ctx, "CloudregionSyncImagesTask", self, userCred, nil, "", "", nil)
+	if err != nil {
+		return errors.Wrapf(err, "NewTask")
+	}
+	task.ScheduleRun(nil)
+	return nil
+}
+
+func (self *SCloudregion) GetCloudprovider() (*SCloudprovider, error) {
+	if len(self.ManagerId) == 0 {
+		return nil, sql.ErrNoRows
+	}
+	provider, err := CloudproviderManager.FetchById(self.ManagerId)
+	if err != nil {
+		return nil, errors.Wrapf(err, "FetchByI(%s)", self.ManagerId)
+	}
+	return provider.(*SCloudprovider), nil
 }

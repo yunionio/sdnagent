@@ -1428,15 +1428,14 @@ func (self *SHost) GetGuestsQuery() *sqlchemy.SQuery {
 	return GuestManager.Query().Equals("host_id", self.Id)
 }
 
-func (self *SHost) GetGuests() []SGuest {
+func (self *SHost) GetGuests() ([]SGuest, error) {
 	q := self.GetGuestsQuery()
 	guests := make([]SGuest, 0)
 	err := db.FetchModelObjects(GuestManager, q, &guests)
 	if err != nil {
-		log.Errorf("GetGuests %s", err)
-		return nil
+		return nil, errors.Wrapf(err, "db.FetchModelObjects")
 	}
-	return guests
+	return guests, nil
 }
 
 func (self *SHost) GetKvmGuests() []SGuest {
@@ -1496,6 +1495,23 @@ func (self *SHost) GetRunningGuestCount() (int, error) {
 	q := self.GetGuestsQuery()
 	q = q.In("status", api.VM_RUNNING_STATUS)
 	return q.CountWithError()
+}
+
+func (self *SHost) GetNotReadyGuestsMemorySize() (int, error) {
+	guests := GuestManager.Query().SubQuery()
+	q := guests.Query(sqlchemy.COUNT("guest_count"),
+		sqlchemy.SUM("guest_vcpu_count", guests.Field("vcpu_count")),
+		sqlchemy.SUM("guest_vmem_size", guests.Field("vmem_size")))
+	cond := sqlchemy.OR(sqlchemy.Equals(q.Field("host_id"), self.Id),
+		sqlchemy.Equals(q.Field("backup_host_id"), self.Id))
+	q = q.Filter(cond)
+	q = q.NotEquals("status", api.VM_READY)
+	stat := SHostGuestResourceUsage{}
+	err := q.First(&stat)
+	if err != nil {
+		return -1, err
+	}
+	return stat.GuestVmemSize, nil
 }
 
 func (self *SHost) GetRunningGuestMemorySize() int {
@@ -1679,7 +1695,10 @@ func (self *SHost) syncRemoveCloudHost(ctx context.Context, userCred mcclient.To
 		if err == nil {
 			_, err = self.PerformDisable(ctx, userCred, nil, apis.PerformDisableInput{})
 		}
-		guests := self.GetGuests()
+		guests, err := self.GetGuests()
+		if err != nil {
+			return errors.Wrapf(err, "GetGuests")
+		}
 		for _, guest := range guests {
 			err = guest.SetStatus(userCred, api.VM_UNKNOWN, "sync to delete")
 			if err != nil {
@@ -2266,7 +2285,11 @@ func (self *SHost) SyncHostVMs(ctx context.Context, userCred mcclient.TokenCrede
 	syncVMPairs := make([]SGuestSyncResult, 0)
 	syncResult := compare.SyncResult{}
 
-	dbVMs := self.GetGuests()
+	dbVMs, err := self.GetGuests()
+	if err != nil {
+		syncResult.Error(errors.Wrapf(err, "GetGuests"))
+		return nil, syncResult
+	}
 
 	for i := range dbVMs {
 		if taskman.TaskManager.IsInTask(&dbVMs[i]) {
@@ -2280,7 +2303,7 @@ func (self *SHost) SyncHostVMs(ctx context.Context, userCred mcclient.TokenCrede
 	commonext := make([]cloudprovider.ICloudVM, 0)
 	added := make([]cloudprovider.ICloudVM, 0)
 
-	err := compare.CompareSets(dbVMs, vms, &removed, &commondb, &commonext, &added)
+	err = compare.CompareSets(dbVMs, vms, &removed, &commondb, &commonext, &added)
 	if err != nil {
 		syncResult.Error(err)
 		return nil, syncResult
@@ -3086,7 +3109,7 @@ func (self *SHost) PostCreate(
 		}
 	}
 
-	keys := GetHostQuotaKeysFromCreateInput(input)
+	keys := GetHostQuotaKeysFromCreateInput(ownerId, input)
 	quota := SInfrasQuota{Host: 1}
 	quota.SetKeys(keys)
 	err = quotas.CancelPendingUsage(ctx, userCred, &quota, &quota, true)
@@ -3380,7 +3403,7 @@ func (manager *SHostManager) ValidateCreateData(
 		return input, errors.Wrap(err, "SEnabledStatusInfrasResourceBaseManager.ValidateCreateData")
 	}
 
-	keys := GetHostQuotaKeysFromCreateInput(input)
+	keys := GetHostQuotaKeysFromCreateInput(ownerId, input)
 	quota := SInfrasQuota{Host: 1}
 	quota.SetKeys(keys)
 	err = quotas.CheckSetPendingQuota(ctx, userCred, &quota)
@@ -4327,7 +4350,17 @@ func (self *SHost) EnableNetif(ctx context.Context, userCred mcclient.TokenCrede
 	} else if net.WireId != wire.Id {
 		return fmt.Errorf("conflict??? candiate net is not on wire")
 	}
-	bn, err = self.Attach2Network(ctx, userCred, netif, net, ipAddr, allocDir, reserve, requireDesignatedIp)
+
+	attachOpt := &hostAttachNetworkOption{
+		netif:               netif,
+		net:                 net,
+		ipAddr:              ipAddr,
+		allocDir:            allocDir,
+		reserved:            reserve,
+		requireDesignatedIp: requireDesignatedIp,
+	}
+
+	bn, err = self.Attach2Network(ctx, userCred, attachOpt)
 	if err != nil {
 		return errors.Wrap(err, "self.Attach2Network")
 	}
@@ -4383,11 +4416,79 @@ func (self *SHost) DisableNetif(ctx context.Context, userCred mcclient.TokenCred
 	return err
 }
 
-func (self *SHost) Attach2Network(ctx context.Context, userCred mcclient.TokenCredential, netif *SNetInterface, net *SNetwork, ipAddr, allocDir string, reserved, requireDesignatedIp bool) (*SHostnetwork, error) {
+type hostAttachNetworkOption struct {
+	netif               *SNetInterface
+	net                 *SNetwork
+	ipAddr              string
+	allocDir            string
+	reserved            bool
+	requireDesignatedIp bool
+}
+
+func (self *SHost) IsIpAddrWithinConvertedGuest(ctx context.Context, userCred mcclient.TokenCredential, ipAddr string, netif *SNetInterface) error {
+	if !self.IsBaremetal {
+		return httperrors.NewNotAcceptableError("Not a baremetal")
+	}
+
+	if self.HostType == api.HOST_TYPE_KVM {
+		return httperrors.NewNotAcceptableError("Not being convert to hypervisor")
+	}
+
+	bmServer := self.GetBaremetalServer()
+	if bmServer == nil {
+		return httperrors.NewNotAcceptableError("Not found baremetal server record")
+	}
+
+	guestNics, err := bmServer.GetNetworks("")
+	if err != nil {
+		return errors.Wrap(err, "Get guest networks")
+	}
+	var findNic *SGuestnetwork
+	for idx := range guestNics {
+		nic := guestNics[idx]
+		if nic.MacAddr == netif.Mac {
+			findNic = &nic
+			break
+		}
+	}
+	if findNic == nil {
+		return httperrors.NewNotFoundError("Not found guest nic by mac %s", netif.Mac)
+	}
+
+	if findNic.IpAddr != ipAddr {
+		return httperrors.NewNotAcceptableError("Guest nic ip addr %s not equal %s", findNic.IpAddr, ipAddr)
+	}
+
+	return nil
+}
+
+func (self *SHost) Attach2Network(
+	ctx context.Context,
+	userCred mcclient.TokenCredential,
+	opt *hostAttachNetworkOption,
+) (*SHostnetwork, error) {
+	netif := opt.netif
+	net := opt.net
+	ipAddr := opt.ipAddr
+	allocDir := opt.allocDir
+	reserved := opt.reserved
+	requireDesignatedIp := opt.requireDesignatedIp
+
 	lockman.LockObject(ctx, net)
 	defer lockman.ReleaseObject(ctx, net)
 
-	freeIp, err := net.GetFreeIP(ctx, userCred, nil, nil, ipAddr, api.IPAllocationDirection(allocDir), reserved)
+	usedAddrs := net.GetUsedAddresses()
+	if ipAddr != "" {
+		// converted baremetal can resuse related guest network ip
+		if err := self.IsIpAddrWithinConvertedGuest(ctx, userCred, ipAddr, netif); err == nil {
+			// force remove used server addr for reuse
+			delete(usedAddrs, ipAddr)
+		} else {
+			log.Warningf("check IsIpAddrWithinConvertedGuest: %v", err)
+		}
+	}
+
+	freeIp, err := net.GetFreeIP(ctx, userCred, usedAddrs, nil, ipAddr, api.IPAllocationDirection(allocDir), reserved)
 	if err != nil {
 		return nil, errors.Wrap(err, "net.GetFreeIP")
 	}
@@ -4747,7 +4848,10 @@ func (self *SHost) PerformUndoConvert(ctx context.Context, userCred mcclient.Tok
 	if err != nil {
 		return nil, httperrors.NewNotAcceptableError("%v", err)
 	}
-	guests := self.GetGuests()
+	guests, err := self.GetGuests()
+	if err != nil {
+		return nil, httperrors.NewGeneralError(errors.Wrapf(err, "GetGuests"))
+	}
 	if len(guests) > 1 {
 		return nil, httperrors.NewNotAcceptableError("Not an empty host")
 	} else if len(guests) == 1 {
@@ -5033,8 +5137,8 @@ func (self *SHost) GetShortDesc(ctx context.Context) *jsonutils.JSONDict {
 }
 
 func (self *SHost) MarkGuestUnknown(userCred mcclient.TokenCredential) {
-	log.Errorln(self.GetGuests())
-	for _, guest := range self.GetGuests() {
+	guests, _ := self.GetGuests()
+	for _, guest := range guests {
 		guest.SetStatus(userCred, api.VM_UNKNOWN, "host offline")
 	}
 }
@@ -5248,10 +5352,11 @@ func (host *SHost) migrateOnHostDown(ctx context.Context, userCred mcclient.Toke
 }
 
 func (host *SHost) MigrateSharedStorageServers(ctx context.Context, userCred mcclient.TokenCredential) error {
-	var (
-		guests     = host.GetGuests()
-		hostGuests = []*api.GuestBatchMigrateParams{}
-	)
+	guests, err := host.GetGuests()
+	if err != nil {
+		return errors.Wrapf(err, "host %s(%s) get guests", host.Name, host.Id)
+	}
+	hostGuests := []*api.GuestBatchMigrateParams{}
 
 	for i := 0; i < len(guests); i++ {
 		lockman.LockObject(ctx, &guests[i])
@@ -5527,15 +5632,15 @@ func (host *SHost) PerformChangeOwner(ctx context.Context, userCred mcclient.Tok
 
 func (host *SHost) GetChangeOwnerRequiredDomainIds() []string {
 	requires := stringutils2.SSortedStrings{}
-	guests := host.GetGuests()
+	guests, _ := host.GetGuests()
 	for i := range guests {
 		requires = stringutils2.Append(requires, guests[i].DomainId)
 	}
 	return requires
 }
 
-func GetHostQuotaKeysFromCreateInput(input api.HostCreateInput) quotas.SDomainRegionalCloudResourceKeys {
-	ownerId := &db.SOwnerId{DomainId: input.ProjectDomainId}
+func GetHostQuotaKeysFromCreateInput(owner mcclient.IIdentityProvider, input api.HostCreateInput) quotas.SDomainRegionalCloudResourceKeys {
+	ownerId := &db.SOwnerId{DomainId: owner.GetProjectDomainId()}
 	var zone *SZone
 	if len(input.ZoneId) > 0 {
 		zone = ZoneManager.FetchZoneById(input.ZoneId)
