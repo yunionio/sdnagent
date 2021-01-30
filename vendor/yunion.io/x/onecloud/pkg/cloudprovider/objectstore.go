@@ -132,6 +132,8 @@ type SBucketPolicyStatement struct {
 
 	// 解析字段，主账号id:子账号id
 	PrincipalId []string
+	// map[主账号id:子账号id]子账号名称
+	PrincipalNames map[string]string
 	// Read|ReadWrite|FullControl
 	CannedAction string
 	// 资源路径
@@ -152,6 +154,16 @@ type SBucketPolicyStatementInput struct {
 	// ip 条件
 	IpEquals    []string
 	IpNotEquals []string
+}
+
+type SBucketMultipartUploads struct {
+	// object name
+	ObjectName string
+	UploadID   string
+	// 发起人
+	Initiator string
+	// 发起时间
+	Initiated time.Time
 }
 
 type SBaseCloudObject struct {
@@ -261,9 +273,9 @@ type ICloudBucket interface {
 	SetPolicy(policy SBucketPolicyStatementInput) error
 	DeletePolicy(id []string) ([]SBucketPolicyStatement, error)
 
-	GetTags() (map[string]string, error)
-	SetTags(tags map[string]string) error
 	DeleteTags() error
+
+	ListMultipartUploads() ([]SBucketMultipartUploads, error)
 }
 
 type ICloudObject interface {
@@ -849,7 +861,7 @@ func SetBucketMetadata(ibucket ICloudBucket, tags map[string]string, replace boo
 			return errors.Wrap(err, "b.DeleteTags()")
 		}
 	} else {
-		err := ibucket.SetTags(newTags)
+		err := ibucket.SetTags(newTags, true)
 		if err != nil {
 			return errors.Wrapf(err, "b.setTags(%s)", jsonutils.Marshal(newTags).String())
 		}

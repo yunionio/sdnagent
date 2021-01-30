@@ -47,8 +47,9 @@ const (
 	ACT_BACKUP_START        = "backup_start"
 	ACT_BACKUP_START_FAILED = "backup_start_fail"
 
-	ACT_FREEZE   = "freeze"
-	ACT_UNFREEZE = "unfreeze"
+	ACT_FREEZE      = "freeze"
+	ACT_FREEZE_FAIL = "freeze_fail"
+	ACT_UNFREEZE    = "unfreeze"
 
 	ACT_RESTARING    = "restarting"
 	ACT_RESTART_FAIL = "restart_fail"
@@ -200,6 +201,7 @@ const (
 	ACT_SYNC_CLOUD_DISK          = "sync_cloud_disk"
 	ACT_SYNC_CLOUD_SERVER        = "sync_cloud_server"
 	ACT_SYNC_CLOUD_SKUS          = "sync_cloud_skus"
+	ACT_SYNC_CLOUD_IMAGES        = "sync_cloud_images"
 	ACT_SYNC_CLOUD_EIP           = "sync_cloud_eip"
 	ACT_SYNC_CLOUD_PROJECT       = "sync_cloud_project"
 	ACT_SYNC_CLOUD_ELASTIC_CACHE = "sync_cloud_elastic_cache"

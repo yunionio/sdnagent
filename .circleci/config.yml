@@ -12,7 +12,7 @@ jobs:
       - checkout
       - run:
           command: |
-            go test -v ./...
+            go test -mod vendor -v ./...
 
 workflows:
   version: 2

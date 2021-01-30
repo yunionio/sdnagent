@@ -1916,6 +1916,7 @@ func (self *SElasticcache) StartRemoteUpdateTask(ctx context.Context, userCred m
 		log.Errorln(err)
 		return errors.Wrap(err, "Start ElasticcacheRemoteUpdateTask")
 	} else {
+		self.SetStatus(userCred, api.ELASTIC_CACHE_UPDATE_TAGS, "StartRemoteUpdateTask")
 		task.ScheduleRun(nil)
 	}
 	return nil
@@ -1925,7 +1926,7 @@ func (self *SElasticcache) OnMetadataUpdated(ctx context.Context, userCred mccli
 	if len(self.ExternalId) == 0 {
 		return
 	}
-	err := self.StartRemoteUpdateTask(ctx, userCred, false, "")
+	err := self.StartRemoteUpdateTask(ctx, userCred, true, "")
 	if err != nil {
 		log.Errorf("StartRemoteUpdateTask fail: %s", err)
 	}
