@@ -239,6 +239,20 @@ func (man *ovnMan) exec(ctx context.Context, args []string) error {
 	return nil
 }
 
+func (man *ovnMan) ensureMappedBridgeVpcPortFlows(ctx context.Context, vpcId string) error {
+	mine, _ := man.pnamePair(vpcId)
+	psMine, err := utils.DumpPort(man.mappedBridge(), mine)
+	if err != nil {
+		return err
+	}
+	pnoMine := psMine.PortID
+	flowman := man.watcher.agent.GetFlowMan(man.mappedBridge())
+	flowman.updateFlows(ctx, mine, []*ovs.Flow{
+		utils.F(0, 30000, fmt.Sprintf("in_port=%d", pnoMine), "drop"),
+	})
+	return nil
+}
+
 func (man *ovnMan) pnamePair(vpcId string) (string, string) {
 	var (
 		base string
@@ -265,6 +279,10 @@ func (man *ovnMan) ensureGuestFlows(ctx context.Context, guestId string) {
 		if _, ok := vpcIds[vpcId]; !ok {
 			vpcIds[vpcId] = utils.Empty{}
 			if err := man.ensureMappedBridgeVpcPort(ctx, vpcId); err != nil {
+				log.Errorln(err)
+				continue
+			}
+			if err := man.ensureMappedBridgeVpcPortFlows(ctx, vpcId); err != nil {
 				log.Errorln(err)
 				continue
 			}
@@ -421,5 +439,6 @@ func (man *ovnMan) refresh(ctx context.Context) {
 // 33000 in_port=LOCAL,nw_dst=VM_MAPPED,actions=mod_dl_dst:lr_mac,mod_nw_dst:VM_IP,output:brvpcp
 // 32000 ip,nw_dst=100.64.0.0/17,actions=drop
 // 31000 in_port=brvpcp,dl_src=lr_mac,ip,nw_src=VM_IP,actions=mod_dl_dst:man.mac,mod_nw_src:VM_MAPPED,LOCAL
+// 30000 in_port=brvpcp,actions=drop
 //
 //  3050 in_port=LOCAL,arp,arp_op=1,...
