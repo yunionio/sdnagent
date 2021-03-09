@@ -76,6 +76,17 @@ push_image() {
     docker push "$tag"
 }
 
+get_image_name() {
+    local component=$1
+    local arch=$2
+    local is_all_arch=$3
+    local img_name="$REGISTRY/$component:$TAG"
+    if [[ "$is_all_arch" == "true" || "$arch" == arm64 ]]; then
+        img_name="${img_name}-$arch"
+    fi
+    echo $img_name
+}
+
 build_process() {
     build_bin
     img_name="$REGISTRY/$image_keyword:$TAG"
@@ -87,15 +98,25 @@ build_process() {
 
 build_process_with_buildx() {
     local arch=$1
+    local is_all_arch=$2
+    local img_name=$(get_image_name $image_keyword $arch $is_all_arch)
 
     build_env="GOARCH=$arch "
-    img_name="$REGISTRY/$image_keyword:$TAG"
     if [[ $arch == arm64 ]]; then
-        img_name="$img_name-$arch"
         build_env="$build_env CC=aarch64-linux-musl-gcc"
     fi
 	build_bin $build_env
-	buildx_and_push $img_name $DOCKER_DIR/Dockerfile $SRC_DIR $ARCH
+	buildx_and_push $img_name $DOCKER_DIR/Dockerfile $SRC_DIR $arch
+}
+
+make_manifest_image() {
+    local component=$1
+    local img_name=$(get_image_name $component "" "false")
+    docker manifest create --amend $img_name \
+        $img_name-amd64 \
+        $img_name-arm64
+    docker manifest annotate $img_name $img_name-arm64 --arch arm64
+    docker manifest push $img_name
 }
 
 cd $SRC_DIR
@@ -103,15 +124,16 @@ cd $SRC_DIR
 echo "Start to build for arch[$ARCH]"
 
 case "$ARCH" in
-	all)
-		for arch in "arm64" "amd64"; do
-			build_process_with_buildx $arch
-		done
-		;;
-	arm64)
-		build_process_with_buildx $ARCH
-		;;
-	*)
-		build_process
-		;;
+    all)
+        for arch in "arm64" "amd64"; do
+            build_process_with_buildx $arch "true"
+        done
+        make_manifest_image $image_keyword
+        ;;
+    arm64)
+        build_process_with_buildx $ARCH "false"
+        ;;
+    *)
+        build_process
+        ;;
 esac
