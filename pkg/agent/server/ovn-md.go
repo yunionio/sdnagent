@@ -90,9 +90,8 @@ type ovnMdServer struct {
 
 	ipNii map[string]netIdIP
 
-	ns     netns.NsHandle
-	origNs netns.NsHandle
-	app    *appsrv.Application
+	ns  netns.NsHandle
+	app *appsrv.Application
 
 	requestC          chan *ovnMdServerReq
 	forwardCtx        context.Context
@@ -105,9 +104,8 @@ func newOvnMdServer(netId, netCidr string, watcher *serversWatcher) *ovnMdServer
 		netCidr: netCidr,
 		watcher: watcher,
 
-		ns:     netns.None(),
-		origNs: netns.None(),
-		ipNii:  map[string]netIdIP{},
+		ns:    netns.None(),
+		ipNii: map[string]netIdIP{},
 
 		requestC: make(chan *ovnMdServerReq),
 	}
@@ -179,19 +177,13 @@ func (s *ovnMdServer) ensureMdInfra(ctx context.Context) error {
 			runtime.LockOSThread()
 			defer runtime.UnlockOSThread()
 
-			s.origNs, err = netns.Get()
-			if err != nil {
-				err = errors.Wrap(err, "get current ns")
-			}
-			s.ns, err = netns.New()
-			//s.ns, err = netns.NewNamed(ns)
-			if err != nil {
-				err = errors.Wrapf(err, "new netns %q", ns)
-			}
-
-			if err = netns.Set(s.origNs); err != nil {
-				err = errors.Wrap(err, "set to orig ns")
-			}
+			err = s.nsRun_(ctx, func(ctx context.Context) error {
+				s.ns, err = netns.New()
+				if err != nil {
+					return errors.Wrapf(err, "new netns %q", ns)
+				}
+				return nil
+			})
 		}()
 		wg.Wait()
 		if err != nil {
@@ -251,12 +243,8 @@ func (s *ovnMdServer) ensureMdInfraOff(ctx context.Context) error {
 	)
 
 	// release network namespace
-	for _, nsh := range []netns.NsHandle{
-		s.ns, s.origNs,
-	} {
-		if int(nsh) >= 0 {
-			nsh.Close()
-		}
+	if int(s.ns) >= 0 {
+		s.ns.Close()
 	}
 	{ // cleanup bridge
 		args := []string{
@@ -282,10 +270,24 @@ func (s *ovnMdServer) ensureMdInfraOff(ctx context.Context) error {
 }
 
 func (s *ovnMdServer) nsRun(ctx context.Context, f func(ctx context.Context) error) error {
+	return s.nsRun_(ctx, func(ctx context.Context) error {
+		if err := netns.Set(s.ns); err != nil {
+			return errors.Wrapf(err, "nsRun: set netns %s", s.ns)
+		}
+		return f(ctx)
+	})
+}
+
+func (s *ovnMdServer) nsRun_(ctx context.Context, f func(ctx context.Context) error) error {
 	var (
 		wg  = &sync.WaitGroup{}
 		err error
 	)
+	origNs, err := netns.Get()
+	if err != nil {
+		return errors.Wrap(err, "get current net ns")
+	}
+	defer origNs.Close()
 	wg.Add(1)
 	go func() {
 		defer wg.Done()
@@ -293,8 +295,7 @@ func (s *ovnMdServer) nsRun(ctx context.Context, f func(ctx context.Context) err
 		runtime.LockOSThread()
 		defer runtime.UnlockOSThread()
 
-		netns.Set(s.ns)
-		defer netns.Set(s.origNs)
+		defer netns.Set(origNs)
 
 		err = f(ctx)
 
