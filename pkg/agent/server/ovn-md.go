@@ -155,7 +155,7 @@ func (s *ovnMdServer) Stop(ctx context.Context) {
 	}
 	s.forwardCancelFunc()
 	if err := s.ensureMdInfraOff(ctx); err != nil {
-		log.Errorf("ensureMdInfra: %v", err)
+		log.Errorf("ensureMdInfraOff: %v", err)
 	}
 }
 
