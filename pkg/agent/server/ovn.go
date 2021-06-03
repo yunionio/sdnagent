@@ -149,7 +149,7 @@ func (man *ovnMan) ensureMappedBridge(ctx context.Context) error {
 	{
 		ipt, err := iptables.NewWithProtocol(iptables.ProtocolIPv4)
 		if err != nil {
-			return err
+			return errors.Wrap(err, "ipt client")
 		}
 		var (
 			p    = apis.VpcMappedCidr()
@@ -166,6 +166,57 @@ func (man *ovnMan) ensureMappedBridge(ctx context.Context) error {
 		}
 	}
 	return nil
+}
+
+func (man *ovnMan) ensureGeneveFastpath(ctx context.Context) {
+	dofunc := func(chain string) error {
+		ipt, err := iptables.NewWithProtocol(iptables.ProtocolIPv4)
+		if err != nil {
+			return errors.Wrap(err, "ipt client")
+		}
+
+		var (
+			tbl     = "filter"
+			chn     = chain
+			comment = fmt.Sprintf("sdnagent: %s fastpath for geneve", chain)
+			spec    = []string{
+				"-p", "udp",
+				"--dport", "6081",
+				"-m", "comment", "--comment", comment,
+				"-j", "ACCEPT",
+			}
+		)
+		rules, err := ipt.List(tbl, chain)
+		if err != nil {
+			return errors.Wrapf(err, "list %q chain of %q table", chain, tbl)
+		}
+		if len(rules) > 1 {
+			r0 := rules[0]
+			if strings.Contains(r0, rules[1]) {
+				return nil
+			}
+		}
+
+		for first := true; ; {
+			if err := ipt.Delete(tbl, chn, spec...); err != nil {
+				break
+			}
+			if first {
+				log.Warningf("try telling calico to use FELIX_CHAININSERTMODE=Append instead of Insert by default")
+				first = false
+			}
+		}
+		log.Infof("inserting %s", comment)
+		if err := ipt.Insert(tbl, chn, 1, spec...); err != nil {
+			return errors.Wrapf(err, "insert %q", strings.Join(spec, ","))
+		}
+		return nil
+	}
+	for _, c := range []string{"INPUT", "OUTPUT"} {
+		if err := dofunc(c); err != nil {
+			log.Errorf("ensureGeneveFastpath: %s: %v", c, err)
+		}
+	}
 }
 
 func (man *ovnMan) ensureBasicFlows(ctx context.Context) {
@@ -423,6 +474,7 @@ func (man *ovnMan) cleanup(ctx context.Context) {
 
 func (man *ovnMan) refresh(ctx context.Context) {
 	defer log.Infoln("ovn: refresh done")
+	man.ensureGeneveFastpath(ctx)
 	if man.hostId != "" {
 		if err := man.setIpMac(ctx); err != nil {
 			log.Errorf("ovn: refresh: set ip mac: %v", err)
