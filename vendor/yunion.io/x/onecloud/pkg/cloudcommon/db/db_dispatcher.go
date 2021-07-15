@@ -425,9 +425,6 @@ func Query2List(manager IModelManager, ctx context.Context, userCred mcclient.To
 					extraResults[i].Update(jsonDict)
 					jsonDict = extraResults[i]
 				}
-				if len(exportKeys) > 0 {
-					jsonDict = jsonDict.CopyIncludes(exportKeys...)
-				}
 				if len(fieldFilter) > 0 {
 					jsonDict = jsonDict.CopyIncludes(fieldFilter...)
 				}
@@ -791,6 +788,9 @@ func ListItems(manager IModelManager, ctx context.Context, userCred mcclient.Tok
 	if len(retList) != retCount {
 		totalCnt = len(retList)
 	}
+	if query.Contains("export_keys") {
+		retList = getExportCols(query, retList)
+	}
 	paginate := false
 	if !customizeFilters.IsEmpty() {
 		// query not use Limit and Offset, do manual pagination
@@ -820,6 +820,18 @@ func calculateListResult(data []jsonutils.JSONObject, total, limit, offset int64
 	retResult := modulebase.ListResult{Data: data, Total: int(total), Limit: int(limit), Offset: int(offset)}
 
 	return &retResult
+}
+
+func getExportCols(query jsonutils.JSONObject, retList []jsonutils.JSONObject) []jsonutils.JSONObject {
+	var exportKeys stringutils2.SSortedStrings
+	exportKeyStr, _ := query.GetString("export_keys")
+	exportKeys = stringutils2.NewSortedStrings(strings.Split(exportKeyStr, ","))
+	for i := range retList {
+		if len(exportKeys) > 0 {
+			retList[i] = retList[i].(*jsonutils.JSONDict).CopyIncludes(exportKeys...)
+		}
+	}
+	return retList
 }
 
 func (dispatcher *DBModelDispatcher) List(ctx context.Context, query jsonutils.JSONObject, ctxIds []dispatcher.SResourceContext) (*modulebase.ListResult, error) {
@@ -886,6 +898,10 @@ func getModelItemDetails(manager IModelManager, item IModel, ctx context.Context
 	}
 }
 
+func GetItemDetails(manager IModelManager, item IModel, ctx context.Context, userCred mcclient.TokenCredential) (jsonutils.JSONObject, error) {
+	return getItemDetails(manager, item, ctx, userCred, nil)
+}
+
 func getItemDetails(manager IModelManager, item IModel, ctx context.Context, userCred mcclient.TokenCredential, query jsonutils.JSONObject) (jsonutils.JSONObject, error) {
 	metaFields, excludeFields := GetDetailFields(manager, userCred)
 	fieldFilter := jsonutils.GetQueryStringArray(query, "field")
@@ -920,11 +936,7 @@ func (dispatcher *DBModelDispatcher) tryGetModelProperty(ctx context.Context, pr
 	}
 
 	if consts.IsRbacEnabled() {
-		ownerId, err := fetchOwnerId(ctx, dispatcher.modelManager, userCred, query)
-		if err != nil {
-			return nil, httperrors.NewGeneralError(err)
-		}
-		err = isClassRbacAllowed(dispatcher.modelManager, userCred, ownerId, policy.PolicyActionList, property)
+		_, _, err := FetchCheckQueryOwnerScope(ctx, userCred, query, dispatcher.modelManager, policy.PolicyActionList, true)
 		if err != nil {
 			return nil, err
 		}
@@ -1196,8 +1208,11 @@ func _doCreateItem(
 			generateName, _ = dataDict.GetString("generate_name")
 			if len(generateName) > 0 {
 				if manager.EnableGenerateName() {
+					lockman.LockRawObject(ctx, manager.Keyword(), "name")
+					defer lockman.ReleaseRawObject(ctx, manager.Keyword(), "name")
+
 					// if enable generateName, alway generate name
-					newName, err := GenerateName2(manager, ownerId, generateName, nil, baseIndex)
+					newName, err := GenerateName2(ctx, manager, ownerId, generateName, nil, baseIndex)
 					if err != nil {
 						return nil, errors.Wrap(err, "GenerateName2")
 					}
@@ -1818,7 +1833,7 @@ func deleteItem(manager IModelManager, model IModel, ctx context.Context, userCr
 	err = CustomizeDelete(model, ctx, userCred, query, data)
 	if err != nil {
 		log.Errorf("customize delete error: %s", err)
-		return nil, httperrors.NewNotAcceptableError("%v", err)
+		return nil, httperrors.NewGeneralError(err)
 	}
 
 	details, err := getItemDetails(manager, model, ctx, userCred, query)

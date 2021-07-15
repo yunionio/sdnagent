@@ -18,6 +18,7 @@ import (
 	"context"
 	"database/sql"
 	"fmt"
+	"strings"
 
 	"github.com/serialx/hashring"
 
@@ -101,6 +102,26 @@ func (self *SStoragecache) getStorageNames() []string {
 		names[i] = storages[i].Name
 	}
 	return names
+}
+
+func (self *SStoragecache) GetEsxiAgentHostDesc() (*jsonutils.JSONDict, error) {
+	if !strings.Contains(self.Name, "esxiagent") {
+		return nil, nil
+	}
+	obj, err := BaremetalagentManager.FetchById(self.ExternalId)
+	if err != nil {
+		return nil, errors.Wrapf(err, "unable to fetch baremetalagent %s", obj.GetId())
+	}
+	agent := obj.(*SBaremetalagent)
+	host := &SHost{}
+	host.Id = agent.Id
+	host.Name = agent.Name
+	host.ZoneId = agent.ZoneId
+	host.SetModelManager(HostManager, host)
+	ret := host.GetShortDesc(context.Background())
+	ret.Set("provider", jsonutils.NewString(api.CLOUD_PROVIDER_VMWARE))
+	ret.Set("brand", jsonutils.NewString(api.CLOUD_PROVIDER_VMWARE))
+	return ret, nil
 }
 
 func (self *SStoragecache) GetHost() (*SHost, error) {
@@ -193,8 +214,7 @@ func (manager *SStoragecacheManager) SyncWithCloudStoragecache(ctx context.Conte
 				return localCache, true, nil
 			}
 		} else {
-			log.Errorf("%s", err)
-			return nil, false, err
+			return nil, false, errors.Wrapf(err, "db.FetchByExternalIdAndManagerId(%s)", cloudCache.GetGlobalId())
 		}
 	} else {
 		localCache := localCacheObj.(*SStoragecache)
@@ -207,11 +227,6 @@ func (manager *SStoragecacheManager) newFromCloudStoragecache(ctx context.Contex
 	local := SStoragecache{}
 	local.SetModelManager(manager, &local)
 
-	newName, err := db.GenerateName(manager, userCred, cloudCache.GetName())
-	if err != nil {
-		return nil, err
-	}
-	local.Name = newName
 	local.ExternalId = cloudCache.GetGlobalId()
 
 	local.IsEmulated = cloudCache.IsEmulated()
@@ -219,7 +234,18 @@ func (manager *SStoragecacheManager) newFromCloudStoragecache(ctx context.Contex
 
 	local.Path = cloudCache.GetPath()
 
-	err = manager.TableSpec().Insert(ctx, &local)
+	var err = func() error {
+		lockman.LockRawObject(ctx, manager.Keyword(), "name")
+		defer lockman.ReleaseRawObject(ctx, manager.Keyword(), "name")
+
+		newName, err := db.GenerateName(ctx, manager, userCred, cloudCache.GetName())
+		if err != nil {
+			return err
+		}
+		local.Name = newName
+
+		return manager.TableSpec().Insert(ctx, &local)
+	}()
 	if err != nil {
 		return nil, err
 	}
@@ -364,6 +390,10 @@ func (self *SStoragecache) getCachedImageSize() int64 {
 }
 
 func (self *SStoragecache) StartImageCacheTask(ctx context.Context, userCred mcclient.TokenCredential, imageId string, format string, isForce bool, parentTaskId string) error {
+	return self.StartImageCacheTaskFromHost(ctx, userCred, imageId, format, isForce, "", parentTaskId)
+}
+
+func (self *SStoragecache) StartImageCacheTaskFromHost(ctx context.Context, userCred mcclient.TokenCredential, imageId string, format string, isForce bool, srcHostId string, parentTaskId string) error {
 	StoragecachedimageManager.Register(ctx, userCred, self.Id, imageId, "")
 	data := jsonutils.NewDict()
 	data.Add(jsonutils.NewString(imageId), "image_id")
@@ -386,6 +416,10 @@ func (self *SStoragecache) StartImageCacheTask(ctx context.Context, userCred mcc
 
 	if isForce {
 		data.Add(jsonutils.JSONTrue, "is_force")
+	}
+
+	if srcHostId != "" {
+		data.Add(jsonutils.NewString(srcHostId), "source_host_id")
 	}
 	task, err := taskman.TaskManager.NewTask(ctx, "StorageCacheImageTask", self, userCred, data, parentTaskId, "", nil)
 	if err != nil {

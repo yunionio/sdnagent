@@ -109,7 +109,7 @@ type SNetwork struct {
 
 	// 服务器类型
 	// example: server
-	ServerType string `width:"16" charset:"ascii" default:"guest" nullable:"true" list:"user" update:"user" create:"optional"`
+	ServerType string `width:"16" charset:"ascii" default:"guest" nullable:"true" list:"user" create:"optional"`
 
 	// 分配策略
 	AllocPolicy string `width:"16" charset:"ascii" nullable:"true" get:"user" update:"user" create:"optional"`
@@ -199,6 +199,7 @@ type sNicCount struct {
 	LoadbalancerNicCount int
 	DBInstanceNicCount   int
 	EipNicCount          int
+	NatNicCount          int
 	Total                int
 }
 
@@ -235,6 +236,11 @@ func (self *SNetwork) GetAllocatedNicCount() (*sNicCount, error) {
 		return nil, errors.Wrapf(err, "GetEipsCount")
 	}
 	cnt.Total += cnt.EipNicCount
+	cnt.NatNicCount, err = self.GetNatGatewayIpsCount()
+	if err != nil {
+		return nil, errors.Wrapf(err, "GetNatGatewayIpsCount")
+	}
+	cnt.Total += cnt.NatNicCount
 	return cnt, nil
 }
 
@@ -298,6 +304,16 @@ func (self *SNetwork) ValidateElbNetwork(ipAddr net.IP) (*SCloudregion, *SZone, 
 	return region, zone, vpc, wire, nil
 }
 
+func (self *SNetwork) GetGuestnetworks() ([]SGuestnetwork, error) {
+	q := GuestnetworkManager.Query().Equals("network_id", self.Id)
+	gns := []SGuestnetwork{}
+	err := db.FetchModelObjects(GuestnetworkManager, q, &gns)
+	if err != nil {
+		return nil, errors.Wrapf(err, "db.FetchModelObjects")
+	}
+	return gns, nil
+}
+
 func (self *SNetwork) GetGuestnicsCount() (int, error) {
 	return GuestnetworkManager.Query().Equals("network_id", self.Id).IsFalse("virtual").CountWithError()
 }
@@ -332,6 +348,10 @@ func (self *SNetwork) GetDBInstanceNetworks() ([]SDBInstanceNetwork, error) {
 
 func (self *SNetwork) GetDBInstanceIpsCount() (int, error) {
 	return DBInstanceNetworkManager.Query().Equals("network_id", self.Id).CountWithError()
+}
+
+func (self *SNetwork) GetNatGatewayIpsCount() (int, error) {
+	return NatGatewayManager.Query().Equals("network_id", self.Id).IsNotEmpty("ip_addr").CountWithError()
 }
 
 func (self *SNetwork) GetEipsCount() (int, error) {
@@ -639,8 +659,8 @@ func (manager *SNetworkManager) getNetworksByWire(wire *SWire) ([]SNetwork, erro
 func (manager *SNetworkManager) SyncNetworks(ctx context.Context, userCred mcclient.TokenCredential, wire *SWire, nets []cloudprovider.ICloudNetwork, provider *SCloudprovider) ([]SNetwork, []cloudprovider.ICloudNetwork, compare.SyncResult) {
 	syncOwnerId := provider.GetOwnerId()
 
-	lockman.LockClass(ctx, manager, db.GetLockClassKey(manager, syncOwnerId))
-	defer lockman.ReleaseClass(ctx, manager, db.GetLockClassKey(manager, syncOwnerId))
+	lockman.LockRawObject(ctx, "networks", wire.Id)
+	defer lockman.ReleaseRawObject(ctx, "networks", wire.Id)
 
 	localNets := make([]SNetwork, 0)
 	remoteNets := make([]cloudprovider.ICloudNetwork, 0)
@@ -683,7 +703,6 @@ func (manager *SNetworkManager) SyncNetworks(ctx context.Context, userCred mccli
 		if err != nil {
 			syncResult.UpdateError(err)
 		} else {
-			syncVirtualResourceMetadata(ctx, userCred, &commondb[i], commonext[i])
 			localNets = append(localNets, commondb[i])
 			remoteNets = append(remoteNets, commonext[i])
 			syncResult.Update()
@@ -694,7 +713,6 @@ func (manager *SNetworkManager) SyncNetworks(ctx context.Context, userCred mccli
 		if err != nil {
 			syncResult.AddError(err)
 		} else {
-			syncVirtualResourceMetadata(ctx, userCred, new, added[i])
 			localNets = append(localNets, *new)
 			remoteNets = append(remoteNets, added[i])
 			syncResult.Add()
@@ -743,6 +761,7 @@ func (self *SNetwork) SyncWithCloudNetwork(ctx context.Context, userCred mcclien
 	}
 	db.OpsLog.LogSyncUpdate(self, diff, userCred)
 
+	syncVirtualResourceMetadata(ctx, userCred, self, extNet)
 	SyncCloudProject(userCred, self, syncOwnerId, extNet, vpc.ManagerId)
 
 	if provider != nil {
@@ -763,11 +782,6 @@ func (manager *SNetworkManager) newFromCloudNetwork(ctx context.Context, userCre
 	net := SNetwork{}
 	net.SetModelManager(manager, &net)
 
-	newName, err := db.GenerateName(manager, syncOwnerId, extNet.GetName())
-	if err != nil {
-		return nil, err
-	}
-	net.Name = newName
 	net.Status = extNet.GetStatus()
 	net.ExternalId = extNet.GetGlobalId()
 	net.WireId = wire.Id
@@ -785,13 +799,24 @@ func (manager *SNetworkManager) newFromCloudNetwork(ctx context.Context, userCre
 
 	net.AllocTimoutSeconds = extNet.GetAllocTimeoutSeconds()
 
-	err = manager.TableSpec().Insert(ctx, &net)
+	var err = func() error {
+		lockman.LockRawObject(ctx, manager.Keyword(), "name")
+		defer lockman.ReleaseRawObject(ctx, manager.Keyword(), "name")
+
+		newName, err := db.GenerateName(ctx, manager, syncOwnerId, extNet.GetName())
+		if err != nil {
+			return err
+		}
+		net.Name = newName
+
+		return manager.TableSpec().Insert(ctx, &net)
+	}()
 	if err != nil {
-		log.Errorf("newFromCloudZone fail %s", err)
-		return nil, err
+		return nil, errors.Wrapf(err, "Insert")
 	}
 
 	vpc := wire.GetVpc()
+	syncVirtualResourceMetadata(ctx, userCred, &net, extNet)
 	SyncCloudProject(userCred, &net, syncOwnerId, extNet, vpc.ManagerId)
 
 	if provider != nil {
@@ -906,7 +931,7 @@ func (manager *SNetworkManager) TotalPortCount(
 	userCred mcclient.IIdentityProvider,
 	providers []string, brands []string, cloudEnv string,
 	rangeObjs []db.IStandaloneModel,
-) NetworkPortStat {
+) map[string]NetworkPortStat {
 	nets := make([]SNetwork, 0)
 	err := manager.totalPortCountQ(
 		scope,
@@ -917,17 +942,32 @@ func (manager *SNetworkManager) TotalPortCount(
 	if err != nil {
 		log.Errorf("TotalPortCount: %v", err)
 	}
-	ct := 0
-	ctExt := 0
+	ret := make(map[string]NetworkPortStat)
 	for _, net := range nets {
+		var stat NetworkPortStat
+		var allStat NetworkPortStat
+		if len(net.ServerType) > 0 {
+			stat, _ = ret[net.ServerType]
+		}
+		allStat, _ = ret[""]
 		count := net.getIPRange().AddressCount()
 		if net.IsExitNetwork() {
-			ctExt += count
+			if len(net.ServerType) > 0 {
+				stat.CountExt += count
+			}
+			allStat.CountExt += count
 		} else {
-			ct += count
+			if len(net.ServerType) > 0 {
+				stat.Count += count
+			}
+			allStat.Count += count
 		}
+		if len(net.ServerType) > 0 {
+			ret[net.ServerType] = stat
+		}
+		ret[""] = allStat
 	}
-	return NetworkPortStat{Count: ct, CountExt: ctExt}
+	return ret
 }
 
 type SNicConfig struct {
@@ -1032,9 +1072,9 @@ func isValidNetworkInfo(userCred mcclient.TokenCredential, netConfig *api.Networ
 	return nil
 }
 
-func IsExitNetworkInfo(netConfig *api.NetworkConfig) bool {
+func IsExitNetworkInfo(userCred mcclient.TokenCredential, netConfig *api.NetworkConfig) bool {
 	if len(netConfig.Network) > 0 {
-		netObj, _ := NetworkManager.FetchById(netConfig.Network)
+		netObj, _ := NetworkManager.FetchByIdOrName(userCred, netConfig.Network)
 		net := netObj.(*SNetwork)
 		if net.IsExitNetwork() {
 			return true
@@ -1216,6 +1256,10 @@ func (self *SNetwork) ensureIfnameHint() {
 		panic(errors.Wrap(err, "ensureIfnameHint: db update"))
 	}
 	log.Infof("network %s(%s): initialized ifname hint: %s", self.Name, self.Id, hint)
+}
+
+func (manager *SNetworkManager) NewIfnameHint(hint string) (string, error) {
+	return manager.newIfnameHint(hint)
 }
 
 func (manager *SNetworkManager) newIfnameHint(hint string) (string, error) {
@@ -1611,6 +1655,10 @@ func (self *SNetwork) validateUpdateData(ctx context.Context, userCred mcclient.
 		if endIp.NetAddr(masklen) != netAddr {
 			return input, httperrors.NewInputParameterError("start, end ip must be in the same subnet")
 		}
+	} else {
+		startIp, _ = netutils.NewIPV4Addr(self.GuestIpStart)
+		endIp, _ = netutils.NewIPV4Addr(self.GuestIpEnd)
+		netAddr = startIp.NetAddr(masklen)
 	}
 
 	for key, ipStr := range map[string]string{
@@ -1789,6 +1837,16 @@ func (self *SNetwork) RealDelete(ctx context.Context, userCred mcclient.TokenCre
 		err = reservedIps[i].Release(ctx, userCred, self)
 		if err != nil {
 			return errors.Wrapf(err, "reservedIps.Release %s(%d)", reservedIps[i].IpAddr, reservedIps[i].Id)
+		}
+	}
+	gns, err := self.GetGuestnetworks() // delete virtual nics
+	if err != nil {
+		return errors.Wrapf(err, "GetGuestnetworks")
+	}
+	for i := range gns {
+		err = gns[i].Delete(ctx, userCred)
+		if err != nil {
+			return errors.Wrapf(err, "delete virtual nic %s(%d)", gns[i].Ifname, gns[i].RowId)
 		}
 	}
 	if err := self.SSharableVirtualResourceBase.Delete(ctx, userCred); err != nil {
@@ -2253,6 +2311,52 @@ func (self *SNetwork) PerformMerge(ctx context.Context, userCred mcclient.TokenC
 		return nil, err
 	}
 
+	startIp, endIp, err := self.CheckInvalidToMerge(ctx, net, nil)
+	if err != nil {
+		logclient.AddActionLogWithContext(ctx, self, logclient.ACT_MERGE, err.Error(), userCred, false)
+		return nil, err
+	}
+
+	return nil, self.MergeToNetworkAfterCheck(ctx, userCred, net, startIp, endIp)
+}
+
+func (self *SNetwork) MergeToNetworkAfterCheck(ctx context.Context, userCred mcclient.TokenCredential, net *SNetwork, startIp string, endIp string) error {
+	lockman.LockClass(ctx, NetworkManager, db.GetLockClassKey(NetworkManager, userCred))
+	defer lockman.ReleaseClass(ctx, NetworkManager, db.GetLockClassKey(NetworkManager, userCred))
+
+	_, err := db.Update(net, func() error {
+		net.GuestIpStart = startIp
+		net.GuestIpEnd = endIp
+		return nil
+	})
+	if err != nil {
+		logclient.AddActionLogWithContext(ctx, self, logclient.ACT_MERGE, err.Error(), userCred, false)
+		return err
+	}
+
+	if err := NetworkManager.handleNetworkIdChange(ctx, &networkIdChangeArgs{
+		action:   logclient.ACT_MERGE,
+		oldNet:   self,
+		newNet:   net,
+		userCred: userCred,
+	}); err != nil {
+		return err
+	}
+
+	note := map[string]string{"start_ip": startIp, "end_ip": endIp}
+	db.OpsLog.LogEvent(self, db.ACT_MERGE, note, userCred)
+	logclient.AddActionLogWithContext(ctx, self, logclient.ACT_MERGE, note, userCred, true)
+
+	if err = self.RealDelete(ctx, userCred); err != nil {
+		return err
+	}
+	note = map[string]string{"network": self.Id}
+	db.OpsLog.LogEvent(self, db.ACT_DELETE, note, userCred)
+	logclient.AddActionLogWithContext(ctx, self, logclient.ACT_DELOCATE, note, userCred, true)
+	return nil
+}
+
+func (self *SNetwork) CheckInvalidToMerge(ctx context.Context, net *SNetwork, allNets []*SNetwork) (string, string, error) {
 	failReason := make([]string, 0)
 
 	if self.WireId != net.WireId {
@@ -2264,11 +2368,13 @@ func (self *SNetwork) PerformMerge(ctx context.Context, userCred mcclient.TokenC
 	if self.VlanId != net.VlanId {
 		failReason = append(failReason, "vlan_id")
 	}
+	if self.ServerType != net.ServerType {
+		failReason = append(failReason, "server_type")
+	}
 
 	if len(failReason) > 0 {
-		err = httperrors.NewInputParameterError("Invalid Target Network %s: inconsist %s", input.Target, strings.Join(failReason, ","))
-		logclient.AddActionLogWithContext(ctx, self, logclient.ACT_MERGE, err.Error(), userCred, false)
-		return nil, err
+		err := httperrors.NewInputParameterError("Invalid Target Network %s: inconsist %s", net.GetId(), strings.Join(failReason, ","))
+		return "", "", err
 	}
 
 	var startIp, endIp string
@@ -2277,12 +2383,18 @@ func (self *SNetwork) PerformMerge(ctx context.Context, userCred mcclient.TokenC
 	ipSS, _ := netutils.NewIPV4Addr(self.GuestIpStart)
 	ipSE, _ := netutils.NewIPV4Addr(self.GuestIpEnd)
 
-	wireNets := make([]SNetwork, 0)
-	q := NetworkManager.Query().Equals("wire_id", self.WireId).NotEquals("id", self.Id).NotEquals("id", net.Id)
-	err = db.FetchModelObjects(NetworkManager, q, &wireNets)
-	if err != nil && errors.Cause(err) != sql.ErrNoRows {
-		logclient.AddActionLogWithContext(ctx, self, logclient.ACT_MERGE, err.Error(), userCred, false)
-		return nil, errors.Wrap(err, "Query nets of same wire")
+	var wireNets []SNetwork
+	if allNets == nil {
+		q := NetworkManager.Query().Equals("wire_id", self.WireId).NotEquals("id", self.Id).NotEquals("id", net.Id)
+		err := db.FetchModelObjects(NetworkManager, q, &wireNets)
+		if err != nil && errors.Cause(err) != sql.ErrNoRows {
+			return "", "", errors.Wrap(err, "Query nets of same wire")
+		}
+	} else {
+		wireNets = make([]SNetwork, len(allNets))
+		for i := range wireNets {
+			wireNets[i] = *allNets[i]
+		}
 	}
 
 	if ipNE.StepUp() == ipSS || (ipNE.StepUp() < ipSS && !isOverlapNetworks(wireNets, ipNE.StepUp(), ipSS.StepDown())) {
@@ -2291,44 +2403,9 @@ func (self *SNetwork) PerformMerge(ctx context.Context, userCred mcclient.TokenC
 		startIp, endIp = self.GuestIpStart, net.GuestIpEnd
 	} else {
 		note := "Incontinuity Network for %s and %s"
-		logclient.AddActionLogWithContext(ctx, self, logclient.ACT_MERGE,
-			fmt.Sprintf(note, self.Name, net.Name), userCred, false)
-		return nil, httperrors.NewBadRequestError(note, self.Name, net.Name)
+		return "", "", httperrors.NewBadRequestError(note, self.Name, net.Name)
 	}
-
-	lockman.LockClass(ctx, NetworkManager, db.GetLockClassKey(NetworkManager, userCred))
-	defer lockman.ReleaseClass(ctx, NetworkManager, db.GetLockClassKey(NetworkManager, userCred))
-
-	_, err = db.Update(net, func() error {
-		net.GuestIpStart = startIp
-		net.GuestIpEnd = endIp
-		return nil
-	})
-	if err != nil {
-		logclient.AddActionLogWithContext(ctx, self, logclient.ACT_MERGE, err.Error(), userCred, false)
-		return nil, err
-	}
-
-	if err := NetworkManager.handleNetworkIdChange(ctx, &networkIdChangeArgs{
-		action:   logclient.ACT_MERGE,
-		oldNet:   self,
-		newNet:   net,
-		userCred: userCred,
-	}); err != nil {
-		return nil, err
-	}
-
-	note := map[string]string{"start_ip": startIp, "end_ip": endIp}
-	db.OpsLog.LogEvent(self, db.ACT_MERGE, note, userCred)
-	logclient.AddActionLogWithContext(ctx, self, logclient.ACT_MERGE, note, userCred, true)
-
-	if err = self.RealDelete(ctx, userCred); err != nil {
-		return nil, err
-	}
-	note = map[string]string{"network": self.Id}
-	db.OpsLog.LogEvent(self, db.ACT_DELETE, note, userCred)
-	logclient.AddActionLogWithContext(ctx, self, logclient.ACT_DELOCATE, note, userCred, true)
-	return nil, nil
+	return startIp, endIp, nil
 }
 
 // 分割IP子网
@@ -2357,26 +2434,7 @@ func (self *SNetwork) PerformSplit(ctx context.Context, userCred mcclient.TokenC
 		return nil, httperrors.NewInputParameterError("Split IP %s out of range", input.SplitIp)
 	}
 
-	lockman.LockClass(ctx, NetworkManager, db.GetLockClassKey(NetworkManager, userCred))
-	defer lockman.ReleaseClass(ctx, NetworkManager, db.GetLockClassKey(NetworkManager, userCred))
-
-	if len(input.Name) > 0 {
-		if err := db.NewNameValidator(NetworkManager, userCred, input.Name, nil); err != nil {
-			return nil, httperrors.NewInputParameterError("Duplicate name %s", input.Name)
-		}
-	} else {
-		input.Name, err = db.GenerateName(NetworkManager, userCred, fmt.Sprintf("%s#", self.Name))
-		if err != nil {
-			return nil, httperrors.NewInternalServerError("GenerateName fail %s", err)
-		}
-	}
-
 	network := &SNetwork{}
-	network.Name = input.Name
-	network.IfnameHint, err = NetworkManager.newIfnameHint(input.Name)
-	if err != nil {
-		return nil, httperrors.NewBadRequestError("Generate ifname hint failed %s", err)
-	}
 	network.GuestIpStart = input.SplitIp
 	network.GuestIpEnd = self.GuestIpEnd
 	network.GuestIpMask = self.GuestIpMask
@@ -2396,7 +2454,29 @@ func (self *SNetwork) PerformSplit(ctx context.Context, userCred mcclient.TokenC
 	network.Description = self.Description
 	network.IsAutoAlloc = self.IsAutoAlloc
 
-	err = NetworkManager.TableSpec().Insert(ctx, network)
+	err = func() error {
+		lockman.LockRawObject(ctx, NetworkManager.Keyword(), "name")
+		defer lockman.ReleaseRawObject(ctx, NetworkManager.Keyword(), "name")
+
+		if len(input.Name) > 0 {
+			if err := db.NewNameValidator(NetworkManager, userCred, input.Name, nil); err != nil {
+				return httperrors.NewInputParameterError("Duplicate name %s", input.Name)
+			}
+		} else {
+			input.Name, err = db.GenerateName(ctx, NetworkManager, userCred, fmt.Sprintf("%s#", self.Name))
+			if err != nil {
+				return httperrors.NewInternalServerError("GenerateName fail %s", err)
+			}
+		}
+
+		network.Name = input.Name
+		network.IfnameHint, err = NetworkManager.newIfnameHint(input.Name)
+		if err != nil {
+			return httperrors.NewBadRequestError("Generate ifname hint failed %s", err)
+		}
+
+		return NetworkManager.TableSpec().Insert(ctx, network)
+	}()
 	if err != nil {
 		return nil, err
 	}
@@ -2520,13 +2600,18 @@ func (manager *SNetworkManager) PerformTryCreateNetwork(ctx context.Context, use
 		newNetwork.IsPublic = nm.IsPublic
 		newNetwork.ProjectId = userCred.GetProjectId()
 		newNetwork.DomainId = userCred.GetProjectDomainId()
-		newName, err := db.GenerateName(NetworkManager, userCred, fmt.Sprintf("%s#", nm.Name))
-		if err != nil {
-			return nil, httperrors.NewInternalServerError("GenerateName fail %s", err)
-		}
-		newNetwork.Name = newName
 
-		err = NetworkManager.TableSpec().Insert(ctx, newNetwork)
+		err = func() error {
+			lockman.LockRawObject(ctx, NetworkManager.Keyword(), "name")
+			defer lockman.ReleaseRawObject(ctx, NetworkManager.Keyword(), "name")
+
+			newNetwork.Name, err = db.GenerateName(ctx, NetworkManager, userCred, fmt.Sprintf("%s#", nm.Name))
+			if err != nil {
+				return httperrors.NewInternalServerError("GenerateName fail %s", err)
+			}
+
+			return NetworkManager.TableSpec().Insert(ctx, newNetwork)
+		}()
 		if err != nil {
 			return nil, err
 		}

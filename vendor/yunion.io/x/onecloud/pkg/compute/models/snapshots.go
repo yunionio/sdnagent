@@ -33,6 +33,7 @@ import (
 	"yunion.io/x/onecloud/pkg/cloudcommon/db/lockman"
 	"yunion.io/x/onecloud/pkg/cloudcommon/db/quotas"
 	"yunion.io/x/onecloud/pkg/cloudcommon/db/taskman"
+	"yunion.io/x/onecloud/pkg/cloudcommon/validators"
 	"yunion.io/x/onecloud/pkg/cloudprovider"
 	"yunion.io/x/onecloud/pkg/compute/options"
 	"yunion.io/x/onecloud/pkg/httperrors"
@@ -341,26 +342,19 @@ func (manager *SSnapshotManager) ValidateCreateData(
 	ownerId mcclient.IIdentityProvider,
 	query jsonutils.JSONObject,
 	input api.SnapshotCreateInput,
-) (*jsonutils.JSONDict, error) {
-	for _, disk := range []string{input.Disk, input.DiskId} {
-		if len(disk) > 0 {
-			input.Disk = disk
-			break
-		}
+) (api.SnapshotCreateInput, error) {
+	if len(input.DiskId) == 0 {
+		return input, httperrors.NewMissingParameterError("disk_id")
 	}
-	if len(input.Disk) == 0 {
-		return nil, httperrors.NewMissingParameterError("disk")
+	_disk, err := validators.ValidateModel(userCred, DiskManager, &input.DiskId)
+	if err != nil {
+		return input, err
 	}
 
-	_disk, err := DiskManager.FetchByIdOrName(userCred, input.Disk)
-	if err != nil {
-		if err == sql.ErrNoRows {
-			return nil, httperrors.NewResourceNotFoundError("failed to found disk %s", input.Disk)
-		}
-		return nil, httperrors.NewGeneralError(errors.Wrap(err, "DiskManager.FetchByIdOrName"))
-	}
 	disk := _disk.(*SDisk)
-	input.DiskId = disk.Id
+	if disk.Status != api.DISK_READY {
+		return input, httperrors.NewInvalidStatusError("disk %s status is not %s", disk.Name, api.DISK_READY)
+	}
 	input.DiskType = disk.DiskType
 	input.Size = disk.DiskSize
 	input.OsArch = disk.OsArch
@@ -372,38 +366,38 @@ func (manager *SSnapshotManager) ValidateCreateData(
 	input.ManagerId = storage.ManagerId
 	region := storage.GetRegion()
 	if region == nil {
-		return nil, httperrors.NewInputParameterError("failed to found region for disk's storage %s(%s)", storage.Name, storage.Id)
+		return input, httperrors.NewInputParameterError("failed to found region for disk's storage %s(%s)", storage.Name, storage.Id)
 	}
 	input.CloudregionId = region.Id
 
 	driver, err := storage.GetRegionDriver()
 	if err != nil {
-		return nil, errors.Wrap(err, "storage.GetRegionDriver")
+		return input, errors.Wrap(err, "storage.GetRegionDriver")
 	}
 	input.OutOfChain = driver.SnapshotIsOutOfChain(disk)
 
 	err = driver.ValidateCreateSnapshotData(ctx, userCred, disk, storage, &input)
 	if err != nil {
-		return nil, errors.Wrap(err, "driver.ValidateCreateSnapshotData")
+		return input, errors.Wrap(err, "driver.ValidateCreateSnapshotData")
 	}
 
 	input.VirtualResourceCreateInput, err = manager.SVirtualResourceBaseManager.ValidateCreateData(ctx, userCred, ownerId, query, input.VirtualResourceCreateInput)
 	if err != nil {
-		return nil, err
+		return input, err
 	}
 
 	pendingUsage := &SRegionQuota{Snapshot: 1}
 	keys, err := disk.GetQuotaKeys()
 	if err != nil {
-		return nil, err
+		return input, err
 	}
 	pendingUsage.SetKeys(keys.(SComputeResourceKeys).SRegionalCloudResourceKeys)
 	err = quotas.CheckSetPendingQuota(ctx, userCred, pendingUsage)
 	if err != nil {
-		return nil, err
+		return input, err
 	}
 
-	return input.JSON(input), nil
+	return input, nil
 }
 
 func (self *SSnapshot) CustomizeCreate(ctx context.Context, userCred mcclient.TokenCredential, ownerId mcclient.IIdentityProvider, query jsonutils.JSONObject, data jsonutils.JSONObject) error {
@@ -890,13 +884,14 @@ func (self *SSnapshot) SyncWithCloudSnapshot(ctx context.Context, userCred mccli
 	}
 	db.OpsLog.LogSyncUpdate(self, diff, userCred)
 
+	syncVirtualResourceMetadata(ctx, userCred, self, ext)
+
 	// bugfix for now:
-	disk, err := self.GetDisk()
-	if err != nil && err != sql.ErrNoRows {
-		return errors.Wrapf(err, "get disk of snapshot %s error", self.Id)
-	}
-	if err == nil {
+	disk, _ := self.GetDisk()
+	if disk != nil {
 		self.SyncCloudProjectId(userCred, disk.GetOwnerId())
+	} else {
+		SyncCloudProject(userCred, self, syncOwnerId, ext, disk.GetCloudprovider().Id)
 	}
 
 	return nil
@@ -906,11 +901,6 @@ func (manager *SSnapshotManager) newFromCloudSnapshot(ctx context.Context, userC
 	snapshot := SSnapshot{}
 	snapshot.SetModelManager(manager, &snapshot)
 
-	newName, err := db.GenerateName(manager, syncOwnerId, extSnapshot.GetName())
-	if err != nil {
-		return nil, err
-	}
-	snapshot.Name = newName
 	snapshot.Status = extSnapshot.GetStatus()
 	snapshot.ExternalId = extSnapshot.GetGlobalId()
 	var localDisk *SDisk
@@ -932,11 +922,23 @@ func (manager *SSnapshotManager) newFromCloudSnapshot(ctx context.Context, userC
 	snapshot.ManagerId = provider.Id
 	snapshot.CloudregionId = region.Id
 
-	err = manager.TableSpec().Insert(ctx, &snapshot)
+	var err = func() error {
+		lockman.LockRawObject(ctx, manager.Keyword(), "name")
+		defer lockman.ReleaseRawObject(ctx, manager.Keyword(), "name")
+
+		newName, err := db.GenerateName(ctx, manager, syncOwnerId, extSnapshot.GetName())
+		if err != nil {
+			return err
+		}
+		snapshot.Name = newName
+
+		return manager.TableSpec().Insert(ctx, &snapshot)
+	}()
 	if err != nil {
-		log.Errorf("newFromCloudEip fail %s", err)
-		return nil, err
+		return nil, errors.Wrapf(err, "Insert")
 	}
+
+	syncVirtualResourceMetadata(ctx, userCred, &snapshot, extSnapshot)
 
 	// bugfix for now:
 	if localDisk != nil {
@@ -964,8 +966,8 @@ func (manager *SSnapshotManager) getProviderSnapshotsByRegion(region *SCloudregi
 }
 
 func (manager *SSnapshotManager) SyncSnapshots(ctx context.Context, userCred mcclient.TokenCredential, provider *SCloudprovider, region *SCloudregion, snapshots []cloudprovider.ICloudSnapshot, syncOwnerId mcclient.IIdentityProvider) compare.SyncResult {
-	lockman.LockClass(ctx, manager, db.GetLockClassKey(manager, syncOwnerId))
-	defer lockman.ReleaseClass(ctx, manager, db.GetLockClassKey(manager, syncOwnerId))
+	lockman.LockRawObject(ctx, "snapshots", fmt.Sprintf("%s-%s", provider.Id, region.Id))
+	defer lockman.ReleaseRawObject(ctx, "snapshots", fmt.Sprintf("%s-%s", provider.Id, region.Id))
 
 	syncResult := compare.SyncResult{}
 	dbSnapshots, err := manager.getProviderSnapshotsByRegion(region, provider)
@@ -996,16 +998,14 @@ func (manager *SSnapshotManager) SyncSnapshots(ctx context.Context, userCred mcc
 		if err != nil {
 			syncResult.UpdateError(err)
 		} else {
-			syncVirtualResourceMetadata(ctx, userCred, &commondb[i], commonext[i])
 			syncResult.Update()
 		}
 	}
 	for i := 0; i < len(added); i += 1 {
-		local, err := manager.newFromCloudSnapshot(ctx, userCred, added[i], region, syncOwnerId, provider)
+		_, err := manager.newFromCloudSnapshot(ctx, userCred, added[i], region, syncOwnerId, provider)
 		if err != nil {
 			syncResult.AddError(err)
 		} else {
-			syncVirtualResourceMetadata(ctx, userCred, local, added[i])
 			syncResult.Add()
 		}
 	}

@@ -53,6 +53,7 @@ import (
 	"yunion.io/x/onecloud/pkg/mcclient"
 	"yunion.io/x/onecloud/pkg/mcclient/auth"
 	"yunion.io/x/onecloud/pkg/mcclient/modules"
+	"yunion.io/x/onecloud/pkg/multicloud/esxi"
 	"yunion.io/x/onecloud/pkg/util/httputils"
 	"yunion.io/x/onecloud/pkg/util/logclient"
 	"yunion.io/x/onecloud/pkg/util/rbacutils"
@@ -187,6 +188,9 @@ type SHost struct {
 
 	// IPv4地址，作为么有云vpc访问外网时的网关
 	OvnMappedIpAddr string `width:"16" charset:"ascii" nullable:"true" list:"user"`
+
+	// UEFI详情
+	UefiInfo jsonutils.JSONObject `nullable:"true" get:"domain" update:"domain" create:"domain_optional"`
 }
 
 func (manager *SHostManager) GetContextManagers() [][]db.IModelManager {
@@ -250,6 +254,14 @@ func (manager *SHostManager) ListItemFilter(
 		} else {
 			q = q.Equals("access_mac", anyMac)
 		}
+	}
+	if len(query.AnyIp) > 0 {
+		hn := HostnetworkManager.Query("baremetal_id").Contains("ip_addr", query.AnyIp).SubQuery()
+		q = q.Filter(sqlchemy.OR(
+			sqlchemy.Contains(q.Field("access_ip"), query.AnyIp),
+			sqlchemy.Contains(q.Field("ipmi_ip"), query.AnyIp),
+			sqlchemy.In(q.Field("id"), hn),
+		))
 	}
 	// var scopeQuery *sqlchemy.SSubQuery
 
@@ -481,6 +493,17 @@ func (manager *SHostManager) OrderByExtraFields(
 	if err != nil {
 		return nil, errors.Wrap(err, "SZoneResourceBaseManager.OrderByExtraFields")
 	}
+
+	if db.NeedOrderQuery([]string{query.OrderByServerCount}) {
+		guests := GuestManager.Query().SubQuery()
+		guestCounts := guests.Query(
+			guests.Field("host_id"),
+			sqlchemy.COUNT("id").Label("guest_count"),
+		).GroupBy("host_id").SubQuery()
+		q = q.LeftJoin(guestCounts, sqlchemy.Equals(q.Field("id"), guestCounts.Field("host_id")))
+		db.OrderByFields(q, []string{query.OrderByServerCount}, []sqlchemy.IQueryField{guestCounts.Field("guest_count")})
+	}
+
 	return q, nil
 }
 
@@ -532,7 +555,7 @@ func (manager *SHostManager) CustomizeFilterList(ctx context.Context, q *sqlchem
 }
 
 func (self *SHost) IsArmHost() bool {
-	return self.CpuArchitecture == api.CPU_ARCH_AARCH64
+	return self.CpuArchitecture == apis.OS_ARCH_AARCH64
 }
 
 func (self *SHost) GetZone() *SZone {
@@ -1398,6 +1421,16 @@ func (self *SHost) GetMasterWire() *SWire {
 	return &wire
 }
 
+func (self *SHost) getHostwires() ([]SHostwire, error) {
+	hostwires := make([]SHostwire, 0)
+	q := self.GetWiresQuery()
+	err := db.FetchModelObjects(HostwireManager, q, &hostwires)
+	if err != nil {
+		return nil, err
+	}
+	return hostwires, nil
+}
+
 func (self *SHost) getHostwiresOfId(wireId string) []SHostwire {
 	hostwires := make([]SHostwire, 0)
 
@@ -1626,8 +1659,12 @@ func (manager *SHostManager) getHostsByZoneProvider(zone *SZone, provider *SClou
 }
 
 func (manager *SHostManager) SyncHosts(ctx context.Context, userCred mcclient.TokenCredential, provider *SCloudprovider, zone *SZone, hosts []cloudprovider.ICloudHost) ([]SHost, []cloudprovider.ICloudHost, compare.SyncResult) {
-	lockman.LockClass(ctx, manager, db.GetLockClassKey(manager, userCred))
-	defer lockman.ReleaseClass(ctx, manager, db.GetLockClassKey(manager, userCred))
+	key := provider.Id
+	if zone != nil {
+		key = fmt.Sprintf("%s-%s", zone.Id, provider.Id)
+	}
+	lockman.LockRawObject(ctx, "hosts", key)
+	defer lockman.ReleaseRawObject(ctx, "hosts", key)
 
 	localHosts := make([]SHost, 0)
 	remoteHosts := make([]cloudprovider.ICloudHost, 0)
@@ -1944,11 +1981,6 @@ func (manager *SHostManager) newFromCloudHost(ctx context.Context, userCred mccl
 		izone = wire.GetZone()
 	}
 
-	newName, err := db.GenerateName(manager, userCred, extHost.GetName())
-	if err != nil {
-		return nil, fmt.Errorf("generate name fail %s", err)
-	}
-	host.Name = newName
 	host.ExternalId = extHost.GetGlobalId()
 	host.ZoneId = izone.Id
 
@@ -1991,10 +2023,20 @@ func (manager *SHostManager) newFromCloudHost(ctx context.Context, userCred mccl
 	host.IsPublic = false
 	host.PublicScope = string(rbacutils.ScopeNone)
 
-	err = manager.TableSpec().Insert(ctx, &host)
+	var err = func() error {
+		lockman.LockRawObject(ctx, manager.Keyword(), "name")
+		defer lockman.ReleaseRawObject(ctx, manager.Keyword(), "name")
+
+		newName, err := db.GenerateName(ctx, manager, userCred, extHost.GetName())
+		if err != nil {
+			return errors.Wrapf(err, "db.GenerateName")
+		}
+		host.Name = newName
+
+		return manager.TableSpec().Insert(ctx, &host)
+	}()
 	if err != nil {
-		log.Errorf("newFromCloudHost fail %s", err)
-		return nil, err
+		return nil, errors.Wrapf(err, "Insert")
 	}
 
 	db.OpsLog.LogEvent(&host, db.ACT_CREATE, host.GetShortDesc(ctx), userCred)
@@ -2018,8 +2060,8 @@ func (manager *SHostManager) newFromCloudHost(ctx context.Context, userCred mccl
 }
 
 func (self *SHost) SyncHostStorages(ctx context.Context, userCred mcclient.TokenCredential, storages []cloudprovider.ICloudStorage, provider *SCloudprovider) ([]SStorage, []cloudprovider.ICloudStorage, compare.SyncResult) {
-	lockman.LockClass(ctx, StorageManager, db.GetLockClassKey(StorageManager, userCred))
-	defer lockman.ReleaseClass(ctx, StorageManager, db.GetLockClassKey(StorageManager, userCred))
+	lockman.LockRawObject(ctx, "storages", self.Id)
+	defer lockman.ReleaseRawObject(ctx, "storages", self.Id)
 
 	localStorages := make([]SStorage, 0)
 	remoteStorages := make([]cloudprovider.ICloudStorage, 0)
@@ -2151,12 +2193,10 @@ func (self *SHost) newCloudHostStorage(ctx context.Context, userCred mcclient.To
 			// create the storage right now
 			storageObj, err = StorageManager.newFromCloudStorage(ctx, userCred, extStorage, provider, self.GetZone())
 			if err != nil {
-				log.Errorf("create by cloud storage fail %s", err)
-				return nil, err
+				return nil, errors.Wrapf(err, "StorageManager.newFromCloudStorage")
 			}
 		} else {
-			log.Errorf("%s", err)
-			return nil, err
+			return nil, errors.Wrapf(err, "FetchByExternalIdAndManagerId(%s)", extStorage.GetGlobalId())
 		}
 	}
 	storage := storageObj.(*SStorage)
@@ -2165,8 +2205,8 @@ func (self *SHost) newCloudHostStorage(ctx context.Context, userCred mcclient.To
 }
 
 func (self *SHost) SyncHostWires(ctx context.Context, userCred mcclient.TokenCredential, wires []cloudprovider.ICloudWire) compare.SyncResult {
-	lockman.LockObject(ctx, self)
-	defer lockman.ReleaseObject(ctx, self)
+	lockman.LockRawObject(ctx, "wires", self.Id)
+	defer lockman.ReleaseRawObject(ctx, "wires", self.Id)
 
 	syncResult := compare.SyncResult{}
 
@@ -2279,8 +2319,8 @@ type SGuestSyncResult struct {
 }
 
 func (self *SHost) SyncHostVMs(ctx context.Context, userCred mcclient.TokenCredential, iprovider cloudprovider.ICloudProvider, vms []cloudprovider.ICloudVM, syncOwnerId mcclient.IIdentityProvider) ([]SGuestSyncResult, compare.SyncResult) {
-	lockman.LockClass(ctx, GuestManager, db.GetLockClassKey(GuestManager, syncOwnerId))
-	defer lockman.ReleaseClass(ctx, GuestManager, db.GetLockClassKey(GuestManager, syncOwnerId))
+	lockman.LockRawObject(ctx, "guests", self.Id)
+	defer lockman.ReleaseRawObject(ctx, "guests", self.Id)
 
 	syncVMPairs := make([]SGuestSyncResult, 0)
 	syncResult := compare.SyncResult{}
@@ -2559,7 +2599,7 @@ func (manager *SHostManager) totalCountQ(
 		iq.Field("isolated_reserved_storage"),
 	)
 	q = AttachUsageQuery(q, hosts, hostTypes, resourceTypes, providers, brands, cloudEnv, rangeObjs)
-	log.Debugf("hostCount: %s", q.String())
+	// log.Debugf("hostCount: %s", q.String())
 	return q
 }
 
@@ -3497,6 +3537,10 @@ func (self *SHost) PostUpdate(ctx context.Context, userCred mcclient.TokenCreden
 			log.Errorf("baremetal host %s update related server %s spec error: %v", self.GetName(), guest.GetName(), err)
 		}
 	}
+
+	if err := self.startSyncConfig(ctx, userCred, "", true); err != nil {
+		log.Errorf("start sync host %q config after updated", self.GetName())
+	}
 }
 
 func (self *SHost) UpdateDnsRecords(isAdd bool) {
@@ -3902,6 +3946,25 @@ func (self *SHost) AllowPerformPrepare(ctx context.Context,
 	return db.IsAdminAllowPerform(userCred, self, "prepare")
 }
 
+func (self *SHost) HasBMC() bool {
+	ipmiInfo, _ := self.GetIpmiInfo()
+	if ipmiInfo.Username != "" && ipmiInfo.Password != "" {
+		return true
+	}
+	return false
+}
+
+func (self *SHost) IsUEFIBoot() bool {
+	info, _ := self.GetUEFIInfo()
+	if info == nil {
+		return false
+	}
+	if len(info.PxeBootNum) == 0 {
+		return false
+	}
+	return true
+}
+
 func (self *SHost) isRedfishCapable() bool {
 	ipmiInfo, _ := self.GetIpmiInfo()
 	if ipmiInfo.Verified && ipmiInfo.RedfishApi {
@@ -3963,7 +4026,7 @@ func (self *SHost) AllowPerformIpmiProbe(ctx context.Context,
 }
 
 func (self *SHost) PerformIpmiProbe(ctx context.Context, userCred mcclient.TokenCredential, query jsonutils.JSONObject, data jsonutils.JSONObject) (jsonutils.JSONObject, error) {
-	if utils.IsInStringArray(self.Status, []string{api.BAREMETAL_INIT, api.BAREMETAL_READY, api.BAREMETAL_RUNNING}) {
+	if utils.IsInStringArray(self.Status, []string{api.BAREMETAL_INIT, api.BAREMETAL_READY, api.BAREMETAL_RUNNING, api.BAREMETAL_PROBE_FAIL, api.BAREMETAL_UNKNOWN}) {
 		return nil, self.StartIpmiProbeTask(ctx, userCred, "")
 	}
 	return nil, httperrors.NewInvalidStatusError("Cannot do Ipmi-probe in status %s", self.Status)
@@ -4908,6 +4971,93 @@ func (self *SHost) UpdateDiskConfig(userCred mcclient.TokenCredential, layouts [
 	return nil
 }
 
+// TODO: support multithreaded operation
+func (host *SHost) SyncEsxiHostWires(ctx context.Context, userCred mcclient.TokenCredential, remoteHost cloudprovider.ICloudHost) compare.SyncResult {
+	lockman.LockObject(ctx, host)
+	defer lockman.ReleaseObject(ctx, host)
+
+	result := compare.SyncResult{}
+	ca := host.GetCloudaccount()
+	host2wires, err := ca.GetHost2Wire(ctx, userCred)
+	if err != nil {
+		result.Error(errors.Wrap(err, "unable to GetHost2Wire"))
+		return result
+	}
+	log.Infof("host2wires: %s", jsonutils.Marshal(host2wires))
+	ihost := remoteHost.(*esxi.SHost)
+	remoteHostId := ihost.GetId()
+	vsWires := host2wires[remoteHostId]
+
+	log.Infof("vsWires: %s", jsonutils.Marshal(vsWires))
+	netIfs := host.GetNetInterfaces()
+	hostwires, err := host.getHostwires()
+	if err != nil {
+		result.Error(errors.Wrapf(err, "unable to getHostwires of host %s", host.GetId()))
+		return result
+	}
+
+	for i := range vsWires {
+		vsWire := vsWires[i]
+		if vsWire.SyncTimes > 0 {
+			continue
+		}
+		netif := host.findNetIfs(netIfs, vsWire.Mac)
+		if netif == nil {
+			// do nothing
+			continue
+		}
+		hostwire := host.findHostwire(hostwires, vsWire.WireId, vsWire.Mac)
+		if hostwire == nil {
+			hostwire = &SHostwire{
+				Bridge:  vsWire.VsId,
+				MacAddr: vsWire.Mac,
+				HostId:  host.GetId(),
+				WireId:  vsWire.WireId,
+			}
+			hostwire.MacAddr = vsWire.Mac
+			err := HostwireManager.TableSpec().Insert(ctx, hostwire)
+			if err != nil {
+				result.Error(errors.Wrapf(err, "unable to create hostwire for host %q", host.GetId()))
+				continue
+			}
+		}
+		if hostwire.Bridge != vsWire.VsId {
+			db.Update(hostwire, func() error {
+				hostwire.Bridge = vsWire.VsId
+				return nil
+			})
+		}
+		if len(netif.WireId) == 0 {
+			db.Update(netif, func() error {
+				netif.WireId = vsWire.WireId
+				return nil
+			})
+		}
+		vsWires[i].SyncTimes += 1
+	}
+	log.Infof("after sync: %s", jsonutils.Marshal(host2wires))
+	ca.SetHost2Wire(ctx, userCred, host2wires)
+	return result
+}
+
+func (host *SHost) findHostwire(hostwires []SHostwire, wireId string, mac string) *SHostwire {
+	for i := range hostwires {
+		if hostwires[i].WireId == wireId && hostwires[i].MacAddr == mac {
+			return &hostwires[i]
+		}
+	}
+	return nil
+}
+
+func (host *SHost) findNetIfs(netIfs []SNetInterface, mac string) *SNetInterface {
+	for i := range netIfs {
+		if netIfs[i].Mac == mac {
+			return &netIfs[i]
+		}
+	}
+	return nil
+}
+
 func (host *SHost) SyncHostExternalNics(ctx context.Context, userCred mcclient.TokenCredential, ihost cloudprovider.ICloudHost) compare.SyncResult {
 	result := compare.SyncResult{}
 
@@ -4960,7 +5110,7 @@ func (host *SHost) SyncHostExternalNics(ctx context.Context, userCred mcclient.T
 					if hw != nil && (hw.Bridge != extNics[i].GetBridge() || hw.Interface != extNics[i].GetDevice()) {
 						db.Update(hw, func() error {
 							hw.Interface = extNics[i].GetDevice()
-							hw.Bridge = extNics[i].GetBridge()
+							// hw.Bridge = extNics[i].GetBridge()
 							return nil
 						})
 					}
@@ -5499,6 +5649,17 @@ func (host *SHost) GetIpmiInfo() (types.SIPMIInfo, error) {
 	return info, nil
 }
 
+func (host *SHost) GetUEFIInfo() (*types.EFIBootMgrInfo, error) {
+	if host.UefiInfo == nil {
+		return nil, nil
+	}
+	info := new(types.EFIBootMgrInfo)
+	if err := host.UefiInfo.Unmarshal(info); err != nil {
+		return nil, errors.Wrap(err, "host.UefiInfo.Unmarshal")
+	}
+	return info, nil
+}
+
 func (self *SHost) AllowGetDetailsJnlp(ctx context.Context, userCred mcclient.TokenCredential, query jsonutils.JSONObject) bool {
 	return db.IsAdminAllowGetSpec(userCred, self, "jnlp")
 }
@@ -5600,7 +5761,13 @@ func (self *SHost) PerformSyncConfig(ctx context.Context, userCred mcclient.Toke
 }
 
 func (self *SHost) StartSyncConfig(ctx context.Context, userCred mcclient.TokenCredential, parentTaskId string) error {
-	task, err := taskman.TaskManager.NewTask(ctx, "BaremetalSyncConfigTask", self, userCred, nil, parentTaskId, "", nil)
+	return self.startSyncConfig(ctx, userCred, parentTaskId, false)
+}
+
+func (self *SHost) startSyncConfig(ctx context.Context, userCred mcclient.TokenCredential, parentTaskId string, noStatus bool) error {
+	data := jsonutils.NewDict()
+	data.Add(jsonutils.NewBool(noStatus), "not_sync_status")
+	task, err := taskman.TaskManager.NewTask(ctx, "BaremetalSyncConfigTask", self, userCred, data, parentTaskId, "", nil)
 	if err != nil {
 		return err
 	}
@@ -5626,8 +5793,22 @@ func (host *SHost) PerformChangeOwner(ctx context.Context, userCred mcclient.Tok
 			return nil, errors.Wrap(err, "local storage change owner")
 		}
 	}
-
+	err = host.StartSyncTask(ctx, userCred, "")
+	if err != nil {
+		return nil, errors.Wrap(err, "PerformChangeOwner StartSyncTask err")
+	}
 	return ret, nil
+}
+
+func (self *SHost) StartSyncTask(ctx context.Context, userCred mcclient.TokenCredential, parentTaskId string) error {
+	if task, err := taskman.TaskManager.NewTask(ctx, "HostSyncTask", self, userCred, jsonutils.NewDict(), parentTaskId, "",
+		nil); err != nil {
+		log.Errorln(err)
+		return err
+	} else {
+		task.ScheduleRun(nil)
+	}
+	return nil
 }
 
 func (host *SHost) GetChangeOwnerRequiredDomainIds() []string {

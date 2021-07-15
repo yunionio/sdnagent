@@ -18,8 +18,8 @@ import (
 	"context"
 
 	"yunion.io/x/log"
-	"yunion.io/x/pkg/errors"
 
+	"yunion.io/x/onecloud/pkg/apis"
 	"yunion.io/x/onecloud/pkg/cloudcommon/db"
 	"yunion.io/x/onecloud/pkg/cloudprovider"
 	"yunion.io/x/onecloud/pkg/mcclient"
@@ -33,6 +33,11 @@ type IMetadataSetter interface {
 	GetCloudproviderId() string
 }
 
+type IVirtualResourceMetadataSetter interface {
+	IMetadataSetter
+	SetSystemInfo(isSystem bool) error
+}
+
 func syncMetadata(ctx context.Context, userCred mcclient.TokenCredential, model IMetadataSetter, remote cloudprovider.ICloudResource) error {
 	sysTags := remote.GetSysTags()
 	sysStore := make(map[string]interface{}, 0)
@@ -42,7 +47,7 @@ func syncMetadata(ctx context.Context, userCred mcclient.TokenCredential, model 
 	model.SetSysCloudMetadataAll(ctx, sysStore, userCred)
 
 	tags, err := remote.GetTags()
-	if err == nil || errors.Cause(err) == cloudprovider.ErrNotFound {
+	if err == nil {
 		store := make(map[string]interface{}, 0)
 		for key, value := range tags {
 			store[db.CLOUD_TAG_PREFIX+key] = value
@@ -52,10 +57,13 @@ func syncMetadata(ctx context.Context, userCred mcclient.TokenCredential, model 
 	return nil
 }
 
-func syncVirtualResourceMetadata(ctx context.Context, userCred mcclient.TokenCredential, model IMetadataSetter, remote cloudprovider.IVirtualResource) error {
+func syncVirtualResourceMetadata(ctx context.Context, userCred mcclient.TokenCredential, model IVirtualResourceMetadataSetter, remote cloudprovider.IVirtualResource) error {
 	sysTags := remote.GetSysTags()
 	sysStore := make(map[string]interface{}, 0)
 	for key, value := range sysTags {
+		if key == apis.IS_SYSTEM && value == "true" {
+			model.SetSystemInfo(true)
+		}
 		sysStore[db.SYS_CLOUD_TAG_PREFIX+key] = value
 	}
 	extProjectId := remote.GetProjectId()
@@ -71,7 +79,7 @@ func syncVirtualResourceMetadata(ctx context.Context, userCred mcclient.TokenCre
 	model.SetSysCloudMetadataAll(ctx, sysStore, userCred)
 
 	tags, err := remote.GetTags()
-	if err == nil || errors.Cause(err) == cloudprovider.ErrNotFound {
+	if err == nil {
 		store := make(map[string]interface{}, 0)
 		for key, value := range tags {
 			store[db.CLOUD_TAG_PREFIX+key] = value
@@ -85,6 +93,6 @@ func SyncMetadata(ctx context.Context, userCred mcclient.TokenCredential, model 
 	return syncMetadata(ctx, userCred, model, remote)
 }
 
-func SyncVirtualResourceMetadata(ctx context.Context, userCred mcclient.TokenCredential, model IMetadataSetter, remote cloudprovider.IVirtualResource) error {
+func SyncVirtualResourceMetadata(ctx context.Context, userCred mcclient.TokenCredential, model IVirtualResourceMetadataSetter, remote cloudprovider.IVirtualResource) error {
 	return syncVirtualResourceMetadata(ctx, userCred, model, remote)
 }

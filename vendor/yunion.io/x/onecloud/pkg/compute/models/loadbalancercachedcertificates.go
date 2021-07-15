@@ -176,7 +176,7 @@ func (man *SCachedLoadbalancerCertificateManager) ValidateCreateData(ctx context
 
 	provider := providerV.Model.(*SCloudprovider)
 	data.Set("manager_id", jsonutils.NewString(provider.Id))
-	name, _ := db.GenerateName(man, ownerId, certificateV.Model.GetName())
+	name, _ := db.GenerateName(ctx, man, ownerId, certificateV.Model.GetName())
 	data.Set("name", jsonutils.NewString(name))
 
 	input := apis.VirtualResourceCreateInput{}
@@ -308,24 +308,15 @@ func (man *SCachedLoadbalancerCertificateManager) newFromCloudLoadbalancerCertif
 	lbcert := SCachedLoadbalancerCertificate{}
 	lbcert.SetModelManager(man, &lbcert)
 
-	newName, err := db.GenerateName(man, projectId, extCertificate.GetName())
-	if err != nil {
-		return nil, err
-	}
-	lbcert.Name = newName
 	lbcert.ExternalId = extCertificate.GetGlobalId()
 	lbcert.ManagerId = provider.Id
 	lbcert.CloudregionId = region.Id
 
-	c := SLoadbalancerCertificate{}
-	q1 := LoadbalancerCertificateManager.Query().IsFalse("pending_deleted")
-	q1 = q1.Equals("fingerprint", extCertificate.GetFingerprint())
-	q1 = q1.Equals("tenant_id", provider.ProjectId)
-	err = q1.First(&c)
+	c, err := LoadbalancerCertificateManager.GetLbCertByFingerprint(provider.ProjectId, extCertificate.GetFingerprint())
 	if err != nil {
 		switch err {
 		case sql.ErrNoRows:
-			localcert, err := LoadbalancerCertificateManager.CreateCertificate(ctx, userCred, provider, lbcert.Name, extCertificate)
+			localcert, err := LoadbalancerCertificateManager.CreateCertificate(ctx, userCred, provider, extCertificate.GetName(), extCertificate)
 			if err != nil {
 				return nil, fmt.Errorf("newFromCloudLoadbalancerCertificate CreateCertificate %s", err)
 			}
@@ -338,10 +329,20 @@ func (man *SCachedLoadbalancerCertificateManager) newFromCloudLoadbalancerCertif
 		lbcert.CertificateId = c.Id
 	}
 
-	err = man.TableSpec().Insert(ctx, &lbcert)
+	err = func() error {
+		lockman.LockRawObject(ctx, man.Keyword(), "name")
+		defer lockman.ReleaseRawObject(ctx, man.Keyword(), "name")
+
+		newName, err := db.GenerateName(ctx, man, projectId, extCertificate.GetName())
+		if err != nil {
+			return err
+		}
+		lbcert.Name = newName
+
+		return man.TableSpec().Insert(ctx, &lbcert)
+	}()
 	if err != nil {
-		log.Errorf("newFromCloudLoadbalancerCertificate fail %s", err)
-		return nil, err
+		return nil, errors.Wrapf(err, "Insert")
 	}
 
 	SyncCloudProject(userCred, &lbcert, projectId, extCertificate, lbcert.ManagerId)
@@ -359,6 +360,23 @@ func (lbcert *SCachedLoadbalancerCertificate) SyncWithCloudLoadbalancerCertifica
 	})
 	if err != nil {
 		return err
+	}
+
+	// update local lb cert
+	localCert, err := LoadbalancerCertificateManager.GetLbCertByFingerprint(projectId.GetProjectId(), extCertificate.GetFingerprint())
+	if err == nil && !localCert.IsComplete() {
+		pkey := extCertificate.GetPrivateKey()
+		cert := extCertificate.GetPublickKey()
+		if len(pkey) > 0 && len(cert) > 0 {
+			_, err = db.UpdateWithLock(ctx, localCert, func() error {
+				localCert.Certificate = cert
+				localCert.PrivateKey = pkey
+				return nil
+			})
+			if err != nil {
+				log.Errorf("SyncWithCloudLoadbalancerCertificate.Update.localcert %s %s", localCert.Id, err)
+			}
+		}
 	}
 	db.OpsLog.LogSyncUpdate(lbcert, diff, userCred)
 
@@ -419,10 +437,8 @@ func (man *SCachedLoadbalancerCertificateManager) getLoadbalancerCertificatesByR
 }
 
 func (man *SCachedLoadbalancerCertificateManager) SyncLoadbalancerCertificates(ctx context.Context, userCred mcclient.TokenCredential, provider *SCloudprovider, region *SCloudregion, certificates []cloudprovider.ICloudLoadbalancerCertificate, syncRange *SSyncRange) compare.SyncResult {
-	ownerProjId := provider.ProjectId
-
-	lockman.LockClass(ctx, man, ownerProjId)
-	defer lockman.ReleaseClass(ctx, man, ownerProjId)
+	lockman.LockRawObject(ctx, "certificates", fmt.Sprintf("%s-%s", provider.Id, region.Id))
+	defer lockman.ReleaseRawObject(ctx, "certificates", fmt.Sprintf("%s-%s", provider.Id, region.Id))
 
 	syncResult := compare.SyncResult{}
 
@@ -584,7 +600,7 @@ func (manager *SCachedLoadbalancerCertificateManager) ListItemExportKeys(ctx con
 }
 
 func (man *SCachedLoadbalancerCertificateManager) InitializeData() error {
-	certs := man.Query().SubQuery()
+	certs := man.Query().IsFalse("pending_deleted").SubQuery()
 	sq := certs.Query(certs.Field("id"), certs.Field("external_id"), sqlchemy.COUNT("external_id").Label("total"))
 	sq2 := sq.GroupBy("external_id").SubQuery()
 	sq3 := sq2.Query(sq2.Field("external_id")).GT("total", 1).SubQuery()

@@ -874,6 +874,21 @@ func (o *ServerRestartOptions) Params() (jsonutils.JSONObject, error) {
 	return StructToParams(o)
 }
 
+type ServerMigrateForecastOptions struct {
+	ID           string `help:"ID of server" json:"-"`
+	PreferHost   string `help:"Server migration prefer host id or name" json:"prefer_host"`
+	LiveMigrate  *bool  `help:"Use live migrate"`
+	SkipCpuCheck *bool  `help:"Skip check CPU mode of the target host" json:"skip_cpu_check"`
+}
+
+func (o *ServerMigrateForecastOptions) GetId() string {
+	return o.ID
+}
+
+func (o *ServerMigrateForecastOptions) Params() (jsonutils.JSONObject, error) {
+	return StructToParams(o)
+}
+
 type ServerMigrateOptions struct {
 	ID         string `help:"ID of server" json:"-"`
 	PreferHost string `help:"Server migration prefer host id or name" json:"prefer_host"`
@@ -890,8 +905,9 @@ func (o *ServerMigrateOptions) Params() (jsonutils.JSONObject, error) {
 }
 
 type ServerLiveMigrateOptions struct {
-	ID         string `help:"ID of server" json:"-"`
-	PreferHost string `help:"Server migration prefer host id or name" json:"prefer_host"`
+	ID           string `help:"ID of server" json:"-"`
+	PreferHost   string `help:"Server migration prefer host id or name" json:"prefer_host"`
+	SkipCpuCheck *bool  `help:"Skip check CPU mode of the target host" json:"skip_cpu_check"`
 }
 
 func (o *ServerLiveMigrateOptions) GetId() string {
@@ -1076,4 +1092,33 @@ func (o *ServerSaveTemplateOptions) Description() string {
 type ServerRemoteUpdateOptions struct {
 	ServerIdOptions
 	computeapi.ServerRemoteUpdateInput
+}
+
+type ServerCreateEipOptions struct {
+	BaseIdOptions
+	Bandwidth  int     `help:"EIP bandwidth in Mbps" default:"5"`
+	BgpType    *string `help:"desired BGP type"`
+	ChargeType *string `help:"bandwidth charge type" choices:"traffic|bandwidth"`
+}
+
+func (opts *ServerCreateEipOptions) Params() (jsonutils.JSONObject, error) {
+	return jsonutils.Marshal(opts), nil
+}
+
+type ServerMakeSshableOptions struct {
+	BaseIdOptions
+
+	User       string `help:"ssh username for ssh connection" default:"root"`
+	PrivateKey string `help:"ssh privatekey for ssh connection"`
+	Password   string `help:"ssh password for ssh connection"`
+}
+
+func (opts *ServerMakeSshableOptions) Params() (jsonutils.JSONObject, error) {
+	if opts.User == "" {
+		return nil, fmt.Errorf("ssh username must be set")
+	}
+	if opts.PrivateKey == "" && opts.Password == "" {
+		return nil, fmt.Errorf("either --private-key or --password must be set")
+	}
+	return jsonutils.Marshal(opts), nil
 }

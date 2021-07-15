@@ -20,6 +20,11 @@ import (
 	"yunion.io/x/onecloud/pkg/httperrors"
 )
 
+const (
+	EXTERNAL_RESOURCE_SOURCE_LOCAL = "local"
+	EXTERNAL_RESOURCE_SOURCE_CLOUD = "cloud"
+)
+
 type ModelBaseDetails struct {
 	Meta
 
@@ -224,4 +229,12 @@ type OpsLogDetails struct {
 
 	OwnerDomain  string `json:"owner_domain"`
 	OwnerProject string `json:"owner_tenant"`
+}
+
+type StatusStatistic struct {
+	// 资源总数
+	TotalCount int64 `json:"total_count"`
+	// 回收站数量
+	// 需要指定pending_delete=all
+	PendingDeletedCount int64 `json:"pending_deleted_count"`
 }

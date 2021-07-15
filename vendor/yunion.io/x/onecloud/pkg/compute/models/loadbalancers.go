@@ -303,11 +303,11 @@ func (man *SLoadbalancerManager) ValidateCreateData(
 
 	var region *SCloudregion
 	if len(input.VpcId) > 0 {
-		var vpc *SVpc
-		vpc, input.VpcResourceInput, err = ValidateVpcResourceInput(userCred, input.VpcResourceInput)
+		_vpc, err := validators.ValidateModel(userCred, VpcManager, &input.VpcId)
 		if err != nil {
-			return nil, errors.Wrap(err, "ValidateVpcResourceInput")
+			return nil, err
 		}
+		vpc := _vpc.(*SVpc)
 		region, _ = vpc.GetRegion()
 	} else if len(input.ZoneId) > 0 {
 		var zone *SZone
@@ -864,8 +864,8 @@ func (man *SLoadbalancerManager) getLocalLoadbalancers(ctx context.Context, user
 func (man *SLoadbalancerManager) SyncLoadbalancers(ctx context.Context, userCred mcclient.TokenCredential, provider *SCloudprovider, region *SCloudregion, lbs []cloudprovider.ICloudLoadbalancer, syncRange *SSyncRange) ([]SLoadbalancer, []cloudprovider.ICloudLoadbalancer, compare.SyncResult) {
 	syncOwnerId := provider.GetOwnerId()
 
-	lockman.LockClass(ctx, man, db.GetLockClassKey(man, syncOwnerId))
-	defer lockman.ReleaseClass(ctx, man, db.GetLockClassKey(man, syncOwnerId))
+	lockman.LockRawObject(ctx, "loadbalance", fmt.Sprintf("%s-%s", provider.Id, region.Id))
+	defer lockman.ReleaseRawObject(ctx, "loadbalance", fmt.Sprintf("%s-%s", provider.Id, region.Id))
 
 	localLbs := []SLoadbalancer{}
 	remoteLbs := []cloudprovider.ICloudLoadbalancer{}
@@ -957,11 +957,6 @@ func (man *SLoadbalancerManager) newFromCloudLoadbalancer(ctx context.Context, u
 	lb.AddressType = extLb.GetAddressType()
 	lb.NetworkType = extLb.GetNetworkType()
 
-	newName, err := db.GenerateName(man, syncOwnerId, extLb.GetName())
-	if err != nil {
-		return nil, err
-	}
-	lb.Name = newName
 	lb.Status = extLb.GetStatus()
 	lb.LoadbalancerSpec = extLb.GetLoadbalancerSpec()
 	lb.ChargeType = extLb.GetChargeType()
@@ -1001,9 +996,20 @@ func (man *SLoadbalancerManager) newFromCloudLoadbalancer(ctx context.Context, u
 		lb.LBInfo = jsonutils.Marshal(extLb.GetSysTags())
 	}
 
-	if err := man.TableSpec().Insert(ctx, &lb); err != nil {
-		log.Errorf("newFromCloudRegion fail %s", err)
-		return nil, err
+	var err = func() error {
+		lockman.LockRawObject(ctx, man.Keyword(), "name")
+		defer lockman.ReleaseRawObject(ctx, man.Keyword(), "name")
+
+		var err error
+		lb.Name, err = db.GenerateName(ctx, man, syncOwnerId, extLb.GetName())
+		if err != nil {
+			return err
+		}
+
+		return man.TableSpec().Insert(ctx, &lb)
+	}()
+	if err != nil {
+		return nil, errors.Wrapf(err, "Insert")
 	}
 
 	SyncCloudProject(userCred, &lb, syncOwnerId, extLb, provider.Id)

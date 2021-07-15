@@ -96,7 +96,7 @@ type IGuestDriver interface {
 	RemoteDeployGuestForRebuildRoot(ctx context.Context, guest *SGuest, ihost cloudprovider.ICloudHost, task taskman.ITask, desc cloudprovider.SManagedVMCreateConfig) (jsonutils.JSONObject, error)
 	GetGuestInitialStateAfterCreate() string
 	GetGuestInitialStateAfterRebuild() string
-	GetLinuxDefaultAccount(desc cloudprovider.SManagedVMCreateConfig) string
+	GetDefaultAccount(desc cloudprovider.SManagedVMCreateConfig) string
 	GetInstanceCapability() cloudprovider.SInstanceCapability
 
 	OnGuestDeployTaskDataReceived(ctx context.Context, guest *SGuest, task taskman.ITask, data jsonutils.JSONObject) error
@@ -178,7 +178,6 @@ type IGuestDriver interface {
 	IsSupportEip() bool
 	IsSupportPublicIp() bool
 	ValidateCreateEip(ctx context.Context, userCred mcclient.TokenCredential, data jsonutils.JSONObject) error
-	RequestAssociateEip(ctx context.Context, userCred mcclient.TokenCredential, guest *SGuest, eip *SElasticip, task taskman.ITask) error
 
 	NeedStopForChangeSpec(guest *SGuest, cpuChanged, memChanged bool) bool
 

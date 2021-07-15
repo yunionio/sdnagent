@@ -35,6 +35,7 @@ const (
 
 type SDatastoreImageCache struct {
 	multicloud.SResourceBase
+	multicloud.STagBase
 	datastore *SDatastore
 	host      *SHost
 }
@@ -173,8 +174,13 @@ func (self *SDatastoreImageCache) GetIImageInTemplateVMs() ([]cloudprovider.IClo
 	}
 
 	log.Infof("get templates successfully")
+	log.Debugf("fake template name: ")
 	for i := range fakeTemplates {
-		log.Infof("fake template name: %s", fakeTemplates[i].GetName())
+		log.Debugf("%s ", fakeTemplates[i].GetName())
+	}
+	log.Debugf("real template name: ")
+	for i := range realTemplates {
+		log.Debugf("%s ", realTemplates[i].GetName())
 	}
 	return ret, nil
 }

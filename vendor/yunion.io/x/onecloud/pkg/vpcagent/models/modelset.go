@@ -19,11 +19,11 @@ import (
 
 	"yunion.io/x/log"
 
+	"yunion.io/x/onecloud/pkg/apihelper"
 	computeapis "yunion.io/x/onecloud/pkg/apis/compute"
 	"yunion.io/x/onecloud/pkg/cloudcommon/db"
 	mcclient_modulebase "yunion.io/x/onecloud/pkg/mcclient/modulebase"
 	mcclient_modules "yunion.io/x/onecloud/pkg/mcclient/modules"
-	"yunion.io/x/onecloud/pkg/vpcagent/apihelper"
 )
 
 type (
@@ -41,6 +41,10 @@ type (
 	Guestsecgroups map[string]*Guestsecgroup // key: guestId/secgroupId
 
 	DnsRecords map[string]*DnsRecord
+
+	RouteTables map[string]*RouteTable
+
+	LoadbalancerNetworks map[string]*LoadbalancerNetwork // key: networkId/loadbalancerId
 )
 
 func (set Vpcs) ModelManager() mcclient_modulebase.IBaseManager {
@@ -76,6 +80,28 @@ func (ms Vpcs) joinWires(subEntries Wires) bool {
 		}
 		subEntry.Vpc = m
 		m.Wire = subEntry
+	}
+	return correct
+}
+
+func (ms Vpcs) joinRouteTables(subEntries RouteTables) bool {
+	correct := true
+	for _, subEntry := range subEntries {
+		vpcId := subEntry.VpcId
+		m, ok := ms[vpcId]
+		if !ok {
+			log.Warningf("vpc_id %s of route table %s(%s) is not present", vpcId, subEntry.Name, subEntry.Id)
+			correct = false
+			continue
+		}
+		subEntry.Vpc = m
+		if m.RouteTable != nil {
+			log.Warningf("vpc %s has more than 1 route table available, skipping %s(%s)",
+				m.Name, m.Id, subEntry.Name, subEntry.Id)
+			correct = false
+			continue
+		}
+		m.RouteTable = subEntry
 	}
 	return correct
 }
@@ -302,6 +328,32 @@ func (ms Networks) joinGuestnetworks(subEntries Guestnetworks) bool {
 	return true
 }
 
+func (ms Networks) joinLoadbalancerNetworks(subEntries LoadbalancerNetworks) bool {
+	for _, m := range ms {
+		m.LoadbalancerNetworks = LoadbalancerNetworks{}
+	}
+	for subEntryId, subEntry := range subEntries {
+		netId := subEntry.NetworkId
+		m, ok := ms[netId]
+		if !ok {
+			// this can happen for external loadbalancers
+			log.Warningf("cannot find network %s for loadblancer %s",
+				subEntry.NetworkId, subEntry.LoadbalancerId)
+			// so that we can ignore these for later stages
+			delete(subEntries, subEntryId)
+			continue
+		}
+		subId := subEntry.NetworkId + "/" + subEntry.LoadbalancerId
+		if _, ok := m.LoadbalancerNetworks[subId]; ok {
+			log.Warningf("loadbalancernetwork net/lb %s already joined", subId)
+			continue
+		}
+		subEntry.Network = m
+		m.LoadbalancerNetworks[subId] = subEntry
+	}
+	return true
+}
+
 func (ms Networks) joinNetworkAddresses(subEntries NetworkAddresses) bool {
 	correct := true
 	for _, subEntry := range subEntries {
@@ -377,6 +429,11 @@ func (set Guestnetworks) joinGuests(subEntries Guests) bool {
 			continue
 		}
 		gn.Guest = g
+		if g.Guestnetworks == nil {
+			g.Guestnetworks = Guestnetworks{}
+		}
+		rowIdStr := fmt.Sprintf("%d", gn.RowId)
+		g.Guestnetworks[rowIdStr] = gn
 	}
 	return true
 }
@@ -630,4 +687,78 @@ func (set DnsRecords) Copy() apihelper.IModelSet {
 		setCopy[id] = el.Copy()
 	}
 	return setCopy
+}
+
+func (set RouteTables) ModelManager() mcclient_modulebase.IBaseManager {
+	return &mcclient_modules.RouteTables
+}
+
+func (set RouteTables) NewModel() db.IModel {
+	return &RouteTable{}
+}
+
+func (set RouteTables) AddModel(i db.IModel) {
+	m := i.(*RouteTable)
+	set[m.Id] = m
+}
+
+func (set RouteTables) Copy() apihelper.IModelSet {
+	setCopy := RouteTables{}
+	for id, el := range set {
+		setCopy[id] = el.Copy()
+	}
+	return setCopy
+}
+
+func (set LoadbalancerNetworks) ModelManager() mcclient_modulebase.IBaseManager {
+	return &mcclient_modules.Loadbalancernetworks
+}
+
+func (set LoadbalancerNetworks) NewModel() db.IModel {
+	return &LoadbalancerNetwork{}
+}
+
+func (set LoadbalancerNetworks) AddModel(i db.IModel) {
+	m := i.(*LoadbalancerNetwork)
+	k := fmt.Sprintf("%s/%s", m.NetworkId, m.LoadbalancerId)
+	set[k] = m
+}
+
+func (set LoadbalancerNetworks) Copy() apihelper.IModelSet {
+	setCopy := LoadbalancerNetworks{}
+	for id, el := range set {
+		setCopy[id] = el.Copy()
+	}
+	return setCopy
+}
+
+func (set LoadbalancerNetworks) joinElasticips(subEntries Elasticips) bool {
+	correct := true
+
+	lnMap := map[string]*LoadbalancerNetwork{}
+	for _, m := range set {
+		lbId := m.LoadbalancerId
+		if old, ok := lnMap[lbId]; ok {
+			log.Errorf("loadbalancer %s is associated with more than 1 networks: %s, %s",
+				lbId, old.NetworkId, m.NetworkId)
+			correct = false
+			continue
+		}
+		lnMap[lbId] = m
+	}
+	for _, subEntry := range subEntries {
+		if subEntry.AssociateType != computeapis.EIP_ASSOCIATE_TYPE_LOADBALANCER {
+			continue
+		}
+		m, ok := lnMap[subEntry.AssociateId]
+		if !ok {
+			log.Errorf("elasticip %s(%s) associated with non-existent loadbalancer %s",
+				subEntry.Name, subEntry.Id, subEntry.AssociateId)
+			correct = false
+			continue
+		}
+		subEntry.LoadbalancerNetwork = m
+		m.Elasticip = subEntry
+	}
+	return correct
 }

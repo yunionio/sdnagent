@@ -28,10 +28,9 @@ import (
 )
 
 var (
-	syncSecgroupWorker *appsrv.SWorkerManager
-	syncAccountWorker  *appsrv.SWorkerManager
-	syncWorkers        []*appsrv.SWorkerManager
-	syncWorkerRing     *hashring.HashRing
+	syncAccountWorker *appsrv.SWorkerManager
+	syncWorkers       []*appsrv.SWorkerManager
+	syncWorkerRing    *hashring.HashRing
 )
 
 func InitSyncWorkers(count int) {
@@ -53,31 +52,40 @@ func InitSyncWorkers(count int) {
 		2048,
 		true,
 	)
-	syncSecgroupWorker = appsrv.NewWorkerManager(
-		"syncSecgroupProbeWorkerManager",
-		1,
-		2048,
-		true,
-	)
+}
+
+type resSyncTask struct {
+	syncFunc func()
+	key      string
+}
+
+func (t *resSyncTask) Run() {
+	t.syncFunc()
+}
+
+func (t *resSyncTask) Dump() string {
+	return fmt.Sprintf("key: %s", t.key)
 }
 
 func RunSyncCloudproviderRegionTask(ctx context.Context, key string, syncFunc func()) {
 	nodeIdxStr, _ := syncWorkerRing.GetNode(key)
 	nodeIdx, _ := strconv.Atoi(nodeIdxStr)
+	task := resSyncTask{
+		syncFunc: syncFunc,
+		key:      key,
+	}
 	log.Debugf("run sync task at %d len %d", nodeIdx, len(syncWorkers))
-	syncWorkers[nodeIdx].Run(syncFunc, nil, func(err error) {
+	syncWorkers[nodeIdx].Run(&task, nil, func(err error) {
 		panicutils.SendPanicMessage(ctx, err)
 	})
 }
 
 func RunSyncCloudAccountTask(ctx context.Context, probeFunc func()) {
-	syncAccountWorker.Run(probeFunc, nil, func(err error) {
-		panicutils.SendPanicMessage(ctx, err)
-	})
-}
-
-func RunSyncSecgroupTask(ctx context.Context, syncFunc func()) {
-	syncSecgroupWorker.Run(syncFunc, nil, func(err error) {
+	task := resSyncTask{
+		syncFunc: probeFunc,
+		key:      "AccountProb",
+	}
+	syncAccountWorker.Run(&task, nil, func(err error) {
 		panicutils.SendPanicMessage(ctx, err)
 	})
 }

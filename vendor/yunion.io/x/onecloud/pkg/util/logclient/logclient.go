@@ -16,6 +16,7 @@ package logclient
 
 import (
 	"context"
+	"fmt"
 	"strings"
 	"time"
 
@@ -42,7 +43,7 @@ var (
 )
 
 // golang 不支持 const 的string array, http://t.cn/EzAvbw8
-var BLACK_LIST_OBJ_TYPE = []string{"parameter"}
+var BLACK_LIST_OBJ_TYPE = []string{} // "parameter"}
 
 var logclientWorkerMan *appsrv.SWorkerManager
 
@@ -160,11 +161,33 @@ func addLog(model IObject, action string, iNotes interface{}, userCred mcclient.
 
 	logentry.Add(jsonutils.NewString(notes), "notes")
 
-	logclientWorkerMan.Run(func() {
-		s := DefaultSessionGenerator(context.Background(), userCred, "", "")
-		_, err := api.Create(s, logentry)
-		if err != nil {
-			log.Errorf("create action log %s failed %s", logentry, err)
-		}
-	}, nil, nil)
+	task := &logTask{
+		userCred: userCred,
+		api:      api,
+		logentry: logentry,
+	}
+	// keystone no need to auth
+	if auth.IsAuthed() {
+		task.userCred = auth.AdminCredential()
+	}
+
+	logclientWorkerMan.Run(task, nil, nil)
+}
+
+type logTask struct {
+	userCred mcclient.TokenCredential
+	api      IModule
+	logentry *jsonutils.JSONDict
+}
+
+func (t *logTask) Run() {
+	s := DefaultSessionGenerator(context.Background(), t.userCred, "", "")
+	_, err := t.api.Create(s, t.logentry)
+	if err != nil {
+		log.Errorf("create action log %s failed %s", t.logentry, err)
+	}
+}
+
+func (t *logTask) Dump() string {
+	return fmt.Sprintf("logTask %v %s", t.api, t.logentry)
 }

@@ -18,6 +18,11 @@ import (
 	"yunion.io/x/onecloud/pkg/apis"
 )
 
+const (
+	NETWORK_TYPE_VPC     = "vpc"
+	NETWORK_TYPE_CLASSIC = "classic"
+)
+
 type WireResourceInput struct {
 	// 二层网络(ID或Name)的资源
 	WireId string `json:"wire_id"`
@@ -315,10 +320,6 @@ type NetworkUpdateInput struct {
 	GuestDomain string `json:"guest_domain"`
 
 	VlanId *int `json:"vlan_id"`
-
-	// 服务器类型
-	// example: server
-	ServerType string `json:"server_type"`
 
 	// 分配策略
 	AllocPolicy string `json:"alloc_policy"`

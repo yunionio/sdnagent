@@ -371,8 +371,12 @@ func (opts *BasePublicOptions) Params() (jsonutils.JSONObject, error) {
 }
 
 type BaseCreateOptions struct {
-	NAME string `help:"Resource Name"`
+	NAME string `json:"name" help:"Resource Name"`
 	Desc string `metavar:"<DESCRIPTION>" help:"Description" json:"description"`
+}
+
+func (opts *BaseCreateOptions) Params() (jsonutils.JSONObject, error) {
+	return jsonutils.Marshal(opts), nil
 }
 
 type EnabledStatusCreateOptions struct {
@@ -381,16 +385,62 @@ type EnabledStatusCreateOptions struct {
 	Enabled *bool `help:"turn on enabled flag"`
 }
 
+type BaseIdOptions struct {
+	ID string `json:"-"`
+}
+
+func (o *BaseIdOptions) GetId() string {
+	return o.ID
+}
+
+func (o *BaseIdOptions) Params() (jsonutils.JSONObject, error) {
+	return nil, nil
+}
+
 type BaseShowOptions struct {
-	ID             string `json:"-"`
-	WithMeta       *bool  `help:"With meta data"`
-	ShowFailReason *bool  `help:"show fail reason fields"`
+	BaseIdOptions
+	WithMeta       *bool `help:"With meta data"`
+	ShowFailReason *bool `help:"show fail reason fields"`
 }
 
 func (o BaseShowOptions) Params() (jsonutils.JSONObject, error) {
 	return StructToParams(o)
 }
 
-func (o BaseShowOptions) GetId() string {
-	return o.ID
+type ChangeOwnerOptions struct {
+	BaseIdOptions
+	ProjectDomain string `json:"project_domain" help:"target domain"`
+}
+
+func (o ChangeOwnerOptions) Params() (jsonutils.JSONObject, error) {
+	if len(o.ProjectDomain) == 0 {
+		return nil, fmt.Errorf("empty project_domain")
+	}
+	return jsonutils.Marshal(map[string]string{"project_domain": o.ProjectDomain}), nil
+}
+
+type StatusStatisticsOptions struct {
+	PendingDelete    *bool  `help:"Show only pending deleted resources"`
+	PendingDeleteAll *bool  `help:"Show also pending-deleted resources" json:"-"`
+	DeleteAll        *bool  `help:"Show also deleted resources" json:"-"`
+	ShowEmulated     *bool  `help:"Show all resources including the emulated resources"`
+	Scope            string `help:"resource scope" choices:"system|domain|project|user"`
+}
+
+func (o StatusStatisticsOptions) Params() (jsonutils.JSONObject, error) {
+	params, err := ListStructToParams(o)
+	if err != nil {
+		return nil, err
+	}
+	if BoolV(o.DeleteAll) {
+		params.Set("delete", jsonutils.NewString("all"))
+	}
+	if BoolV(o.PendingDeleteAll) {
+		params.Set("pending_delete", jsonutils.NewString("all"))
+	}
+	return params, nil
+}
+
+func (o StatusStatisticsOptions) Property() string {
+	return "statistics"
 }

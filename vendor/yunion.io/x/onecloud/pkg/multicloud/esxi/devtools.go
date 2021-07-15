@@ -24,15 +24,28 @@ import (
 	"yunion.io/x/pkg/errors"
 )
 
-func NewDiskDev(sizeMb int64, templatePath string, uuid string, index int32, keyBase int32, controlKey int32, key int32) *types.VirtualDisk {
+type SDiskConfig struct {
+	SizeMb        int64
+	Uuid          string
+	ControllerKey int32
+	UnitNumber    int32
+	Key           int32
+	ImagePath     string
+	IsRoot        bool
+}
+
+// In fact, it is the default lable of first one disk
+const rootDiskMark = "Hard disk 1"
+
+func NewDiskDev(sizeMb int64, config SDiskConfig) *types.VirtualDisk {
 	device := types.VirtualDisk{}
 	diskFile := types.VirtualDiskFlatVer2BackingInfo{}
 	diskFile.DiskMode = "persistent"
 	thinProvisioned := true
 	diskFile.ThinProvisioned = &thinProvisioned
-	diskFile.Uuid = uuid
-	if len(templatePath) > 0 {
-		diskFile.FileName = templatePath
+	diskFile.Uuid = config.Uuid
+	if len(config.ImagePath) > 0 {
+		diskFile.FileName = config.ImagePath
 	}
 	device.Backing = &diskFile
 
@@ -40,13 +53,15 @@ func NewDiskDev(sizeMb int64, templatePath string, uuid string, index int32, key
 		device.CapacityInKB = sizeMb * 1024
 	}
 
-	device.ControllerKey = controlKey
-	if key != 0 {
-		device.Key = key
-	} else {
-		device.Key = keyBase + index
+	device.ControllerKey = config.ControllerKey
+	device.Key = config.Key
+	device.UnitNumber = &config.UnitNumber
+
+	var label string
+	if config.IsRoot {
+		label = rootDiskMark
+		device.DeviceInfo = &types.Description{Label: label}
 	}
-	device.UnitNumber = &index
 
 	return &device
 }
@@ -137,24 +152,65 @@ func NewUSBController(key *int32) types.BaseVirtualDevice {
 	return &device
 }
 
+var getNetwork func(bridge, vlanId string) (IVMNetwork, error)
+
 func NewVNICDev(host *SHost, mac, driver string, bridge string, vlanId int32, key, ctlKey, index int32) (types.BaseVirtualDevice, error) {
 	desc := types.Description{Label: fmt.Sprintf("Network adapter %d", index+1), Summary: "VM Network"}
 
-	var inet IVMNetwork
-	var err error
-	if (vlanId == 0 || vlanId == 1) && len(bridge) > 0 {
-		inet, err = host.findDVPGById(bridge)
+	newGetNetwork := func(bridge string, vlanId int32) (IVMNetwork, error) {
+		if len(bridge) == 0 {
+			log.Warningf("empty bridge for host %s, vlanId %d, mac %s", host.GetGlobalId(), vlanId, mac)
+			return nil, nil
+		}
+		vs, err := findVirtualSwitch(host, bridge)
 		if err != nil {
-			log.Errorf("fail to find dvportgroup by name %s: %s", bridge, err)
+			return nil, errors.Wrapf(err, "findVirtualSwitch for host %s bridge %s", host.GetGlobalId(), bridge)
+		}
+		if vs == nil {
+			log.Infof("can't find vs via host %s, bridge %s", host.GetId(), bridge)
+			return nil, nil
+		}
+		network, err := vs.FindNetworkByVlanID(vlanId)
+		if err != nil {
+			return nil, errors.Wrapf(err, "FindNetworkByVlanID for vlanId %q", vlanId)
+		}
+		return network, nil
+	}
+
+	oldGetNework := func(bridge string, vlanId int32) (IVMNetwork, error) {
+		var inet IVMNetwork
+		var err error
+		if (vlanId == 0 || vlanId == 1) && len(bridge) > 0 {
+			inet, err = host.findDVPGById(bridge)
+			if err != nil {
+				log.Errorf("fail to find dvportgroup by name %s: %s", bridge, err)
+			}
+		}
+		if inet == nil || reflect.ValueOf(inet).IsNil() {
+			inet, err = host.FindNetworkByVlanID(vlanId)
+			if err != nil {
+				log.Errorf("fail to find network by vlanid %d: %s", vlanId, err)
+			}
+		}
+		if inet == nil || reflect.ValueOf(inet).IsNil() {
+			return nil, nil
+		}
+		return inet, nil
+	}
+
+	inet, err := newGetNetwork(bridge, vlanId)
+	if err != nil {
+		return nil, err
+	}
+	if inet == nil {
+		log.Infof("no find network via new method")
+		inet, err = oldGetNework(bridge, vlanId)
+		if err != nil {
+			return nil, err
 		}
 	}
-	if inet == nil || reflect.ValueOf(inet).IsNil() {
-		inet, err = host.FindNetworkByVlanID(vlanId)
-		if err != nil {
-			log.Errorf("fail to find network by vlanid %d: %s", vlanId, err)
-		}
-	}
-	if inet == nil || reflect.ValueOf(inet).IsNil() {
+
+	if inet == nil {
 		return nil, errors.Error(fmt.Sprintf("Brige %s VLAN %d not found", bridge, vlanId))
 	}
 
@@ -165,14 +221,6 @@ func NewVNICDev(host *SHost, mac, driver string, bridge string, vlanId int32, ke
 	var backing types.BaseVirtualDeviceBackingInfo
 	switch inet.(type) {
 	case *SDistributedVirtualPortgroup:
-		// net := inet.(*SDistributedVirtualPortgroup)
-		// port, err := net.FindPort()
-		//if err != nil {
-		//		return nil, errors.Wrap(err, "net.FindPort")
-		//	}
-		//	if port == nil {
-		//		return nil, fmt.Errorf("no active port for dvportgroup %q", net.GetName())
-		//	}
 		net := inet.(*SDistributedVirtualPortgroup)
 		dvpg := net.getMODVPortgroup()
 		uuid, err := net.GetDVSUuid()

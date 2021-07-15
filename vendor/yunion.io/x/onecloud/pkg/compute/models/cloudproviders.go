@@ -37,6 +37,7 @@ import (
 	"yunion.io/x/onecloud/pkg/cloudcommon/db/lockman"
 	"yunion.io/x/onecloud/pkg/cloudcommon/db/proxy"
 	"yunion.io/x/onecloud/pkg/cloudcommon/db/taskman"
+	"yunion.io/x/onecloud/pkg/cloudcommon/validators"
 	"yunion.io/x/onecloud/pkg/cloudprovider"
 	"yunion.io/x/onecloud/pkg/compute/options"
 	"yunion.io/x/onecloud/pkg/httperrors"
@@ -52,6 +53,7 @@ type SCloudproviderManager struct {
 	db.SEnabledStatusStandaloneResourceBaseManager
 	db.SProjectizedResourceBaseManager
 
+	SProjectMappingResourceBaseManager
 	SSyncableBaseResourceManager
 }
 
@@ -108,6 +110,61 @@ type SCloudprovider struct {
 
 	// 云账号的平台信息
 	Provider string `width:"64" charset:"ascii" list:"domain" create:"domain_required"`
+
+	SProjectMappingResourceBase
+}
+
+type pmCache struct {
+	Id                      string
+	CloudaccountId          string
+	AccountProjectMappingId string
+	ManagerProjectMappingId string
+}
+
+func (self *pmCache) GetProjectMapping() (*SProjectMapping, error) {
+	if len(self.ManagerProjectMappingId) > 0 {
+		return GetRuleMapping(self.ManagerProjectMappingId)
+	}
+	if len(self.AccountProjectMappingId) > 0 {
+		return GetRuleMapping(self.AccountProjectMappingId)
+	}
+	return nil, errors.Wrapf(cloudprovider.ErrNotFound, "empty project mapping id")
+}
+
+var pmCaches map[string]*pmCache = map[string]*pmCache{}
+
+func refreshPmCaches() error {
+	q := CloudproviderManager.Query().SubQuery()
+	providers := q.Query(q.Field("cloudaccount_id"), q.Field("id"), q.Field("project_mapping_id").Label("manager_project_mapping_id"))
+	sq := CloudaccountManager.Query().SubQuery()
+	mq := providers.LeftJoin(sq, sqlchemy.Equals(q.Field("cloudaccount_id"), sq.Field("id"))).AppendField(sq.Field("project_mapping_id").Label("account_project_mapping_id"))
+	caches := []pmCache{}
+	err := mq.All(&caches)
+	if err != nil {
+		return errors.Wrapf(err, "q.All")
+	}
+	for i := range caches {
+		pmCaches[caches[i].Id] = &caches[i]
+	}
+	return nil
+}
+
+func (self *SCloudprovider) GetProjectMapping() (*SProjectMapping, error) {
+	cache, err := func() (*pmCache, error) {
+		mp, ok := pmCaches[self.Id]
+		if ok {
+			return mp, nil
+		}
+		err := refreshPmCaches()
+		if err != nil {
+			return nil, errors.Wrapf(err, "refreshPmCaches")
+		}
+		return pmCaches[self.Id], nil
+	}()
+	if err != nil {
+		return nil, errors.Wrapf(err, "get project mapping cache")
+	}
+	return cache.GetProjectMapping()
 }
 
 func (self *SCloudprovider) ValidateDeleteCondition(ctx context.Context) error {
@@ -181,11 +238,11 @@ func (manager *SCloudproviderManager) GetProviderFieldQuery(field string, isPubl
 	} else if isOnPremise.IsFalse() {
 		q = q.Filter(sqlchemy.IsFalse(account.Field("is_on_premise")))
 	}
-	if len(providers) > 0 {
-		q = q.Filter(sqlchemy.In(account.Field("provider"), providers))
-	}
-	if len(brands) > 0 {
-		q = q.Filter(sqlchemy.In(account.Field("brand"), brands))
+	if len(providers) > 0 || len(brands) > 0 {
+		q = q.Filter(sqlchemy.OR(
+			sqlchemy.In(account.Field("provider"), providers),
+			sqlchemy.In(account.Field("brand"), brands),
+		))
 	}
 	return q.SubQuery()
 }
@@ -769,8 +826,7 @@ func (self *SCloudprovider) markEndSync(userCred mcclient.TokenCredential) error
 		return nil
 	})
 	if err != nil {
-		log.Errorf("Failed to markEndSync error: %v", err)
-		return err
+		return errors.Wrapf(err, "markEndSync")
 	}
 	return nil
 }
@@ -934,6 +990,7 @@ func (manager *SCloudproviderManager) FetchCustomizeColumns(
 
 	stdRows := manager.SEnabledStatusStandaloneResourceBaseManager.FetchCustomizeColumns(ctx, userCred, query, objs, fields, isList)
 	projRows := manager.SProjectizedResourceBaseManager.FetchCustomizeColumns(ctx, userCred, query, objs, fields, isList)
+	pmRows := manager.SProjectMappingResourceBaseManager.FetchCustomizeColumns(ctx, userCred, query, objs, fields, isList)
 	accountIds := make([]string, len(objs))
 	for i := range rows {
 		provider := objs[i].(*SCloudprovider)
@@ -943,6 +1000,7 @@ func (manager *SCloudproviderManager) FetchCustomizeColumns(
 			ProjectizedResourceInfo:                projRows[i],
 			SCloudproviderUsage:                    provider.getUsage(),
 			SyncStatus2:                            provider.getSyncStatus2(),
+			ProjectMappingResourceInfo:             pmRows[i],
 		}
 		capabilities, _ := CloudproviderCapabilityManager.getCapabilities(provider.Id)
 		if len(capabilities) > 0 {
@@ -1053,7 +1111,7 @@ func (manager *SCloudproviderManager) migrateVCenterInfo(vc *SVCenter) error {
 	cp := SCloudprovider{}
 	cp.SetModelManager(manager, &cp)
 
-	newName, err := db.GenerateName(manager, nil, vc.Name)
+	newName, err := db.GenerateName(context.Background(), manager, nil, vc.Name)
 	if err != nil {
 		return err
 	}
@@ -1347,7 +1405,10 @@ func (provider *SCloudprovider) syncCloudproviderRegions(ctx context.Context, us
 		}
 	}
 	if syncCnt == 0 {
-		provider.markEndSyncWithLock(ctx, userCred)
+		err := provider.markEndSyncWithLock(ctx, userCred)
+		if err != nil {
+			log.Errorf("markEndSyncWithLock for %s error: %v", provider.Name, err)
+		}
 	}
 }
 
@@ -1391,10 +1452,13 @@ func (self *SCloudprovider) RealDelete(ctx context.Context, userCred mcclient.To
 		LoadbalancerBackendGroupManager,
 		CachedLoadbalancerAclManager,
 		CachedLoadbalancerCertificateManager,
+		LoadbalancerCertificateManager,
 		NatGatewayManager,
 		DBInstanceManager,
 		DBInstanceBackupManager,
 		ElasticcacheManager,
+		AccessGroupCacheManager,
+		FileSystemManager,
 		VpcManager,
 		ElasticipManager,
 		NetworkInterfaceManager,
@@ -1497,27 +1561,53 @@ func (self *SCloudprovider) PerformDisable(ctx context.Context, userCred mcclien
 	return nil, nil
 }
 
+func (manager *SCloudproviderManager) filterByDomainId(q *sqlchemy.SQuery, domainId string) *sqlchemy.SQuery {
+	subq := db.SharedResourceManager.Query("resource_id")
+	subq = subq.Equals("resource_type", CloudaccountManager.Keyword())
+	subq = subq.Equals("target_project_id", domainId)
+	subq = subq.Equals("target_type", db.SharedTargetDomain)
+
+	cloudaccounts := CloudaccountManager.Query().SubQuery()
+	q = q.Join(cloudaccounts, sqlchemy.Equals(
+		q.Field("cloudaccount_id"),
+		cloudaccounts.Field("id"),
+	))
+	q = q.Filter(sqlchemy.OR(
+		sqlchemy.AND(
+			sqlchemy.Equals(q.Field("domain_id"), domainId),
+			sqlchemy.Equals(cloudaccounts.Field("share_mode"), api.CLOUD_ACCOUNT_SHARE_MODE_PROVIDER_DOMAIN),
+		),
+		sqlchemy.AND(
+			sqlchemy.Equals(cloudaccounts.Field("share_mode"), api.CLOUD_ACCOUNT_SHARE_MODE_SYSTEM),
+			sqlchemy.OR(
+				sqlchemy.AND(
+					sqlchemy.Equals(cloudaccounts.Field("public_scope"), rbacutils.ScopeNone),
+					sqlchemy.Equals(cloudaccounts.Field("domain_id"), domainId),
+				),
+				sqlchemy.AND(
+					sqlchemy.Equals(cloudaccounts.Field("public_scope"), rbacutils.ScopeDomain),
+					sqlchemy.OR(
+						sqlchemy.Equals(cloudaccounts.Field("domain_id"), domainId),
+						sqlchemy.In(cloudaccounts.Field("id"), subq.SubQuery()),
+					),
+				),
+				sqlchemy.Equals(cloudaccounts.Field("public_scope"), rbacutils.ScopeSystem),
+			),
+		),
+		sqlchemy.AND(
+			sqlchemy.Equals(cloudaccounts.Field("domain_id"), domainId),
+			sqlchemy.Equals(cloudaccounts.Field("share_mode"), api.CLOUD_ACCOUNT_SHARE_MODE_ACCOUNT_DOMAIN),
+		),
+	))
+	return q
+}
+
 func (manager *SCloudproviderManager) FilterByOwner(q *sqlchemy.SQuery, owner mcclient.IIdentityProvider, scope rbacutils.TRbacScope) *sqlchemy.SQuery {
 	if owner != nil {
 		switch scope {
 		case rbacutils.ScopeProject, rbacutils.ScopeDomain:
 			if len(owner.GetProjectDomainId()) > 0 {
-				cloudaccounts := CloudaccountManager.Query().SubQuery()
-				q = q.Join(cloudaccounts, sqlchemy.Equals(
-					q.Field("cloudaccount_id"),
-					cloudaccounts.Field("id"),
-				))
-				q = q.Filter(sqlchemy.OR(
-					sqlchemy.AND(
-						sqlchemy.Equals(q.Field("domain_id"), owner.GetProjectDomainId()),
-						sqlchemy.Equals(cloudaccounts.Field("share_mode"), api.CLOUD_ACCOUNT_SHARE_MODE_PROVIDER_DOMAIN),
-					),
-					sqlchemy.Equals(cloudaccounts.Field("share_mode"), api.CLOUD_ACCOUNT_SHARE_MODE_SYSTEM),
-					sqlchemy.AND(
-						sqlchemy.Equals(cloudaccounts.Field("domain_id"), owner.GetProjectDomainId()),
-						sqlchemy.Equals(cloudaccounts.Field("share_mode"), api.CLOUD_ACCOUNT_SHARE_MODE_ACCOUNT_DOMAIN),
-					),
-				))
+				q = manager.filterByDomainId(q, owner.GetProjectDomainId())
 			}
 		}
 	}
@@ -1810,4 +1900,49 @@ func (self *SCloudprovider) SyncCallSyncCloudproviderInterVpcNetwork(ctx context
 			return
 		}
 	}
+}
+
+func (manager *SCloudproviderManager) ListItemExportKeys(ctx context.Context, q *sqlchemy.SQuery, userCred mcclient.TokenCredential, keys stringutils2.SSortedStrings) (*sqlchemy.SQuery, error) {
+	q, err := manager.SEnabledStatusStandaloneResourceBaseManager.ListItemExportKeys(ctx, q, userCred, keys)
+	if err != nil {
+		return nil, errors.Wrap(err, "SEnabledStatusStandaloneResourceBaseManager.ListItemExportKeys")
+	}
+	q, err = manager.SProjectizedResourceBaseManager.ListItemExportKeys(ctx, q, userCred, keys)
+	if err != nil {
+		return nil, errors.Wrapf(err, "SProjectizedResourceBaseManager.ListItemExportKeys")
+	}
+	q, err = manager.SProjectMappingResourceBaseManager.ListItemExportKeys(ctx, q, userCred, keys)
+	if err != nil {
+		return nil, errors.Wrapf(err, "SProjectMappingResourceBaseManager.ListItemExportKeys")
+	}
+	return q, nil
+}
+
+func (self *SCloudprovider) AllowPerformProjectMapping(ctx context.Context, userCred mcclient.TokenCredential, query jsonutils.JSONObject) bool {
+	return db.IsAdminAllowPerform(userCred, self, "project-mapping")
+}
+
+// 绑定同步策略
+func (self *SCloudprovider) PerformProjectMapping(ctx context.Context, userCred mcclient.TokenCredential, query jsonutils.JSONObject, input api.CloudaccountProjectMappingInput) (jsonutils.JSONObject, error) {
+	if len(input.ProjectMappingId) > 0 {
+		_, err := validators.ValidateModel(userCred, ProjectMappingManager, &input.ProjectMappingId)
+		if err != nil {
+			return nil, err
+		}
+		if len(self.ProjectMappingId) > 0 && self.ProjectMappingId != input.ProjectMappingId {
+			return nil, httperrors.NewInputParameterError("cloudprovider %s has aleady bind project mapping %s", self.Name, self.ProjectMappingId)
+		}
+	}
+	// no changes
+	if self.ProjectMappingId == input.ProjectMappingId {
+		return nil, nil
+	}
+	_, err := db.Update(self, func() error {
+		self.ProjectMappingId = input.ProjectMappingId
+		return nil
+	})
+	if err != nil {
+		return nil, err
+	}
+	return nil, refreshPmCaches()
 }

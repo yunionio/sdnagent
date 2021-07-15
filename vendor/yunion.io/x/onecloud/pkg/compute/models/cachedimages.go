@@ -90,7 +90,7 @@ type SCachedimage struct {
 
 	// 镜像类型, system: 公有云镜像, customized: 自定义镜像
 	// example: system
-	ImageType string `width:"16" default:"customized" list:"user"`
+	ImageType string `width:"16" default:"customized" list:"user" index:"true"`
 }
 
 func (self SCachedimage) GetGlobalId() string {
@@ -170,6 +170,11 @@ func (self *SCachedimage) GetHypervisor() string {
 	return osType
 }
 
+func (self *SCachedimage) GetChecksum() string {
+	checksum, _ := self.Info.GetString("checksum")
+	return checksum
+}
+
 func (self *SCachedimage) getStoragecacheQuery() *sqlchemy.SQuery {
 	q := StoragecachedimageManager.Query().Equals("cachedimage_id", self.Id)
 	return q
@@ -196,8 +201,8 @@ func (self *SCachedimage) GetImage() (*cloudprovider.SImage, error) {
 }
 
 func (manager *SCachedimageManager) cacheGlanceImageInfo(ctx context.Context, userCred mcclient.TokenCredential, info jsonutils.JSONObject) (*SCachedimage, error) {
-	lockman.LockClass(ctx, manager, db.GetLockClassKey(manager, userCred))
-	defer lockman.ReleaseClass(ctx, manager, db.GetLockClassKey(manager, userCred))
+	lockman.LockRawObject(ctx, manager.Keyword(), "name")
+	defer lockman.ReleaseRawObject(ctx, manager.Keyword(), "name")
 
 	img := struct {
 		Id          string
@@ -222,7 +227,7 @@ func (manager *SCachedimageManager) cacheGlanceImageInfo(ctx context.Context, us
 	imageCache := SCachedimage{}
 	imageCache.SetModelManager(manager, &imageCache)
 
-	img.Name, err = db.GenerateName(manager, nil, img.Name)
+	img.Name, err = db.GenerateName(ctx, manager, nil, img.Name)
 	if err != nil {
 		return nil, errors.Wrapf(err, "db.GenerateName(%s)", img.Name)
 	}
@@ -450,6 +455,8 @@ func (self *SCachedimage) ChooseSourceStoragecacheInRange(hostType string, exclu
 
 	for _, rangeObj := range rangeObjs {
 		switch v := rangeObj.(type) {
+		case *SHost:
+			q = q.Filter(sqlchemy.Equals(host.Field("id"), v.Id))
 		case *SZone:
 			q = q.Filter(sqlchemy.Equals(host.Field("zone_id"), v.Id))
 		case *SCloudprovider:
@@ -519,18 +526,9 @@ func (self *SCachedimage) syncWithCloudImage(ctx context.Context, userCred mccli
 }
 
 func (manager *SCachedimageManager) newFromCloudImage(ctx context.Context, userCred mcclient.TokenCredential, ownerId mcclient.IIdentityProvider, image cloudprovider.ICloudImage, managerId string) (*SCachedimage, error) {
-	lockman.LockClass(ctx, manager, db.GetLockClassKey(manager, userCred))
-	defer lockman.ReleaseClass(ctx, manager, db.GetLockClassKey(manager, userCred))
-
 	cachedImage := SCachedimage{}
 	cachedImage.SetModelManager(manager, &cachedImage)
 
-	newName, err := db.GenerateName(manager, nil, image.GetName())
-	if err != nil {
-		return nil, err
-	}
-
-	cachedImage.Name = newName
 	cachedImage.Size = image.GetSizeByte()
 	cachedImage.UEFI = tristate.NewFromBool(image.UEFI())
 	sImage := cloudprovider.CloudImage2Image(image)
@@ -546,7 +544,17 @@ func (manager *SCachedimageManager) newFromCloudImage(ctx context.Context, userC
 		cachedImage.IsPublic = true
 	}
 
-	err = manager.TableSpec().Insert(ctx, &cachedImage)
+	var err error
+	err = func() error {
+		lockman.LockRawObject(ctx, manager.Keyword(), "name")
+		defer lockman.ReleaseRawObject(ctx, manager.Keyword(), "name")
+
+		cachedImage.Name, err = db.GenerateName(ctx, manager, nil, image.GetName())
+		if err != nil {
+			return err
+		}
+		return manager.TableSpec().Insert(ctx, &cachedImage)
+	}()
 	if err != nil {
 		return nil, err
 	}

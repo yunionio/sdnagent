@@ -379,8 +379,8 @@ func (manager *SCloudregionManager) SyncRegions(
 	[]SCloudproviderregion,
 	compare.SyncResult,
 ) {
-	lockman.LockClass(ctx, manager, db.GetLockClassKey(manager, userCred))
-	defer lockman.ReleaseClass(ctx, manager, db.GetLockClassKey(manager, userCred))
+	lockman.LockRawObject(ctx, "cloudregions", externalIdPrefix)
+	defer lockman.ReleaseRawObject(ctx, "cloudregions", externalIdPrefix)
 
 	syncResult := compare.SyncResult{}
 	localRegions := make([]SCloudregion, 0)
@@ -515,12 +515,7 @@ func (manager *SCloudregionManager) newFromCloudRegion(ctx context.Context, user
 	region := SCloudregion{}
 	region.SetModelManager(manager, &region)
 
-	newName, err := db.GenerateName(manager, nil, cloudRegion.GetName())
-	if err != nil {
-		return nil, err
-	}
 	region.ExternalId = cloudRegion.GetGlobalId()
-	region.Name = newName
 	region.SGeographicInfo = cloudRegion.GetGeographicInfo()
 	region.Status = cloudRegion.GetStatus()
 	region.SetEnabled(true)
@@ -537,9 +532,18 @@ func (manager *SCloudregionManager) newFromCloudRegion(ctx context.Context, user
 		region.ManagerId = provider.Id
 	}
 
-	err = manager.TableSpec().Insert(ctx, &region)
+	err = func() error {
+		lockman.LockRawObject(ctx, manager.Keyword(), "name")
+		defer lockman.ReleaseRawObject(ctx, manager.Keyword(), "name")
+
+		region.Name, err = db.GenerateName(ctx, manager, nil, cloudRegion.GetName())
+		if err != nil {
+			return errors.Wrapf(err, "db.GenerateName")
+		}
+
+		return manager.TableSpec().Insert(ctx, &region)
+	}()
 	if err != nil {
-		log.Errorf("newFromCloudRegion fail %s", err)
 		return nil, err
 	}
 
@@ -629,28 +633,17 @@ func (manager *SCloudregionManager) InitializeData() error {
 }
 
 func getCloudRegionIdByDomainId(domainId string) *sqlchemy.SSubQuery {
-	accounts := CloudaccountManager.Query().SubQuery()
 	cloudproviderregions := CloudproviderRegionManager.Query().SubQuery()
-	providers := CloudproviderManager.Query().SubQuery()
 
 	// not managed region
 	q1 := CloudregionManager.Query("id").Equals("provider", api.CLOUD_PROVIDER_ONECLOUD)
 
 	// managed region
 	q2 := cloudproviderregions.Query(cloudproviderregions.Field("cloudregion_id", "id"))
-	q2 = q2.Join(providers, sqlchemy.Equals(providers.Field("id"), cloudproviderregions.Field("cloudprovider_id")))
-	q2 = q2.Join(accounts, sqlchemy.Equals(providers.Field("cloudaccount_id"), accounts.Field("id")))
-	q2 = q2.Filter(sqlchemy.OR(
-		sqlchemy.AND(
-			sqlchemy.Equals(providers.Field("domain_id"), domainId),
-			sqlchemy.Equals(accounts.Field("share_mode"), api.CLOUD_ACCOUNT_SHARE_MODE_PROVIDER_DOMAIN),
-		),
-		sqlchemy.Equals(accounts.Field("share_mode"), api.CLOUD_ACCOUNT_SHARE_MODE_SYSTEM),
-		sqlchemy.AND(
-			sqlchemy.Equals(accounts.Field("domain_id"), domainId),
-			sqlchemy.Equals(accounts.Field("share_mode"), api.CLOUD_ACCOUNT_SHARE_MODE_ACCOUNT_DOMAIN),
-		),
-	))
+	providerIds := CloudproviderManager.Query("id")
+	providerIds = CloudproviderManager.filterByDomainId(providerIds, domainId)
+	providersIdsQ := providerIds.Distinct().SubQuery()
+	q2 = q2.Join(providersIdsQ, sqlchemy.Equals(providersIdsQ.Field("id"), cloudproviderregions.Field("cloudprovider_id")))
 
 	return sqlchemy.Union(q1, q2).Query().SubQuery()
 }
@@ -929,6 +922,18 @@ func (self *SCloudregion) AllowGetDetailsCapability(ctx context.Context, userCre
 
 func (self *SCloudregion) GetDetailsCapability(ctx context.Context, userCred mcclient.TokenCredential, query jsonutils.JSONObject) (jsonutils.JSONObject, error) {
 	capa, err := GetCapabilities(ctx, userCred, query, self, nil)
+	if err != nil {
+		return nil, err
+	}
+	return jsonutils.Marshal(&capa), nil
+}
+
+func (self *SCloudregion) AllowGetDetailsDiskCapability(ctx context.Context, userCred mcclient.TokenCredential, query jsonutils.JSONObject) bool {
+	return true
+}
+
+func (self *SCloudregion) GetDetailsDiskCapability(ctx context.Context, userCred mcclient.TokenCredential, query jsonutils.JSONObject) (jsonutils.JSONObject, error) {
+	capa, err := GetDiskCapabilities(ctx, userCred, query, self, nil)
 	if err != nil {
 		return nil, err
 	}

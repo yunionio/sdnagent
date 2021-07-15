@@ -85,8 +85,8 @@ type SServerSku struct {
 	InstanceTypeCategory string `width:"32" charset:"utf8" nullable:"true" list:"user" create:"admin_optional" update:"admin"`            // 通用型
 	LocalCategory        string `width:"32" charset:"utf8" nullable:"true" list:"user" create:"admin_optional" update:"admin" default:""` // 记录本地分类
 
-	PrepaidStatus  string `width:"32" charset:"utf8" nullable:"true" list:"user" create:"admin_optional" default:"available"` // 预付费资源状态   available|soldout
-	PostpaidStatus string `width:"32" charset:"utf8" nullable:"true" list:"user" create:"admin_optional" default:"available"` // 按需付费资源状态  available|soldout
+	PrepaidStatus  string `width:"32" charset:"utf8" nullable:"true" list:"user" update:"admin" create:"admin_optional" default:"available"` // 预付费资源状态   available|soldout
+	PostpaidStatus string `width:"32" charset:"utf8" nullable:"true" list:"user" update:"admin" create:"admin_optional" default:"available"` // 按需付费资源状态  available|soldout
 
 	CpuArch      string `width:"16" charset:"ascii" nullable:"true" list:"user" create:"admin_optional" update:"admin"` // CPU 架构 x86|xarm
 	CpuCoreCount int    `nullable:"false" list:"user" create:"admin_required"`
@@ -629,11 +629,6 @@ func (self *SServerSku) AllowUpdateItem(ctx context.Context, userCred mcclient.T
 }
 
 func (self *SServerSku) ValidateUpdateData(ctx context.Context, userCred mcclient.TokenCredential, query jsonutils.JSONObject, input api.ServerSkuUpdateInput) (api.ServerSkuUpdateInput, error) {
-	// 目前不允许改sku信息
-	if !inWhiteList(self.Provider) {
-		return input, httperrors.NewForbiddenError("can not update instance_type for public cloud %s", self.Provider)
-	}
-
 	if len(input.Name) > 0 {
 		return input, httperrors.NewUnsupportOperationError("Cannot change server sku name")
 	}
@@ -907,7 +902,7 @@ func (manager *SServerSkuManager) GetMatchedSku(regionId string, cpu int64, memM
 }
 
 func (manager *SServerSkuManager) FetchSkuByNameAndProvider(name string, provider string, checkConsistency bool) (*SServerSku, error) {
-	q := manager.Query()
+	q := manager.Query().IsTrue("enabled")
 	q = q.Equals("name", name)
 	if utils.IsInStringArray(provider, []string{api.CLOUD_PROVIDER_ONECLOUD, api.CLOUD_PROVIDER_VMWARE}) {
 		q = q.Filter(
@@ -1032,8 +1027,8 @@ func (manager *SServerSkuManager) PendingDeleteInvalidSku() error {
 }
 
 func (manager *SServerSkuManager) SyncPrivateCloudSkus(ctx context.Context, userCred mcclient.TokenCredential, region *SCloudregion, skus []cloudprovider.ICloudSku) compare.SyncResult {
-	lockman.LockClass(ctx, manager, db.GetLockClassKey(manager, userCred))
-	defer lockman.ReleaseClass(ctx, manager, db.GetLockClassKey(manager, userCred))
+	lockman.LockRawObject(ctx, "serverskus", region.Id)
+	defer lockman.ReleaseRawObject(ctx, "serverskus", region.Id)
 
 	result := compare.SyncResult{}
 
@@ -1093,6 +1088,7 @@ func (self *SServerSku) SyncWithPrivateCloudSku(ctx context.Context, userCred mc
 }
 
 func (self *SServerSku) constructSku(extSku cloudprovider.ICloudSku) {
+	self.ExternalId = extSku.GetGlobalId()
 	self.InstanceTypeFamily = extSku.GetInstanceTypeFamily()
 	self.InstanceTypeCategory = extSku.GetInstanceTypeCategory()
 
@@ -1143,6 +1139,7 @@ func (self *SServerSku) setPrepaidPostpaidStatus(userCred mcclient.TokenCredenti
 
 func (manager *SServerSkuManager) newFromCloudSku(ctx context.Context, userCred mcclient.TokenCredential, region *SCloudregion, extSku cloudprovider.ICloudSku) error {
 	sku := &SServerSku{Provider: region.Provider}
+
 	sku.SetModelManager(manager, sku)
 	// 第一次同步新建的套餐是启用状态
 	sku.Enabled = tristate.True
@@ -1150,10 +1147,22 @@ func (manager *SServerSkuManager) newFromCloudSku(ctx context.Context, userCred 
 	sku.constructSku(extSku)
 
 	sku.CloudregionId = region.Id
+
 	sku.SetModelManager(manager, sku)
-	err := manager.TableSpec().Insert(ctx, sku)
+	var err = func() error {
+		lockman.LockRawObject(ctx, manager.Keyword(), "name")
+		defer lockman.ReleaseRawObject(ctx, manager.Keyword(), "name")
+
+		var err error
+		sku.Name, err = db.GenerateName(ctx, manager, userCred, extSku.GetName())
+		if err != nil {
+			return errors.Wrap(err, "db.GenerateName")
+		}
+
+		return manager.TableSpec().Insert(ctx, sku)
+	}()
 	if err != nil {
-		return errors.Wrapf(err, "newFromCloudSku.Insert")
+		return errors.Wrapf(err, "Insert")
 	}
 	db.OpsLog.LogEvent(sku, db.ACT_CREATE, sku.GetShortDesc(ctx), userCred)
 
@@ -1204,8 +1213,8 @@ func (manager *SServerSkuManager) FetchSkusByRegion(regionID string) ([]SServerS
 }
 
 func (manager *SServerSkuManager) SyncServerSkus(ctx context.Context, userCred mcclient.TokenCredential, region *SCloudregion, extSkuMeta *SSkuResourcesMeta) compare.SyncResult {
-	lockman.LockClass(ctx, manager, db.GetLockClassKey(manager, userCred))
-	defer lockman.ReleaseClass(ctx, manager, db.GetLockClassKey(manager, userCred))
+	lockman.LockRawObject(ctx, "serverskus", region.Id)
+	defer lockman.ReleaseRawObject(ctx, "serverskus", region.Id)
 
 	syncResult := compare.SyncResult{}
 
@@ -1256,6 +1265,13 @@ func (manager *SServerSkuManager) SyncServerSkus(ctx context.Context, userCred m
 			syncResult.Add()
 		}
 	}
+
+	// notfiy sched manager
+	_, err = modules.SchedManager.SyncSku(auth.GetAdminSession(ctx, options.Options.Region, ""), false)
+	if err != nil {
+		log.Errorf("SchedManager SyncSku %s", err)
+	}
+
 	return syncResult
 }
 

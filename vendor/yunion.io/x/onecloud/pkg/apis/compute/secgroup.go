@@ -24,14 +24,12 @@ import (
 	"yunion.io/x/onecloud/pkg/apis"
 )
 
-type SSecgroupRuleCreateInput struct {
-	apis.ResourceBaseCreateInput
-
+type SSecgroupRuleResource struct {
 	// 优先级, 数字越大优先级越高
 	// minimum: 1
 	// maximum: 100
 	// required: true
-	Priority int `json:"priority"`
+	Priority *int `json:"priority"`
 
 	// 协议
 	// required: true
@@ -68,7 +66,7 @@ type SSecgroupRuleCreateInput struct {
 	// required: true
 	Direction string `json:"direction"`
 
-	// ip或cidr地址
+	// ip或cidr地址, 若指定peer_secgroup_id此参数不生效
 	// example: 192.168.222.121
 	CIDR string `json:"cidr"`
 
@@ -84,17 +82,36 @@ type SSecgroupRuleCreateInput struct {
 	// example: test to create rule
 	Description string `json:"description"`
 
-	// 仅单独创建安全组规则时需要指定安全组
-	// required: true
-	Secgroup string `json:"secgroup"`
-
-	// swagger:ignore
-	SecgroupId string
+	// 对端安全组Id, 此参数和cidr参数互斥，并且优先级高于cidr, 同时peer_secgroup_id不能和它所在的安全组ID相同
+	// required: false
+	PeerSecgroupId string `json:"peer_secgroup_id"`
 }
 
-func (input *SSecgroupRuleCreateInput) Check() error {
+type SSecgroupRuleCreateInput struct {
+	apis.ResourceBaseCreateInput
+	SSecgroupRuleResource
+
+	// swagger:ignore
+	Secgroup string `json:"secgroup"  yunion-deprecated-by:"secgroup_id"`
+
+	// 安全组ID
+	// required: true
+	SecgroupId string `json:"secgroup_id"`
+}
+
+type SSecgroupRuleUpdateInput struct {
+	apis.ResourceBaseUpdateInput
+
+	SSecgroupRuleResource
+}
+
+func (input *SSecgroupRuleResource) Check() error {
+	priority := 1
+	if input.Priority != nil {
+		priority = *input.Priority
+	}
 	rule := secrules.SecurityRule{
-		Priority:  input.Priority,
+		Priority:  priority,
 		Direction: secrules.TSecurityRuleDirection(input.Direction),
 		Action:    secrules.TSecurityRuleAction(input.Action),
 		Protocol:  input.Protocol,
@@ -132,7 +149,7 @@ type SSecgroupCreateInput struct {
 type SecgroupListInput struct {
 	apis.SharableVirtualResourceListInput
 
-	ServerFilterListInput
+	ServerResourceInput
 
 	DBInstanceResourceInput
 	ELasticcacheResourceInput
@@ -160,6 +177,10 @@ type SecgroupListInput struct {
 	// default: all
 	// example: in
 	Direction string `json:"direction"`
+
+	RegionalFilterListInput
+
+	ManagedResourceListInput
 }
 
 type SecurityGroupCacheListInput struct {
@@ -226,11 +247,11 @@ type SecgroupDetails struct {
 	// 安全组缓存数量
 	CacheCnt int `json:"cache_cnt,allowempty"`
 	// 规则信息
-	Rules []SSecurityGroupRule `json:"rules"`
+	Rules []SecgroupRuleDetails `json:"rules"`
 	// 入方向规则信息
-	InRules []SSecurityGroupRule `json:"in_rules"`
+	InRules []SecgroupRuleDetails `json:"in_rules"`
 	// 出方向规则信息
-	OutRules []SSecurityGroupRule `json:"out_rules"`
+	OutRules []SecgroupRuleDetails `json:"out_rules"`
 }
 
 type SecurityGroupResourceInfo struct {

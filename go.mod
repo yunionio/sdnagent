@@ -3,7 +3,7 @@ module yunion.io/x/sdnagent
 go 1.12
 
 require (
-	github.com/coreos/go-iptables v0.4.5
+	github.com/coreos/go-iptables v0.6.0
 	github.com/digitalocean/go-openvswitch v0.0.0-20190515160856-1141932ed5cf
 	github.com/fsnotify/fsnotify v1.4.9
 	github.com/golang/protobuf v1.4.2
@@ -14,13 +14,13 @@ require (
 	github.com/spf13/viper v1.3.2
 	github.com/vishvananda/netlink v1.0.0
 	github.com/vishvananda/netns v0.0.0-20191106174202-0a2b9b5464df
-	golang.org/x/net v0.0.0-20200707034311-ab3426394381
+	golang.org/x/net v0.0.0-20201110031124-69a78807bb2b
 	google.golang.org/grpc v1.29.0
 	google.golang.org/protobuf v1.24.0
 	yunion.io/x/jsonutils v0.0.0-20201110084044-3e4e1cb49769
 	yunion.io/x/log v0.0.0-20201210064738-43181789dc74
 	yunion.io/x/onecloud v0.0.0-20210128125021-0f028562876e
-	yunion.io/x/pkg v0.0.0-20210109071527-7e72daf56747
+	yunion.io/x/pkg v0.0.0-20210218105412-13a69f60034c
 )
 
 replace github.com/digitalocean/go-openvswitch => github.com/yousong/go-openvswitch v0.0.0-20200422025222-6b2d502be872
@@ -51,3 +51,5 @@ replace (
 	k8s.io/sample-cli-plugin => k8s.io/sample-cli-plugin v0.0.0-20190918162410-e45c26d066f2
 	k8s.io/sample-controller => k8s.io/sample-controller v0.0.0-20190918161628-92eb3cb7496c
 )
+
+replace yunion.io/x/onecloud => github.com/yousong/onecloud v0.0.0-20210617114739-127bc881a25e

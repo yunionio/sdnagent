@@ -21,6 +21,8 @@ import (
 type Vpc struct {
 	compute_models.SVpc
 
+	RouteTable *RouteTable `json:"-"`
+
 	Wire     *Wire    `json:"-"`
 	Networks Networks `json:"-"`
 }
@@ -28,6 +30,18 @@ type Vpc struct {
 func (el *Vpc) Copy() *Vpc {
 	return &Vpc{
 		SVpc: el.SVpc,
+	}
+}
+
+type RouteTable struct {
+	compute_models.SRouteTable
+
+	Vpc *Vpc
+}
+
+func (el *RouteTable) Copy() *RouteTable {
+	return &RouteTable{
+		SRouteTable: el.SRouteTable,
 	}
 }
 
@@ -46,10 +60,11 @@ func (el *Wire) Copy() *Wire {
 type Network struct {
 	compute_models.SNetwork
 
-	Vpc           *Vpc          `json:"-"`
-	Wire          *Wire         `json:"-"`
-	Guestnetworks Guestnetworks `json:"-"`
-	Elasticips    Elasticips    `json:"-"`
+	Vpc                  *Vpc                 `json:"-"`
+	Wire                 *Wire                `json:"-"`
+	Guestnetworks        Guestnetworks        `json:"-"`
+	LoadbalancerNetworks LoadbalancerNetworks `json:"-"`
+	Elasticips           Elasticips           `json:"-"`
 }
 
 func (el *Network) Copy() *Network {
@@ -93,6 +108,7 @@ type Guest struct {
 	Host               *Host          `json:"-"`
 	AdminSecurityGroup *SecurityGroup `json:"-"`
 	SecurityGroups     SecurityGroups `json:"-"`
+	Guestnetworks      Guestnetworks  `json:"-"`
 }
 
 func (el *Guest) Copy() *Guest {
@@ -155,8 +171,9 @@ func (el *SecurityGroupRule) Copy() *SecurityGroupRule {
 type Elasticip struct {
 	compute_models.SElasticip
 
-	Network      *Network      `json:"-"`
-	Guestnetwork *Guestnetwork `json:"-"`
+	Network             *Network             `json:"-"`
+	Guestnetwork        *Guestnetwork        `json:"-"`
+	LoadbalancerNetwork *LoadbalancerNetwork `json:"-"`
 }
 
 func (el *Elasticip) Copy() *Elasticip {
@@ -172,5 +189,18 @@ type DnsRecord struct {
 func (el *DnsRecord) Copy() *DnsRecord {
 	return &DnsRecord{
 		SDnsRecord: el.SDnsRecord,
+	}
+}
+
+type LoadbalancerNetwork struct {
+	compute_models.SLoadbalancerNetwork
+
+	Network   *Network   `json:"-"`
+	Elasticip *Elasticip `json:"-"`
+}
+
+func (el *LoadbalancerNetwork) Copy() *LoadbalancerNetwork {
+	return &LoadbalancerNetwork{
+		SLoadbalancerNetwork: el.SLoadbalancerNetwork,
 	}
 }

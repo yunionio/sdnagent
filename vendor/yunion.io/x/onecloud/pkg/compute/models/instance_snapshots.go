@@ -239,7 +239,7 @@ func (self *SInstanceSnapshot) getMoreDetails(userCred mcclient.TokenCredential,
 				out.StorageType = snapshots[i].GetStorageType()
 			}
 		}
-	} else {
+	} else if guest != nil {
 		out.Size = self.SizeMb
 		disk, err := guest.GetSystemDisk()
 		if err != nil {
@@ -593,16 +593,22 @@ func (is *SInstanceSnapshot) SyncWithCloudInstanceSnapshot(ctx context.Context, 
 func (manager *SInstanceSnapshotManager) newFromCloudInstanceSnapshot(ctx context.Context, userCred mcclient.TokenCredential, extSnapshot cloudprovider.ICloudInstanceSnapshot, guest *SGuest) (*SInstanceSnapshot, error) {
 	instanceSnapshot := SInstanceSnapshot{}
 	instanceSnapshot.SetModelManager(manager, &instanceSnapshot)
-	newName, err := db.GenerateName(manager, nil, extSnapshot.GetName())
-	if err == nil {
-		instanceSnapshot.Name = extSnapshot.GetName()
-	} else {
-		instanceSnapshot.Name = newName
-	}
+
 	instanceSnapshot.ExternalId = extSnapshot.GetGlobalId()
 	instanceSnapshot.Status = extSnapshot.GetStatus()
 	manager.fillInstanceSnapshot(userCred, guest, &instanceSnapshot)
-	err = manager.TableSpec().Insert(ctx, &instanceSnapshot)
+	var err = func() error {
+		lockman.LockClass(ctx, manager, "name")
+		defer lockman.ReleaseClass(ctx, manager, "name")
+
+		newName, err := db.GenerateName(ctx, manager, nil, extSnapshot.GetName())
+		if err == nil {
+			instanceSnapshot.Name = extSnapshot.GetName()
+		} else {
+			instanceSnapshot.Name = newName
+		}
+		return manager.TableSpec().Insert(ctx, &instanceSnapshot)
+	}()
 	if err != nil {
 		return nil, err
 	}

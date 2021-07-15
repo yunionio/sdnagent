@@ -337,6 +337,28 @@ func (opts *SCtyunCloudAccountCreateOptions) Params() (jsonutils.JSONObject, err
 	return params, nil
 }
 
+type SEcloudCloudAccountCreateOptions struct {
+	SCloudAccountCreateBaseOptions
+	SAccessKeyCredentialWithEnvironment
+}
+
+func (opts *SEcloudCloudAccountCreateOptions) Params() (jsonutils.JSONObject, error) {
+	params := jsonutils.Marshal(opts)
+	params.(*jsonutils.JSONDict).Add(jsonutils.NewString("Ecloud"), "provider")
+	return params, nil
+}
+
+type SJDcloudCloudAccountCreateOptions struct {
+	SCloudAccountCreateBaseOptions
+	SAccessKeyCredential
+}
+
+func (opts *SJDcloudCloudAccountCreateOptions) Params() (jsonutils.JSONObject, error) {
+	params := jsonutils.Marshal(opts)
+	params.(*jsonutils.JSONDict).Add(jsonutils.NewString("JDcloud"), "provider")
+	return params, nil
+}
+
 // update credential options
 
 type SCloudAccountIdOptions struct {
@@ -447,6 +469,15 @@ type SCtyunCloudAccountUpdateCredentialOptions struct {
 }
 
 func (opts *SCtyunCloudAccountUpdateCredentialOptions) Params() (jsonutils.JSONObject, error) {
+	return jsonutils.Marshal(opts), nil
+}
+
+type SJDcloudCloudAccountUpdateCredentialOptions struct {
+	SCloudAccountIdOptions
+	SAccessKeyCredential
+}
+
+func (opts *SJDcloudCloudAccountUpdateCredentialOptions) Params() (jsonutils.JSONObject, error) {
 	return jsonutils.Marshal(opts), nil
 }
 
@@ -749,12 +780,21 @@ func (opts *SCtyunCloudAccountUpdateOptions) Params() (jsonutils.JSONObject, err
 	return jsonutils.Marshal(opts), nil
 }
 
+type SJDcloudCloudAccountUpdateOptions struct {
+	SCloudAccountUpdateBaseOptions
+}
+
+func (opts *SJDcloudCloudAccountUpdateOptions) Params() (jsonutils.JSONObject, error) {
+	return jsonutils.Marshal(opts), nil
+}
+
 type SVMwareCloudAccountPrepareNetsOptions struct {
 	SVMwareCredentialWithEnvironment
 
 	Project       string `help:"project for this account"`
 	ProjectDomain string `help:"domain for this account"`
 	WireLevel     string `help:"wire level for this account" choices:"vcenter|datacenter|cluster" json:"wire_level_for_vmware"`
+	Dvs           bool   `help:"whether to enable dvs corresponding wire"`
 	NAME          string `help:"name for this account"`
 }
 
@@ -839,10 +879,10 @@ func (opts *CloudaccountShareModeOptions) Params() (jsonutils.JSONObject, error)
 
 type CloudaccountSyncSkusOptions struct {
 	SCloudAccountIdOptions
-	RESOURCE string `help:"Resource of skus" choices:"serversku|elasticcachesku|dbinstance_sku"`
-	Force    bool   `help:"Force sync no matter what"`
-	Provider string `help:"provider to sync"`
-	Region   string `help:"region to sync"`
+	RESOURCE      string `help:"Resource of skus" choices:"serversku|elasticcachesku|dbinstance_sku|nat_sku|nas_sku"`
+	Force         bool   `help:"Force sync no matter what"`
+	Cloudprovider string `help:"provider to sync"`
+	Region        string `help:"region to sync"`
 }
 
 func (opts *CloudaccountSyncSkusOptions) Params() (jsonutils.JSONObject, error) {
@@ -852,8 +892,8 @@ func (opts *CloudaccountSyncSkusOptions) Params() (jsonutils.JSONObject, error) 
 		params.Add(jsonutils.JSONTrue, "force")
 	}
 
-	if len(opts.Provider) > 0 {
-		params.Add(jsonutils.NewString(opts.Provider), "cloudprovider")
+	if len(opts.Cloudprovider) > 0 {
+		params.Add(jsonutils.NewString(opts.Cloudprovider), "cloudprovider")
 	}
 
 	if len(opts.Region) > 0 {
@@ -896,4 +936,13 @@ func (opts *SubscriptionCreateOptions) Params() (jsonutils.JSONObject, error) {
 		"offer_type":            opts.OfferType,
 		"enrollment_account_id": opts.ENROLLMENTACCOUNT,
 	}), nil
+}
+
+type ClouaccountProjectMappingOptions struct {
+	SCloudAccountIdOptions
+	ProjectMappingId string `json:"project_mapping_id" help:"project mapping id"`
+}
+
+func (opts *ClouaccountProjectMappingOptions) Params() (jsonutils.JSONObject, error) {
+	return jsonutils.Marshal(map[string]string{"project_mapping_id": opts.ProjectMappingId}), nil
 }

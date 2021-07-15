@@ -150,7 +150,7 @@ func (ts *STableSpec) CreateSQL() string {
 	if len(indexes) > 0 {
 		cols = append(cols, indexes...)
 	}
-	return fmt.Sprintf("CREATE TABLE IF NOT EXISTS `%s` (\n%s\n) ENGINE=InnoDB DEFAULT CHARSET=utf8%s", ts.name, strings.Join(cols, ",\n"), autoInc)
+	return fmt.Sprintf("CREATE TABLE IF NOT EXISTS `%s` (\n%s\n) ENGINE=InnoDB DEFAULT CHARSET = utf8mb4 COLLATE = utf8mb4_unicode_ci%s", ts.name, strings.Join(cols, ",\n"), autoInc)
 }
 
 func NewTableInstance(ts ITableSpec) *STable {
@@ -219,4 +219,8 @@ func (c *STableField) Label(label string) IQueryField {
 		c.alias = label
 	}
 	return c
+}
+
+func (c *STableField) Variables() []interface{} {
+	return nil
 }
