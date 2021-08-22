@@ -20,7 +20,10 @@ import (
 	"sync"
 	"time"
 
+	"github.com/vishvananda/netlink"
+
 	"yunion.io/x/log"
+	"yunion.io/x/pkg/errors"
 	"yunion.io/x/sdnagent/pkg/agent/utils"
 	"yunion.io/x/sdnagent/pkg/tc"
 )
@@ -33,7 +36,8 @@ type TcManPage struct {
 }
 
 func (p *TcManPage) batchReplaceInput() string {
-	lines := []string{"qdisc del dev " + p.ifname + " root"}
+	// lines := []string{"qdisc del dev " + p.ifname + " root"}
+	lines := []string{}
 	lines = append(lines, p.qtWant.BatchReplaceLines(p.ifname)...)
 	lines = append(lines, "qdisc show dev "+p.ifname)
 	input := strings.Join(lines, "\n")
@@ -44,6 +48,25 @@ func (p *TcManPage) batchReplaceInput() string {
 	//   https://github.com/shemminger/iproute2/commit/bd9cea5d8c9dc6266f9529e1be6bc7dab4519d9c
 	input += "\n"
 	return input
+}
+
+func (p *TcManPage) deleteDevQdiscs(ifname string) error {
+	link, err := netlink.LinkByName(ifname)
+	if err != nil {
+		return errors.Wrapf(err, "get iface by name: %s", ifname)
+	}
+	qdiscs, err := netlink.QdiscList(link)
+	if err != nil {
+		return errors.Wrapf(err, "get iface qdiscs: %s", ifname)
+	}
+
+	errs := []error{}
+	for _, qdisc := range qdiscs {
+		if err := netlink.QdiscDel(qdisc); err != nil {
+			errs = append(errs, err)
+		}
+	}
+	return errors.NewAggregate(errs)
 }
 
 type TcManSection struct {
@@ -165,6 +188,9 @@ func (tm *TcMan) doCheckPage(ctx context.Context, page *TcManPage) {
 	}
 
 	// TODO batch them all
+	if err := page.deleteDevQdiscs(page.ifname); err != nil {
+		log.Warningf("delete ifname %s all qdiscs before batch replace: %v", page.ifname, err)
+	}
 	input := page.batchReplaceInput()
 	output, stderr, err := tm.tcCli.Batch(ctx, input)
 	if err != nil {
