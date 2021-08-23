@@ -20,8 +20,9 @@ import (
 )
 
 type QdiscTree struct {
-	qdisc    IQdisc
-	children map[uint32]*QdiscTree
+	qdisc        IQdisc
+	children     map[uint32]*QdiscTree
+	ingressQdisc IQdisc
 }
 
 func (qt *QdiscTree) IsLeaf() bool {
@@ -71,6 +72,18 @@ func (qt *QdiscTree) Equals(qt2 *QdiscTree) bool {
 			return false
 		}
 	}
+	if qt.ingressQdisc == nil {
+		if qt2.ingressQdisc != nil {
+			return false
+		}
+	} else {
+		if qt2.ingressQdisc == nil {
+			return false
+		}
+		if !qt.ingressQdisc.Equals(qt2.ingressQdisc) {
+			return false
+		}
+	}
 	return true
 }
 
@@ -109,6 +122,7 @@ func NewQdiscTree(qs []IQdisc) (*QdiscTree, error) {
 
 			if qbase.Kind == "ingress" {
 				// NOTE ingress is singleton
+				root.ingressQdisc = q
 				continue
 			}
 			// mq is classful

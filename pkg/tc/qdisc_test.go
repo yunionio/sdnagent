@@ -99,3 +99,35 @@ func TestQdiscTbf(t *testing.T) {
 		}
 	}
 }
+
+func TestQdiscIngress(t *testing.T) {
+	cases := []tcCase{
+		{
+			ifname:      "adm0-99",
+			line:        "qdisc ingress ffff: dev adm0-99 parent ffff:fff1 ----------------",
+			lineDelete:  "qdisc delete dev adm0-99 parent ffff:fff1 handle ffff:",
+			lineReplace: "qdisc replace dev adm0-99 parent ffff:fff1 handle ffff: ingress",
+			isRoot:      false,
+		},
+	}
+
+	for _, c := range cases {
+		q, err := NewQdiscFromString(c.line)
+		if err != nil {
+			t.Errorf("NewQdiscFromString: %s", err)
+			continue
+		}
+		if c.isRoot && !q.IsRoot() {
+			t.Errorf("isroot want: %v, got %v", c.isRoot, q.IsRoot())
+			continue
+		}
+		if lineDelete := q.DeleteLine(c.ifname); lineDelete != c.lineDelete {
+			t.Errorf("delete line want: %s, got: %s", c.lineDelete, lineDelete)
+			continue
+		}
+		if lineReplace := q.ReplaceLine(c.ifname); lineReplace != c.lineReplace {
+			t.Errorf("replace line want: %s, got: %s", c.lineReplace, lineReplace)
+			continue
+		}
+	}
+}
