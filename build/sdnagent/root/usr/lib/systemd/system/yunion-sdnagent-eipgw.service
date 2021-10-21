@@ -7,7 +7,8 @@ After=network.target
 Type=simple
 User=root
 Group=root
-ExecStart=/usr/sbin/keepalived -f /etc/keepalived/eipgw.conf --vrrp --dont-fork --log-detail
+PIDFile=/var/run/yunion-sdnagent-eipgw-keepalived.pid
+ExecStart=/usr/sbin/keepalived -f /etc/keepalived/eipgw.conf --vrrp --dont-fork --log-detail --pid=/var/run/yunion-sdnagent-eipgw-keepalived.pid --vrrp_pid=/var/run/yunion-sdnagent-eipgw-vrrp.pid
 ExecReload=/bin/kill -HUP $MAINPID
 WorkingDirectory=/
 KillMode=control-group
