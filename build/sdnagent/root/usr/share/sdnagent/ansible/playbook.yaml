@@ -15,6 +15,13 @@
         name: /tmp/sdnagent.rpm
         state: installed
       notify: restart eipgw
+    - name: enable ip forwarding
+      sysctl:
+        name: net.ipv4.ip_forward
+        value: 1
+        sysctl_set: yes
+        state: present
+        reload: yes
     - name: make sdnagent.conf
       template:
         src: sdnagent.conf.j2
