@@ -237,9 +237,9 @@ func (manager *SDBInstanceDatabaseManager) ValidateCreateData(ctx context.Contex
 	if instance.Status != api.DBINSTANCE_RUNNING {
 		return nil, httperrors.NewInputParameterError("DBInstance %s(%s) status is %s require status is %s", instance.Name, instance.Id, instance.Status, api.DBINSTANCE_RUNNING)
 	}
-	region := instance.GetRegion()
-	if region == nil {
-		return nil, httperrors.NewInputParameterError("failed to found region for dbinstance %s(%s)", instance.Name, instance.Id)
+	region, err := instance.GetRegion()
+	if err != nil {
+		return nil, err
 	}
 	for i, _account := range input.Accounts {
 		account, err := instance.GetDBInstanceAccount(_account.Account)
@@ -293,10 +293,6 @@ func (self *SDBInstanceDatabase) GetDBInstance() (*SDBInstance, error) {
 		return nil, err
 	}
 	return instance.(*SDBInstance), nil
-}
-
-func (self *SDBInstanceDatabase) GetExtraDetails(ctx context.Context, userCred mcclient.TokenCredential, query jsonutils.JSONObject, isList bool) (api.DBInstancedatabaseDetails, error) {
-	return api.DBInstancedatabaseDetails{}, nil
 }
 
 func (manager *SDBInstanceDatabaseManager) FetchCustomizeColumns(
@@ -370,8 +366,8 @@ func (self *SDBInstanceDatabase) getMoreDetails(ctx context.Context, userCred mc
 }
 
 func (manager *SDBInstanceDatabaseManager) SyncDBInstanceDatabases(ctx context.Context, userCred mcclient.TokenCredential, instance *SDBInstance, cloudDatabases []cloudprovider.ICloudDBInstanceDatabase) compare.SyncResult {
-	lockman.LockClass(ctx, manager, db.GetLockClassKey(manager, instance.GetOwnerId()))
-	defer lockman.ReleaseClass(ctx, manager, db.GetLockClassKey(manager, instance.GetOwnerId()))
+	lockman.LockRawObject(ctx, "dbinstance-databases", instance.Id)
+	defer lockman.ReleaseRawObject(ctx, "dbinstance-databases", instance.Id)
 
 	result := compare.SyncResult{}
 	dbDatabases, err := instance.GetDBInstanceDatabases()

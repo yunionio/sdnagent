@@ -75,8 +75,8 @@ type SElasticcacheAccount struct {
 }
 
 func (manager *SElasticcacheAccountManager) SyncElasticcacheAccounts(ctx context.Context, userCred mcclient.TokenCredential, elasticcache *SElasticcache, cloudElasticcacheAccounts []cloudprovider.ICloudElasticcacheAccount) compare.SyncResult {
-	lockman.LockClass(ctx, manager, db.GetLockClassKey(manager, elasticcache.GetOwnerId()))
-	defer lockman.ReleaseClass(ctx, manager, db.GetLockClassKey(manager, elasticcache.GetOwnerId()))
+	lockman.LockRawObject(ctx, "elastic-cache-accounts", elasticcache.Id)
+	defer lockman.ReleaseRawObject(ctx, "elastic-cache-accounts", elasticcache.Id)
 
 	syncResult := compare.SyncResult{}
 
@@ -130,7 +130,7 @@ func (self *SElasticcacheAccount) syncRemoveCloudElasticcacheAccount(ctx context
 	lockman.LockObject(ctx, self)
 	defer lockman.ReleaseObject(ctx, self)
 
-	err := self.ValidateDeleteCondition(ctx)
+	err := self.ValidateDeleteCondition(ctx, nil)
 	if err != nil {
 		return errors.Wrapf(err, "newFromCloudElasticcacheAccount.Remove")
 	}
@@ -158,7 +158,8 @@ func (self *SElasticcacheAccount) GetRegion() *SCloudregion {
 		return nil
 	}
 
-	return iec.(*SElasticcache).GetRegion()
+	region, _ := iec.(*SElasticcache).GetRegion()
+	return region
 }
 
 func (self *SElasticcacheAccount) GetOwnerId() mcclient.IIdentityProvider {
@@ -227,7 +228,7 @@ func (manager *SElasticcacheAccountManager) ValidateCreateData(ctx context.Conte
 		if err != nil {
 			return nil, fmt.Errorf("getting elastic cache instance failed")
 		}
-		region = ec.(*SElasticcache).GetRegion()
+		region, _ = ec.(*SElasticcache).GetRegion()
 	} else {
 		return nil, httperrors.NewMissingParameterError("elasticcache_id")
 	}
@@ -583,15 +584,6 @@ func (manager *SElasticcacheAccountManager) QueryDistinctExtraField(q *sqlchemy.
 		return q, nil
 	}
 	return q, httperrors.ErrNotFound
-}
-
-func (self *SElasticcacheAccount) GetExtraDetails(
-	ctx context.Context,
-	userCred mcclient.TokenCredential,
-	query jsonutils.JSONObject,
-	isList bool,
-) (api.ElasticcacheAccountDetails, error) {
-	return api.ElasticcacheAccountDetails{}, nil
 }
 
 func (manager *SElasticcacheAccountManager) FetchCustomizeColumns(

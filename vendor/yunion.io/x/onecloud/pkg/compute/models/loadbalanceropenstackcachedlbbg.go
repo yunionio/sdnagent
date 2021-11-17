@@ -29,7 +29,6 @@ import (
 	"yunion.io/x/onecloud/pkg/cloudcommon/db"
 	"yunion.io/x/onecloud/pkg/cloudcommon/db/lockman"
 	"yunion.io/x/onecloud/pkg/cloudprovider"
-	"yunion.io/x/onecloud/pkg/httperrors"
 	"yunion.io/x/onecloud/pkg/mcclient"
 )
 
@@ -65,6 +64,11 @@ type SOpenstackCachedLbbg struct {
 	AssociatedId   string `width:"36" charset:"ascii" nullable:"true" list:"user" create:"optional"`  // 关联ID
 	AssociatedType string `width:"36" charset:"ascii" nullable:"true" list:"user" create:"optional"`  // 关联类型， listener || rule
 	ProtocolType   string `width:"16" charset:"ascii" nullable:"false" list:"user" create:"required"` // 监听协议类型
+}
+
+func (manager *SOpenstackCachedLbbgManager) GetResourceCount() ([]db.SScopeResourceCount, error) {
+	virts := manager.Query().IsFalse("pending_deleted")
+	return db.CalculateResourceCount(virts, "tenant_id")
 }
 
 func (lbbg *SOpenstackCachedLbbg) GetLocalBackendGroup(ctx context.Context, userCred mcclient.TokenCredential) (*SLoadbalancerBackendGroup, error) {
@@ -208,8 +212,8 @@ func (man *SOpenstackCachedLbbgManager) getLoadbalancerBackendgroupsByLoadbalanc
 func (man *SOpenstackCachedLbbgManager) SyncLoadbalancerBackendgroups(ctx context.Context, userCred mcclient.TokenCredential, provider *SCloudprovider, lb *SLoadbalancer, lbbgs []cloudprovider.ICloudLoadbalancerBackendGroup, syncRange *SSyncRange) ([]SOpenstackCachedLbbg, []cloudprovider.ICloudLoadbalancerBackendGroup, compare.SyncResult) {
 	syncOwnerId := provider.GetOwnerId()
 
-	lockman.LockClass(ctx, man, db.GetLockClassKey(man, syncOwnerId))
-	defer lockman.ReleaseClass(ctx, man, db.GetLockClassKey(man, syncOwnerId))
+	lockman.LockRawObject(ctx, "backendgroups", fmt.Sprintf("%s-%s", provider.Id, lb.Id))
+	defer lockman.ReleaseRawObject(ctx, "backendgroups", fmt.Sprintf("%s-%s", provider.Id, lb.Id))
 
 	localLbgs := []SOpenstackCachedLbbg{}
 	remoteLbbgs := []cloudprovider.ICloudLoadbalancerBackendGroup{}
@@ -269,7 +273,7 @@ func (lbbg *SOpenstackCachedLbbg) syncRemoveCloudLoadbalancerBackendgroup(ctx co
 	lockman.LockObject(ctx, lbbg)
 	defer lockman.ReleaseObject(ctx, lbbg)
 
-	err := lbbg.ValidateDeleteCondition(ctx)
+	err := lbbg.ValidateDeleteCondition(ctx, nil)
 	if err != nil { // cannot delete
 		lbbg.SetStatus(userCred, api.LB_STATUS_UNKNOWN, "sync to delete")
 		return errors.Wrap(err, "lbbg.ValidateDeleteCondition(ctx)")
@@ -363,9 +367,9 @@ func (man *SOpenstackCachedLbbgManager) newFromCloudLoadbalancerBackendgroup(ctx
 	lbbg := &SOpenstackCachedLbbg{}
 	lbbg.SetModelManager(man, lbbg)
 
-	region := lb.GetRegion()
-	if region == nil {
-		return nil, errors.Wrap(httperrors.ErrInvalidStatus, "loadbalancer is not attached to any region")
+	region, err := lb.GetRegion()
+	if err != nil {
+		return nil, err
 	}
 
 	lbbg.ManagerId = provider.Id
@@ -375,15 +379,19 @@ func (man *SOpenstackCachedLbbgManager) newFromCloudLoadbalancerBackendgroup(ctx
 	lbbg.ExternalId = extLoadbalancerBackendgroup.GetGlobalId()
 	lbbg.ProtocolType = extLoadbalancerBackendgroup.GetProtocolType()
 
-	newName, err := db.GenerateName(man, syncOwnerId, LocalLbbg.GetName())
-	if err != nil {
-		return nil, err
-	}
-
-	lbbg.Name = newName
 	lbbg.Status = extLoadbalancerBackendgroup.GetStatus()
 
-	err = man.TableSpec().Insert(ctx, lbbg)
+	err = func() error {
+		lockman.LockRawObject(ctx, man.Keyword(), "name")
+		defer lockman.ReleaseRawObject(ctx, man.Keyword(), "name")
+
+		lbbg.Name, err = db.GenerateName(ctx, man, syncOwnerId, LocalLbbg.GetName())
+		if err != nil {
+			return err
+		}
+
+		return man.TableSpec().Insert(ctx, lbbg)
+	}()
 	if err != nil {
 		return nil, err
 	}

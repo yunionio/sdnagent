@@ -96,6 +96,12 @@ type SCloudaccountCredential struct {
 
 	// 阿里云专有云Endpoints
 	*SApsaraEndpoints
+
+	// Huawei Cloud Stack Online
+	*SHCSOEndpoints
+
+	// ctyun crm account extra info
+	*SCtyunExtraOptions
 }
 
 type SCloudaccount struct {
@@ -157,7 +163,7 @@ type ProviderConfig struct {
 
 	AccountId string
 
-	SApsaraEndpoints
+	Options *jsonutils.JSONDict
 
 	ProxyFunc httputils.TransportProxyFunc
 }
@@ -173,6 +179,7 @@ type SProviderInfo struct {
 	Url     string
 	Account string
 	Secret  string
+	Options *jsonutils.JSONDict
 }
 
 type ICloudProviderFactory interface {
@@ -190,6 +197,7 @@ type ICloudProviderFactory interface {
 
 	IsPublicCloud() bool
 	IsOnPremise() bool
+	IsMultiTenant() bool
 	IsSupportPrepaidResources() bool
 	NeedSyncSkuFromCloud() bool
 
@@ -225,6 +233,8 @@ type ICloudProviderFactory interface {
 	GetTTLRange(zoneType TDnsZoneType, productType TDnsProductType) TTlRange
 
 	IsSupportSAMLAuth() bool
+
+	GetAccountIdEqualizer() func(origin, now string) bool
 }
 
 type ICloudProvider interface {
@@ -287,38 +297,69 @@ type ICloudProvider interface {
 	GetICloudInterVpcNetworks() ([]ICloudInterVpcNetwork, error)
 	GetICloudInterVpcNetworkById(id string) (ICloudInterVpcNetwork, error)
 	CreateICloudInterVpcNetwork(opts *SInterVpcNetworkCreateOptions) (ICloudInterVpcNetwork, error)
+
+	GetICloudCDNDomains() ([]ICloudCDNDomain, error)
+	GetICloudCDNDomainByName(name string) (ICloudCDNDomain, error)
+}
+
+func IsSupportCapability(prod ICloudProvider, capa string) bool {
+	return utils.IsInStringArray(capa, prod.GetCapabilities()) || utils.IsInStringArray(capa+READ_ONLY_SUFFIX, prod.GetCapabilities())
 }
 
 func IsSupportProject(prod ICloudProvider) bool {
-	return utils.IsInStringArray(CLOUD_CAPABILITY_PROJECT, prod.GetCapabilities())
+	return IsSupportCapability(prod, CLOUD_CAPABILITY_PROJECT)
 }
 
 func IsSupportDnsZone(prod ICloudProvider) bool {
-	return utils.IsInStringArray(CLOUD_CAPABILITY_DNSZONE, prod.GetCapabilities())
+	return IsSupportCapability(prod, CLOUD_CAPABILITY_DNSZONE)
 }
 
 func IsSupportInterVpcNetwork(prod ICloudProvider) bool {
-	return utils.IsInStringArray(CLOUD_CAPABILITY_INTERVPCNETWORK, prod.GetCapabilities())
+	return IsSupportCapability(prod, CLOUD_CAPABILITY_INTERVPCNETWORK)
 }
 
 func IsSupportCompute(prod ICloudProvider) bool {
-	return utils.IsInStringArray(CLOUD_CAPABILITY_COMPUTE, prod.GetCapabilities())
+	return IsSupportCapability(prod, CLOUD_CAPABILITY_COMPUTE)
 }
 
 func IsSupportLoadbalancer(prod ICloudProvider) bool {
-	return utils.IsInStringArray(CLOUD_CAPABILITY_LOADBALANCER, prod.GetCapabilities())
+	return IsSupportCapability(prod, CLOUD_CAPABILITY_LOADBALANCER)
 }
 
 func IsSupportObjectstore(prod ICloudProvider) bool {
-	return utils.IsInStringArray(CLOUD_CAPABILITY_OBJECTSTORE, prod.GetCapabilities())
+	return IsSupportCapability(prod, CLOUD_CAPABILITY_OBJECTSTORE)
 }
 
 func IsSupportRds(prod ICloudProvider) bool {
-	return utils.IsInStringArray(CLOUD_CAPABILITY_RDS, prod.GetCapabilities())
+	return IsSupportCapability(prod, CLOUD_CAPABILITY_RDS)
+}
+
+func IsSupportNAT(prod ICloudProvider) bool {
+	return IsSupportCapability(prod, CLOUD_CAPABILITY_NAT)
 }
 
 func IsSupportElasticCache(prod ICloudProvider) bool {
-	return utils.IsInStringArray(CLOUD_CAPABILITY_CACHE, prod.GetCapabilities())
+	return IsSupportCapability(prod, CLOUD_CAPABILITY_CACHE)
+}
+
+func IsSupportWaf(prod ICloudProvider) bool {
+	return IsSupportCapability(prod, CLOUD_CAPABILITY_WAF)
+}
+
+func IsSupportMongoDB(prod ICloudProvider) bool {
+	return IsSupportCapability(prod, CLOUD_CAPABILITY_MONGO_DB)
+}
+
+func IsSupportElasticSearch(prod ICloudProvider) bool {
+	return IsSupportCapability(prod, CLOUD_CAPABILITY_ES)
+}
+
+func IsSupportKafka(prod ICloudProvider) bool {
+	return IsSupportCapability(prod, CLOUD_CAPABILITY_KAFKA)
+}
+
+func IsSupportApp(prod ICloudProvider) bool {
+	return IsSupportCapability(prod, CLOUD_CAPABILITY_APP)
 }
 
 var providerTable map[string]ICloudProviderFactory
@@ -355,7 +396,7 @@ func GetProvider(cfg ProviderConfig) (ICloudProvider, error) {
 	return driver.GetProvider(cfg)
 }
 
-func GetClientRC(name, accessUrl, account, secret, provider string) (map[string]string, error) {
+func GetClientRC(name, accessUrl, account, secret, provider string, options *jsonutils.JSONDict) (map[string]string, error) {
 	driver, err := GetProviderFactory(provider)
 	if err != nil {
 		return nil, errors.Wrap(err, "GetProviderFactory")
@@ -365,6 +406,7 @@ func GetClientRC(name, accessUrl, account, secret, provider string) (map[string]
 		Url:     accessUrl,
 		Account: account,
 		Secret:  secret,
+		Options: options,
 	}
 	return driver.GetClientRC(info)
 }
@@ -510,11 +552,21 @@ func (self *SBaseProvider) GetSamlSpInitiatedLoginUrl(idpName string) string {
 func (self *SBaseProvider) GetICloudInterVpcNetworks() ([]ICloudInterVpcNetwork, error) {
 	return nil, ErrNotImplemented
 }
+
 func (self *SBaseProvider) GetICloudInterVpcNetworkById(id string) (ICloudInterVpcNetwork, error) {
 	return nil, ErrNotImplemented
 }
+
 func (self *SBaseProvider) CreateICloudInterVpcNetwork(opts *SInterVpcNetworkCreateOptions) (ICloudInterVpcNetwork, error) {
 	return nil, ErrNotImplemented
+}
+
+func (self *SBaseProvider) GetICloudCDNDomains() ([]ICloudCDNDomain, error) {
+	return nil, errors.Wrapf(ErrNotImplemented, "GetICloudCDNDomains")
+}
+
+func (self *SBaseProvider) GetICloudCDNDomainByName(name string) (ICloudCDNDomain, error) {
+	return nil, errors.Wrapf(ErrNotImplemented, "GetICloudCDNDomainByName")
 }
 
 func NewBaseProvider(factory ICloudProviderFactory) SBaseProvider {
@@ -618,6 +670,10 @@ func (factory *baseProviderFactory) IsOnPremise() bool {
 	return false
 }
 
+func (factory *baseProviderFactory) IsMultiTenant() bool {
+	return false
+}
+
 func (factory *baseProviderFactory) IsCloudeventRegional() bool {
 	return false
 }
@@ -711,6 +767,15 @@ func (factory *baseProviderFactory) GetTTLRange(zoneType TDnsZoneType, productTy
 	return TTlRange{}
 }
 
+func (factory *baseProviderFactory) GetAccountIdEqualizer() func(origin, now string) bool {
+	return func(origin, now string) bool {
+		if len(now) > 0 && now != origin {
+			return false
+		}
+		return true
+	}
+}
+
 type SDnsCapability struct {
 	ZoneTypes    []TDnsZoneType
 	DnsTypes     map[TDnsZoneType][]TDnsType
@@ -747,12 +812,20 @@ func (factory *SPremiseBaseProviderFactory) IsOnPremise() bool {
 	return true
 }
 
+func (factory *SPremiseBaseProviderFactory) IsMultiTenant() bool {
+	return false
+}
+
 func (factory *SPremiseBaseProviderFactory) NeedSyncSkuFromCloud() bool {
 	return false
 }
 
 type SPublicCloudBaseProviderFactory struct {
 	baseProviderFactory
+}
+
+func (factory *SPublicCloudBaseProviderFactory) IsMultiTenant() bool {
+	return true
 }
 
 func (factory *SPublicCloudBaseProviderFactory) IsPublicCloud() bool {
@@ -769,6 +842,10 @@ func (factory *SPublicCloudBaseProviderFactory) NeedSyncSkuFromCloud() bool {
 
 type SPrivateCloudBaseProviderFactory struct {
 	baseProviderFactory
+}
+
+func (factory *SPrivateCloudBaseProviderFactory) IsMultiTenant() bool {
+	return false
 }
 
 func (factory *SPrivateCloudBaseProviderFactory) IsPublicCloud() bool {

@@ -126,7 +126,8 @@ type ServerSkuCreateInput struct {
 type ServerSkuDetails struct {
 	apis.EnabledStatusStandaloneResourceDetails
 
-	ZoneResourceInfo
+	ZoneResourceInfoBase
+	CloudregionResourceInfo
 
 	SServerSku
 
@@ -139,6 +140,13 @@ type ServerSkuDetails struct {
 
 type ServerSkuUpdateInput struct {
 	apis.EnabledStatusStandaloneResourceBaseUpdateInput
+
+	// 预付费状态
+	// default: available
+	PrepaidStatus string `json:"prepaid_status"`
+	// 后付费状态
+	// default: available
+	PostpaidStatus string `json:"postpaid_status"`
 
 	InstanceTypeFamily string `json:"instance_type_family"`
 

@@ -16,7 +16,6 @@ package models
 
 import (
 	"context"
-	"database/sql"
 
 	"yunion.io/x/jsonutils"
 	"yunion.io/x/log"
@@ -26,6 +25,7 @@ import (
 
 	api "yunion.io/x/onecloud/pkg/apis/compute"
 	"yunion.io/x/onecloud/pkg/cloudcommon/db"
+	"yunion.io/x/onecloud/pkg/cloudcommon/validators"
 	"yunion.io/x/onecloud/pkg/cloudprovider"
 	"yunion.io/x/onecloud/pkg/httperrors"
 	"yunion.io/x/onecloud/pkg/mcclient"
@@ -33,8 +33,8 @@ import (
 )
 
 type IVpcResource interface {
-	GetVpc() *SVpc
-	GetRegion() *SCloudregion
+	GetVpc() (*SVpc, error)
+	GetRegion() (*SCloudregion, error)
 }
 
 type SVpcResourceBase struct {
@@ -46,55 +46,41 @@ type SVpcResourceBaseManager struct {
 	SManagedResourceBaseManager
 }
 
-func ValidateVpcResourceInput(userCred mcclient.TokenCredential, input api.VpcResourceInput) (*SVpc, api.VpcResourceInput, error) {
-	vpcObj, err := VpcManager.FetchByIdOrName(userCred, input.VpcId)
+func (self *SVpcResourceBase) GetVpc() (*SVpc, error) {
+	obj, err := VpcManager.FetchById(self.VpcId)
 	if err != nil {
-		if errors.Cause(err) == sql.ErrNoRows {
-			return nil, input, httperrors.NewResourceNotFoundError2(VpcManager.Keyword(), input.VpcId)
-		} else {
-			return nil, input, errors.Wrap(err, "VpcManager.FetchByIdOrName")
-		}
+		return nil, errors.Wrapf(err, "GetVpc(%s)", self.VpcId)
 	}
-	input.VpcId = vpcObj.GetId()
-	return vpcObj.(*SVpc), input, nil
+	return obj.(*SVpc), nil
 }
 
-func (self *SVpcResourceBase) GetVpc() *SVpc {
-	obj, _ := VpcManager.FetchById(self.VpcId)
-	if obj == nil {
-		return nil
+func (self *SVpcResourceBase) GetRegion() (*SCloudregion, error) {
+	vpc, err := self.GetVpc()
+	if err != nil {
+		return nil, err
 	}
-	return obj.(*SVpc)
-}
-
-func (self *SVpcResourceBase) GetRegion() *SCloudregion {
-	vpc := self.GetVpc()
-	if vpc == nil {
-		return nil
-	}
-	region, _ := vpc.GetRegion()
-	return region
+	return vpc.GetRegion()
 }
 
 func (self *SVpcResourceBase) GetRegionId() string {
-	region := self.GetRegion()
-	if region != nil {
-		return region.Id
+	region, err := self.GetRegion()
+	if err != nil {
+		return ""
 	}
-	return ""
+	return region.Id
 }
 
 func (self *SVpcResourceBase) GetIRegion() (cloudprovider.ICloudRegion, error) {
-	vpc := self.GetVpc()
-	if vpc != nil {
-		return vpc.GetIRegion()
+	vpc, err := self.GetVpc()
+	if err != nil {
+		return nil, errors.Wrapf(err, "GetVpc")
 	}
-	return nil, errors.Wrap(httperrors.ErrBadRequest, "not a valid vpc")
+	return vpc.GetIRegion()
 }
 
 func (self *SVpcResourceBase) GetCloudprovider() *SCloudprovider {
-	vpc := self.GetVpc()
-	if vpc == nil {
+	vpc, err := self.GetVpc()
+	if err != nil {
 		return nil
 	}
 	return vpc.GetCloudprovider()
@@ -109,15 +95,11 @@ func (self *SVpcResourceBase) GetCloudproviderId() string {
 }
 
 func (self *SVpcResourceBase) GetProviderName() string {
-	vpc := self.GetVpc()
+	vpc, _ := self.GetVpc()
 	if vpc == nil {
 		return ""
 	}
 	return vpc.GetProviderName()
-}
-
-func (self *SVpcResourceBase) GetExtraDetails(ctx context.Context, userCred mcclient.TokenCredential, query jsonutils.JSONObject) api.VpcResourceInfo {
-	return api.VpcResourceInfo{}
 }
 
 func (manager *SVpcResourceBaseManager) FetchCustomizeColumns(
@@ -180,11 +162,16 @@ func (manager *SVpcResourceBaseManager) ListItemFilter(
 ) (*sqlchemy.SQuery, error) {
 	var err error
 	if len(query.VpcId) > 0 {
-		vpcObj, _, err := ValidateVpcResourceInput(userCred, query.VpcResourceInput)
-		if err != nil {
-			return nil, errors.Wrap(err, "ValidateVpcResourceInput")
+		switch query.VpcId {
+		case api.CLASSIC_VPC_NAME:
+			q = q.Equals("name", api.CLASSIC_VPC_NAME)
+		default:
+			_, err := validators.ValidateModel(userCred, VpcManager, &query.VpcId)
+			if err != nil {
+				return nil, err
+			}
+			q = q.Equals("vpc_id", query.VpcId)
 		}
-		q = q.Equals("vpc_id", vpcObj.GetId())
 	}
 	subq := VpcManager.Query("id").Snapshot()
 	subq, err = manager.SCloudregionResourceBaseManager.ListItemFilter(ctx, subq, userCred, query.RegionalFilterListInput)
@@ -306,7 +293,7 @@ func (manager *SVpcResourceBaseManager) GetExportKeys() []string {
 }
 
 func (self *SVpcResourceBase) GetChangeOwnerCandidateDomainIds() []string {
-	vpc := self.GetVpc()
+	vpc, _ := self.GetVpc()
 	if vpc != nil {
 		return vpc.GetChangeOwnerCandidateDomainIds()
 	}
@@ -314,11 +301,11 @@ func (self *SVpcResourceBase) GetChangeOwnerCandidateDomainIds() []string {
 }
 
 func IsOneCloudVpcResource(res IVpcResource) bool {
-	vpc := res.GetVpc()
+	vpc, _ := res.GetVpc()
 	if vpc == nil {
 		return false
 	}
-	region := res.GetRegion()
+	region, _ := res.GetRegion()
 	if region == nil {
 		return false
 	}

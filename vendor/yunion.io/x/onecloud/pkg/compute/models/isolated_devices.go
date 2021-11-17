@@ -302,11 +302,11 @@ func (manager *SIsolatedDeviceManager) GetExportExtraKeys(ctx context.Context, k
 	return res
 }
 
-func (self *SIsolatedDevice) ValidateDeleteCondition(ctx context.Context) error {
+func (self *SIsolatedDevice) ValidateDeleteCondition(ctx context.Context, info jsonutils.JSONObject) error {
 	if len(self.GuestId) > 0 {
 		return httperrors.NewNotEmptyError("Isolated device used by server")
 	}
-	return self.SStandaloneResourceBase.ValidateDeleteCondition(ctx)
+	return self.SStandaloneResourceBase.ValidateDeleteCondition(ctx, nil)
 }
 
 func (self *SIsolatedDevice) getDetailedString() string {
@@ -517,7 +517,7 @@ func (manager *SIsolatedDeviceManager) ReleaseDevicesOfGuest(ctx context.Context
 }
 
 func (manager *SIsolatedDeviceManager) totalCountQ(
-	devType []string, hostTypes []string,
+	scope rbacutils.TRbacScope, ownerId mcclient.IIdentityProvider, devType []string, hostTypes []string,
 	resourceTypes []string,
 	providers []string, brands []string, cloudEnv string,
 	rangeObjs []db.IStandaloneModel,
@@ -525,6 +525,9 @@ func (manager *SIsolatedDeviceManager) totalCountQ(
 	hosts := HostManager.Query().SubQuery()
 	devs := manager.Query().SubQuery()
 	q := devs.Query().Join(hosts, sqlchemy.Equals(devs.Field("host_id"), hosts.Field("id")))
+	if scope == rbacutils.ScopeDomain {
+		q = q.Filter(sqlchemy.Equals(hosts.Field("domain_id"), ownerId.GetProjectDomainId()))
+	}
 	q = q.Filter(sqlchemy.IsTrue(hosts.Field("enabled")))
 	if len(devType) != 0 {
 		q = q.Filter(sqlchemy.In(devs.Field("dev_type"), devType))
@@ -538,6 +541,8 @@ type IsolatedDeviceCountStat struct {
 }
 
 func (manager *SIsolatedDeviceManager) totalCount(
+	scope rbacutils.TRbacScope,
+	ownerId mcclient.IIdentityProvider,
 	devType,
 	hostTypes []string,
 	resourceTypes []string,
@@ -547,6 +552,8 @@ func (manager *SIsolatedDeviceManager) totalCount(
 	rangeObjs []db.IStandaloneModel,
 ) (int, error) {
 	return manager.totalCountQ(
+		scope,
+		ownerId,
 		devType,
 		hostTypes,
 		resourceTypes,
@@ -558,6 +565,8 @@ func (manager *SIsolatedDeviceManager) totalCount(
 }
 
 func (manager *SIsolatedDeviceManager) TotalCount(
+	scope rbacutils.TRbacScope,
+	ownerId mcclient.IIdentityProvider,
 	hostType []string,
 	resourceTypes []string,
 	providers []string,
@@ -567,14 +576,14 @@ func (manager *SIsolatedDeviceManager) TotalCount(
 ) (IsolatedDeviceCountStat, error) {
 	stat := IsolatedDeviceCountStat{}
 	devCnt, err := manager.totalCount(
-		nil, hostType, resourceTypes,
+		scope, ownerId, nil, hostType, resourceTypes,
 		providers, brands, cloudEnv,
 		rangeObjs)
 	if err != nil {
 		return stat, err
 	}
 	gpuCnt, err := manager.totalCount(
-		VALID_GPU_TYPES, hostType, resourceTypes,
+		scope, ownerId, VALID_GPU_TYPES, hostType, resourceTypes,
 		providers, brands, cloudEnv,
 		rangeObjs)
 	if err != nil {
@@ -585,15 +594,15 @@ func (manager *SIsolatedDeviceManager) TotalCount(
 	return stat, nil
 }
 
-func (self *SIsolatedDevice) getDesc() *jsonutils.JSONDict {
-	desc := jsonutils.NewDict()
-	desc.Add(jsonutils.NewString(self.Id), "id")
-	desc.Add(jsonutils.NewString(self.DevType), "dev_type")
-	desc.Add(jsonutils.NewString(self.Model), "model")
-	desc.Add(jsonutils.NewString(self.Addr), "addr")
-	desc.Add(jsonutils.NewString(self.VendorDeviceId), "vendor_device_id")
-	desc.Add(jsonutils.NewString(self.getVendor()), "vendor")
-	return desc
+func (self *SIsolatedDevice) getDesc() *api.IsolatedDeviceJsonDesc {
+	return &api.IsolatedDeviceJsonDesc{
+		Id:             self.Id,
+		DevType:        self.DevType,
+		Model:          self.Model,
+		Addr:           self.Addr,
+		VendorDeviceId: self.VendorDeviceId,
+		Vendor:         self.getVendor(),
+	}
 }
 
 func (man *SIsolatedDeviceManager) GetSpecShouldCheckStatus(query *jsonutils.JSONDict) (bool, error) {
@@ -631,20 +640,10 @@ func (man *SIsolatedDeviceManager) GetSpecIdent(spec *jsonutils.JSONDict) []stri
 }
 
 func (self *SIsolatedDevice) GetShortDesc(ctx context.Context) *jsonutils.JSONDict {
-	desc := self.getDesc()
+	desc := jsonutils.NewDict()
+	desc.Update(jsonutils.Marshal(self.getDesc()))
 	desc.Add(jsonutils.NewString(IsolatedDeviceManager.Keyword()), "res_name")
 	return desc
-}
-
-func (manager *SIsolatedDeviceManager) generateJsonDescForGuest(guest *SGuest) []jsonutils.JSONObject {
-	ret := make([]jsonutils.JSONObject, 0)
-	devs := manager.findAttachedDevicesOfGuest(guest)
-	if devs != nil && len(devs) > 0 {
-		for _, dev := range devs {
-			ret = append(ret, dev.getDesc())
-		}
-	}
-	return ret
 }
 
 func (self *SIsolatedDevice) getHost() *SHost {
@@ -656,10 +655,6 @@ func (self *SIsolatedDevice) getGuest() *SGuest {
 		return GuestManager.FetchGuestById(self.GuestId)
 	}
 	return nil
-}
-
-func (self *SIsolatedDevice) GetExtraDetails(ctx context.Context, userCred mcclient.TokenCredential, query jsonutils.JSONObject, isList bool) (api.IsolateDeviceDetails, error) {
-	return api.IsolateDeviceDetails{}, nil
 }
 
 func (manager *SIsolatedDeviceManager) FetchCustomizeColumns(

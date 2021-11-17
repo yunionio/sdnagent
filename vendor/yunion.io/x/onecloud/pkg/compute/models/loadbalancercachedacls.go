@@ -22,6 +22,7 @@ import (
 	"yunion.io/x/log"
 	"yunion.io/x/pkg/errors"
 	"yunion.io/x/pkg/util/compare"
+	"yunion.io/x/pkg/utils"
 	"yunion.io/x/sqlchemy"
 
 	"yunion.io/x/onecloud/pkg/apis"
@@ -69,6 +70,11 @@ type SCachedLoadbalancerAcl struct {
 	SLoadbalancerAclResourceBase
 
 	ListenerId string `width:"36" charset:"ascii" nullable:"true" list:"user" create:"optional"` // huawei only
+}
+
+func (manager *SCachedLoadbalancerAclManager) GetResourceCount() ([]db.SScopeResourceCount, error) {
+	virts := manager.Query().IsFalse("pending_deleted")
+	return db.CalculateResourceCount(virts, "tenant_id")
 }
 
 func (lbacl *SCachedLoadbalancerAcl) AllowPerformStatus(ctx context.Context, userCred mcclient.TokenCredential, query jsonutils.JSONObject, data jsonutils.JSONObject) bool {
@@ -124,7 +130,7 @@ func (man *SCachedLoadbalancerAclManager) ValidateCreateData(ctx context.Context
 		}
 	}
 
-	if providerV.Model.(*SCloudprovider).Provider == api.CLOUD_PROVIDER_HUAWEI {
+	if utils.IsInStringArray(providerV.Model.(*SCloudprovider).Provider, []string{api.CLOUD_PROVIDER_HUAWEI, api.CLOUD_PROVIDER_HCSO}) {
 		listenerV := validators.NewModelIdOrNameValidator("listener", "loadbalancerlistener", ownerId)
 		if err := listenerV.Validate(data); err != nil {
 			return nil, err
@@ -149,7 +155,7 @@ func (man *SCachedLoadbalancerAclManager) ValidateCreateData(ctx context.Context
 
 	provider := providerV.Model.(*SCloudprovider)
 	data.Set("manager_id", jsonutils.NewString(provider.Id))
-	name, _ := db.GenerateName(man, ownerId, aclV.Model.GetName())
+	name, _ := db.GenerateName(ctx, man, ownerId, aclV.Model.GetName())
 	data.Set("name", jsonutils.NewString(name))
 
 	input := apis.VirtualResourceCreateInput{}
@@ -218,15 +224,6 @@ func (lbacl *SCachedLoadbalancerAcl) GetListener() (*SLoadbalancerListener, erro
 	return listener.(*SLoadbalancerListener), nil
 }
 
-func (lbacl *SCachedLoadbalancerAcl) GetExtraDetails(
-	ctx context.Context,
-	userCred mcclient.TokenCredential,
-	query jsonutils.JSONObject,
-	isList bool,
-) (api.CachedLoadbalancerAclDetails, error) {
-	return api.CachedLoadbalancerAclDetails{}, nil
-}
-
 func (man *SCachedLoadbalancerAclManager) FetchCustomizeColumns(
 	ctx context.Context,
 	userCred mcclient.TokenCredential,
@@ -256,7 +253,7 @@ func (lbacl *SCachedLoadbalancerAcl) AllowPerformPatch(ctx context.Context, user
 	return lbacl.IsOwner(userCred) || db.IsAdminAllowPerform(userCred, lbacl, "patch")
 }
 
-func (lbacl *SCachedLoadbalancerAcl) ValidateDeleteCondition(ctx context.Context) error {
+func (lbacl *SCachedLoadbalancerAcl) ValidateDeleteCondition(ctx context.Context, info jsonutils.JSONObject) error {
 	man := LoadbalancerListenerManager
 	t := man.TableSpec().Instance()
 	pdF := t.Field("pending_deleted")
@@ -310,7 +307,7 @@ func (self *SCachedLoadbalancerAcl) syncRemoveCloudLoadbalanceAcl(ctx context.Co
 	lockman.LockObject(ctx, self)
 	defer lockman.ReleaseObject(ctx, self)
 
-	err := self.ValidateDeleteCondition(ctx)
+	err := self.ValidateDeleteCondition(ctx, nil)
 	if err != nil { // cannot delete
 		err = self.SetStatus(userCred, api.LB_STATUS_UNKNOWN, "sync to delete")
 	} else {
@@ -322,7 +319,7 @@ func (self *SCachedLoadbalancerAcl) syncRemoveCloudLoadbalanceAcl(ctx context.Co
 func (acl *SCachedLoadbalancerAcl) SyncWithCloudLoadbalancerAcl(ctx context.Context, userCred mcclient.TokenCredential, extAcl cloudprovider.ICloudLoadbalancerAcl, projectId mcclient.IIdentityProvider) error {
 	diff, err := db.UpdateWithLock(ctx, acl, func() error {
 		// todo: 华为云acl没有name字段应此不需要同步名称
-		if api.CLOUD_PROVIDER_HUAWEI != acl.GetProviderName() {
+		if !utils.IsInStringArray(acl.GetProviderName(), []string{api.CLOUD_PROVIDER_HUAWEI, api.CLOUD_PROVIDER_HCSO}) {
 			acl.Name = extAcl.GetName()
 		} else {
 			ext_listener_id := extAcl.GetAclListenerID()
@@ -358,16 +355,16 @@ func (man *SCachedLoadbalancerAclManager) GetOrCreateCachedAcl(ctx context.Conte
 	defer lockman.ReleaseClass(ctx, man, ownerProjId)
 
 	listenerId := ""
-	if lblis.GetProviderName() == api.CLOUD_PROVIDER_HUAWEI {
+	if utils.IsInStringArray(lblis.GetProviderName(), []string{api.CLOUD_PROVIDER_HUAWEI, api.CLOUD_PROVIDER_HCSO}) {
 		listenerId = lblis.Id
 	}
 	if lblis.GetProviderName() == api.CLOUD_PROVIDER_OPENSTACK {
 		listenerId = lblis.Id
 	}
 
-	region := lblis.GetRegion()
-	if region == nil {
-		return nil, errors.Wrap(httperrors.ErrInvalidStatus, "Loadbalancer listenser is not attached region")
+	region, err := lblis.GetRegion()
+	if err != nil {
+		return nil, err
 	}
 	lbacl, err := man.getLoadbalancerAclByRegion(provider, region.Id, acl.Id, listenerId)
 	if err == nil {
@@ -441,10 +438,8 @@ func (man *SCachedLoadbalancerAclManager) getLoadbalancerAclByRegion(provider *S
 }
 
 func (man *SCachedLoadbalancerAclManager) SyncLoadbalancerAcls(ctx context.Context, userCred mcclient.TokenCredential, provider *SCloudprovider, region *SCloudregion, acls []cloudprovider.ICloudLoadbalancerAcl, syncRange *SSyncRange) compare.SyncResult {
-	ownerProjId := provider.ProjectId
-
-	lockman.LockClass(ctx, man, ownerProjId)
-	defer lockman.ReleaseClass(ctx, man, ownerProjId)
+	lockman.LockRawObject(ctx, "acls", fmt.Sprintf("%s-%s", provider.Id, region.Id))
+	defer lockman.ReleaseRawObject(ctx, "acls", fmt.Sprintf("%s-%s", provider.Id, region.Id))
 
 	syncResult := compare.SyncResult{}
 
@@ -498,12 +493,7 @@ func (man *SCachedLoadbalancerAclManager) newFromCloudLoadbalancerAcl(ctx contex
 	acl := SCachedLoadbalancerAcl{}
 	acl.SetModelManager(man, &acl)
 
-	newName, err := db.GenerateName(man, projectId, extAcl.GetName())
-	if err != nil {
-		return nil, errors.Wrap(err, "cachedLoadbalancerAclManager.new.GenerateName")
-	}
 	acl.ExternalId = extAcl.GetGlobalId()
-	acl.Name = newName
 	acl.ManagerId = provider.Id
 	acl.CloudregionId = region.Id
 
@@ -539,10 +529,19 @@ func (man *SCachedLoadbalancerAclManager) newFromCloudLoadbalancerAcl(ctx contex
 		acl.AclId = localAcl.GetId()
 	}
 
-	err = man.TableSpec().Insert(ctx, &acl)
+	var err = func() error {
+		lockman.LockRawObject(ctx, man.Keyword(), "name")
+		defer lockman.ReleaseRawObject(ctx, man.Keyword(), "name")
+
+		newName, err := db.GenerateName(ctx, man, projectId, extAcl.GetName())
+		if err != nil {
+			return errors.Wrap(err, "cachedLoadbalancerAclManager.new.GenerateName")
+		}
+		acl.Name = newName
+		return man.TableSpec().Insert(ctx, &acl)
+	}()
 	if err != nil {
-		log.Errorf("newFromCloudLoadbalancerAcl fail %s", err)
-		return nil, errors.Wrap(err, "cachedLoadbalancerAclManager.new.InsertCachedAcl")
+		return nil, errors.Wrap(err, "Insert")
 	}
 
 	SyncCloudProject(userCred, &acl, projectId, extAcl, acl.ManagerId)

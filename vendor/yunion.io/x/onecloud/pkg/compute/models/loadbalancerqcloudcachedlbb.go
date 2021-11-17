@@ -62,6 +62,11 @@ type SQcloudCachedLb struct {
 	CachedBackendGroupId string `width:"36" charset:"ascii" nullable:"true" list:"user" create:"optional"`
 }
 
+func (manager *SQcloudCachedLbManager) GetResourceCount() ([]db.SScopeResourceCount, error) {
+	virts := manager.Query().IsFalse("pending_deleted")
+	return db.CalculateResourceCount(virts, "tenant_id")
+}
+
 func (lbb *SQcloudCachedLb) GetCustomizeColumns(context.Context, mcclient.TokenCredential, jsonutils.JSONObject) *jsonutils.JSONDict {
 	return nil
 }
@@ -79,7 +84,7 @@ func (lbb *SQcloudCachedLb) syncRemoveCloudLoadbalancerBackend(ctx context.Conte
 	lockman.LockObject(ctx, lbb)
 	defer lockman.ReleaseObject(ctx, lbb)
 
-	err := lbb.ValidateDeleteCondition(ctx)
+	err := lbb.ValidateDeleteCondition(ctx, nil)
 	if err != nil { // cannot delete
 		err = lbb.SetStatus(userCred, api.LB_STATUS_UNKNOWN, "sync to delete")
 	} else {
@@ -164,18 +169,21 @@ func (man *SQcloudCachedLbManager) newFromCloudLoadbalancerBackend(ctx context.C
 	lbb.BackendId = locallbb.GetId()
 	lbb.ExternalId = extLoadbalancerBackend.GetGlobalId()
 
-	newName, err := db.GenerateName(man, syncOwnerId, extLoadbalancerBackend.GetName())
-	if err != nil {
-		return nil, err
-	}
-	lbb.Name = newName
-
 	if err := lbb.constructFieldsFromCloudLoadbalancerBackend(extLoadbalancerBackend); err != nil {
 		return nil, err
 	}
 
-	err = man.TableSpec().Insert(ctx, lbb)
+	err = func() error {
+		lockman.LockRawObject(ctx, man.Keyword(), "name")
+		defer lockman.ReleaseRawObject(ctx, man.Keyword(), "name")
 
+		lbb.Name, err = db.GenerateName(ctx, man, syncOwnerId, extLoadbalancerBackend.GetName())
+		if err != nil {
+			return err
+		}
+
+		return man.TableSpec().Insert(ctx, lbb)
+	}()
 	if err != nil {
 		return nil, err
 	}
@@ -199,8 +207,8 @@ func (man *SQcloudCachedLbManager) getLoadbalancerBackendsByLoadbalancerBackendg
 func (man *SQcloudCachedLbManager) SyncLoadbalancerBackends(ctx context.Context, userCred mcclient.TokenCredential, provider *SCloudprovider, loadbalancerBackendgroup *SQcloudCachedLbbg, lbbs []cloudprovider.ICloudLoadbalancerBackend, syncRange *SSyncRange) compare.SyncResult {
 	syncOwnerId := provider.GetOwnerId()
 
-	lockman.LockClass(ctx, man, db.GetLockClassKey(man, syncOwnerId))
-	defer lockman.ReleaseClass(ctx, man, db.GetLockClassKey(man, syncOwnerId))
+	lockman.LockRawObject(ctx, "backends", loadbalancerBackendgroup.Id)
+	defer lockman.ReleaseRawObject(ctx, "backends", loadbalancerBackendgroup.Id)
 
 	syncResult := compare.SyncResult{}
 
@@ -267,18 +275,22 @@ func (man *SQcloudCachedLbManager) CreateQcloudCachedLb(ctx context.Context, use
 	cachedlbb.BackendId = lbb.GetId()
 	cachedlbb.ExternalId = extLoadbalancerBackend.GetGlobalId()
 
-	newName, err := db.GenerateName(man, syncOwnerId, extLoadbalancerBackend.GetName())
-	if err != nil {
-		return nil, err
-	}
-	cachedlbb.Name = newName
-
 	if err := cachedlbb.constructFieldsFromCloudLoadbalancerBackend(extLoadbalancerBackend); err != nil {
 		return nil, err
 	}
 
-	err = man.TableSpec().Insert(ctx, cachedlbb)
+	var err error
+	err = func() error {
+		lockman.LockRawObject(ctx, man.Keyword(), "name")
+		defer lockman.ReleaseRawObject(ctx, man.Keyword(), "name")
 
+		cachedlbb.Name, err = db.GenerateName(ctx, man, syncOwnerId, extLoadbalancerBackend.GetName())
+		if err != nil {
+			return err
+		}
+
+		return man.TableSpec().Insert(ctx, cachedlbb)
+	}()
 	if err != nil {
 		return nil, err
 	}

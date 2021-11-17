@@ -16,10 +16,8 @@ package models
 
 import (
 	"context"
-	"fmt"
 
 	"yunion.io/x/jsonutils"
-	"yunion.io/x/log"
 	"yunion.io/x/pkg/errors"
 	"yunion.io/x/pkg/util/compare"
 	"yunion.io/x/pkg/util/regutils"
@@ -29,6 +27,7 @@ import (
 	"yunion.io/x/onecloud/pkg/cloudcommon/db"
 	"yunion.io/x/onecloud/pkg/cloudcommon/db/lockman"
 	"yunion.io/x/onecloud/pkg/cloudcommon/db/taskman"
+	"yunion.io/x/onecloud/pkg/cloudcommon/validators"
 	"yunion.io/x/onecloud/pkg/cloudprovider"
 	"yunion.io/x/onecloud/pkg/httperrors"
 	"yunion.io/x/onecloud/pkg/mcclient"
@@ -119,14 +118,29 @@ func (manager *SNatDEntryManager) QueryDistinctExtraField(q *sqlchemy.SQuery, fi
 	return q, httperrors.ErrNotFound
 }
 
-func (man *SNatDEntryManager) ValidateCreateData(ctx context.Context, userCred mcclient.TokenCredential, ownerId mcclient.IIdentityProvider, query jsonutils.JSONObject, data *jsonutils.JSONDict) (*jsonutils.JSONDict, error) {
-	input := &api.SNatDCreateInput{}
-	err := data.Unmarshal(input)
-	if err != nil {
-		return nil, httperrors.NewInputParameterError("Unmarshal input failed %s", err)
+func (self *SNatDEntry) GetUniqValues() jsonutils.JSONObject {
+	return jsonutils.Marshal(map[string]string{"natgateway_id": self.NatgatewayId})
+}
+
+func (manager *SNatDEntryManager) FetchUniqValues(ctx context.Context, data jsonutils.JSONObject) jsonutils.JSONObject {
+	natId, _ := data.GetString("natgateway_id")
+	return jsonutils.Marshal(map[string]string{"natgateway_id": natId})
+}
+
+func (manager *SNatDEntryManager) FilterByUniqValues(q *sqlchemy.SQuery, values jsonutils.JSONObject) *sqlchemy.SQuery {
+	natId, _ := values.GetString("natgateway_id")
+	if len(natId) > 0 {
+		q = q.Equals("natgateway_id", natId)
 	}
-	if len(input.NatgatewayId) == 0 || len(input.ExternalIpId) == 0 || len(input.ExternalIp) == 0 {
-		return nil, httperrors.NewMissingParameterError("natgateway_id or external_ip_id or external_ip")
+	return q
+}
+
+func (man *SNatDEntryManager) ValidateCreateData(ctx context.Context, userCred mcclient.TokenCredential, ownerId mcclient.IIdentityProvider, query jsonutils.JSONObject, input *api.SNatDCreateInput) (*api.SNatDCreateInput, error) {
+	if len(input.NatgatewayId) == 0 {
+		return nil, httperrors.NewMissingParameterError("natgateway_id")
+	}
+	if len(input.Eip) == 0 {
+		return nil, httperrors.NewMissingParameterError("eip")
 	}
 	if input.ExternalPort < 1 || input.ExternalPort > 65535 {
 		return nil, httperrors.NewInputParameterError("Port value error")
@@ -138,57 +152,35 @@ func (man *SNatDEntryManager) ValidateCreateData(ctx context.Context, userCred m
 		return nil, httperrors.NewInputParameterError("invalid internal ip address: %s", input.InternalIp)
 	}
 
-	// check ip + port
-	eip, err := man.checkIPPort(input)
-	if err != nil {
-		return nil, httperrors.NewInputParameterError("%v", err)
-	}
-
-	// check that eip is suitable
-	if len(eip.AssociateId) != 0 {
-		if eip.AssociateId != input.NatgatewayId {
-			return nil, httperrors.NewInputParameterError("eip has been binding to another instance")
-		} else if !man.canBindIP(eip.IpAddr) {
-			return nil, httperrors.NewInputParameterError("eip has been binding to snat rules")
-		}
-	} else {
-		data.Add(jsonutils.NewBool(true), "need_bind")
-	}
-	data.Remove("external_ip_id")
-	data.Add(jsonutils.NewString(eip.Id), "eip_id")
-	data.Add(jsonutils.NewString(eip.ExternalId), "eip_external_id")
-	data.Set("name", jsonutils.NewString(NatGatewayManager.NatNameFromReal(input.Name, input.NatgatewayId)))
-	return data, nil
-}
-
-func (manager *SNatDEntryManager) checkIPPort(input *api.SNatDCreateInput) (*SElasticip, error) {
-	q := manager.Query().Equals("external_ip", input.ExternalIp).Equals("external_port", input.ExternalPort)
-	count, err := q.CountWithError()
-	if err != nil {
-		return nil, errors.Wrap(err, "fetch dnat with same external_ip and external_port")
-	}
-	if count > 0 {
-		return nil, fmt.Errorf("there are dnat rules with same external ip and external port")
-	}
-	model, err := ElasticipManager.FetchById(input.ExternalIpId)
+	_eip, err := validators.ValidateModel(userCred, ElasticipManager, &input.Eip)
 	if err != nil {
 		return nil, err
 	}
-	if model == nil {
-		return nil, httperrors.NewInputParameterError("No such eip")
+	eip := _eip.(*SElasticip)
+	input.ExternalIp = eip.IpAddr
+
+	q := man.Query().Equals("external_ip", input.ExternalIp).Equals("external_port", input.ExternalPort)
+	count, err := q.CountWithError()
+	if err != nil {
+		return nil, errors.Wrap(err, "q.CountWithError")
 	}
-	eip := model.(*SElasticip)
-	if eip.IpAddr != input.ExternalIp {
-		return nil, fmt.Errorf("No such eip")
+
+	if count > 0 {
+		return nil, httperrors.NewInputParameterError("there are dnat rules with same external ip and external port")
 	}
-	return eip, nil
+
+	// check that eip is suitable
+	if len(eip.AssociateId) > 0 && eip.AssociateId != input.NatgatewayId {
+		return nil, httperrors.NewInputParameterError("eip has been binding to another instance")
+	}
+	return input, nil
 }
 
 func (manager *SNatDEntryManager) SyncNatDTable(ctx context.Context, userCred mcclient.TokenCredential, provider *SCloudprovider, nat *SNatGateway, extDTable []cloudprovider.ICloudNatDEntry) compare.SyncResult {
 	syncOwnerId := provider.GetOwnerId()
 
-	lockman.LockClass(ctx, manager, db.GetLockClassKey(manager, syncOwnerId))
-	defer lockman.ReleaseClass(ctx, manager, db.GetLockClassKey(manager, syncOwnerId))
+	lockman.LockRawObject(ctx, "dtable", nat.Id)
+	defer lockman.ReleaseRawObject(ctx, "dtable", nat.Id)
 
 	result := compare.SyncResult{}
 	dbNatDTables, err := nat.GetDTable()
@@ -249,7 +241,7 @@ func (self *SNatDEntry) syncRemoveCloudNatDTable(ctx context.Context, userCred m
 	lockman.LockObject(ctx, self)
 	defer lockman.ReleaseObject(ctx, self)
 
-	err := self.ValidateDeleteCondition(ctx)
+	err := self.ValidateDeleteCondition(ctx, nil)
 	if err != nil { // cannot delete
 		return self.SetStatus(userCred, api.VPC_STATUS_UNKNOWN, "sync to delete")
 	}
@@ -280,7 +272,6 @@ func (manager *SNatDEntryManager) newFromCloudNatDTable(ctx context.Context, use
 	table := SNatDEntry{}
 	table.SetModelManager(manager, &table)
 
-	table.Name = NatGatewayManager.NatNameFromReal(extEntry.GetName(), nat.Id)
 	table.Status = extEntry.GetStatus()
 	table.ExternalId = extEntry.GetGlobalId()
 	table.IsEmulated = extEntry.IsEmulated()
@@ -291,10 +282,20 @@ func (manager *SNatDEntryManager) newFromCloudNatDTable(ctx context.Context, use
 	table.InternalPort = extEntry.GetInternalPort()
 	table.IpProtocol = extEntry.GetIpProtocol()
 
-	err := manager.TableSpec().Insert(ctx, &table)
+	var err = func() error {
+		lockman.LockRawObject(ctx, manager.Keyword(), "name")
+		defer lockman.ReleaseRawObject(ctx, manager.Keyword(), "name")
+
+		var err error
+		table.Name, err = db.GenerateName(ctx, manager, ownerId, extEntry.GetName())
+		if err != nil {
+			return err
+		}
+
+		return manager.TableSpec().Insert(ctx, &table)
+	}()
 	if err != nil {
-		log.Errorf("newFromCloudNatDTable fail %s", err)
-		return nil, err
+		return nil, errors.Wrapf(err, "Insert")
 	}
 
 	SyncCloudDomain(userCred, &table, ownerId)
@@ -302,15 +303,6 @@ func (manager *SNatDEntryManager) newFromCloudNatDTable(ctx context.Context, use
 	db.OpsLog.LogEvent(&table, db.ACT_CREATE, table.GetShortDesc(ctx), userCred)
 
 	return &table, nil
-}
-
-func (self *SNatDEntry) GetExtraDetails(
-	ctx context.Context,
-	userCred mcclient.TokenCredential,
-	query jsonutils.JSONObject,
-	isList bool,
-) (api.NatDEntryDetails, error) {
-	return api.NatDEntryDetails{}, nil
 }
 
 func (manager *SNatDEntryManager) FetchCustomizeColumns(
@@ -332,47 +324,52 @@ func (manager *SNatDEntryManager) FetchCustomizeColumns(
 }
 
 func (self *SNatDEntry) PostCreate(ctx context.Context, userCred mcclient.TokenCredential, ownerId mcclient.IIdentityProvider, query jsonutils.JSONObject, data jsonutils.JSONObject) {
-	if len(self.NatgatewayId) == 0 {
+	var err = func() error {
+		task, err := taskman.TaskManager.NewTask(ctx, "SNatDEntryCreateTask", self, userCred, nil, "", "", nil)
+		if err != nil {
+			return errors.Wrapf(err, "NewTask")
+		}
+		return task.ScheduleRun(nil)
+	}()
+	if err != nil {
+		self.SetStatus(userCred, api.NAT_STATUS_CREATE_FAILED, err.Error())
 		return
 	}
-	// ValidateCreateData function make data must contain 'externalIpId' key
-	taskData := data.(*jsonutils.JSONDict)
-	task, err := taskman.TaskManager.NewTask(ctx, "SNatDEntryCreateTask", self, userCred, taskData, "", "", nil)
-	if err != nil {
-		log.Errorf("SNatDEntryCreateTask newTask error %s", err)
-	} else {
-		task.ScheduleRun(nil)
-	}
+	self.SetStatus(userCred, api.NAT_STATUS_ALLOCATE, "")
 }
 
 func (self *SNatDEntry) CustomizeDelete(ctx context.Context, userCred mcclient.TokenCredential, query jsonutils.JSONObject, data jsonutils.JSONObject) error {
-	if len(self.ExternalId) > 0 {
-		return self.StartDeleteDNatTask(ctx, userCred)
-	} else {
-		return self.RealDelete(ctx, userCred)
-	}
+	return self.StartDeleteDNatTask(ctx, userCred)
 }
 
 func (self *SNatDEntry) StartDeleteDNatTask(ctx context.Context, userCred mcclient.TokenCredential) error {
-	task, err := taskman.TaskManager.NewTask(ctx, "SNatDEntryDeleteTask", self, userCred, nil, "", "", nil)
+	var err = func() error {
+		task, err := taskman.TaskManager.NewTask(ctx, "SNatDEntryDeleteTask", self, userCred, nil, "", "", nil)
+		if err != nil {
+			return errors.Wrapf(err, "NewTask")
+		}
+		return task.ScheduleRun(nil)
+	}()
 	if err != nil {
-		log.Errorf("Start dnatEntry deleteTask fail %s", err)
+		self.SetStatus(userCred, api.NAT_STATUS_DELETE_FAILED, err.Error())
 		return err
 	}
-	task.ScheduleRun(nil)
+	self.SetStatus(userCred, api.NAT_STATUS_DELETING, "")
 	return nil
 }
 
-func (self *SNatDEntryManager) canBindIP(ipAddr string) bool {
-	q := NatSEntryManager.Query().Equals("ip", ipAddr)
-	count, _ := q.CountWithError()
-	if count != 0 {
-		return false
+func (self *SNatDEntry) GetEip() (*SElasticip, error) {
+	q := ElasticipManager.Query().Equals("ip_addr", self.ExternalIP)
+	eips := []SElasticip{}
+	err := db.FetchModelObjects(ElasticipManager, q, &eips)
+	if err != nil {
+		return nil, errors.Wrapf(err, "db.FetchModelObjects")
 	}
-	return true
-}
-
-func (self *SNatDEntry) CountByEIP() (int, error) {
-	q := NatDEntryManager.Query().Equals("external_ip", self.ExternalIP)
-	return q.CountWithError()
+	if len(eips) == 1 {
+		return &eips[0], nil
+	}
+	if len(eips) == 0 {
+		return nil, errors.Wrapf(cloudprovider.ErrNotFound, self.ExternalIP)
+	}
+	return nil, errors.Wrapf(cloudprovider.ErrDuplicateId, self.ExternalIP)
 }

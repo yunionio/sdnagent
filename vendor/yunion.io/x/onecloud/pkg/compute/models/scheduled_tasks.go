@@ -31,6 +31,7 @@ import (
 	"yunion.io/x/onecloud/pkg/apis"
 	api "yunion.io/x/onecloud/pkg/apis/compute"
 	"yunion.io/x/onecloud/pkg/cloudcommon/db"
+	"yunion.io/x/onecloud/pkg/cloudcommon/notifyclient"
 	cop "yunion.io/x/onecloud/pkg/compute/options"
 	"yunion.io/x/onecloud/pkg/httperrors"
 	"yunion.io/x/onecloud/pkg/mcclient"
@@ -102,11 +103,6 @@ func (stm *SScheduledTaskManager) ListItemFilter(ctx context.Context, q *sqlchem
 func (stm *SScheduledTaskManager) OrderByExtraFields(ctx context.Context, q *sqlchemy.SQuery,
 	userCred mcclient.TokenCredential, query api.ScalingPolicyListInput) (*sqlchemy.SQuery, error) {
 	return stm.SVirtualResourceBaseManager.OrderByExtraFields(ctx, q, userCred, query.VirtualResourceListInput)
-}
-
-func (stm *SScheduledTask) GetExtraDetails(ctx context.Context, userCred mcclient.TokenCredential,
-	query jsonutils.JSONObject, isList bool) (api.ScheduledTaskDetails, error) {
-	return api.ScheduledTaskDetails{}, nil
 }
 
 func (stm *SScheduledTaskManager) FetchCustomizeColumns(
@@ -267,8 +263,8 @@ func (st *SScheduledTask) PostCreate(ctx context.Context, userCred mcclient.Toke
 	logclient.AddActionLogWithContext(ctx, st, logclient.ACT_CREATE, "", userCred, true)
 }
 
-func (st *SScheduledTask) ValidateDeleteCondition(ctx context.Context) error {
-	err := st.SVirtualResourceBase.ValidateDeleteCondition(ctx)
+func (st *SScheduledTask) ValidateDeleteCondition(ctx context.Context, info jsonutils.JSONObject) error {
+	err := st.SVirtualResourceBase.ValidateDeleteCondition(ctx, nil)
 	if err != nil {
 		return err
 	}
@@ -393,6 +389,17 @@ func (st *SScheduledTask) Action(ctx context.Context, userCred mcclient.TokenCre
 	return Action.ResourceOperation(st.ResourceOperation()).Session(session)
 }
 
+func (st *SScheduledTask) ExecuteNotify(ctx context.Context, userCred mcclient.TokenCredential, name string) {
+	log.Infof("scheduledtask %s exec for resource %s", st.Name, name)
+	notifyclient.EventNotify(ctx, userCred, notifyclient.SEventNotifyParam{
+		Obj:    st,
+		Action: notifyclient.ActionExecute,
+		ObjDetailsDecorator: func(ctx context.Context, details *jsonutils.JSONDict) {
+			details.Set("resource_name", jsonutils.NewString(name))
+		},
+	})
+}
+
 func (st *SScheduledTask) Execute(ctx context.Context, userCred mcclient.TokenCredential) (err error) {
 	exec, err := st.IsExecuted()
 	if err != nil {
@@ -419,26 +426,34 @@ func (st *SScheduledTask) Execute(ctx context.Context, userCred mcclient.TokenCr
 		return err
 	}
 
-	var ids []string
+	var (
+		ids   []string
+		opts  options.BaseListOptions
+		f     bool
+		limit int
+	)
 	switch st.LabelType {
 	case api.ST_LABEL_TAG:
-		f := false
-		limit := 1000
-		opts := options.BaseListOptions{
+		opts = options.BaseListOptions{
 			Details: &f,
 			Limit:   &limit,
 			Scope:   "system",
 			Tags:    labels,
 		}
-		res, err := action.List(&WrapperListOptions{opts})
-		if err != nil {
-			return err
-		}
-		for id := range res {
-			ids = append(ids, id)
-		}
 	case api.ST_LABEL_ID:
-		ids = labels
+		opts = options.BaseListOptions{
+			Details: &f,
+			Limit:   &limit,
+			Scope:   "system",
+			Filter:  []string{fmt.Sprintf("id.in(%s)", strings.Join(labels, ","))},
+		}
+	}
+	res, err := action.List(&WrapperListOptions{opts})
+	if err != nil {
+		return err
+	}
+	for id := range res {
+		ids = append(ids, id)
 	}
 
 	maxLimit := 20
@@ -449,10 +464,15 @@ func (st *SScheduledTask) Execute(ctx context.Context, userCred mcclient.TokenCr
 	}
 	workerQueue := make(chan struct{}, maxLimit)
 	results := make([]result, len(ids))
+	log.Infof("servers to scheduledtask: %v", ids)
 	for i, id := range ids {
 		workerQueue <- struct{}{}
 		go func(n int, id string) {
 			ok, reason := action.Apply(id)
+			log.Infof("exec successfully: %t, reason: %s", ok, reason)
+			if ok {
+				st.ExecuteNotify(ctx, userCred, res[id])
+			}
 			results[n] = result{id, ok, reason}
 			<-workerQueue
 		}(i, id)
@@ -551,10 +571,10 @@ func (stm *SScheduledTaskManager) timeScope(median time.Time, interval time.Dura
 	}
 }
 
-var timerQueue = make(chan struct{}, cop.Options.ScheduledTaskQueueSize)
+var timerQueue chan struct{}
 
 func (stm *SScheduledTaskManager) Timer(ctx context.Context, userCred mcclient.TokenCredential, isStart bool) {
-	if len(timerQueue) == 0 {
+	if timerQueue == nil {
 		timerQueue = make(chan struct{}, cop.Options.ScheduledTaskQueueSize)
 	}
 	// 60 is for fault tolerance
@@ -568,12 +588,16 @@ func (stm *SScheduledTaskManager) Timer(ctx context.Context, userCred mcclient.T
 		return
 	}
 	log.Debugf("timeScope: start: %s, end: %s", timeScope.Start, timeScope.End)
+	waitQueue := make(chan struct{}, len(sts))
 	for i := range sts {
+		log.Infof("sts[%d]: %s", i, jsonutils.Marshal(sts[i]))
 		st := sts[i]
 		timerQueue <- struct{}{}
+		waitQueue <- struct{}{}
 		go func(ctx context.Context) {
 			defer func() {
 				<-timerQueue
+				<-waitQueue
 			}()
 			if st.NextTime.Before(timeScope.Start) {
 				// For unknown reasons, the scalingTimer did not execute at the specified time
@@ -599,6 +623,9 @@ func (stm *SScheduledTaskManager) Timer(ctx context.Context, userCred mcclient.T
 		}(ctx)
 	}
 	// wait all finish
+	for i := 0; i < len(sts); i++ {
+		waitQueue <- struct{}{}
+	}
 }
 
 func init() {

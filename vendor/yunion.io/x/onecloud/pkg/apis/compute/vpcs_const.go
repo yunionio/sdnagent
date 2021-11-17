@@ -33,6 +33,8 @@ const (
 
 	DEFAULT_VPC_ID = "default"
 	NORMAL_VPC_ID  = "normal" // 没有关联VPC的安全组，统一使用normal
+
+	CLASSIC_VPC_NAME = "-"
 )
 
 type UsableResourceListInput struct {
@@ -56,9 +58,14 @@ type VpcListInput struct {
 	DnsZoneFilterListBase
 
 	InterVpcNetworkFilterListBase
+	// 过滤可以加入指定vpc互联的vpc
+	UsableForInterVpcNetworkId string `json:"usable_for_inter_vpc_network_id"`
 
 	UsableResourceListInput
 	UsableVpcResourceListInput
+
+	// 过滤vpc底下有指定zone的ip子网
+	ZoneId string `json:"zone_id"`
 
 	// filter by globalvpc
 	Globalvpc string `json:"globalvpc"`

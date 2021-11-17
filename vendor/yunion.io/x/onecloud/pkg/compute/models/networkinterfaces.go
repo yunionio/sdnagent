@@ -16,6 +16,7 @@ package models
 
 import (
 	"context"
+	"fmt"
 
 	"yunion.io/x/jsonutils"
 	"yunion.io/x/log"
@@ -155,15 +156,6 @@ func (manager *SNetworkInterfaceManager) QueryDistinctExtraField(q *sqlchemy.SQu
 	return q, httperrors.ErrNotFound
 }
 
-func (self *SNetworkInterface) GetExtraDetails(
-	ctx context.Context,
-	userCred mcclient.TokenCredential,
-	query jsonutils.JSONObject,
-	isList bool,
-) (api.NetworkInterfaceDetails, error) {
-	return api.NetworkInterfaceDetails{}, nil
-}
-
 func (self *SNetworkInterface) getMoreDetails(out api.NetworkInterfaceDetails) (api.NetworkInterfaceDetails, error) {
 	networks, err := self.GetNetworks()
 	if err != nil {
@@ -223,8 +215,8 @@ func (manager *SNetworkInterfaceManager) getNetworkInterfacesByProviderId(provid
 }
 
 func (manager *SNetworkInterfaceManager) SyncNetworkInterfaces(ctx context.Context, userCred mcclient.TokenCredential, provider *SCloudprovider, region *SCloudregion, exts []cloudprovider.ICloudNetworkInterface) ([]SNetworkInterface, []cloudprovider.ICloudNetworkInterface, compare.SyncResult) {
-	lockman.LockClass(ctx, manager, db.GetLockClassKey(manager, provider.GetOwnerId()))
-	defer lockman.ReleaseClass(ctx, manager, db.GetLockClassKey(manager, provider.GetOwnerId()))
+	lockman.LockRawObject(ctx, "network-interfaces", fmt.Sprintf("%s-%s", provider.Id, region.Id))
+	defer lockman.ReleaseRawObject(ctx, "network-interfaces", fmt.Sprintf("%s-%s", provider.Id, region.Id))
 
 	localResources := make([]SNetworkInterface, 0)
 	remoteResources := make([]cloudprovider.ICloudNetworkInterface, 0)
@@ -284,7 +276,7 @@ func (self *SNetworkInterface) syncRemoveCloudNetworkInterface(ctx context.Conte
 	lockman.LockObject(ctx, self)
 	defer lockman.ReleaseObject(ctx, self)
 
-	err := self.ValidateDeleteCondition(ctx)
+	err := self.ValidateDeleteCondition(ctx, nil)
 	if err != nil {
 		self.SetStatus(userCred, api.NETWORK_INTERFACE_STATUS_UNKNOWN, "sync to delete")
 		return errors.Wrapf(err, "ValidateDeleteCondition")
@@ -342,12 +334,6 @@ func (manager *SNetworkInterfaceManager) newFromCloudNetworkInterface(ctx contex
 	networkinterface := SNetworkInterface{}
 	networkinterface.SetModelManager(manager, &networkinterface)
 
-	newName, err := db.GenerateName(manager, provider.GetOwnerId(), ext.GetName())
-	if err != nil {
-		return nil, err
-	}
-	networkinterface.Name = newName
-
 	networkinterface.Status = ext.GetStatus()
 	networkinterface.ExternalId = ext.GetGlobalId()
 	networkinterface.CloudregionId = region.Id
@@ -363,9 +349,20 @@ func (manager *SNetworkInterfaceManager) newFromCloudNetworkInterface(ctx contex
 		}
 	}
 
-	err = manager.TableSpec().Insert(ctx, &networkinterface)
+	var err = func() error {
+		lockman.LockRawObject(ctx, manager.Keyword(), "name")
+		defer lockman.ReleaseRawObject(ctx, manager.Keyword(), "name")
+
+		newName, err := db.GenerateName(ctx, manager, provider.GetOwnerId(), ext.GetName())
+		if err != nil {
+			return err
+		}
+		networkinterface.Name = newName
+
+		return manager.TableSpec().Insert(ctx, &networkinterface)
+	}()
 	if err != nil {
-		return nil, errors.Wrap(err, "TableSpec().Insert(&networkinterface)")
+		return nil, errors.Wrap(err, "Insert")
 	}
 
 	SyncCloudDomain(userCred, &networkinterface, provider.GetOwnerId())

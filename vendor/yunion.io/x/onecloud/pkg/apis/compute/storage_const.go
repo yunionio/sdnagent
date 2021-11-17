@@ -94,6 +94,19 @@ const (
 	STORAGE_CTYUN_SSD  = "SSD"  // 超高IO云硬盘
 	STORAGE_CTYUN_SAS  = "SAS"  // 高IO云硬盘
 	STORAGE_CTYUN_SATA = "SATA" // 普通IO云硬盘
+
+	// jd cloud storage type
+	STORAGE_JDCLOUD_GP1 = "ssd.gp1"     // 通用型SSD云硬盘
+	STORAGE_JDCLOUD_IO1 = "ssd.io1"     // 性能型SSD云硬盘
+	STORAGE_JDCLOUD_STD = "hdd.std1"    // 容量型HDD云硬盘
+	STORAGE_JDCLOUD_SSD = "ssd"         // SSD云硬盘
+	STORAGE_JDCLOUD_PHD = "premium-hdd" // HDD云硬盘
+
+	STORAGE_ECLOUD_CAPEBS = "capebs" // 容量盘
+	STORAGE_ECLOUD_EBS    = "ebs"    // 性能盘
+	STORAGE_ECLOUD_SSD    = "ssd"    // 高性能盘
+	STORAGE_ECLOUD_SSDEBS = "ssdebs" // 性能优化盘
+	STORAGE_ECLOUD_SYSTEM = "system" // 系统盘
 )
 
 const (
@@ -148,6 +161,25 @@ var (
 	SHARED_STORAGE = []string{STORAGE_NFS, STORAGE_GPFS, STORAGE_RBD}
 )
 
+func IsDiskTypeMatch(t1, t2 string) bool {
+	switch t1 {
+	case DISK_TYPE_ROTATE:
+		if t2 == DISK_TYPE_SSD {
+			return false
+		} else {
+			return true
+		}
+	case DISK_TYPE_SSD:
+		if t2 == DISK_TYPE_ROTATE {
+			return false
+		} else {
+			return true
+		}
+	default:
+		return true
+	}
+}
+
 type StorageResourceInput struct {
 	// 存储（ID或Name）
 	StorageId string `json:"storage_id"`
@@ -197,4 +229,7 @@ type StorageListInput struct {
 
 	// filter by cachedimage
 	ImageId string `json:"image_id"`
+
+	// filter storages which attached the specified host
+	HostId string `json:"host_id"`
 }

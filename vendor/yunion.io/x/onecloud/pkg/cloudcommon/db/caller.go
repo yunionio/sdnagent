@@ -24,6 +24,7 @@ import (
 	"yunion.io/x/pkg/gotypes"
 	"yunion.io/x/sqlchemy"
 
+	"yunion.io/x/onecloud/pkg/apis"
 	"yunion.io/x/onecloud/pkg/httperrors"
 	"yunion.io/x/onecloud/pkg/mcclient"
 	"yunion.io/x/onecloud/pkg/util/stringutils2"
@@ -184,7 +185,7 @@ func ValueToJSONObject(out reflect.Value) jsonutils.JSONObject {
 	if obj, ok := isJSONObject(out); ok {
 		return obj
 	}
-	return jsonutils.Marshal(out.Interface())
+	return jsonutils.MarshalAll(out.Interface())
 }
 
 func ValueToJSONDict(out reflect.Value) *jsonutils.JSONDict {
@@ -206,17 +207,45 @@ func ValueToError(out reflect.Value) error {
 func mergeInputOutputData(data *jsonutils.JSONDict, resVal reflect.Value) *jsonutils.JSONDict {
 	retJson := ValueToJSONDict(resVal)
 	// preserve the input info not returned by caller
-	data.Update(retJson)
-	return data
+	output := data.Copy()
+	jsonMap, _ := retJson.GetMap()
+	for k, v := range jsonMap {
+		if output.Contains(k) {
+			if v == jsonutils.JSONNull {
+				output.Remove(k)
+			} else {
+				switch v.(type) {
+				case *jsonutils.JSONString:
+					if v.IsZero() {
+						output.Remove(k)
+					} else {
+						output.Set(k, v)
+					}
+				default:
+					output.Set(k, v)
+				}
+			}
+		} else if v != jsonutils.JSONNull {
+			switch v.(type) {
+			case *jsonutils.JSONString:
+				if !v.IsZero() {
+					output.Add(v, k)
+				}
+			default:
+				output.Add(v, k)
+			}
+		}
+	}
+	return output
 }
 
-func ValidateCreateData(manager IModelManager, ctx context.Context, userCred mcclient.TokenCredential, ownerId mcclient.IIdentityProvider, query jsonutils.JSONObject, data *jsonutils.JSONDict) (*jsonutils.JSONDict, error) {
-	ret, err := call(manager, "ValidateCreateData", ctx, userCred, ownerId, query, data)
+func ValidateCreateData(funcName string, manager IModelManager, ctx context.Context, userCred mcclient.TokenCredential, ownerId mcclient.IIdentityProvider, query jsonutils.JSONObject, data *jsonutils.JSONDict) (*jsonutils.JSONDict, error) {
+	ret, err := call(manager, funcName, ctx, userCred, ownerId, query, data)
 	if err != nil {
 		return nil, httperrors.NewGeneralError(err)
 	}
 	if len(ret) != 2 {
-		return nil, httperrors.NewInternalServerError("Invald ValidateCreateData return value")
+		return nil, httperrors.NewInternalServerError("Invald %s return value", funcName)
 	}
 	resVal := ret[0]
 	if err := ValueToError(ret[1]); err != nil {
@@ -259,20 +288,6 @@ func OrderByExtraFields(
 	return ret[0].Interface().(*sqlchemy.SQuery), nil
 }
 
-func GetExtraDetails(model IModel, ctx context.Context, userCred mcclient.TokenCredential, query jsonutils.JSONObject, isList bool) (*jsonutils.JSONDict, error) {
-	ret, err := call(model, "GetExtraDetails", ctx, userCred, query, isList)
-	if err != nil {
-		return nil, httperrors.NewGeneralError(err)
-	}
-	if len(ret) != 2 {
-		return nil, httperrors.NewInternalServerError("Invalid GetExtraDetails return value count %d", len(ret))
-	}
-	if err := ValueToError(ret[1]); err != nil {
-		return nil, err
-	}
-	return ValueToJSONDict(ret[0]), nil
-}
-
 func FetchCustomizeColumns(
 	manager IModelManager,
 	ctx context.Context,
@@ -298,12 +313,40 @@ func FetchCustomizeColumns(
 	if ret[0].Len() != len(objs) {
 		return nil, httperrors.NewInternalServerError("Invalid FetchCustomizeColumns return value, inconsistent obj count: input %d != output %d", len(objs), ret[0].Len())
 	}
+
+	showReason := false
+	if query.Contains("show_fail_reason") {
+		showReason = true
+	}
+
 	retVal := make([]*jsonutils.JSONDict, ret[0].Len())
 	for i := 0; i < ret[0].Len(); i += 1 {
 		jsonDict := ValueToJSONDict(ret[0].Index(i))
 		// NOTE: don't use obj update jsonDict as retval
 		jsonDict.Update(jsonutils.Marshal(objs[i]).(*jsonutils.JSONDict))
+		out := apis.ModelBaseDetails{
+			CanDelete: true,
+			CanUpdate: true,
+		}
+
+		err = ValidateDeleteCondition(objs[i].(IModel), ctx, jsonDict)
+		if err != nil {
+			out.CanDelete = false
+			if showReason {
+				out.DeleteFailReason = httperrors.NewErrorFromGeneralError(ctx, err)
+			}
+		}
+		err = ValidateUpdateCondition(objs[i].(IModel), ctx)
+		if err != nil {
+			out.CanUpdate = false
+			if showReason {
+				out.UpdateFailReason = httperrors.NewErrorFromGeneralError(ctx, err)
+			}
+		}
+		jsonDict.Update(jsonutils.Marshal(out))
+
 		retVal[i] = jsonDict
+
 	}
 	return retVal, nil
 }
@@ -330,6 +373,28 @@ func CustomizeDelete(model IModel, ctx context.Context, userCred mcclient.TokenC
 	}
 	if len(ret) != 1 {
 		return httperrors.NewInternalServerError("Invald CustomizeDelete return value")
+	}
+	return ValueToError(ret[0])
+}
+
+func ValidateDeleteCondition(model IModel, ctx context.Context, data jsonutils.JSONObject) error {
+	ret, err := call(model, "ValidateDeleteCondition", ctx, data)
+	if err != nil {
+		return httperrors.NewGeneralError(err)
+	}
+	if len(ret) != 1 {
+		return httperrors.NewInternalServerError("Invald ValidateDeleteCondition return value")
+	}
+	return ValueToError(ret[0])
+}
+
+func ValidateUpdateCondition(model IModel, ctx context.Context) error {
+	ret, err := call(model, "ValidateUpdateCondition", ctx)
+	if err != nil {
+		return httperrors.NewGeneralError(err)
+	}
+	if len(ret) != 1 {
+		return httperrors.NewInternalServerError("Invald ValidateUpdateCondition return value")
 	}
 	return ValueToError(ret[0])
 }

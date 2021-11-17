@@ -143,7 +143,7 @@ func (manager *SRouteTableRouteSetManager) ValidateCreateData(
 		input.ExtNextHopId = vpcPeer.GetExternalId()
 	}
 
-	vpc := routeTable.GetVpc()
+	vpc, _ := routeTable.GetVpc()
 	account := vpc.GetCloudaccount()
 	factory, err := account.GetProviderFactory()
 	if err != nil {
@@ -271,7 +271,7 @@ func (self *SRouteTableRouteSet) PostUpdate(ctx context.Context, userCred mcclie
 	routeTable.StartRouteTableUpdateTask(ctx, userCred, self, "update")
 }
 
-func (self *SRouteTableRouteSet) ValidateDeleteCondition(ctx context.Context) error {
+func (self *SRouteTableRouteSet) ValidateDeleteCondition(ctx context.Context, info jsonutils.JSONObject) error {
 	vpc, err := self.GetVpc()
 	if err != nil {
 		return errors.Wrap(err, "self.GetVpc()")
@@ -312,14 +312,14 @@ func (self *SRouteTableRouteSet) GetVpc() (*SVpc, error) {
 	if err != nil {
 		return nil, errors.Wrap(err, "self.GetRouteTable()")
 	}
-	return routeTable.GetVpc(), nil
+	return routeTable.GetVpc()
 }
 
 func (self *SRouteTableRouteSet) syncRemoveRouteSet(ctx context.Context, userCred mcclient.TokenCredential) error {
 	lockman.LockObject(ctx, self)
 	defer lockman.ReleaseObject(ctx, self)
 
-	err := self.ValidateDeleteCondition(ctx)
+	err := self.ValidateDeleteCondition(ctx, nil)
 	if err != nil {
 		return err
 	}
@@ -378,7 +378,7 @@ func (manager *SRouteTableRouteSetManager) newRouteSetFromCloud(ctx context.Cont
 	routeSet.ExternalId = cloudRouteSet.GetGlobalId()
 	routeSet.SetModelManager(manager, routeSet)
 	if cloudRouteSet.GetNextHopType() == api.Next_HOP_TYPE_VPCPEERING {
-		vpc := routeTable.GetVpc()
+		vpc, _ := routeTable.GetVpc()
 		vpcPeer, err := vpc.GetVpcPeeringConnectionByExtId(cloudRouteSet.GetNextHop())
 		if err == nil {
 			routeSet.NextHopId = vpcPeer.GetId()
@@ -390,16 +390,22 @@ func (manager *SRouteTableRouteSetManager) newRouteSetFromCloud(ctx context.Cont
 			}
 		}
 	}
-	{
+
+	var err = func() error {
 		basename := routeSetBasename(cloudRouteSet.GetName(), cloudRouteSet.GetCidr())
-		newName, err := db.GenerateName(manager, userCred, basename)
+
+		lockman.LockClass(ctx, manager, "name")
+		defer lockman.ReleaseClass(ctx, manager, "name")
+
+		newName, err := db.GenerateName(ctx, manager, userCred, basename)
 		if err != nil {
-			return nil, err
+			return err
 		}
 		routeSet.Name = newName
-	}
 
-	if err := manager.TableSpec().Insert(ctx, routeSet); err != nil {
+		return manager.TableSpec().Insert(ctx, routeSet)
+	}()
+	if err != nil {
 		return nil, err
 	}
 

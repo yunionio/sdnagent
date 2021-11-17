@@ -33,7 +33,7 @@ pkg/agent/proto/agent_pb2.py: pkg/agent/proto/agent.proto
 	python -m grpc_tools.protoc -Ipkg/agent/proto --python_out=pkg/agent/proto --grpc_python_out=pkg/agent/proto pkg/agent/proto/agent.proto
 
 mod:
-	GOPROXY=direct go get -v yunion.io/x/onecloud@master
+	GOPROXY=direct go get -v yunion.io/x/onecloud@release/3.8
 	GOPROXY=direct go mod vendor -v
 
 .PHONY: mod

@@ -15,10 +15,15 @@
 package compute
 
 import (
+	"fmt"
 	"time"
+
+	"yunion.io/x/jsonutils"
+	"yunion.io/x/pkg/errors"
 
 	"yunion.io/x/onecloud/pkg/apis"
 	"yunion.io/x/onecloud/pkg/apis/billing"
+	"yunion.io/x/onecloud/pkg/httperrors"
 )
 
 type ServerListInput struct {
@@ -62,9 +67,9 @@ type ServerListInput struct {
 	// enum: linux,windows,vmware
 	OsType []string `json:"os_type"`
 
-	// 对列表结果按照磁盘进行排序
+	// 对列表结果按照磁盘大小进行排序
 	// enum: asc,desc
-	// OrderByDisk string `json:"order_by_disk"`
+	OrderByDisk string `json:"order_by_disk"`
 
 	// 根据ip查找机器
 	IpAddr string `json:"ip_addr"`
@@ -120,37 +125,19 @@ func (input *ServerListInput) AfterUnmarshal() {
 type ServerRebuildRootInput struct {
 	apis.Meta
 
-	// 镜像名称
-	Image string `json:"image"`
+	// swagger: ignore
+	Image string `json:"image" yunion-deprecated-by:"image_id"`
 	// 镜像 id
 	// required: true
-	ImageId       string `json:"image_id"`
-	Keypair       string `json:"keypair"`
+	ImageId string `json:"image_id"`
+	// swagger: ignore
+	Keypair string `json:"keypair" yunion-deprecated-by:"keypair_id"`
+	// 秘钥Id
 	KeypairId     string `json:"keypair_id"`
 	ResetPassword *bool  `json:"reset_password"`
 	Password      string `json:"password"`
 	AutoStart     *bool  `json:"auto_start"`
 	AllDisks      *bool  `json:"all_disks"`
-}
-
-func (i ServerRebuildRootInput) GetImageName() string {
-	if len(i.Image) > 0 {
-		return i.Image
-	}
-	if len(i.ImageId) > 0 {
-		return i.ImageId
-	}
-	return ""
-}
-
-func (i ServerRebuildRootInput) GetKeypairName() string {
-	if len(i.Keypair) > 0 {
-		return i.Keypair
-	}
-	if len(i.KeypairId) > 0 {
-		return i.KeypairId
-	}
-	return ""
 }
 
 type ServerResumeInput struct {
@@ -178,8 +165,7 @@ type ServerDetails struct {
 	SecurityRules string `json:"security_rules"`
 	// 操作系统名称
 	OsName string `json:"os_name"`
-	// 操作系统类型
-	OsType string `json:"os_type"`
+
 	// 系统管理员可见的安全组规则
 	AdminSecurityRules string `json:"admin_security_rules"`
 
@@ -268,6 +254,19 @@ type GuestDiskInfo struct {
 	Bps         int    `json:"bps"`
 	ImageId     string `json:"image_id,omitempty"`
 	Image       string `json:"image,omitemtpy"`
+}
+
+func (self GuestDiskInfo) ShortDesc() string {
+	fs := ""
+	if len(self.ImageId) > 0 {
+		fs = "root"
+	} else if len(self.FsFormat) > 0 {
+		fs = self.FsFormat
+	} else {
+		fs = "none"
+	}
+	return fmt.Sprintf("disk%d:%dM/%s/%s/%s/%s/%s", self.Index, self.SizeMb,
+		self.DiskFormat, self.Driver, self.CacheMode, self.AioMode, fs)
 }
 
 type GuestJointResourceDetails struct {
@@ -372,7 +371,10 @@ type GuestMigrateInput struct {
 }
 
 type GuestLiveMigrateInput struct {
+	// 指定期望的迁移目标宿主机
 	PreferHost string `json:"prefer_host"`
+	// 是否跳过CPU检查，默认要做CPU检查
+	SkipCpuCheck *bool `json:"skip_cpu_check"`
 }
 
 type GuestSetSecgroupInput struct {
@@ -503,4 +505,227 @@ type ServerDeleteInput struct {
 	// 是否删除关联的数据盘
 	// default: false
 	DeleteDisks bool
+}
+
+type ServerDetachnetworkInput struct {
+	// 是否保留IP地址(ip地址会进入到预留ip)
+	Reserve bool `json:"reserve"`
+	// 通过IP子网地址, 优先级最高
+	NetId string `json:"net_id"`
+	// 通过IP解绑网卡, 优先级高于mac
+	IpAddr string `json:"ip_addr"`
+	// 通过Mac解绑网卡, 优先级低于ip_addr
+	Mac string `json:"mac"`
+}
+
+type ServerMigrateForecastInput struct {
+	PreferHostId string `json:"prefer_host_id"`
+	// Deprecated
+	PreferHost   string `json:"prefer_host" yunion-deprecated-by:"prefer_host_id"`
+	LiveMigrate  bool   `json:"live_migrate"`
+	SkipCpuCheck bool   `josn:"skip_cpu_check"`
+}
+
+type ServerResizeDiskInput struct {
+	// swagger: ignore
+	Disk string `json:"disk" yunion-deprecated-by:"disk_id"`
+	// 磁盘Id
+	DiskId string `json:"disk_id"`
+
+	DiskResizeInput
+}
+
+type ServerMigrateNetworkInput struct {
+	// Source network Id
+	Src string `json:"src"`
+	// Destination network Id
+	Dest string `json:"dest"`
+}
+
+type ServerDeployInput struct {
+	apis.Meta
+
+	// swagger: ignore
+	Keypair string `json:"keypair" yunion-deprecated-by:"keypair_id"`
+	// 秘钥Id
+	KeypairId string `json:"keypair_id"`
+
+	// 清理指定公钥
+	// 若指定的秘钥Id和虚拟机的秘钥Id不相同, 则清理旧的公钥
+	DeletePublicKey string `json:"delete_public_key"`
+	// 解绑当前虚拟机秘钥, 并清理公钥信息
+	DeleteKeypair bool `json:"__delete_keypair__"`
+	// 生成随机密码, 优先级低于password
+	ResetPassword bool `json:"reset_password"`
+	// 重置指定密码
+	Password string `json:"password"`
+	// 部署完成后是否自动启动
+	// 若虚拟机重置密码后需要重启生效，并且当前虚拟机状态为running, 此参数默认为true
+	// 若虚拟机状态为ready, 指定此参数后，部署完成后，虚拟机会自动启动
+	AutoStart bool `json:"auto_start"`
+	// swagger: ignore
+	Restart bool `json:"restart"`
+
+	// swagger: ignore
+	DeployConfigs []*DeployConfig `json:"deploy_configs"`
+}
+
+type ServerUserDataInput struct {
+	UserData string `json:"user_data"`
+}
+
+type ServerAttachDiskInput struct {
+	DiskId string `json:"disk_id"`
+}
+
+type ServerDetachDiskInput struct {
+	// 磁盘Id，若磁盘未挂载在虚拟机上，不返回错误
+	DiskId string `json:"disk_id"`
+	// 是否保留磁盘
+	// default: false
+	KeepDisk bool `json:"keep_disk"`
+}
+
+type ServerChangeConfigInput struct {
+	// 实例类型, 优先级高于vcpu_count和vmem_size
+	InstanceType string `json:"instance_type"`
+	// swagger: ignore
+	Sku string `json:"sku" yunion-deprecated-by:"instance_type"`
+	// swagger: ignore
+	Flavor string `json:"flavor" yunion-deprecated-by:"instance_type"`
+
+	// cpu大小
+	VcpuCount int `json:"vcpu_count"`
+	// 内存大小, 1024M, 1G
+	VmemSize string `json:"vmem_size"`
+
+	// 调整完配置后是否自动启动
+	AutoStart bool `json:"auto_start"`
+
+	Disks []DiskConfig `json:"disks"`
+}
+
+type ServerUpdateInput struct {
+	apis.VirtualResourceBaseUpdateInput
+
+	// 删除保护开关
+	DisableDelete *bool `json:"disable_delete"`
+	// 启动顺序
+	BootOrder *string `json:"boot_order"`
+	// 关机执行操作
+	ShutdownBehavior *string `json:"shutdown_behavior"`
+	Vga              *string `json:"vga"`
+	Vdi              *string `json:"vdi"`
+	Machine          *string `json:"machine"`
+	Bios             *string `json:"bios"`
+
+	SrcIpCheck  *bool `json:"src_ip_check"`
+	SrcMacCheck *bool `json:"src_mac_check"`
+
+	SshPort int `json:"ssh_port"`
+}
+
+type GuestJsonDesc struct {
+	Name        string `json:"name"`
+	Description string `json:"description"`
+	UUID        string `json:"uuid"`
+	Mem         int    `json:"mem"`
+	Cpu         int    `json:"cpu"`
+	Vga         string `json:"vga"`
+	Vdi         string `json:"vdi"`
+	Machine     string `json:"machine"`
+	Bios        string `json:"bios"`
+	BootOrder   string `json:"boot_order"`
+	SrcIpCheck  bool   `json:"src_ip_check"`
+	SrcMacCheck bool   `json:"src_mac_check"`
+	IsMaster    *bool  `json:"is_master"`
+	IsSlave     *bool  `json:"is_slave"`
+	HostId      string `json:"host_id"`
+
+	IsolatedDevices []*IsolatedDeviceJsonDesc `json:"isolated_devices"`
+
+	Domain string `json:"domain"`
+
+	Nics  []*GuestnetworkJsonDesc `json:"nics"`
+	Disks []*GuestdiskJsonDesc    `json:"disks"`
+
+	Cdrom *GuestcdromJsonDesc `json:"cdrom"`
+
+	Tenant        string `json:"tenant"`
+	TenantId      string `json:"tenant_id"`
+	DomainId      string `json:"domain_id"`
+	ProjectDomain string `json:"project_domain"`
+
+	Keypair string `json:"keypair"`
+	Pubkey  string `json:"pubkey"`
+
+	NetworkRoles []string `json:"network_roles"`
+
+	Secgroups          []*SecgroupJsonDesc `json:"secgroups"`
+	SecurityRules      string              `json:"security_rules"`
+	AdminSecurityRules string              `json:"admin_security_rules"`
+
+	ExtraOptions jsonutils.JSONObject `json:"extra_options"`
+
+	Kvm string `json:"kvm"`
+
+	Zone   string `json:"zone"`
+	ZoneId string `json:"zone_id"`
+
+	OsName string `json:"os_name"`
+
+	Metadata       map[string]string `json:"metadata"`
+	UserData       string            `json:"user_data"`
+	PendingDeleted bool              `json:"pending_deleted"`
+
+	ScallingGroupId string `json:"scalling_group_id"`
+
+	// baremetal
+	DiskConfig  jsonutils.JSONObject    `json:"disk_config"`
+	NicsStandby []*GuestnetworkJsonDesc `json:"nics_standby"`
+
+	// esxi
+	InstanceSnapshotInfo struct {
+		InstanceSnapshotId string `json:"instance_snapshot_id"`
+		InstanceId         string `json:"instance_id"`
+	} `json:"instance_snapshot_info"`
+}
+
+type ServerChangeDiskStorageInput struct {
+	DiskId          string `json:"disk_id"`
+	TargetStorageId string `json:"target_storage_id"`
+	KeepOriginDisk  bool   `json:"keep_origin_disk"`
+}
+
+type ServerChangeDiskStorageInternalInput struct {
+	ServerChangeDiskStorageInput
+	StorageId    string `json:"storage_id"`
+	TargetDiskId string `json:"target_disk_id"`
+}
+
+type ServerSetExtraOptionInput struct {
+	Key   string `json:"key"`
+	Value string `json:"value"`
+}
+
+func (o ServerSetExtraOptionInput) Validate() error {
+	if len(o.Key) == 0 {
+		return errors.Wrap(httperrors.ErrBadRequest, "empty key")
+	}
+	if len(o.Value) == 0 {
+		return errors.Wrap(httperrors.ErrBadRequest, "empty value")
+	}
+	return nil
+}
+
+type ServerDelExtraOptionInput struct {
+	Key   string `json:"key"`
+	Value string `json:"value"`
+}
+
+func (o ServerDelExtraOptionInput) Validate() error {
+	if len(o.Key) == 0 {
+		return errors.Wrap(httperrors.ErrBadRequest, "empty key")
+	}
+	return nil
 }

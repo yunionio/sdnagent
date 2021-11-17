@@ -18,6 +18,11 @@ import (
 	"yunion.io/x/onecloud/pkg/apis"
 )
 
+const (
+	NETWORK_TYPE_VPC     = "vpc"
+	NETWORK_TYPE_CLASSIC = "classic"
+)
+
 type WireResourceInput struct {
 	// 二层网络(ID或Name)的资源
 	WireId string `json:"wire_id"`
@@ -94,6 +99,8 @@ type NetworkListInput struct {
 	GuestDns []string `json:"guest_dns"`
 	// allow multiple dhcp, seperated by ","
 	GuestDhcp []string `json:"guest_dhcp"`
+	// NTP
+	GuestNtp []string `json:"guest_ntp"`
 
 	GuestDomain []string `json:"guest_domain"`
 
@@ -121,6 +128,8 @@ type NetworkListInput struct {
 
 	// filter by BGP types
 	BgpType []string `json:"bgp_type"`
+
+	HostType string `json:"host_type"`
 }
 
 type NetworkResourceInfoBase struct {
@@ -165,12 +174,16 @@ type NetworkCreateInput struct {
 	GuestGateway string `json:"guest_gateway"`
 
 	// description: guest dns
-	// example: 114.114.114.114
+	// example: 114.114.114.114,8.8.8.8
 	GuestDns string `json:"guest_dns"`
 
 	// description: guest dhcp
 	// example: 192.168.222.1,192.168.222.4
 	GuestDHCP string `json:"guest_dhcp"`
+
+	// description: guest ntp
+	// example: cn.pool.ntp.org,0.cn.pool.ntp.org
+	GuestNtp string `json:"guest_ntp"`
 
 	// swagger:ignore
 	WireId string `json:"wire_id"`
@@ -202,22 +215,11 @@ type NetworkCreateInput struct {
 	BgpType string `json:"bgp_type"`
 }
 
-type NetworkDetails struct {
-	apis.SharableVirtualResourceDetails
-	WireResourceInfo
-
-	SNetwork
-
-	// 是否是内网
-	Exit bool `json:"exit"`
-	// 端口数量
-	Ports int `json:"ports"`
-	// 已使用端口数量
-	PortsUsed int `json:"ports_used"`
-	// 网卡数量
+type SNetworkNics struct {
+	// 虚拟机网卡数量
 	Vnics int `json:"vnics"`
 	// 裸金属网卡数量
-	BmVnics int `json:"bm_nics"`
+	BmVnics int `json:"bm_vnics"`
 	// 负载均衡网卡数量
 	LbVnics int `json:"lb_vnics"`
 	// 浮动Ip网卡数量
@@ -225,6 +227,48 @@ type NetworkDetails struct {
 	GroupVnics int `json:"group_vnics"`
 	// 预留IP数量
 	ReserveVnics int `json:"reserve_vnics"`
+
+	// RDS网卡数量
+	RdsVnics int `json:"rds_vnics"`
+	// NAT网关网卡数量
+	NatVnics      int `json:"nat_vnics"`
+	BmReusedVnics int `json:"bm_reused_vnics"`
+
+	// 弹性网卡数量
+	NetworkinterfaceVnics int `json:"networkinterface_vnics"`
+
+	// 已使用端口数量
+	PortsUsed int `json:"ports_used"`
+
+	Total int `json:"total"`
+}
+
+func (self *SNetworkNics) SumTotal() {
+	self.Total = self.Vnics +
+		self.BmVnics +
+		self.LbVnics +
+		self.LbVnics +
+		self.EipVnics +
+		self.GroupVnics +
+		self.ReserveVnics +
+		self.RdsVnics +
+		self.NetworkinterfaceVnics +
+		self.NatVnics -
+		self.BmReusedVnics
+	self.PortsUsed = self.Total
+}
+
+type NetworkDetails struct {
+	apis.SharableVirtualResourceDetails
+	WireResourceInfo
+
+	SNetwork
+	SNetworkNics
+
+	// 是否是内网
+	Exit bool `json:"exit"`
+	// 端口数量
+	Ports int `json:"ports"`
 
 	// 路由信息
 	Routes    [][]string                 `json:"routes"`
@@ -311,14 +355,12 @@ type NetworkUpdateInput struct {
 	GuestDns string `json:"guest_dns"`
 	// allow multiple dhcp, seperated by ","
 	GuestDhcp string `json:"guest_dhcp"`
+	// NTP
+	GuestNtp string `json:"guest_ntp"`
 
 	GuestDomain string `json:"guest_domain"`
 
 	VlanId *int `json:"vlan_id"`
-
-	// 服务器类型
-	// example: server
-	ServerType string `json:"server_type"`
 
 	// 分配策略
 	AllocPolicy string `json:"alloc_policy"`

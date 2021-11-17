@@ -101,15 +101,6 @@ func (sd *SSnapshotPolicyDisk) SetStatus(userCred mcclient.TokenCredential, stat
 	return nil
 }
 
-func (self *SSnapshotPolicyDisk) GetExtraDetails(
-	ctx context.Context,
-	userCred mcclient.TokenCredential,
-	query jsonutils.JSONObject,
-	isList bool,
-) (api.SnapshotPolicyDiskDetails, error) {
-	return api.SnapshotPolicyDiskDetails{}, nil
-}
-
 func (manager *SSnapshotPolicyDiskManager) FetchCustomizeColumns(
 	ctx context.Context,
 	userCred mcclient.TokenCredential,
@@ -150,7 +141,8 @@ func (manager *SSnapshotPolicyDiskManager) FetchCustomizeColumns(
 			rows[i].Snapshotpolicy = name
 		}
 		if disk, ok := disks[diskIds[i]]; ok {
-			rows[i].Disk, _ = disk.GetExtraDetails(ctx, userCred, query, isList)
+			rows[i].Disk = api.DiskDetails{}
+			jsonutils.Update(&rows[i].Disk, disk)
 		}
 	}
 
@@ -321,7 +313,8 @@ func (m *SSnapshotPolicyDiskManager) SyncByDisk(ctx context.Context, userCred mc
 	}
 
 	//fetch snapshotPolicy Cache to find the snapshotpolicyID corresponding to extSnapshotpolicyID
-	spCaches, err := SnapshotPolicyCacheManager.FetchAllByExtIds(extSnapshotpolicies, storage.GetRegion().GetId(),
+	region, _ := storage.GetRegion()
+	spCaches, err := SnapshotPolicyCacheManager.FetchAllByExtIds(extSnapshotpolicies, region.GetId(),
 		storage.ManagerId)
 	if err != nil {
 		return errors.Wrapf(err, "fetachsnapshotpolicy caches failed")
@@ -356,8 +349,8 @@ func (m *SSnapshotPolicyDiskManager) SyncByDisk(ctx context.Context, userCred mc
 func (m *SSnapshotPolicyDiskManager) SyncAttachDisk(ctx context.Context, userCred mcclient.TokenCredential,
 	Snapshotpolicies []string, syncOwnerID mcclient.IIdentityProvider, disk *SDisk) error {
 
-	lockman.LockClass(ctx, m, db.GetLockClassKey(m, syncOwnerID))
-	defer lockman.ReleaseClass(ctx, m, db.GetLockClassKey(m, syncOwnerID))
+	lockman.LockRawObject(ctx, "snapshot-policies", disk.Id)
+	defer lockman.ReleaseRawObject(ctx, "snapshot-policies", disk.Id)
 
 	failRecord := make([]string, 0, 1)
 	for _, spId := range Snapshotpolicies {
@@ -402,7 +395,8 @@ func (m *SSnapshotPolicyDiskManager) SyncAttachDiskExt(ctx context.Context, user
 	extSnapshotpolicies []string, syncOwnerID mcclient.IIdentityProvider, disk *SDisk, storage *SStorage) error {
 
 	//fetch snapshotPolicy Cache to find the snapshotpolicyID corresponding to extSnapshotpolicyID
-	spCaches, err := SnapshotPolicyCacheManager.FetchAllByExtIds(extSnapshotpolicies, storage.GetRegion().GetId(),
+	region, _ := storage.GetRegion()
+	spCaches, err := SnapshotPolicyCacheManager.FetchAllByExtIds(extSnapshotpolicies, region.GetId(),
 		storage.ManagerId)
 	if err != nil {
 		return errors.Wrapf(err, "fetachsnapshotpolicy caches failed")
@@ -491,7 +485,9 @@ func (self *SSnapshotPolicyDiskManager) ValidateCreateData(ctx context.Context, 
 	if err != nil {
 		return nil, err
 	}
-	err = disk.GetStorage().GetRegion().GetDriver().ValidateCreateSnapshopolicyDiskData(ctx, userCred, disk, snapshotPolicy)
+	storage, _ := disk.GetStorage()
+	region, _ := storage.GetRegion()
+	err = region.GetDriver().ValidateCreateSnapshopolicyDiskData(ctx, userCred, disk, snapshotPolicy)
 	if err != nil {
 		return nil, err
 	}

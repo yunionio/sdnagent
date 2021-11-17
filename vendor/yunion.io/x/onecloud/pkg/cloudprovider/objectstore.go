@@ -110,12 +110,15 @@ type SBucketCORSRule struct {
 }
 
 type SBucketRefererConf struct {
-	// 白名单域名列表
-	WhiteList []string
-	// 黑名单域名列表
-	BlackList []string
+	// 域名列表
+	DomainList []string
+	// 域名列表
+	// enmu: Black-List, White-List
+	RefererType string
 	// 是否允许空referer 访问
 	AllowEmptyRefer bool
+
+	Enabled bool
 }
 
 type SBucketPolicyStatement struct {
@@ -272,8 +275,6 @@ type ICloudBucket interface {
 	GetPolicy() ([]SBucketPolicyStatement, error)
 	SetPolicy(policy SBucketPolicyStatementInput) error
 	DeletePolicy(id []string) ([]SBucketPolicyStatement, error)
-
-	DeleteTags() error
 
 	ListMultipartUploads() ([]SBucketMultipartUploads, error)
 }
@@ -839,32 +840,18 @@ func DeleteBucketCORS(ibucket ICloudBucket, id []string) ([]SBucketCORSRule, err
 	return deletedRules, nil
 }
 
-func SetBucketMetadata(ibucket ICloudBucket, tags map[string]string, replace bool) error {
-	newTags := map[string]string{}
-	if replace {
-		newTags = tags
-	} else {
-		oldTags, err := ibucket.GetTags()
-		if err != nil {
-			return errors.Wrap(err, "b.getTags()")
+func SetBucketTags(ctx context.Context, iBucket ICloudBucket, mangerId string, tags map[string]string) (TagsUpdateInfo, error) {
+	ret := TagsUpdateInfo{}
+	old, err := iBucket.GetTags()
+	if err != nil {
+		if errors.Cause(err) == ErrNotImplemented || errors.Cause(err) == ErrNotSupported {
+			return ret, nil
 		}
-		for k, v := range oldTags {
-			if _, ok := tags[k]; !ok {
-				tags[k] = v
-			}
-		}
-		newTags = tags
+		return ret, errors.Wrapf(err, "iBucket.GetTags")
 	}
-	if len(newTags) == 0 {
-		err := ibucket.DeleteTags()
-		if err != nil {
-			return errors.Wrap(err, "b.DeleteTags()")
-		}
-	} else {
-		err := ibucket.SetTags(newTags, true)
-		if err != nil {
-			return errors.Wrapf(err, "b.setTags(%s)", jsonutils.Marshal(newTags).String())
-		}
+	ret.OldTags, ret.NewTags = old, tags
+	if !ret.IsChanged() {
+		return ret, nil
 	}
-	return nil
+	return ret, SetTags(ctx, iBucket, mangerId, tags, true)
 }

@@ -96,17 +96,22 @@ type IsolatedDeviceManager struct {
 	DetachedDevices []*CloudDeviceInfo
 }
 
-func NewManager(host IHost) (*IsolatedDeviceManager, error) {
+func NewManager(host IHost) *IsolatedDeviceManager {
 	man := &IsolatedDeviceManager{
 		host:            host,
 		Devices:         make([]IDevice, 0),
 		DetachedDevices: make([]*CloudDeviceInfo, 0),
 	}
-	err := man.fillPCIDevices()
-	return man, err
+	// Do probe laster - Qiu Jian
+	// err := man.fillPCIDevices()
+	return man
 }
 
-func (man *IsolatedDeviceManager) fillPCIDevices() error {
+func (man *IsolatedDeviceManager) ProbePCIDevices() error {
+	if len(man.Devices) > 0 {
+		// already probed, skip
+		return nil
+	}
 	// only support gpu by now
 	gpus, err := getPassthroughGPUS()
 	if err != nil {
@@ -531,7 +536,7 @@ func (d *PCIDevice) checkSameIOMMUGroupDevice() error {
 	if err != nil {
 		return fmt.Errorf("IOMMUGroup FindSameGroupDevs: %v", err)
 	}
-	d.RestIOMMUGroupDevs = group.FindSameGroupDevs(d.Addr)
+	d.RestIOMMUGroupDevs = group.FindSameGroupDevs(d.Addr, d.VendorId)
 	return nil
 }
 
@@ -690,7 +695,7 @@ func NewIOMMUGroup() (*IOMMUGroup, error) {
 	return &IOMMUGroup{group: dict}, nil
 }
 
-func (g *IOMMUGroup) ListDevices(groupNum, selfAddr string) []*PCIDevice {
+func (g *IOMMUGroup) ListDevices(groupNum, selfAddr, vendorId string) []*PCIDevice {
 	ret := []string{}
 	for busId, group := range g.group {
 		if groupNum == group {
@@ -705,13 +710,17 @@ func (g *IOMMUGroup) ListDevices(groupNum, selfAddr string) []*PCIDevice {
 		}
 		dev, _ := detectPCIDevByAddrWithoutIOMMUGroup(addr[5:])
 		if dev != nil {
-			devs = append(devs, dev)
+			if dev.VendorId == vendorId {
+				devs = append(devs, dev)
+			} else {
+				log.Warningf("Skip append %q iommu_group[%s] device %s", selfAddr, groupNum, dev.String())
+			}
 		}
 	}
 	return devs
 }
 
-func (g *IOMMUGroup) FindSameGroupDevs(devAddr string) []*PCIDevice {
+func (g *IOMMUGroup) FindSameGroupDevs(devAddr string, vendorId string) []*PCIDevice {
 	// devAddr: '0000:3f:0f.3' or '3f:0f.3' format
 	if len(devAddr) == 7 {
 		devAddr = fmt.Sprintf("0000:%s", devAddr)
@@ -720,7 +729,7 @@ func (g *IOMMUGroup) FindSameGroupDevs(devAddr string) []*PCIDevice {
 	if !ok {
 		return nil
 	}
-	return g.ListDevices(group, devAddr)
+	return g.ListDevices(group, devAddr, vendorId)
 }
 
 func (g *IOMMUGroup) String() string {
