@@ -2,6 +2,8 @@
 github.com/360EntSecGroup-Skylar/excelize
 # github.com/beevik/etree v1.1.0
 github.com/beevik/etree
+# github.com/coredns/coredns v1.3.0
+github.com/coredns/coredns/plugin/pkg/log
 # github.com/coreos/go-iptables v0.4.5
 github.com/coreos/go-iptables/iptables
 # github.com/coreos/go-semver v0.2.0
@@ -205,7 +207,7 @@ golang.org/x/crypto/poly1305
 golang.org/x/crypto/ssh
 golang.org/x/crypto/ssh/internal/bcrypt_pbkdf
 golang.org/x/crypto/ssh/terminal
-# golang.org/x/net v0.0.0-20200707034311-ab3426394381
+# golang.org/x/net v0.0.0-20201110031124-69a78807bb2b
 golang.org/x/net/context
 golang.org/x/net/http/httpguts
 golang.org/x/net/http/httpproxy
@@ -217,7 +219,7 @@ golang.org/x/net/publicsuffix
 golang.org/x/net/trace
 # golang.org/x/sync v0.0.0-20190911185100-cd5d95a43a6e
 golang.org/x/sync/errgroup
-# golang.org/x/sys v0.0.0-20200622214017-ed371f2e16b4
+# golang.org/x/sys v0.0.0-20200930185726-fdedc70b468f
 golang.org/x/sys/cpu
 golang.org/x/sys/internal/unsafeheader
 golang.org/x/sys/unix
@@ -321,21 +323,26 @@ google.golang.org/protobuf/types/known/timestamppb
 gopkg.in/fatih/set.v0
 # gopkg.in/go-playground/validator.v9 v9.29.1
 gopkg.in/go-playground/validator.v9
+# gopkg.in/inf.v0 v0.9.0
+gopkg.in/inf.v0
 # gopkg.in/ini.v1 v1.44.0
 gopkg.in/ini.v1
 # gopkg.in/yaml.v2 v2.2.8
 gopkg.in/yaml.v2
-# yunion.io/x/executor v0.0.0-20201231064744-df32f32165a9
+# k8s.io/apimachinery v0.19.3 => k8s.io/apimachinery v0.0.0-20190913080033-27d36303b655
+k8s.io/apimachinery/pkg/api/resource
+# yunion.io/x/executor v0.0.0-20211018100936-39a2cd966656
 yunion.io/x/executor/apis
 yunion.io/x/executor/client
-# yunion.io/x/jsonutils v0.0.0-20201110084044-3e4e1cb49769
+# yunion.io/x/jsonutils v0.0.0-20211105163012-d846c05a3c9a
 yunion.io/x/jsonutils
 # yunion.io/x/log v0.0.0-20201210064738-43181789dc74
 yunion.io/x/log
 yunion.io/x/log/hooks
-# yunion.io/x/onecloud v0.0.0-20210128125021-0f028562876e
+# yunion.io/x/onecloud v0.0.0-20211117084125-3a17d88a0892
 yunion.io/x/onecloud/cmd/climc/shell
 yunion.io/x/onecloud/locales
+yunion.io/x/onecloud/pkg/apihelper
 yunion.io/x/onecloud/pkg/apis
 yunion.io/x/onecloud/pkg/apis/ansible
 yunion.io/x/onecloud/pkg/apis/billing
@@ -343,10 +350,12 @@ yunion.io/x/onecloud/pkg/apis/cloudcommon/db
 yunion.io/x/onecloud/pkg/apis/cloudcommon/proxy
 yunion.io/x/onecloud/pkg/apis/cloudid
 yunion.io/x/onecloud/pkg/apis/cloudprovider
+yunion.io/x/onecloud/pkg/apis/cloudproxy
 yunion.io/x/onecloud/pkg/apis/compute
 yunion.io/x/onecloud/pkg/apis/identity
 yunion.io/x/onecloud/pkg/apis/image
 yunion.io/x/onecloud/pkg/apis/monitor
+yunion.io/x/onecloud/pkg/apis/notify
 yunion.io/x/onecloud/pkg/apis/scheduler
 yunion.io/x/onecloud/pkg/appctx
 yunion.io/x/onecloud/pkg/appsrv
@@ -384,6 +393,8 @@ yunion.io/x/onecloud/pkg/hostman/hostdeployer/apis
 yunion.io/x/onecloud/pkg/hostman/hostdeployer/deployclient
 yunion.io/x/onecloud/pkg/hostman/hostinfo/hostbridge
 yunion.io/x/onecloud/pkg/hostman/hostutils
+yunion.io/x/onecloud/pkg/hostman/hostutils/kubelet
+yunion.io/x/onecloud/pkg/hostman/hostutils/kubelet/eviction
 yunion.io/x/onecloud/pkg/hostman/isolated_device
 yunion.io/x/onecloud/pkg/hostman/metadata
 yunion.io/x/onecloud/pkg/hostman/options
@@ -396,6 +407,7 @@ yunion.io/x/onecloud/pkg/mcclient/informer
 yunion.io/x/onecloud/pkg/mcclient/models
 yunion.io/x/onecloud/pkg/mcclient/modulebase
 yunion.io/x/onecloud/pkg/mcclient/modules
+yunion.io/x/onecloud/pkg/mcclient/modules/cloudproxy
 yunion.io/x/onecloud/pkg/mcclient/modules/k8s
 yunion.io/x/onecloud/pkg/mcclient/modules/monitor
 yunion.io/x/onecloud/pkg/mcclient/modules/notify
@@ -435,15 +447,15 @@ yunion.io/x/onecloud/pkg/util/s3auth
 yunion.io/x/onecloud/pkg/util/samlutils
 yunion.io/x/onecloud/pkg/util/seclib2
 yunion.io/x/onecloud/pkg/util/splitable
+yunion.io/x/onecloud/pkg/util/ssh
 yunion.io/x/onecloud/pkg/util/streamutils
 yunion.io/x/onecloud/pkg/util/stringutils2
 yunion.io/x/onecloud/pkg/util/validate
 yunion.io/x/onecloud/pkg/util/version
 yunion.io/x/onecloud/pkg/util/vmdkutils
-yunion.io/x/onecloud/pkg/vpcagent/apihelper
 yunion.io/x/onecloud/pkg/vpcagent/models
 yunion.io/x/onecloud/pkg/vpcagent/ovn/mac
-# yunion.io/x/pkg v0.0.0-20210109071527-7e72daf56747
+# yunion.io/x/pkg v0.0.0-20211116020154-6a76ba2f7e97
 yunion.io/x/pkg/errors
 yunion.io/x/pkg/gotypes
 yunion.io/x/pkg/prettytable
@@ -471,7 +483,7 @@ yunion.io/x/pkg/util/version
 yunion.io/x/pkg/utils
 # yunion.io/x/s3cli v0.0.0-20190917004522-13ac36d8687e
 yunion.io/x/s3cli
-# yunion.io/x/sqlchemy v0.0.0-20201219153152-2d901261898c
+# yunion.io/x/sqlchemy v1.0.0
 yunion.io/x/sqlchemy
 # yunion.io/x/structarg v0.0.0-20200720093445-9f850fa222ce
 yunion.io/x/structarg

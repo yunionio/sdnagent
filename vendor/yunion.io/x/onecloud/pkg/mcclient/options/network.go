@@ -44,7 +44,8 @@ type NetworkListOptions struct {
 	GuestIpStart []string `help:"search by guest_ip_start"`
 	GuestIpEnd   []string `help:"search by guest_ip_end"`
 
-	BgpType []string `help:"filter by bgp_type"`
+	BgpType  []string `help:"filter by bgp_type"`
+	HostType string   `help:"filter by host_type"`
 }
 
 func (opts *NetworkListOptions) GetContextId() string {
@@ -58,7 +59,6 @@ func (opts *NetworkListOptions) Params() (jsonutils.JSONObject, error) {
 type NetworkUpdateOptions struct {
 	BaseUpdateOptions
 
-	ServerType  string `help:"server type," choices:"baremetal|container|eip|guest|ipmi|pxe"`
 	StartIp     string `help:"Start ip"`
 	EndIp       string `help:"end ip"`
 	NetMask     int64  `help:"Netmask"`
@@ -79,9 +79,6 @@ func (opts *NetworkUpdateOptions) Params() (jsonutils.JSONObject, error) {
 	}
 	if len(opts.Desc) > 0 {
 		params.Add(jsonutils.NewString(opts.Desc), "description")
-	}
-	if len(opts.ServerType) > 0 {
-		params.Add(jsonutils.NewString(opts.ServerType), "server_type")
 	}
 	if len(opts.StartIp) > 0 {
 		params.Add(jsonutils.NewString(opts.StartIp), "guest_ip_start")

@@ -309,7 +309,27 @@ func (manager *SDnsZoneManager) FetchCustomizeColumns(
 			for i := range caches {
 				objs[i] = &caches[i]
 			}
-			rows[i].CloudCaches = DnsZoneCacheManager.FetchCustomizeColumns(ctx, userCred, jsonutils.NewDict(), objs, stringutils2.SSortedStrings{}, true)
+			cacheDetails := DnsZoneCacheManager.FetchCustomizeColumns(ctx, userCred, jsonutils.NewDict(), objs, stringutils2.SSortedStrings{}, true)
+			for i := range cacheDetails {
+				jsonDict := jsonutils.Marshal(cacheDetails[i]).(*jsonutils.JSONDict)
+				jsonDict.Update(jsonutils.Marshal(objs[i]).(*jsonutils.JSONDict))
+				rows[i].CloudCaches = append(rows[i].CloudCaches, jsonDict)
+			}
+		}
+	}
+	withCache, _ := query.Bool("with_cache")
+	if withCache {
+		log.Infof("try to get caches")
+		dnsZoneIds := make([]string, len(dnsZones))
+		for i := range dnsZones {
+			dnsZoneIds[i] = dnsZones[i].Id
+		}
+		cacheDetails, err := manager.GetCacheDetails(ctx, userCred, dnsZoneIds)
+		if err != nil {
+			log.Errorf("unable to Get cacheDetails: %v", err)
+		}
+		for i := range rows {
+			rows[i].CloudCaches = cacheDetails[dnsZoneIds[i]]
 		}
 	}
 	return rows
@@ -473,6 +493,28 @@ func (self *SDnsZone) GetDnsZoneCache(accountId string) (*SDnsZoneCache, error) 
 	return nil, sqlchemy.ErrDuplicateEntry
 }
 
+func (self *SDnsZoneManager) GetCacheDetails(ctx context.Context, userCred mcclient.TokenCredential, dnsZoneIds []string) (map[string][]jsonutils.JSONObject, error) {
+	q := DnsZoneCacheManager.Query().In("dns_zone_id", dnsZoneIds)
+	caches := []SDnsZoneCache{}
+	err := db.FetchModelObjects(DnsZoneCacheManager, q, &caches)
+	if err != nil {
+		return nil, errors.Wrapf(err, "db.FetchModelObjects")
+	}
+	objs := make([]interface{}, len(caches))
+	for i := range caches {
+		objs[i] = &caches[i]
+	}
+	cacheDetails := DnsZoneCacheManager.FetchCustomizeColumns(ctx, userCred, jsonutils.NewDict(), objs, stringutils2.SSortedStrings{}, true)
+	ret := make(map[string][]jsonutils.JSONObject, len(dnsZoneIds))
+	for i := range cacheDetails {
+		jsonDict := jsonutils.Marshal(cacheDetails[i]).(*jsonutils.JSONDict)
+		jsonDict.Update(jsonutils.Marshal(objs[i]).(*jsonutils.JSONDict))
+		dnsZoneId, _ := jsonDict.GetString("dns_zone_id")
+		ret[dnsZoneId] = append(ret[dnsZoneId], jsonDict)
+	}
+	return ret, nil
+}
+
 func (self *SDnsZone) GetDnsZoneCaches() ([]SDnsZoneCache, error) {
 	caches := []SDnsZoneCache{}
 	q := DnsZoneCacheManager.Query().Equals("dns_zone_id", self.Id)
@@ -621,14 +663,19 @@ func (self *SDnsZone) SyncDnsRecordSets(ctx context.Context, userCred mcclient.T
 		result.Delete()
 	}
 
-	if self.ZoneType == string(cloudprovider.PrivateZone) {
-		for i := range update {
-			_record, err := DnsRecordSetManager.FetchById(update[i].Id)
-			if err != nil {
-				result.UpdateError(errors.Wrapf(err, "DnsRecordSetManager.FetchById(%s)", del[i].Id))
-				continue
-			}
-			record := _record.(*SDnsRecordSet)
+	for i := range update {
+		_record, err := DnsRecordSetManager.FetchById(update[i].Id)
+		if err != nil {
+			result.UpdateError(errors.Wrapf(err, "DnsRecordSetManager.FetchById(%s)", del[i].Id))
+			continue
+		}
+		record := _record.(*SDnsRecordSet)
+		caches, err := self.GetDnsZoneCaches()
+		if err != nil {
+			result.UpdateError(errors.Wrapf(err, "GetDnsZoneCaches"))
+			continue
+		}
+		if self.ZoneType == string(cloudprovider.PrivateZone) || len(caches) < 2 {
 			err = record.syncWithCloudDnsRecord(ctx, userCred, provider, update[i])
 			if err != nil {
 				result.UpdateError(errors.Wrapf(err, "syncWithCloudDnsRecord"))

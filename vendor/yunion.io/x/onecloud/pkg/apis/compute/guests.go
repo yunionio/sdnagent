@@ -62,9 +62,9 @@ type ServerListInput struct {
 	// enum: linux,windows,vmware
 	OsType []string `json:"os_type"`
 
-	// 对列表结果按照磁盘进行排序
+	// 对列表结果按照磁盘大小进行排序
 	// enum: asc,desc
-	// OrderByDisk string `json:"order_by_disk"`
+	OrderByDisk string `json:"order_by_disk"`
 
 	// 根据ip查找机器
 	IpAddr string `json:"ip_addr"`
@@ -372,7 +372,10 @@ type GuestMigrateInput struct {
 }
 
 type GuestLiveMigrateInput struct {
+	// 指定期望的迁移目标宿主机
 	PreferHost string `json:"prefer_host"`
+	// 是否跳过CPU检查，默认要做CPU检查
+	SkipCpuCheck *bool `json:"skip_cpu_check"`
 }
 
 type GuestSetSecgroupInput struct {
@@ -503,4 +506,39 @@ type ServerDeleteInput struct {
 	// 是否删除关联的数据盘
 	// default: false
 	DeleteDisks bool
+}
+
+type ServerDetachnetworkInput struct {
+	// 是否保留IP地址(ip地址会进入到预留ip)
+	Reserve bool `json:"reserve"`
+	// 通过IP子网地址, 优先级最高
+	NetId string `json:"net_id"`
+	// 通过IP解绑网卡, 优先级高于mac
+	IpAddr string `json:"ip_addr"`
+	// 通过Mac解绑网卡, 优先级低于ip_addr
+	Mac string `json:"mac"`
+}
+
+type ServerMigrateForecastInput struct {
+	PreferHostId string `json:"prefer_host_id"`
+	// Deprecated
+	PreferHost   string `json:"prefer_host" yunion-deprecated-by:"prefer_host_id"`
+	LiveMigrate  bool   `json:"live_migrate"`
+	SkipCpuCheck bool   `josn:"skip_cpu_check"`
+}
+
+type ServerResizeDiskInput struct {
+	// swagger: ignore
+	Disk string `json:"disk" yunion-deprecated-by:"disk_id"`
+	// 磁盘Id
+	DiskId string `json:"disk_id"`
+
+	DiskResizeInput
+}
+
+type ServerMigrateNetworkInput struct {
+	// Source network Id
+	Src string `json:"src"`
+	// Destination network Id
+	Dest string `json:"dest"`
 }

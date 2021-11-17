@@ -55,7 +55,7 @@ func init() {
 type SHostwire struct {
 	SHostJointsBase
 
-	Bridge string `width:"16" charset:"ascii" nullable:"false" list:"domain" update:"domain" create:"domain_required"`
+	Bridge string `width:"64" charset:"ascii" nullable:"false" list:"domain" update:"domain" create:"domain_required"`
 	// 接口名称
 	Interface string `width:"16" charset:"ascii" nullable:"false" list:"domain" update:"domain" create:"domain_required"`
 	// 是否是主地址
@@ -150,19 +150,46 @@ func (self *SHostwire) GetGuestnicsCount() (int, error) {
 	return q.CountWithError()
 }
 
-func (self *SHostwire) ValidateDeleteCondition(ctx context.Context) error {
+func (self *SHostwire) ValidateDeleteCondition(ctx context.Context, info jsonutils.JSONObject) error {
 	cnt, err := self.GetGuestnicsCount()
 	if err != nil {
 		return httperrors.NewInternalServerError("GetGuestnicsCount fail %s", err)
 	}
 	if cnt > 0 {
-		return httperrors.NewNotEmptyError("guest on the host are using networks on this wire")
+		// check if this is the last one
+		host := self.GetHost()
+		if len(host.getHostwiresOfId(self.WireId)) == 1 {
+			return httperrors.NewNotEmptyError("guest on the host are using networks on this wire")
+		}
 	}
-	return self.SHostJointsBase.ValidateDeleteCondition(ctx)
+	return self.SHostJointsBase.ValidateDeleteCondition(ctx, nil)
 }
 
 func (self *SHostwire) Delete(ctx context.Context, userCred mcclient.TokenCredential) error {
 	return db.DeleteModel(ctx, userCred, self)
+}
+
+func (self *SHostwire) PreDelete(ctx context.Context, userCred mcclient.TokenCredential) {
+	host := self.GetHost()
+	if host == nil {
+		log.Errorf("no host found??")
+		return
+	}
+	netif := host.GetNetInterface(self.MacAddr)
+	if netif == nil {
+		log.Errorf("no netinterface for %s", self.MacAddr)
+		return
+	}
+	err := host.DisableNetif(ctx, userCred, netif, false)
+	if err != nil {
+		log.Errorf("host.DisableNetif fail %s", err)
+		return
+	}
+	err = netif.UnsetWire()
+	if err != nil {
+		log.Errorf("netif.UnsetWire fail %s", err)
+		return
+	}
 }
 
 func (self *SHostwire) Detach(ctx context.Context, userCred mcclient.TokenCredential) error {

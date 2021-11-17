@@ -49,8 +49,7 @@ type SHostOptions struct {
 	EnableMonitor  bool `help:"Enable monitor"`
 	ReportInterval int  `help:"Report interval in seconds" default:"60"`
 
-	EnableTcBwlimit     bool `help:"Enable linux tc bandwidth limit"`
-	BwDownloadBandwidth int  `help:"Default ingress bandwidth in mbit (0 disabled)" default:"10"`
+	BwDownloadBandwidth int `help:"Default ingress bandwidth in mbit (0 disabled)" default:"10"`
 
 	DnsServer       string `help:"Address of host DNS server"`
 	DnsServerLegacy string `help:"Deprecated Address of host DNS server"`
@@ -133,13 +132,18 @@ type SHostOptions struct {
 	OvnUnderlayMtu            int    `help:"mtu of ovn underlay network" default:"1500"`
 
 	EnableRemoteExecutor bool   `help:"Enable remote executor" default:"false"`
-	EnableHealthChecker  bool   `help:"enable host health checker" default:"true"`
+	EnableHealthChecker  bool   `help:"enable host health checker" default:"false"`
 	HealthDriver         string `help:"Component save host health state" default:"etcd"`
 	HostHealthTimeout    int    `help:"host health timeout" default:"30"`
 	HostLeaseTimeout     int    `help:"lease timeout" default:"10"`
 
 	SyncStorageInfoDurationSecond int  `help:"sync storage size duration, unit is second" default:"60"`
 	StartHostIgnoreSysError       bool `help:"start host agent ignore sys error" default:"false"`
+
+	DisableProbeKubelet bool   `help:"Disable probe kubelet config" default:"false"`
+	KubeletRunDirectory string `help:"Kubelet config file path" default:"/var/lib/kubelet"`
+
+	DisableGPU bool `help:"force disable GPU" default:"false" json:"disable_gpu"`
 }
 
 var (

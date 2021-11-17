@@ -61,6 +61,11 @@ type SAwsCachedLb struct {
 	CachedBackendGroupId string `width:"36" charset:"ascii" nullable:"true" list:"user" create:"optional"`
 }
 
+func (manager *SAwsCachedLbManager) GetResourceCount() ([]db.SScopeResourceCount, error) {
+	virts := manager.Query().IsFalse("pending_deleted")
+	return db.CalculateResourceCount(virts, "tenant_id")
+}
+
 func (man *SAwsCachedLbManager) GetBackendsByLocalBackendId(backendId string) ([]SAwsCachedLb, error) {
 	loadbalancerBackends := []SAwsCachedLb{}
 	q := man.Query().Equals("backend_id", backendId)
@@ -177,7 +182,7 @@ func (lbb *SAwsCachedLb) syncRemoveCloudLoadbalancerBackend(ctx context.Context,
 	lockman.LockObject(ctx, lbb)
 	defer lockman.ReleaseObject(ctx, lbb)
 
-	err := lbb.ValidateDeleteCondition(ctx)
+	err := lbb.ValidateDeleteCondition(ctx, nil)
 	if err != nil { // cannot delete
 		err = lbb.SetStatus(userCred, api.LB_STATUS_UNKNOWN, "sync to delete")
 	} else {

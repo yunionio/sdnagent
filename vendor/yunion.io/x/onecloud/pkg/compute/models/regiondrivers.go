@@ -121,12 +121,6 @@ type IRegionDriver interface {
 	RequestDeleteInstanceSnapshot(ctx context.Context, isp *SInstanceSnapshot, task taskman.ITask) error
 	RequestResetToInstanceSnapshot(ctx context.Context, guest *SGuest, isp *SInstanceSnapshot, task taskman.ITask, params *jsonutils.JSONDict) error
 
-	//Nat gateway
-	DealNatGatewaySpec(spec string) string
-	RequestBindIPToNatgateway(ctx context.Context, task taskman.ITask, natgateway *SNatGateway, eipID string) error
-	RequestUnBindIPFromNatgateway(ctx context.Context, task taskman.ITask, nat INatHelper, natgateway *SNatGateway) error
-	BindIPToNatgatewayRollback(ctx context.Context, eipId string) error
-
 	RequestCacheSecurityGroup(ctx context.Context, userCred mcclient.TokenCredential, region *SCloudregion, vpc *SVpc, secgroup *SSecurityGroup, classic bool, removeProjectId string, task taskman.ITask) error
 	RequestSyncSecurityGroup(ctx context.Context, userCred mcclient.TokenCredential, vpcId string, vpc *SVpc, secgroup *SSecurityGroup, removeProjectId, service string) (string, error)
 	GetDefaultSecurityGroupInRule() cloudprovider.SecurityRule
@@ -134,6 +128,8 @@ type IRegionDriver interface {
 	GetSecurityGroupRuleMaxPriority() int
 	GetSecurityGroupRuleMinPriority() int
 	IsOnlySupportAllowRules() bool
+	IsPeerSecgroupWithSameProject() bool
+	IsSupportPeerSecgroup() bool
 	IsSupportClassicSecurityGroup() bool
 	IsSecurityGroupBelongVpc() bool
 	IsVpcBelongGlobalVpc() bool
@@ -157,14 +153,13 @@ type IDBInstanceDriver interface {
 	ValidateCreateDBInstanceAccountData(ctx context.Context, userCred mcclient.TokenCredential, ownerId mcclient.IIdentityProvider, instance *SDBInstance, input api.DBInstanceAccountCreateInput) (api.DBInstanceAccountCreateInput, error)
 	ValidateCreateDBInstanceDatabaseData(ctx context.Context, userCred mcclient.TokenCredential, ownerId mcclient.IIdentityProvider, instance *SDBInstance, input api.DBInstanceDatabaseCreateInput) (api.DBInstanceDatabaseCreateInput, error)
 	ValidateCreateDBInstanceBackupData(ctx context.Context, userCred mcclient.TokenCredential, ownerId mcclient.IIdentityProvider, instance *SDBInstance, input api.DBInstanceBackupCreateInput) (api.DBInstanceBackupCreateInput, error)
-	ValidateChangeDBInstanceConfigData(ctx context.Context, userCred mcclient.TokenCredential, instance *SDBInstance, input *api.SDBInstanceChangeConfigInput) error
 	ValidateDBInstanceAccountPrivilege(ctx context.Context, userCred mcclient.TokenCredential, instance *SDBInstance, account string, privilege string) error
 	ValidateResetDBInstancePassword(ctx context.Context, userCred mcclient.TokenCredential, instance *SDBInstance, account string) error
 
 	RequestCreateDBInstance(ctx context.Context, userCred mcclient.TokenCredential, dbinstance *SDBInstance, task taskman.ITask) error
 	RequestCreateDBInstanceFromBackup(ctx context.Context, userCred mcclient.TokenCredential, dbinstance *SDBInstance, task taskman.ITask) error
 	RequestCreateDBInstanceBackup(ctx context.Context, userCred mcclient.TokenCredential, instance *SDBInstance, backup *SDBInstanceBackup, task taskman.ITask) error
-	RequestChangeDBInstanceConfig(ctx context.Context, userCred mcclient.TokenCredential, instance *SDBInstance, task taskman.ITask) error
+	RequestChangeDBInstanceConfig(ctx context.Context, userCred mcclient.TokenCredential, instance *SDBInstance, input *api.SDBInstanceChangeConfigInput, task taskman.ITask) error
 
 	IsSupportedDBInstance() bool
 	IsSupportedDBInstanceAutoRenew() bool
@@ -178,6 +173,25 @@ type IDBInstanceDriver interface {
 
 	RequestRemoteUpdateDBInstance(ctx context.Context, userCred mcclient.TokenCredential, instance *SDBInstance, replaceTags bool, task taskman.ITask) error
 	RequestSyncRdsSecurityGroups(ctx context.Context, userCred mcclient.TokenCredential, rds *SDBInstance, task taskman.ITask) error
+
+	INatGatewayDriver
+
+	IElasticIpDriver
+	INasDriver
+}
+
+type INasDriver interface {
+	RequestSyncAccessGroup(ctx context.Context, userCred mcclient.TokenCredential, fs *SFileSystem, mt *SMountTarget, ag *SAccessGroup, task taskman.ITask) error
+	IsSupportedNas() bool
+}
+
+// NAT
+type INatGatewayDriver interface {
+	IsSupportedNatGateway() bool
+	IsSupportedNatAutoRenew() bool
+	RequestAssociateEipForNAT(ctx context.Context, userCred mcclient.TokenCredential, nat *SNatGateway, eip *SElasticip, task taskman.ITask) error
+	ValidateCreateNatGateway(ctx context.Context, userCred mcclient.TokenCredential, input api.NatgatewayCreateInput) (api.NatgatewayCreateInput, error)
+	OnNatEntryDeleteComplete(ctx context.Context, userCred mcclient.TokenCredential, eip *SElasticip) error
 }
 
 type IElasticcacheDriver interface {
@@ -189,7 +203,7 @@ type IElasticcacheDriver interface {
 
 	AllowCreateElasticcacheBackup(ctx context.Context, userCred mcclient.TokenCredential, ownerId mcclient.IIdentityProvider, elasticcache *SElasticcache) error
 	AllowUpdateElasticcacheAuthMode(ctx context.Context, userCred mcclient.TokenCredential, ownerId mcclient.IIdentityProvider, elasticcache *SElasticcache) error
-	ValidateCreateElasticcacheData(ctx context.Context, userCred mcclient.TokenCredential, ownerId mcclient.IIdentityProvider, data *jsonutils.JSONDict) (*jsonutils.JSONDict, error)
+	ValidateCreateElasticcacheData(ctx context.Context, userCred mcclient.TokenCredential, ownerId mcclient.IIdentityProvider, input api.ElasticcacheCreateInput) (*jsonutils.JSONDict, error)
 	ValidateCreateElasticcacheAccountData(ctx context.Context, userCred mcclient.TokenCredential, ownerId mcclient.IIdentityProvider, data *jsonutils.JSONDict) (*jsonutils.JSONDict, error)
 	ValidateCreateElasticcacheAclData(ctx context.Context, userCred mcclient.TokenCredential, ownerId mcclient.IIdentityProvider, data *jsonutils.JSONDict) (*jsonutils.JSONDict, error)
 	ValidateCreateElasticcacheBackupData(ctx context.Context, userCred mcclient.TokenCredential, ownerId mcclient.IIdentityProvider, data *jsonutils.JSONDict) (*jsonutils.JSONDict, error)
@@ -232,6 +246,10 @@ type IElasticcacheAcl interface {
 
 type IElasticcacheBackup interface {
 	RequestElasticcacheBackupRestoreInstance(ctx context.Context, userCred mcclient.TokenCredential, ea *SElasticcacheBackup, task taskman.ITask) error
+}
+
+type IElasticIpDriver interface {
+	RequestAssociatEip(ctx context.Context, userCred mcclient.TokenCredential, eip *SElasticip, input api.ElasticipAssociateInput, obj db.IStatusStandaloneModel, task taskman.ITask) error
 }
 
 var regionDrivers map[string]IRegionDriver

@@ -2,6 +2,8 @@ package monitor
 
 import "yunion.io/x/onecloud/pkg/apis"
 
+const EXT_PREFIX = "ext"
+
 const (
 	METRIC_RES_TYPE_GUEST        = "guest"
 	METRIC_RES_TYPE_HOST         = "host"
@@ -9,6 +11,15 @@ const (
 	METRIC_RES_TYPE_OSS          = "oss"
 	METRIC_RES_TYPE_RDS          = "rds"
 	METRIC_RES_TYPE_CLOUDACCOUNT = "cloudaccount"
+	METRIC_RES_TYPE_AGENT        = "agent"
+	METRIC_RES_TYPE_TENANT       = "tenant"
+	METRIC_RES_TYPE_DOMAIN       = "domain"
+	METRIC_RES_TYPE_STORAGE      = "storage"
+	//ext is prefix！
+	METRIC_RES_TYPE_JENKINS      = "ext_jenkins"
+	METRIC_RES_TYPE_EXT_MYSQL    = "ext_mysql"
+	METRIC_RES_TYPE_EXT_REDIS    = "ext_redis"
+	METRIC_RES_TYPE_EXT_RABBITMQ = "ext_rabbitmq"
 
 	METRIC_UNIT_PERCENT = "%"
 	METRIC_UNIT_BPS     = "bps"
@@ -17,8 +28,10 @@ const (
 	METRIC_UNIT_CPS     = "cps"
 	METRIC_UNIT_COUNT   = "count"
 	METRIC_UNIT_MS      = "ms"
+	METRIC_UNIT_SEC     = "s"
 	METRIC_UNIT_BYTE    = "byte"
 	METRIC_UNIT_RMB     = "RMB"
+	METRIC_UNIT_MB      = "Mb"
 
 	METRIC_DATABASE_TELE  = "telegraf"
 	METRIC_DATABASE_METER = "meter_db"
@@ -29,13 +42,15 @@ var (
 		METRIC_RES_TYPE_RDS, METRIC_RES_TYPE_CLOUDACCOUNT}
 	MetricUnit = []string{METRIC_UNIT_PERCENT, METRIC_UNIT_BPS, METRIC_UNIT_MBPS, METRIC_UNIT_BYTEPS, "count/s",
 		METRIC_UNIT_COUNT, METRIC_UNIT_MS, METRIC_UNIT_BYTE, METRIC_UNIT_RMB}
-	ResTypeScoreMap = map[string]int{
+	ResTypeScoreMap = map[string]float64{
 		METRIC_RES_TYPE_GUEST:        1,
+		METRIC_RES_TYPE_AGENT:        1.1,
 		METRIC_RES_TYPE_HOST:         2,
 		METRIC_RES_TYPE_OSS:          3,
 		METRIC_RES_TYPE_RDS:          4,
 		METRIC_RES_TYPE_REDIS:        5,
 		METRIC_RES_TYPE_CLOUDACCOUNT: 6,
+		METRIC_RES_TYPE_STORAGE:      7,
 	}
 )
 

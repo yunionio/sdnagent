@@ -29,11 +29,13 @@ const (
 	HOST_TYPE_QCLOUD    = "qcloud"
 	HOST_TYPE_AZURE     = "azure"
 	HOST_TYPE_HUAWEI    = "huawei"
+	HOST_TYPE_HCSO      = "hcso"
 	HOST_TYPE_OPENSTACK = "openstack"
 	HOST_TYPE_UCLOUD    = "ucloud"
 	HOST_TYPE_ZSTACK    = "zstack"
 	HOST_TYPE_GOOGLE    = "google"
 	HOST_TYPE_CTYUN     = "ctyun"
+	HOST_TYPE_ECLOUD    = "ecloud"
 
 	HOST_TYPE_DEFAULT = HOST_TYPE_HYPERVISOR
 
@@ -108,6 +110,7 @@ var HOST_TYPES = []string{
 	HOST_TYPE_AWS,
 	HOST_TYPE_QCLOUD,
 	HOST_TYPE_HUAWEI,
+	HOST_TYPE_HCSO,
 	HOST_TYPE_OPENSTACK,
 	HOST_TYPE_UCLOUD,
 	HOST_TYPE_ZSTACK,
@@ -130,8 +133,4 @@ const (
 	HOST_HEALTH_PREFIX         = "/onecloud/kvm/host/health"
 	HOST_HEALTH_STATUS_RUNNING = "running"
 	HOST_HEALTH_LOCK_PREFIX    = "host-health"
-)
-
-const (
-	CPU_ARCH_AARCH64 = "aarch64"
 )

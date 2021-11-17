@@ -576,9 +576,13 @@ func (v *ValidatorModelIdOrName) Validate(data *jsonutils.JSONDict) error {
 	if v.Model != nil {
 		val = v.Model.GetId()
 	}
-	if len(v.modelIdKey) > 0 && data.Contains(v.Key) {
-		data.Remove(v.Key)
-		data.Set(v.modelIdKey, jsonutils.NewString(val))
+	if v.modelIdKey != "" {
+		if data.Contains(v.Key) {
+			data.Remove(v.Key)
+		}
+		if val != "" {
+			data.Set(v.modelIdKey, jsonutils.NewString(val))
+		}
 	}
 	return nil
 }
@@ -828,6 +832,9 @@ var ValidateModel = func(userCred mcclient.TokenCredential, manager db.IStandalo
 	if err != nil {
 		if errors.Cause(err) == sql.ErrNoRows {
 			return nil, httperrors.NewResourceNotFoundError2(manager.Keyword(), *id)
+		}
+		if errors.Cause(err) == sqlchemy.ErrDuplicateEntry {
+			return nil, httperrors.NewDuplicateResourceError(manager.Keyword(), *id)
 		}
 		return nil, httperrors.NewGeneralError(err)
 	}

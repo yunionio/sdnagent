@@ -103,7 +103,7 @@ func (self *SCloudregion) CustomizeCreate(ctx context.Context, userCred mcclient
 	return nil
 }
 
-func (self *SCloudregion) ValidateDeleteCondition(ctx context.Context) error {
+func (self *SCloudregion) ValidateDeleteCondition(ctx context.Context, info jsonutils.JSONObject) error {
 	zoneCnt, err := self.GetZoneCount()
 	if err != nil {
 		return httperrors.NewInternalServerError("GetZoneCount fail %s", err)
@@ -118,7 +118,7 @@ func (self *SCloudregion) ValidateDeleteCondition(ctx context.Context) error {
 	if self.Id == api.DEFAULT_REGION_ID {
 		return httperrors.NewProtectedResourceError("not allow to delete default cloud region")
 	}
-	return self.SEnabledStatusStandaloneResourceBase.ValidateDeleteCondition(ctx)
+	return self.SEnabledStatusStandaloneResourceBase.ValidateDeleteCondition(ctx, nil)
 }
 
 func (self *SCloudregion) GetElasticIps(managerId, eipMode string) ([]SElasticip, error) {
@@ -497,7 +497,7 @@ func (self *SCloudregion) syncWithCloudRegion(ctx context.Context, userCred mccl
 
 		self.IsEmulated = cloudRegion.IsEmulated()
 
-		if !factory.IsPublicCloud() && !factory.IsOnPremise() {
+		if !factory.IsPublicCloud() && !factory.IsOnPremise() && !factory.IsMultiTenant() {
 			self.ManagerId = provider.Id
 		}
 
@@ -629,28 +629,17 @@ func (manager *SCloudregionManager) InitializeData() error {
 }
 
 func getCloudRegionIdByDomainId(domainId string) *sqlchemy.SSubQuery {
-	accounts := CloudaccountManager.Query().SubQuery()
 	cloudproviderregions := CloudproviderRegionManager.Query().SubQuery()
-	providers := CloudproviderManager.Query().SubQuery()
 
 	// not managed region
 	q1 := CloudregionManager.Query("id").Equals("provider", api.CLOUD_PROVIDER_ONECLOUD)
 
 	// managed region
 	q2 := cloudproviderregions.Query(cloudproviderregions.Field("cloudregion_id", "id"))
-	q2 = q2.Join(providers, sqlchemy.Equals(providers.Field("id"), cloudproviderregions.Field("cloudprovider_id")))
-	q2 = q2.Join(accounts, sqlchemy.Equals(providers.Field("cloudaccount_id"), accounts.Field("id")))
-	q2 = q2.Filter(sqlchemy.OR(
-		sqlchemy.AND(
-			sqlchemy.Equals(providers.Field("domain_id"), domainId),
-			sqlchemy.Equals(accounts.Field("share_mode"), api.CLOUD_ACCOUNT_SHARE_MODE_PROVIDER_DOMAIN),
-		),
-		sqlchemy.Equals(accounts.Field("share_mode"), api.CLOUD_ACCOUNT_SHARE_MODE_SYSTEM),
-		sqlchemy.AND(
-			sqlchemy.Equals(accounts.Field("domain_id"), domainId),
-			sqlchemy.Equals(accounts.Field("share_mode"), api.CLOUD_ACCOUNT_SHARE_MODE_ACCOUNT_DOMAIN),
-		),
-	))
+	providerIds := CloudproviderManager.Query("id")
+	providerIds = CloudproviderManager.filterByDomainId(providerIds, domainId)
+	providersIdsQ := providerIds.Distinct().SubQuery()
+	q2 = q2.Join(providersIdsQ, sqlchemy.Equals(providersIdsQ.Field("id"), cloudproviderregions.Field("cloudprovider_id")))
 
 	return sqlchemy.Union(q1, q2).Query().SubQuery()
 }
@@ -781,7 +770,7 @@ func (manager *SCloudregionManager) ListItemFilter(
 	usableNet := (query.Usable != nil && *query.Usable)
 	usableVpc := (query.UsableVpc != nil && *query.UsableVpc)
 	if usableNet || usableVpc {
-		providers := CloudproviderManager.Query().SubQuery()
+		providers := usableCloudProviders().SubQuery()
 		networks := NetworkManager.Query().SubQuery()
 		wires := WireManager.Query().SubQuery()
 		vpcs := VpcManager.Query().SubQuery()
@@ -795,9 +784,6 @@ func (manager *SCloudregionManager) ListItemFilter(
 		if usableNet {
 			sq = sq.Filter(sqlchemy.Equals(networks.Field("status"), api.NETWORK_STATUS_AVAILABLE))
 		}
-		sq = sq.Filter(sqlchemy.IsTrue(providers.Field("enabled")))
-		sq = sq.Filter(sqlchemy.In(providers.Field("status"), api.CLOUD_PROVIDER_VALID_STATUS))
-		sq = sq.Filter(sqlchemy.In(providers.Field("health_status"), api.CLOUD_PROVIDER_VALID_HEALTH_STATUS))
 		if usableVpc {
 			sq = sq.Filter(sqlchemy.Equals(vpcs.Field("status"), api.VPC_STATUS_AVAILABLE))
 		}
@@ -929,6 +915,18 @@ func (self *SCloudregion) AllowGetDetailsCapability(ctx context.Context, userCre
 
 func (self *SCloudregion) GetDetailsCapability(ctx context.Context, userCred mcclient.TokenCredential, query jsonutils.JSONObject) (jsonutils.JSONObject, error) {
 	capa, err := GetCapabilities(ctx, userCred, query, self, nil)
+	if err != nil {
+		return nil, err
+	}
+	return jsonutils.Marshal(&capa), nil
+}
+
+func (self *SCloudregion) AllowGetDetailsDiskCapability(ctx context.Context, userCred mcclient.TokenCredential, query jsonutils.JSONObject) bool {
+	return true
+}
+
+func (self *SCloudregion) GetDetailsDiskCapability(ctx context.Context, userCred mcclient.TokenCredential, query jsonutils.JSONObject) (jsonutils.JSONObject, error) {
+	capa, err := GetDiskCapabilities(ctx, userCred, query, self, nil)
 	if err != nil {
 		return nil, err
 	}

@@ -72,6 +72,8 @@ type HostListInput struct {
 	ResourceType string `json:"resource_type"`
 	// filter by mac of any network interface
 	AnyMac string `json:"any_mac"`
+	// filter by ip of any network interface
+	AnyIp string `json:"any_ip"`
 	// filter storages not attached to this host
 	StorageNotAttached *bool `json:"storage_not_attached"`
 	// filter by Hypervisor
@@ -122,6 +124,10 @@ type HostListInput struct {
 	ServerIdForNetwork string `json:"server_id_for_network"`
 	// 宿主机 cpu 架构
 	CpuArchitecture string `json:"cpu_architecture"`
+
+	// 按虚拟机数量排序
+	// enum: asc,desc
+	OrderByServerCount string `json:"order_by_server_count"`
 }
 
 type HostDetails struct {

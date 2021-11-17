@@ -38,7 +38,6 @@ type ICloudResource interface {
 	Refresh() error
 
 	IsEmulated() bool
-	//	GetMetadata() *jsonutils.JSONDict
 
 	GetSysTags() map[string]string
 	GetTags() (map[string]string, error)
@@ -56,6 +55,7 @@ type IBillingResource interface {
 	GetCreatedAt() time.Time
 	GetExpiredAt() time.Time
 	SetAutoRenew(autoRenew bool) error
+	Renew(bc billing.SBillingCycle) error
 	IsAutoRenew() bool
 }
 
@@ -125,6 +125,8 @@ type ICloudRegion interface {
 	GetISkus() ([]ICloudSku, error)
 	CreateISku(opts *SServerSkuCreateOption) (ICloudSku, error)
 
+	GetICloudNatSkus() ([]ICloudNatSku, error)
+
 	GetINetworkInterfaces() ([]ICloudNetworkInterface, error)
 
 	GetIBuckets() ([]ICloudBucket, error)
@@ -138,6 +140,7 @@ type ICloudRegion interface {
 	GetIDBInstanceById(instanceId string) (ICloudDBInstance, error)
 	GetIDBInstanceBackups() ([]ICloudDBInstanceBackup, error)
 	GetIDBInstanceBackupById(backupId string) (ICloudDBInstanceBackup, error)
+	GetIDBInstanceSkus() ([]ICloudDBInstanceSku, error)
 
 	CreateIDBInstance(desc *SManagedDBInstanceCreateConfig) (ICloudDBInstance, error)
 
@@ -153,6 +156,15 @@ type ICloudRegion interface {
 	GetCapabilities() []string
 
 	GetICloudQuotas() ([]ICloudQuota, error)
+
+	GetICloudFileSystems() ([]ICloudFileSystem, error)
+	GetICloudFileSystemById(id string) (ICloudFileSystem, error)
+
+	CreateICloudFileSystem(opts *FileSystemCraeteOptions) (ICloudFileSystem, error)
+
+	GetICloudAccessGroups() ([]ICloudAccessGroup, error)
+	CreateICloudAccessGroup(opts *SAccessGroup) (ICloudAccessGroup, error)
+	GetICloudAccessGroupById(id string) (ICloudAccessGroup, error)
 }
 
 type ICloudZone interface {
@@ -177,7 +189,7 @@ type ICloudImage interface {
 	GetSizeByte() int64
 	GetImageType() TImageType
 	GetImageStatus() string
-	GetOsType() string
+	GetOsType() TOsType
 	GetOsDist() string
 	GetOsVersion() string
 	GetOsArch() string
@@ -230,6 +242,8 @@ type ICloudStorage interface {
 	GetMountPoint() string
 
 	IsSysDiskStore() bool
+
+	DisableSync() bool
 }
 
 type ICloudHost interface {
@@ -294,7 +308,8 @@ type ICloudVM interface {
 	GetBootOrder() string
 	GetVga() string
 	GetVdi() string
-	GetOSType() string
+	GetOSArch() string
+	GetOsType() TOsType
 	GetOSName() string
 	GetBios() string
 	GetMachine() string
@@ -327,8 +342,6 @@ type ICloudVM interface {
 	DetachDisk(ctx context.Context, diskId string) error
 
 	CreateDisk(ctx context.Context, sizeMb int, uuid string, driver string) error
-
-	Renew(bc billing.SBillingCycle) error
 
 	MigrateVM(hostid string) error
 	LiveMigrateVM(hostid string) error
@@ -417,6 +430,7 @@ type ICloudSecurityGroup interface {
 	GetVpcId() string
 
 	SyncRules(common, inAdds, outAdds, inDels, outDels []SecurityRule) error
+	GetReferences() ([]SecurityGroupReference, error)
 	Delete() error
 }
 
@@ -524,6 +538,7 @@ type ICloudVpc interface {
 
 	GetIWireById(wireId string) (ICloudWire, error)
 	GetINatGateways() ([]ICloudNatGateway, error)
+	CreateINatGateway(opts *NatGatewayCreateOptions) (ICloudNatGateway, error)
 
 	GetICloudVpcPeeringConnections() ([]ICloudVpcPeeringConnection, error)
 	GetICloudAccepterVpcPeeringConnections() ([]ICloudVpcPeeringConnection, error)
@@ -741,6 +756,7 @@ type ICloudSku interface {
 	GetPrepaidStatus() string
 	GetPostpaidStatus() string
 
+	GetCpuArch() string
 	GetCpuCoreCount() int
 	GetMemorySizeMB() int
 
@@ -771,6 +787,9 @@ type ICloudSku interface {
 
 type ICloudProject interface {
 	ICloudResource
+
+	GetDomainId() string
+	GetDomainName() string
 }
 
 type ICloudNatGateway interface {
@@ -790,6 +809,12 @@ type ICloudNatGateway interface {
 	// Read the description of these two structures before using.
 	CreateINatDEntry(rule SNatDRule) (ICloudNatDEntry, error)
 	CreateINatSEntry(rule SNatSRule) (ICloudNatSEntry, error)
+
+	GetINetworkId() string
+	GetBandwidthMb() int
+	GetIpAddr() string
+
+	Delete() error
 }
 
 // ICloudNatDEntry describe a DNat rule which transfer externalIp:externalPort to
@@ -874,7 +899,6 @@ type ICloudDBInstance interface {
 	GetIDBInstanceBackups() ([]ICloudDBInstanceBackup, error)
 
 	ChangeConfig(ctx context.Context, config *SManagedDBInstanceChangeConfig) error
-	Renew(bc billing.SBillingCycle) error
 
 	OpenPublicConnection() error
 	ClosePublicConnection() error
@@ -995,7 +1019,6 @@ type ICloudElasticcache interface {
 	UpdateAuthMode(noPasswordAccess bool, password string) error
 	UpdateInstanceParameters(config jsonutils.JSONObject) error
 	UpdateBackupPolicy(config SCloudElasticCacheBackupPolicyUpdateInput) error
-	Renew(bc billing.SBillingCycle) error
 
 	UpdateSecurityGroups(secgroupIds []string) error
 }
@@ -1212,4 +1235,85 @@ type ICloudInterVpcNetworkRoute interface {
 
 	GetEnabled() bool
 	GetCidr() string
+}
+
+type ICloudFileSystem interface {
+	ICloudResource
+	IBillingResource
+
+	GetFileSystemType() string
+	GetStorageType() string
+	GetProtocol() string
+	GetCapacityGb() int64
+	GetUsedCapacityGb() int64
+	GetMountTargetCountLimit() int
+
+	GetZoneId() string
+
+	GetMountTargets() ([]ICloudMountTarget, error)
+	CreateMountTarget(opts *SMountTargetCreateOptions) (ICloudMountTarget, error)
+
+	Delete() error
+}
+
+type ICloudMountTarget interface {
+	GetGlobalId() string
+	GetName() string
+	GetAccessGroupId() string
+	GetDomainName() string
+	GetNetworkType() string
+	GetVpcId() string
+	GetNetworkId() string
+	GetStatus() string
+
+	Delete() error
+}
+
+type ICloudAccessGroup interface {
+	GetGlobalId() string
+	GetName() string
+	GetDesc() string
+	IsDefault() bool
+	GetMaxPriority() int
+	GetMinPriority() int
+	GetSupporedUserAccessTypes() []TUserAccessType
+	GetNetworkType() string
+	GetFileSystemType() string
+	GetMountTargetCount() int
+
+	GetRules() ([]AccessGroupRule, error)
+	SyncRules(common, added, removed AccessGroupRuleSet) error
+
+	Delete() error
+}
+
+type ICloudDBInstanceSku interface {
+	GetName() string
+	GetGlobalId() string
+	GetStatus() string
+	GetEngine() string
+	GetEngineVersion() string
+	GetStorageType() string
+	GetDiskSizeStep() int
+	GetMaxDiskSizeGb() int
+	GetMinDiskSizeGb() int
+	GetIOPS() int
+	GetTPS() int
+	GetQPS() int
+	GetMaxConnections() int
+	GetVcpuCount() int
+	GetVmemSizeMb() int
+	GetCategory() string
+	GetZone1Id() string
+	GetZone2Id() string
+	GetZone3Id() string
+	GetZoneId() string
+}
+
+type ICloudNatSku interface {
+	GetName() string
+	GetDesc() string
+	GetGlobalId() string
+	GetPrepaidStatus() string
+	GetPostpaidStatus() string
 }

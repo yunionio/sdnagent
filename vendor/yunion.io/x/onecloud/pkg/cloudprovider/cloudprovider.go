@@ -96,6 +96,9 @@ type SCloudaccountCredential struct {
 
 	// 阿里云专有云Endpoints
 	*SApsaraEndpoints
+
+	// Huawei Cloud Stack Online
+	*SHCSOEndpoints
 }
 
 type SCloudaccount struct {
@@ -157,7 +160,7 @@ type ProviderConfig struct {
 
 	AccountId string
 
-	SApsaraEndpoints
+	Options *jsonutils.JSONDict
 
 	ProxyFunc httputils.TransportProxyFunc
 }
@@ -190,6 +193,7 @@ type ICloudProviderFactory interface {
 
 	IsPublicCloud() bool
 	IsOnPremise() bool
+	IsMultiTenant() bool
 	IsSupportPrepaidResources() bool
 	NeedSyncSkuFromCloud() bool
 
@@ -225,6 +229,8 @@ type ICloudProviderFactory interface {
 	GetTTLRange(zoneType TDnsZoneType, productType TDnsProductType) TTlRange
 
 	IsSupportSAMLAuth() bool
+
+	GetAccountIdEqualizer() func(origin, now string) bool
 }
 
 type ICloudProvider interface {
@@ -315,6 +321,10 @@ func IsSupportObjectstore(prod ICloudProvider) bool {
 
 func IsSupportRds(prod ICloudProvider) bool {
 	return utils.IsInStringArray(CLOUD_CAPABILITY_RDS, prod.GetCapabilities())
+}
+
+func IsSupportNAT(prod ICloudProvider) bool {
+	return utils.IsInStringArray(CLOUD_CAPABILITY_NAT, prod.GetCapabilities())
 }
 
 func IsSupportElasticCache(prod ICloudProvider) bool {
@@ -618,6 +628,10 @@ func (factory *baseProviderFactory) IsOnPremise() bool {
 	return false
 }
 
+func (factory *baseProviderFactory) IsMultiTenant() bool {
+	return false
+}
+
 func (factory *baseProviderFactory) IsCloudeventRegional() bool {
 	return false
 }
@@ -711,6 +725,15 @@ func (factory *baseProviderFactory) GetTTLRange(zoneType TDnsZoneType, productTy
 	return TTlRange{}
 }
 
+func (factory *baseProviderFactory) GetAccountIdEqualizer() func(origin, now string) bool {
+	return func(origin, now string) bool {
+		if len(now) > 0 && now != origin {
+			return false
+		}
+		return true
+	}
+}
+
 type SDnsCapability struct {
 	ZoneTypes    []TDnsZoneType
 	DnsTypes     map[TDnsZoneType][]TDnsType
@@ -747,12 +770,20 @@ func (factory *SPremiseBaseProviderFactory) IsOnPremise() bool {
 	return true
 }
 
+func (factory *SPremiseBaseProviderFactory) IsMultiTenant() bool {
+	return false
+}
+
 func (factory *SPremiseBaseProviderFactory) NeedSyncSkuFromCloud() bool {
 	return false
 }
 
 type SPublicCloudBaseProviderFactory struct {
 	baseProviderFactory
+}
+
+func (factory *SPublicCloudBaseProviderFactory) IsMultiTenant() bool {
+	return true
 }
 
 func (factory *SPublicCloudBaseProviderFactory) IsPublicCloud() bool {
@@ -769,6 +800,10 @@ func (factory *SPublicCloudBaseProviderFactory) NeedSyncSkuFromCloud() bool {
 
 type SPrivateCloudBaseProviderFactory struct {
 	baseProviderFactory
+}
+
+func (factory *SPrivateCloudBaseProviderFactory) IsMultiTenant() bool {
+	return false
 }
 
 func (factory *SPrivateCloudBaseProviderFactory) IsPublicCloud() bool {

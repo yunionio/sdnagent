@@ -28,9 +28,9 @@ import (
 	"yunion.io/x/log"
 	"yunion.io/x/pkg/errors"
 
+	"yunion.io/x/onecloud/pkg/apihelper"
 	apis "yunion.io/x/onecloud/pkg/apis/compute"
 	"yunion.io/x/onecloud/pkg/util/iproute2"
-	"yunion.io/x/onecloud/pkg/vpcagent/apihelper"
 	agentmodels "yunion.io/x/onecloud/pkg/vpcagent/models"
 
 	"yunion.io/x/sdnagent/pkg/agent/utils"

@@ -155,9 +155,9 @@ func (man *SRouteTableManager) ValidateCreateData(
 	if err != nil {
 		return input, errors.Wrap(err, "validateRoutes")
 	}
-	_, input.VpcResourceInput, err = ValidateVpcResourceInput(userCred, input.VpcResourceInput)
+	_, err = validators.ValidateModel(userCred, VpcManager, &input.VpcId)
 	if err != nil {
-		return input, errors.Wrap(err, "ValidateVpcResourceInput")
+		return input, err
 	}
 	input.StatusInfrasResourceBaseCreateInput, err = man.SStatusInfrasResourceBaseManager.ValidateCreateData(ctx, userCred, ownerId, query, input.StatusInfrasResourceBaseCreateInput)
 	if err != nil {
@@ -171,7 +171,7 @@ func (rt *SRouteTable) AllowPerformPurge(ctx context.Context, userCred mcclient.
 }
 
 func (rt *SRouteTable) PerformPurge(ctx context.Context, userCred mcclient.TokenCredential, query jsonutils.JSONObject, data jsonutils.JSONObject) (jsonutils.JSONObject, error) {
-	err := rt.ValidateDeleteCondition(ctx)
+	err := rt.ValidateDeleteCondition(ctx, nil)
 	if err != nil {
 		return nil, err
 	}
@@ -500,7 +500,7 @@ func (self *SRouteTable) syncRemoveCloudRouteTable(ctx context.Context, userCred
 	lockman.LockObject(ctx, self)
 	defer lockman.ReleaseObject(ctx, self)
 
-	err := self.ValidateDeleteCondition(ctx)
+	err := self.ValidateDeleteCondition(ctx, nil)
 	if err != nil {
 		return err
 	}

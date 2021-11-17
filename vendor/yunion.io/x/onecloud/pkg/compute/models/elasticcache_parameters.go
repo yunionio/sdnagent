@@ -134,7 +134,7 @@ func (self *SElasticcacheParameter) syncRemoveCloudElasticcacheParameter(ctx con
 	lockman.LockObject(ctx, self)
 	defer lockman.ReleaseObject(ctx, self)
 
-	err := self.ValidateDeleteCondition(ctx)
+	err := self.ValidateDeleteCondition(ctx, nil)
 	if err != nil {
 		return errors.Wrapf(err, "newFromCloudElasticcacheParameter.Remove")
 	}
@@ -205,7 +205,8 @@ func (self *SElasticcacheParameter) GetRegion() *SCloudregion {
 		return nil
 	}
 
-	return ieb.(*SElasticcache).GetRegion()
+	region, _ := ieb.(*SElasticcache).GetRegion()
+	return region
 }
 
 func (self *SElasticcacheParameter) ValidateUpdateData(ctx context.Context, userCred mcclient.TokenCredential, query jsonutils.JSONObject, data *jsonutils.JSONDict) (*jsonutils.JSONDict, error) {

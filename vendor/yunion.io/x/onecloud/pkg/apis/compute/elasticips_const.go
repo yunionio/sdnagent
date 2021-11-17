@@ -42,6 +42,11 @@ const (
 
 	EIP_CHARGE_TYPE_BY_TRAFFIC   = "traffic"
 	EIP_CHARGE_TYPE_BY_BANDWIDTH = "bandwidth"
+
+	INSTANCE_ASSOCIATE_EIP         = "associate_eip"
+	INSTANCE_ASSOCIATE_EIP_FAILED  = "associate_eip_failed"
+	INSTANCE_DISSOCIATE_EIP        = "dissociate_eip"
+	INSTANCE_DISSOCIATE_EIP_FAILED = "dissociate_eip_failed"
 )
 
 var (
@@ -57,6 +62,7 @@ type ElasticipListInput struct {
 	UsableResourceListInput
 
 	// filter usable eip for given associate type
+	// enmu: server, natgateway
 	UsableEipForAssociateType string `json:"usable_eip_for_associate_type"`
 	// filter usable eip for given associate id
 	UsableEipForAssociateId string `json:"usable_eip_for_associate_id"`

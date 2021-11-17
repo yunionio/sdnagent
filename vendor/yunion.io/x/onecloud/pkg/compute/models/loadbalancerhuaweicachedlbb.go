@@ -64,6 +64,11 @@ type SHuaweiCachedLb struct {
 	CachedBackendGroupId string `width:"36" charset:"ascii" nullable:"true" list:"user" create:"optional"`
 }
 
+func (manager *SHuaweiCachedLbManager) GetResourceCount() ([]db.SScopeResourceCount, error) {
+	virts := manager.Query().IsFalse("pending_deleted")
+	return db.CalculateResourceCount(virts, "tenant_id")
+}
+
 func (man *SHuaweiCachedLbManager) GetBackendsByLocalBackendId(backendId string) ([]SHuaweiCachedLb, error) {
 	loadbalancerBackends := []SHuaweiCachedLb{}
 	q := man.Query().IsFalse("pending_deleted").Equals("backend_id", backendId)
@@ -180,7 +185,7 @@ func (lbb *SHuaweiCachedLb) syncRemoveCloudLoadbalancerBackend(ctx context.Conte
 	lockman.LockObject(ctx, lbb)
 	defer lockman.ReleaseObject(ctx, lbb)
 
-	err := lbb.ValidateDeleteCondition(ctx)
+	err := lbb.ValidateDeleteCondition(ctx, nil)
 	if err != nil { // cannot delete
 		err = lbb.SetStatus(userCred, api.LB_STATUS_UNKNOWN, "sync to delete")
 	} else {
@@ -288,9 +293,9 @@ func (man *SHuaweiCachedLbManager) newFromCloudLoadbalancerBackend(ctx context.C
 }
 
 func newLocalBackendFromCloudLoadbalancerBackend(ctx context.Context, userCred mcclient.TokenCredential, loadbalancerBackendgroup *SLoadbalancerBackendGroup, extLoadbalancerBackend cloudprovider.ICloudLoadbalancerBackend, syncOwnerId mcclient.IIdentityProvider) (*SLoadbalancerBackend, error) {
-	lbbgRegion := loadbalancerBackendgroup.GetRegion()
-	if lbbgRegion == nil {
-		return nil, errors.Wrap(httperrors.ErrInvalidStatus, "loadbalancerBackendgroup is not attached to any region")
+	lbbgRegion, err := loadbalancerBackendgroup.GetRegion()
+	if err != nil {
+		return nil, err
 	}
 	lbbgProvider := loadbalancerBackendgroup.GetCloudprovider()
 	if lbbgProvider == nil {
