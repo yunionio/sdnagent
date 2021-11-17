@@ -23,6 +23,7 @@ import (
 	"yunion.io/x/log"
 	"yunion.io/x/pkg/errors"
 	"yunion.io/x/pkg/util/compare"
+	"yunion.io/x/pkg/utils"
 	"yunion.io/x/sqlchemy"
 
 	"yunion.io/x/onecloud/pkg/apis"
@@ -493,9 +494,9 @@ func (man *SLoadbalancerListenerRuleManager) ValidateCreateData(ctx context.Cont
 	}
 
 	listener := listenerV.Model.(*SLoadbalancerListener)
-	region := listener.GetRegion()
-	if region == nil {
-		return nil, httperrors.NewResourceNotFoundError("failed to find region for loadbalancer listener %s", listener.Name)
+	region, err := listener.GetRegion()
+	if err != nil {
+		return nil, err
 	}
 
 	backendGroupV := validators.NewModelIdOrNameValidator("backend_group", "loadbalancerbackendgroup", ownerId)
@@ -578,9 +579,9 @@ func (lbr *SLoadbalancerListenerRule) ValidateUpdateData(ctx context.Context, us
 	}
 	data.Update(jsonutils.Marshal(input))
 
-	region := lbr.GetRegion()
-	if region == nil {
-		return nil, httperrors.NewResourceNotFoundError("failed to find region for loadbalancer listener rule %s", lbr.Name)
+	region, err := lbr.GetRegion()
+	if err != nil {
+		return nil, err
 	}
 
 	ctx = context.WithValue(ctx, "lbr", lbr)
@@ -636,20 +637,12 @@ func (man *SLoadbalancerListenerRuleManager) FetchCustomizeColumns(
 	return rows
 }
 
-/*func (lbr *SLoadbalancerListenerRule) GetLoadbalancerListener() *SLoadbalancerListener {
-	listener, err := LoadbalancerListenerManager.FetchById(lbr.ListenerId)
+func (lbr *SLoadbalancerListenerRule) GetRegion() (*SCloudregion, error) {
+	listener, err := lbr.GetLoadbalancerListener()
 	if err != nil {
-		log.Errorf("failed to find listener for loadbalancer listener rule %s", lbr.Name)
-		return nil
+		return nil, err
 	}
-	return listener.(*SLoadbalancerListener)
-}*/
-
-func (lbr *SLoadbalancerListenerRule) GetRegion() *SCloudregion {
-	if listener := lbr.GetLoadbalancerListener(); listener != nil {
-		return listener.GetRegion()
-	}
-	return nil
+	return listener.GetRegion()
 }
 
 func (lbr *SLoadbalancerListenerRule) GetLoadbalancerBackendGroup() *SLoadbalancerBackendGroup {
@@ -739,7 +732,7 @@ func (lbr *SLoadbalancerListenerRule) constructFieldsFromCloudListenerRule(userC
 	lbr.Status = extRule.GetStatus()
 	lbr.Condition = extRule.GetCondition()
 	if groupId := extRule.GetBackendGroupId(); len(groupId) > 0 {
-		if lbr.GetProviderName() == api.CLOUD_PROVIDER_HUAWEI {
+		if utils.IsInStringArray(lbr.GetProviderName(), []string{api.CLOUD_PROVIDER_HUAWEI, api.CLOUD_PROVIDER_HCSO}) {
 			group, err := db.FetchByExternalId(HuaweiCachedLbbgManager, groupId)
 			if err != nil {
 				if err == sql.ErrNoRows {
@@ -781,7 +774,7 @@ func (lbr *SLoadbalancerListenerRule) updateCachedLoadbalancerBackendGroupAssoci
 	}
 
 	switch lbr.GetProviderName() {
-	case api.CLOUD_PROVIDER_HUAWEI:
+	case api.CLOUD_PROVIDER_HUAWEI, api.CLOUD_PROVIDER_HCSO:
 		_group, err := db.FetchByExternalId(HuaweiCachedLbbgManager, exteralLbbgId)
 		if err != nil {
 			if err == sql.ErrNoRows {
@@ -899,7 +892,7 @@ func (lbr *SLoadbalancerListenerRule) syncRemoveCloudLoadbalancerListenerRule(ct
 	lockman.LockObject(ctx, lbr)
 	defer lockman.ReleaseObject(ctx, lbr)
 
-	err := lbr.ValidateDeleteCondition(ctx)
+	err := lbr.ValidateDeleteCondition(ctx, nil)
 	if err != nil { // cannot delete
 		err = lbr.SetStatus(userCred, api.LB_STATUS_UNKNOWN, "sync to delete")
 	} else {

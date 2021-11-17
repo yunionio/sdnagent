@@ -22,6 +22,7 @@ import (
 	"yunion.io/x/log"
 	"yunion.io/x/pkg/errors"
 	"yunion.io/x/pkg/util/compare"
+	"yunion.io/x/pkg/utils"
 	"yunion.io/x/sqlchemy"
 
 	"yunion.io/x/onecloud/pkg/apis"
@@ -69,6 +70,11 @@ type SCachedLoadbalancerAcl struct {
 	SLoadbalancerAclResourceBase
 
 	ListenerId string `width:"36" charset:"ascii" nullable:"true" list:"user" create:"optional"` // huawei only
+}
+
+func (manager *SCachedLoadbalancerAclManager) GetResourceCount() ([]db.SScopeResourceCount, error) {
+	virts := manager.Query().IsFalse("pending_deleted")
+	return db.CalculateResourceCount(virts, "tenant_id")
 }
 
 func (lbacl *SCachedLoadbalancerAcl) AllowPerformStatus(ctx context.Context, userCred mcclient.TokenCredential, query jsonutils.JSONObject, data jsonutils.JSONObject) bool {
@@ -124,7 +130,7 @@ func (man *SCachedLoadbalancerAclManager) ValidateCreateData(ctx context.Context
 		}
 	}
 
-	if providerV.Model.(*SCloudprovider).Provider == api.CLOUD_PROVIDER_HUAWEI {
+	if utils.IsInStringArray(providerV.Model.(*SCloudprovider).Provider, []string{api.CLOUD_PROVIDER_HUAWEI, api.CLOUD_PROVIDER_HCSO}) {
 		listenerV := validators.NewModelIdOrNameValidator("listener", "loadbalancerlistener", ownerId)
 		if err := listenerV.Validate(data); err != nil {
 			return nil, err
@@ -256,7 +262,7 @@ func (lbacl *SCachedLoadbalancerAcl) AllowPerformPatch(ctx context.Context, user
 	return lbacl.IsOwner(userCred) || db.IsAdminAllowPerform(userCred, lbacl, "patch")
 }
 
-func (lbacl *SCachedLoadbalancerAcl) ValidateDeleteCondition(ctx context.Context) error {
+func (lbacl *SCachedLoadbalancerAcl) ValidateDeleteCondition(ctx context.Context, info jsonutils.JSONObject) error {
 	man := LoadbalancerListenerManager
 	t := man.TableSpec().Instance()
 	pdF := t.Field("pending_deleted")
@@ -310,7 +316,7 @@ func (self *SCachedLoadbalancerAcl) syncRemoveCloudLoadbalanceAcl(ctx context.Co
 	lockman.LockObject(ctx, self)
 	defer lockman.ReleaseObject(ctx, self)
 
-	err := self.ValidateDeleteCondition(ctx)
+	err := self.ValidateDeleteCondition(ctx, nil)
 	if err != nil { // cannot delete
 		err = self.SetStatus(userCred, api.LB_STATUS_UNKNOWN, "sync to delete")
 	} else {
@@ -322,7 +328,7 @@ func (self *SCachedLoadbalancerAcl) syncRemoveCloudLoadbalanceAcl(ctx context.Co
 func (acl *SCachedLoadbalancerAcl) SyncWithCloudLoadbalancerAcl(ctx context.Context, userCred mcclient.TokenCredential, extAcl cloudprovider.ICloudLoadbalancerAcl, projectId mcclient.IIdentityProvider) error {
 	diff, err := db.UpdateWithLock(ctx, acl, func() error {
 		// todo: 华为云acl没有name字段应此不需要同步名称
-		if api.CLOUD_PROVIDER_HUAWEI != acl.GetProviderName() {
+		if !utils.IsInStringArray(acl.GetProviderName(), []string{api.CLOUD_PROVIDER_HUAWEI, api.CLOUD_PROVIDER_HCSO}) {
 			acl.Name = extAcl.GetName()
 		} else {
 			ext_listener_id := extAcl.GetAclListenerID()
@@ -358,16 +364,16 @@ func (man *SCachedLoadbalancerAclManager) GetOrCreateCachedAcl(ctx context.Conte
 	defer lockman.ReleaseClass(ctx, man, ownerProjId)
 
 	listenerId := ""
-	if lblis.GetProviderName() == api.CLOUD_PROVIDER_HUAWEI {
+	if utils.IsInStringArray(lblis.GetProviderName(), []string{api.CLOUD_PROVIDER_HUAWEI, api.CLOUD_PROVIDER_HCSO}) {
 		listenerId = lblis.Id
 	}
 	if lblis.GetProviderName() == api.CLOUD_PROVIDER_OPENSTACK {
 		listenerId = lblis.Id
 	}
 
-	region := lblis.GetRegion()
-	if region == nil {
-		return nil, errors.Wrap(httperrors.ErrInvalidStatus, "Loadbalancer listenser is not attached region")
+	region, err := lblis.GetRegion()
+	if err != nil {
+		return nil, err
 	}
 	lbacl, err := man.getLoadbalancerAclByRegion(provider, region.Id, acl.Id, listenerId)
 	if err == nil {

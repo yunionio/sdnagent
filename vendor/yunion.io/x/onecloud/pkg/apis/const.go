@@ -14,6 +14,8 @@
 
 package apis
 
+import "yunion.io/x/pkg/utils"
+
 const (
 	SERVICE_TYPE_IMAGE             = "image"
 	SERVICE_TYPE_OFFLINE_CLOUDMETA = "offlinecloudmeta"
@@ -60,3 +62,32 @@ var (
 		SERVICE_TYPE_INFLUXDB,
 	}
 )
+
+const (
+	OS_ARCH_X86 = "x86"
+	OS_ARCH_ARM = "arm"
+
+	OS_ARCH_I386    = "i386"
+	OS_ARCH_X86_32  = "x86_32"
+	OS_ARCH_X86_64  = "x86_64"
+	OS_ARCH_AARCH32 = "aarch32"
+	OS_ARCH_AARCH64 = "aarch64"
+)
+
+var (
+	ARCH_X86 = []string{
+		OS_ARCH_X86,
+		OS_ARCH_I386,
+		OS_ARCH_X86_32,
+		OS_ARCH_X86_64,
+	}
+	ARCH_ARM = []string{
+		OS_ARCH_ARM,
+		OS_ARCH_AARCH32,
+		OS_ARCH_AARCH64,
+	}
+)
+
+func IsARM(osArch string) bool {
+	return utils.IsInStringArray(osArch, ARCH_ARM)
+}

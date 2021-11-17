@@ -29,6 +29,7 @@ import (
 
 type SImage struct {
 	multicloud.SImageBase
+	multicloud.STagBase
 	cache    *SDatastoreImageCache
 	filename string
 	size     int64
@@ -109,8 +110,8 @@ func (self *SImage) GetSizeByte() int64 {
 	return self.size
 }
 
-func (self *SImage) GetOsType() string {
-	return ""
+func (self *SImage) GetOsType() cloudprovider.TOsType {
+	return cloudprovider.OsTypeLinux
 }
 
 func (self *SImage) GetOsDist() string {

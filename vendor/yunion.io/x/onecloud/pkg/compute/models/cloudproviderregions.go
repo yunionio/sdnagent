@@ -111,19 +111,6 @@ func (self *SCloudproviderregion) GetAccount() *SCloudaccount {
 	return nil
 }
 
-func (self *SCloudproviderregion) GetRegion() *SCloudregion {
-	regionObj, err := CloudregionManager.FetchById(self.CloudregionId)
-	if err != nil {
-		log.Errorf("CloudregionManager.FetchById(%s) fail %s", self.CloudregionId, err)
-		return nil
-	}
-	return regionObj.(*SCloudregion)
-}
-
-func (self *SCloudproviderregion) GetExtraDetails(ctx context.Context, userCred mcclient.TokenCredential, query jsonutils.JSONObject, isList bool) (api.CloudproviderregionDetails, error) {
-	return api.CloudproviderregionDetails{}, nil
-}
-
 func (manager *SCloudproviderregionManager) FetchCustomizeColumns(
 	ctx context.Context,
 	userCred mcclient.TokenCredential,
@@ -184,7 +171,7 @@ func (manager *SCloudproviderregion) ValidateCreateData(ctx context.Context, use
 	return nil, httperrors.NewForbiddenError("not allow to create")
 }
 
-func (self *SCloudproviderregion) ValidateDeleteCondition(ctx context.Context) error {
+func (self *SCloudproviderregion) ValidateDeleteCondition(ctx context.Context, info jsonutils.JSONObject) error {
 	return nil
 }
 
@@ -209,7 +196,7 @@ func (manager *SCloudproviderregionManager) QueryRelatedRegionIds(cloudAccounts 
 	if len(cloudAccounts) > 0 {
 		cpq := CloudaccountManager.Query().SubQuery()
 		subcpq := cpq.Query(cpq.Field("id")).Filter(sqlchemy.OR(
-			sqlchemy.In(cpq.Field("id"), cloudAccounts),
+			sqlchemy.In(cpq.Field("id"), stringutils2.RemoveUtf8Strings(cloudAccounts)),
 			sqlchemy.In(cpq.Field("name"), cloudAccounts),
 		)).SubQuery()
 		providers := CloudproviderManager.Query().SubQuery()
@@ -315,11 +302,11 @@ func (self *SCloudproviderregion) markEndSync(ctx context.Context, userCred mccl
 	log.Debugf("markEndSync deepSync %v", *deepSync)
 	err := self.markEndSyncInternal(userCred, syncResults, deepSync)
 	if err != nil {
-		return err
+		return errors.Wrapf(err, "markEndSyncInternal")
 	}
 	err = self.GetProvider().markEndSyncWithLock(ctx, userCred)
 	if err != nil {
-		return err
+		return errors.Wrapf(err, "markEndSyncWithLock")
 	}
 	return nil
 }
@@ -335,8 +322,7 @@ func (self *SCloudproviderregion) markEndSyncInternal(userCred mcclient.TokenCre
 		return nil
 	})
 	if err != nil {
-		log.Errorf("Failed to markEndSyncInternal error: %v", err)
-		return err
+		return errors.Wrapf(err, "db.Update")
 	}
 	return nil
 }
@@ -373,11 +359,21 @@ func (set SSyncResultSet) Add(manager db.IModelManager, result compare.SyncResul
 func (self *SCloudproviderregion) DoSync(ctx context.Context, userCred mcclient.TokenCredential, syncRange SSyncRange) error {
 	syncResults := SSyncResultSet{}
 
-	self.markSyncing(userCred)
-	defer self.markEndSync(ctx, userCred, syncResults, &syncRange.DeepSync)
-
-	localRegion := self.GetRegion()
+	localRegion, err := self.GetRegion()
+	if err != nil {
+		return errors.Wrapf(err, "GetRegion")
+	}
 	provider := self.GetProvider()
+
+	self.markSyncing(userCred)
+
+	defer func() {
+		err := self.markEndSync(ctx, userCred, syncResults, &syncRange.DeepSync)
+		if err != nil {
+			log.Errorf("markEndSync for %s(%s) : %v", localRegion.Name, provider.Name, err)
+		}
+	}()
+
 	driver, err := provider.GetProvider()
 	if err != nil {
 		log.Errorf("Failed to get driver, connection problem?")
@@ -413,18 +409,14 @@ func (self *SCloudproviderregion) DoSync(ctx context.Context, userCred mcclient.
 }
 
 func (self *SCloudproviderregion) getSyncTaskKey() string {
-	region := self.GetRegion()
-	if len(region.ExternalId) > 0 {
-		return region.ExternalId
-	} else {
-		return self.CloudproviderId
-	}
+	return fmt.Sprintf("%d", self.RowId)
 }
 
 func (self *SCloudproviderregion) submitSyncTask(ctx context.Context, userCred mcclient.TokenCredential, syncRange SSyncRange, waitChan chan bool) {
 	self.markStartSync(userCred)
 	RunSyncCloudproviderRegionTask(ctx, self.getSyncTaskKey(), func() {
 		nopanic.Run(func() {
+			ctx = context.WithValue(ctx, "provider-region", fmt.Sprintf("%d", self.RowId))
 			err := self.DoSync(ctx, userCred, syncRange)
 			if err != nil {
 				log.Errorf("DoSync faild %v", err)
@@ -477,10 +469,10 @@ func (cpr *SCloudproviderregion) needAutoSyncInternal() bool {
 		if intval > 24*3600 { // at least once everyday
 			intval = 24 * 3600
 		}
-		region := cpr.GetRegion()
+		region, _ := cpr.GetRegion()
 		log.Debugf("empty region %s! no need to check so frequently", region.GetName())
 	}
-	if time.Now().Sub(cpr.LastSyncEndAt) > time.Duration(intval)*time.Second {
+	if time.Now().Sub(cpr.LastSync) > time.Duration(intval)*time.Second {
 		return true
 	}
 	return false

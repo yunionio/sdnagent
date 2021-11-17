@@ -195,6 +195,9 @@ type CloudaccountCreateInput struct {
 	// 是否启用SAML认证
 	// default: false
 	SAMLAuth *bool `json:"saml_auth"`
+
+	// VMware 账号有zone属性
+	Zone string `json:"zone"`
 }
 
 type CloudaccountShareModeInput struct {
@@ -306,6 +309,8 @@ type CloudaccountDetail struct {
 	StoragecacheCount int `json:"storagecache_count,allowempty"`
 
 	ProxySetting proxyapi.SProxySetting `json:"proxy_setting"`
+
+	ProjectMappingResourceInfo
 }
 
 type CloudaccountUpdateInput struct {
@@ -335,12 +340,43 @@ type CloudaccountPerformPublicInput struct {
 type CloudaccountPerformPrepareNetsInput struct {
 	CloudaccountCreateInput
 
-	// enum: vcenter,datacenter,cluster
 	WireLevelForVmware string `json:"wire_level_for_vmware"`
+	Dvs                bool   `json:"dvs"`
 }
 
 type CloudaccountPerformPrepareNetsOutput struct {
-	CAWireNets []CAWireNet `json:"wire_networks"`
+	CAWireNets []CAWireNet  `json:"wire_networks"`
+	Hosts      []CAGuestNet `json:"hosts"`
+	Guests     []CAGuestNet `json:"guests"`
+	Wires      []CAPWire    `json:"wires"`
+	VSwitchs   []VSwitch    `json:"vswitchs"`
+}
+
+type CloudaccountSyncVMwareNetworkInput struct {
+	Zone string `help:"zone Id or Name" json:"zone"`
+}
+
+type CAPWire struct {
+	Id            string       `json:"id"`
+	Name          string       `json:"name"`
+	Distributed   bool         `json:"distributed"`
+	Hosts         []SimpleHost `json:"hosts"`
+	HostNetworks  []CANetConf  `json:"host_networks"`
+	GuestNetworks []CANetConf  `json:"guest_networks"`
+}
+
+type VSwitch struct {
+	Id            string       `json:"id"`
+	Name          string       `json:"name"`
+	Distributed   bool         `json:"distributed"`
+	Hosts         []SimpleHost `json:"hosts"`
+	HostNetworks  []CANetConf  `json:"host_networks"`
+	GuestNetworks []CANetConf  `json:"guest_networks"`
+}
+
+type SimpleHost struct {
+	Id   string
+	Name string
 }
 
 type CAWireNet struct {
@@ -426,4 +462,24 @@ type GetCloudaccountSamlOutput struct {
 	MetadataUrl string `json:"metadata_url,allowempty"`
 	// initial SAML SSO login URL for this cloudaccount
 	InitLoginUrl string `json:"init_login_url,allowempty"`
+}
+
+type CloudaccountSyncSkusInput struct {
+	Resource string
+	Force    bool
+
+	CloudregionResourceInput
+	CloudproviderResourceInput
+}
+
+type CloudaccountEnableAutoSyncInput struct {
+	// 云账号状态必须是connected
+	// 最小值为region服务的minimal_sync_interval_seconds
+	SyncIntervalSeconds int `json:"sync_interval_seconds"`
+}
+
+type CloudaccountProjectMappingInput struct {
+	// 同步策略Id, 若不传此参数则解绑
+	// 绑定同步策略要求当前云账号此刻未绑定其他同步策略
+	ProjectMappingId string `json:"project_mapping_id"`
 }

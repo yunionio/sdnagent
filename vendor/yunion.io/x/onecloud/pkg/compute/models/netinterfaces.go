@@ -78,6 +78,14 @@ func (manager *SNetInterfaceManager) FetchByMac(mac string) (*SNetInterface, err
 	return netif.(*SNetInterface), nil
 }
 
+func (netif *SNetInterface) UnsetWire() error {
+	_, err := db.Update(netif, func() error {
+		netif.WireId = ""
+		return nil
+	})
+	return err
+}
+
 func (netif *SNetInterface) GetWire() *SWire {
 	if len(netif.WireId) > 0 {
 		wireModel, _ := WireManager.FetchById(netif.WireId)
@@ -273,6 +281,7 @@ func (self *SNetInterface) GetCandidateNetworkForIp(ownerId mcclient.IIdentityPr
 	if wire == nil {
 		return nil, nil
 	}
+	log.Infof("ipAddr: %s, netiName: %s, wire: %s", ipAddr, self.GetName(), wire.GetName())
 	return wire.GetCandidateNetworkForIp(ownerId, scope, ipAddr)
 }
 

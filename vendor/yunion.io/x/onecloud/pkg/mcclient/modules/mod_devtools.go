@@ -19,8 +19,12 @@ import (
 )
 
 var (
-	DevToolCronjobs  modulebase.ResourceManager
-	DevToolTemplates modulebase.ResourceManager
+	DevToolCronjobs           modulebase.ResourceManager
+	DevToolTemplates          modulebase.ResourceManager
+	DevToolScripts            modulebase.ResourceManager
+	DevToolScriptApplyRecords modulebase.ResourceManager
+	DevToolSshInfos           modulebase.ResourceManager
+	DevToolServiceUrls        modulebase.ResourceManager
 )
 
 func init() {
@@ -40,4 +44,35 @@ func init() {
 		[]string{"is_system"},
 	)
 	registerCompute(&DevToolTemplates)
+
+	DevToolScripts = NewDevtoolManager(
+		"script",
+		"scripts",
+		[]string{"Id", "Name", "Type", "Playbook_Reference", "Max_Try_Times"},
+		[]string{},
+	)
+	registerCompute(&DevToolScripts)
+	DevToolScriptApplyRecords = NewDevtoolManager(
+		"scriptapplyrecord",
+		"scriptapplyrecords",
+		[]string{"Script_Id", "Server_Id", "Start_Time", "End_Time", "Reason", "Status"},
+		[]string{},
+	)
+	registerCompute(&DevToolScriptApplyRecords)
+
+	DevToolSshInfos = NewDevtoolManager(
+		"sshinfo",
+		"sshinfos",
+		[]string{"Id", "Server_Id", "Server_Name", "Server_Hypervisor", "Forward_Id", "User", "Host", "Port", "Need_Clean", "Failed_Reason"},
+		[]string{},
+	)
+	registerCompute(&DevToolSshInfos)
+
+	DevToolServiceUrls = NewDevtoolManager(
+		"serviceurl",
+		"serviceurls",
+		[]string{"Id", "Service", "Server_Id", "Url", "Server_Ansible_Info", "Failed_Reason"},
+		[]string{},
+	)
+	registerCompute(&DevToolServiceUrls)
 }

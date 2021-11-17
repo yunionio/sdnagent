@@ -53,6 +53,7 @@ import (
 	"yunion.io/x/onecloud/pkg/mcclient"
 	"yunion.io/x/onecloud/pkg/mcclient/auth"
 	"yunion.io/x/onecloud/pkg/mcclient/modules"
+	"yunion.io/x/onecloud/pkg/multicloud/esxi"
 	"yunion.io/x/onecloud/pkg/util/httputils"
 	"yunion.io/x/onecloud/pkg/util/logclient"
 	"yunion.io/x/onecloud/pkg/util/rbacutils"
@@ -113,7 +114,7 @@ type SHost struct {
 	// 物理CPU颗数
 	NodeCount int8 `nullable:"true" list:"domain" update:"domain" create:"domain_optional"`
 	// CPU描述信息
-	CpuDesc string `width:"64" charset:"ascii" nullable:"true" get:"domain" update:"domain" create:"domain_optional"`
+	CpuDesc string `width:"128" charset:"ascii" nullable:"true" get:"domain" update:"domain" create:"domain_optional"`
 	// CPU频率
 	CpuMhz int `nullable:"true" get:"domain" update:"domain" create:"domain_optional"`
 	// CPU缓存大小,单位KB
@@ -187,6 +188,9 @@ type SHost struct {
 
 	// IPv4地址，作为么有云vpc访问外网时的网关
 	OvnMappedIpAddr string `width:"16" charset:"ascii" nullable:"true" list:"user"`
+
+	// UEFI详情
+	UefiInfo jsonutils.JSONObject `nullable:"true" get:"domain" update:"domain" create:"domain_optional"`
 }
 
 func (manager *SHostManager) GetContextManagers() [][]db.IModelManager {
@@ -251,6 +255,14 @@ func (manager *SHostManager) ListItemFilter(
 			q = q.Equals("access_mac", anyMac)
 		}
 	}
+	if len(query.AnyIp) > 0 {
+		hn := HostnetworkManager.Query("baremetal_id").Contains("ip_addr", query.AnyIp).SubQuery()
+		q = q.Filter(sqlchemy.OR(
+			sqlchemy.Contains(q.Field("access_ip"), query.AnyIp),
+			sqlchemy.Contains(q.Field("ipmi_ip"), query.AnyIp),
+			sqlchemy.In(q.Field("id"), hn),
+		))
+	}
 	// var scopeQuery *sqlchemy.SSubQuery
 
 	schedTagStr := query.SchedtagId
@@ -305,15 +317,12 @@ func (manager *SHostManager) ListItemFilter(
 		hosts := HostManager.Query().SubQuery()
 		hostwires := HostwireManager.Query().SubQuery()
 		networks := NetworkManager.Query().SubQuery()
-		providers := CloudproviderManager.Query().SubQuery()
+		providers := usableCloudProviders().SubQuery()
 
 		hostQ1 := hosts.Query(hosts.Field("id"))
 		hostQ1 = hostQ1.Join(providers, sqlchemy.Equals(hosts.Field("manager_id"), providers.Field("id")))
 		hostQ1 = hostQ1.Join(hostwires, sqlchemy.Equals(hosts.Field("id"), hostwires.Field("host_id")))
 		hostQ1 = hostQ1.Join(networks, sqlchemy.Equals(hostwires.Field("wire_id"), networks.Field("wire_id")))
-		hostQ1 = hostQ1.Filter(sqlchemy.IsTrue(providers.Field("enabled")))
-		hostQ1 = hostQ1.Filter(sqlchemy.In(providers.Field("status"), api.CLOUD_PROVIDER_VALID_STATUS))
-		hostQ1 = hostQ1.Filter(sqlchemy.In(providers.Field("health_status"), api.CLOUD_PROVIDER_VALID_HEALTH_STATUS))
 		hostQ1 = hostQ1.Filter(sqlchemy.Equals(networks.Field("status"), api.NETWORK_STATUS_AVAILABLE))
 		hostQ1 = hostQ1.Filter(sqlchemy.IsTrue(hosts.Field("enabled")))
 
@@ -444,7 +453,8 @@ func (manager *SHostManager) ListItemFilter(
 				wires := []string{}
 				for i := 0; i < len(nets); i++ {
 					net := nets[i].GetNetwork()
-					if net.GetVpc().Id != api.DEFAULT_VPC_ID {
+					vpc, _ := net.GetVpc()
+					if vpc.Id != api.DEFAULT_VPC_ID {
 						q = q.IsNotEmpty("ovn_version")
 					} else {
 						if !utils.IsInStringArray(net.WireId, wires) {
@@ -481,6 +491,17 @@ func (manager *SHostManager) OrderByExtraFields(
 	if err != nil {
 		return nil, errors.Wrap(err, "SZoneResourceBaseManager.OrderByExtraFields")
 	}
+
+	if db.NeedOrderQuery([]string{query.OrderByServerCount}) {
+		guests := GuestManager.Query().SubQuery()
+		guestCounts := guests.Query(
+			guests.Field("host_id"),
+			sqlchemy.COUNT("id").Label("guest_count"),
+		).GroupBy("host_id").SubQuery()
+		q = q.LeftJoin(guestCounts, sqlchemy.Equals(q.Field("id"), guestCounts.Field("host_id")))
+		db.OrderByFields(q, []string{query.OrderByServerCount}, []sqlchemy.IQueryField{guestCounts.Field("guest_count")})
+	}
+
 	return q, nil
 }
 
@@ -532,26 +553,23 @@ func (manager *SHostManager) CustomizeFilterList(ctx context.Context, q *sqlchem
 }
 
 func (self *SHost) IsArmHost() bool {
-	return self.CpuArchitecture == api.CPU_ARCH_AARCH64
+	return self.CpuArchitecture == apis.OS_ARCH_AARCH64
 }
 
-func (self *SHost) GetZone() *SZone {
-	if len(self.ZoneId) == 0 {
-		return nil
+func (self *SHost) GetZone() (*SZone, error) {
+	zone, err := ZoneManager.FetchById(self.ZoneId)
+	if err != nil {
+		return nil, err
 	}
-	zone, _ := ZoneManager.FetchById(self.ZoneId)
-	if zone != nil {
-		return zone.(*SZone)
-	}
-	return nil
+	return zone.(*SZone), nil
 }
 
-func (self *SHost) GetRegion() *SCloudregion {
-	zone := self.GetZone()
-	if zone != nil {
-		return zone.GetRegion()
+func (self *SHost) GetRegion() (*SCloudregion, error) {
+	zone, err := self.GetZone()
+	if err != nil {
+		return nil, err
 	}
-	return nil
+	return zone.GetRegion()
 }
 
 func (self *SHost) GetCpuCount() int {
@@ -612,7 +630,7 @@ func (self *SHost) AllowDeleteItem(ctx context.Context, userCred mcclient.TokenC
 	return userCred.IsSystemAdmin()
 }*/
 
-func (self *SHost) ValidateDeleteCondition(ctx context.Context) error {
+func (self *SHost) ValidateDeleteCondition(ctx context.Context, info jsonutils.JSONObject) error {
 	return self.validateDeleteCondition(ctx, false)
 }
 
@@ -647,7 +665,7 @@ func (self *SHost) validateDeleteCondition(ctx context.Context, purge bool) erro
 		}
 
 	}
-	return self.SEnabledStatusInfrasResourceBase.ValidateDeleteCondition(ctx)
+	return self.SEnabledStatusInfrasResourceBase.ValidateDeleteCondition(ctx, nil)
 }
 
 func (self *SHost) Delete(ctx context.Context, userCred mcclient.TokenCredential) error {
@@ -1007,7 +1025,20 @@ func (self *SHostManager) AllowGetPropertyNodeCount(ctx context.Context, userCre
 func (self *SHostManager) GetPropertyNodeCount(ctx context.Context, userCred mcclient.TokenCredential, query api.HostListInput) (jsonutils.JSONObject, error) {
 	hosts := self.Query().SubQuery()
 	q := hosts.Query(hosts.Field("host_type"), sqlchemy.SUM("node_count_total", hosts.Field("node_count")))
-	q, err := self.ListItemFilter(ctx, q, userCred, query)
+	return self.getCount(ctx, userCred, q, query)
+}
+
+func (self *SHostManager) getCount(ctx context.Context, userCred mcclient.TokenCredential, q *sqlchemy.SQuery, query api.HostListInput) (jsonutils.JSONObject, error) {
+	filterAny := false
+	if query.FilterAny != nil {
+		filterAny = *query.FilterAny
+	}
+	q, err := db.ApplyListItemsGeneralFilters(self, q, userCred, query.Filter, filterAny)
+	if err != nil {
+		return nil, err
+	}
+
+	q, err = self.ListItemFilter(ctx, q, userCred, query)
 	if err != nil {
 		return nil, err
 	}
@@ -1023,7 +1054,7 @@ func (self *SHostManager) GetPropertyNodeCount(ctx context.Context, userCred mcc
 		var count int64
 		err = rows.Scan(&hostType, &count)
 		if err != nil {
-			log.Errorf("Get host node count scan err: %v", err)
+			log.Errorf("getCount scan err: %v", err)
 			return ret, nil
 		}
 
@@ -1031,6 +1062,21 @@ func (self *SHostManager) GetPropertyNodeCount(ctx context.Context, userCred mcc
 	}
 
 	return ret, nil
+}
+
+func (self *SHostManager) AllowGetPropertyHostTypeCount(ctx context.Context, userCred mcclient.TokenCredential, query api.HostListInput) bool {
+	return userCred.HasSystemAdminPrivilege()
+}
+
+func (self *SHostManager) GetPropertyHostTypeCount(ctx context.Context, userCred mcclient.TokenCredential, query api.HostListInput) (jsonutils.JSONObject, error) {
+	hosts := self.Query().SubQuery()
+	// select host_type, (case host_type when 'huaweicloudstack' then count(DISTINCT external_id) else count(id) end) as count from hosts_tbl group by host_type;
+	cs := sqlchemy.NewCase()
+	hcso := sqlchemy.Equals(hosts.Field("host_type"), api.HOST_TYPE_HCSO)
+	cs.When(hcso, sqlchemy.COUNT("", sqlchemy.DISTINCT("", hosts.Field("external_id"))))
+	cs.Else(sqlchemy.COUNT("", hosts.Field("id")))
+	q := hosts.Query(hosts.Field("host_type"), sqlchemy.NewFunction(cs, "count"))
+	return self.getCount(ctx, userCred, q, query)
 }
 
 func (self *SHostManager) ClearAllSchedDescCache() error {
@@ -1095,8 +1141,7 @@ func (self *SHost) GetSpec(statusCheck bool) *jsonutils.JSONDict {
 		if !self.GetEnabled() {
 			return nil
 		}
-		if utils.IsInStringArray(self.Status, []string{api.BAREMETAL_INIT, api.BAREMETAL_PREPARE_FAIL, api.BAREMETAL_PREPARE}) ||
-			self.GetBaremetalServer() != nil {
+		if self.Status != api.BAREMETAL_RUNNING || self.GetBaremetalServer() != nil || self.IsMaintenance {
 			return nil
 		}
 		if self.MemSize == 0 || self.CpuCount == 0 {
@@ -1398,6 +1443,16 @@ func (self *SHost) GetMasterWire() *SWire {
 	return &wire
 }
 
+func (self *SHost) getHostwires() ([]SHostwire, error) {
+	hostwires := make([]SHostwire, 0)
+	q := self.GetWiresQuery()
+	err := db.FetchModelObjects(HostwireManager, q, &hostwires)
+	if err != nil {
+		return nil, err
+	}
+	return hostwires, nil
+}
+
 func (self *SHost) getHostwiresOfId(wireId string) []SHostwire {
 	hostwires := make([]SHostwire, 0)
 
@@ -1672,7 +1727,7 @@ func (manager *SHostManager) SyncHosts(ctx context.Context, userCred mcclient.To
 		}
 	}
 	for i := 0; i < len(added); i += 1 {
-		new, err := manager.newFromCloudHost(ctx, userCred, added[i], provider, zone)
+		new, err := manager.NewFromCloudHost(ctx, userCred, added[i], provider, zone)
 		if err != nil {
 			syncResult.AddError(err)
 		} else {
@@ -1691,19 +1746,9 @@ func (self *SHost) syncRemoveCloudHost(ctx context.Context, userCred mcclient.To
 
 	err := self.ValidatePurgeCondition(ctx)
 	if err != nil {
-		err = self.SetStatus(userCred, api.HOST_OFFLINE, "sync to delete")
-		if err == nil {
-			_, err = self.PerformDisable(ctx, userCred, nil, apis.PerformDisableInput{})
-		}
-		guests, err := self.GetGuests()
+		err = self.purge(ctx, userCred)
 		if err != nil {
-			return errors.Wrapf(err, "GetGuests")
-		}
-		for _, guest := range guests {
-			err = guest.SetStatus(userCred, api.VM_UNKNOWN, "sync to delete")
-			if err != nil {
-				return err
-			}
+			return errors.Wrap(err, "purge")
 		}
 	} else {
 		err = self.RealDelete(ctx, userCred)
@@ -1723,7 +1768,11 @@ func (self *SHost) syncWithCloudHost(ctx context.Context, userCred mcclient.Toke
 		self.SysInfo = extHost.GetSysInfo()
 		self.CpuCount = extHost.GetCpuCount()
 		self.NodeCount = extHost.GetNodeCount()
-		self.CpuDesc = extHost.GetCpuDesc()
+		cpuDesc := extHost.GetCpuDesc()
+		if len(cpuDesc) > 128 {
+			cpuDesc = cpuDesc[:128]
+		}
+		self.CpuDesc = cpuDesc
 		self.CpuMhz = extHost.GetCpuMhz()
 		self.MemSize = extHost.GetMemSizeMB()
 		self.StorageSize = extHost.GetStorageSizeMB()
@@ -1923,7 +1972,7 @@ func (s *SHost) syncSchedtags(ctx context.Context, userCred mcclient.TokenCreden
 	return nil
 }
 
-func (manager *SHostManager) newFromCloudHost(ctx context.Context, userCred mcclient.TokenCredential, extHost cloudprovider.ICloudHost, provider *SCloudprovider, izone *SZone) (*SHost, error) {
+func (manager *SHostManager) NewFromCloudHost(ctx context.Context, userCred mcclient.TokenCredential, extHost cloudprovider.ICloudHost, provider *SCloudprovider, izone *SZone) (*SHost, error) {
 	host := SHost{}
 	host.SetModelManager(manager, &host)
 
@@ -1941,14 +1990,10 @@ func (manager *SHostManager) newFromCloudHost(ctx context.Context, userCred mccl
 			log.Errorf(msg)
 			return nil, fmt.Errorf(msg)
 		}
-		izone = wire.GetZone()
+		izone, _ = wire.GetZone()
 	}
 
-	newName, err := db.GenerateName(manager, userCred, extHost.GetName())
-	if err != nil {
-		return nil, fmt.Errorf("generate name fail %s", err)
-	}
-	host.Name = newName
+	host.Name = extHost.GetName()
 	host.ExternalId = extHost.GetGlobalId()
 	host.ZoneId = izone.Id
 
@@ -1964,7 +2009,11 @@ func (manager *SHostManager) newFromCloudHost(ctx context.Context, userCred mccl
 	host.SysInfo = extHost.GetSysInfo()
 	host.CpuCount = extHost.GetCpuCount()
 	host.NodeCount = extHost.GetNodeCount()
-	host.CpuDesc = extHost.GetCpuDesc()
+	cpuDesc := extHost.GetCpuDesc()
+	if len(cpuDesc) > 128 {
+		cpuDesc = cpuDesc[:128]
+	}
+	host.CpuDesc = cpuDesc
 	host.CpuMhz = extHost.GetCpuMhz()
 	host.MemSize = extHost.GetMemSizeMB()
 	host.StorageSize = extHost.GetStorageSizeMB()
@@ -1991,7 +2040,7 @@ func (manager *SHostManager) newFromCloudHost(ctx context.Context, userCred mccl
 	host.IsPublic = false
 	host.PublicScope = string(rbacutils.ScopeNone)
 
-	err = manager.TableSpec().Insert(ctx, &host)
+	err := manager.TableSpec().Insert(ctx, &host)
 	if err != nil {
 		log.Errorf("newFromCloudHost fail %s", err)
 		return nil, err
@@ -2093,7 +2142,7 @@ func (self *SHost) SyncHostStorages(ctx context.Context, userCred mcclient.Token
 
 func (self *SHost) syncRemoveCloudHostStorage(ctx context.Context, userCred mcclient.TokenCredential, localStorage *SStorage) error {
 	hs := self.GetHoststorageOfId(localStorage.Id)
-	err := hs.ValidateDeleteCondition(ctx)
+	err := hs.ValidateDeleteCondition(ctx, nil)
 	if err == nil {
 		log.Errorf("sync remove hoststorage fail: %s", err)
 		err = hs.Detach(ctx, userCred)
@@ -2149,7 +2198,8 @@ func (self *SHost) newCloudHostStorage(ctx context.Context, userCred mcclient.To
 		if err == sql.ErrNoRows {
 			// no cloud storage found, this may happen for on-premise host
 			// create the storage right now
-			storageObj, err = StorageManager.newFromCloudStorage(ctx, userCred, extStorage, provider, self.GetZone())
+			zone, _ := self.GetZone()
+			storageObj, err = StorageManager.newFromCloudStorage(ctx, userCred, extStorage, provider, zone)
 			if err != nil {
 				log.Errorf("create by cloud storage fail %s", err)
 				return nil, err
@@ -2405,18 +2455,18 @@ func (self *SHost) getNetworkOfIPOnHost(ipAddr string) (*SNetwork, error) {
 	return nil, fmt.Errorf("IP %s not reachable on this host", ipAddr)
 }
 
-func (self *SHost) GetNetinterfacesWithIdAndCredential(netId string, userCred mcclient.TokenCredential, reserved bool) ([]SNetInterface, *SNetwork) {
+func (self *SHost) GetNetinterfacesWithIdAndCredential(netId string, userCred mcclient.TokenCredential, reserved bool) ([]SNetInterface, *SNetwork, error) {
 	netObj, err := NetworkManager.FetchById(netId)
 	if err != nil {
-		return nil, nil
+		return nil, nil, errors.Wrapf(err, "fetch by id %q", netId)
 	}
 	net := netObj.(*SNetwork)
 	used, err := net.getFreeAddressCount()
 	if err != nil {
-		return nil, nil
+		return nil, nil, errors.Wrapf(err, "get network %q free address count", net.GetName())
 	}
-	if used == 0 && !reserved {
-		return nil, nil
+	if used == 0 && !reserved && !options.Options.BaremetalServerReuseHostIp {
+		return nil, nil, errors.Errorf("network %q out of usage", net.GetName())
 	}
 	matchNetIfs := make([]SNetInterface, 0)
 	netifs := self.GetNetInterfaces()
@@ -2430,9 +2480,9 @@ func (self *SHost) GetNetinterfacesWithIdAndCredential(netId string, userCred mc
 		}
 	}
 	if len(matchNetIfs) > 0 {
-		return matchNetIfs, net
+		return matchNetIfs, net, nil
 	}
-	return nil, nil
+	return nil, nil, errors.Errorf("not found matched netinterface by net %q wire %q", net.GetName(), net.WireId)
 }
 
 func (self *SHost) GetNetworkWithId(netId string, reserved bool) (*SNetwork, error) {
@@ -2559,7 +2609,7 @@ func (manager *SHostManager) totalCountQ(
 		iq.Field("isolated_reserved_storage"),
 	)
 	q = AttachUsageQuery(q, hosts, hostTypes, resourceTypes, providers, brands, cloudEnv, rangeObjs)
-	log.Debugf("hostCount: %s", q.String())
+	// log.Debugf("hostCount: %s", q.String())
 	return q
 }
 
@@ -2698,11 +2748,11 @@ func (self *SHost) GetIZone() (cloudprovider.ICloudZone, error) {
 	if err != nil {
 		return nil, fmt.Errorf("No cloudprovider for host: %s", err)
 	}
-	zone := self.GetZone()
+	zone, _ := self.GetZone()
 	if zone == nil {
 		return nil, fmt.Errorf("no zone for host???")
 	}
-	region := zone.GetRegion()
+	region, _ := zone.GetRegion()
 	if region == nil {
 		return nil, fmt.Errorf("No region for zone???")
 	}
@@ -2732,11 +2782,9 @@ func (self *SHost) GetIHostAndProvider() (cloudprovider.ICloudHost, cloudprovide
 	if provider.GetFactory().IsOnPremise() {
 		iregion, err = provider.GetOnPremiseIRegion()
 	} else {
-		region := self.GetRegion()
-		if region == nil {
-			msg := "fail to find region of host???"
-			log.Errorf(msg)
-			return nil, nil, fmt.Errorf(msg)
+		region, err := self.GetRegion()
+		if err != nil {
+			return nil, nil, errors.Wrapf(err, "GetRegion")
 		}
 		iregion, err = provider.GetIRegionById(region.ExternalId)
 	}
@@ -2756,7 +2804,7 @@ func (self *SHost) GetIRegion() (cloudprovider.ICloudRegion, error) {
 	if err != nil {
 		return nil, fmt.Errorf("No cloudprovider for host %s: %s", self.Name, err)
 	}
-	region := self.GetRegion()
+	region, _ := self.GetRegion()
 	if region == nil {
 		return nil, fmt.Errorf("failed to find host %s region info", self.Name)
 	}
@@ -2833,16 +2881,11 @@ func (self *SHost) getMoreDetails(ctx context.Context, out api.HostDetails, show
 			out.ServerIps = strings.Join(server.GetRealIPs(), ",")
 		}
 	}
-	netifs := self.GetNetInterfaces()
-	if netifs != nil && len(netifs) > 0 {
+	nics := self.GetNics()
+	if nics != nil && len(nics) > 0 {
 		nicInfos := []jsonutils.JSONObject{}
-		for i := 0; i < len(netifs); i += 1 {
-			nicInfo := netifs[i].getBaremetalJsonDesc()
-			if nicInfo == nil {
-				log.Errorf("netif %s get baremetal desc failed", netifs[i].GetId())
-				continue
-			}
-			nicInfos = append(nicInfos, nicInfo)
+		for i := 0; i < len(nics); i += 1 {
+			nicInfos = append(nicInfos, jsonutils.Marshal(nics[i]))
 		}
 		out.NicCount = len(nicInfos)
 		out.NicInfo = nicInfos
@@ -2990,7 +3033,7 @@ func (self *SHost) GetDetailsVnc(ctx context.Context, userCred mcclient.TokenCre
 	if utils.IsInStringArray(self.Status, []string{api.BAREMETAL_READY, api.BAREMETAL_RUNNING}) {
 		retval := jsonutils.NewDict()
 		retval.Set("host_id", jsonutils.NewString(self.Id))
-		zone := self.GetZone()
+		zone, _ := self.GetZone()
 		retval.Set("zone", jsonutils.NewString(zone.GetName()))
 		return retval, nil
 	}
@@ -3285,7 +3328,7 @@ func (manager *SHostManager) ValidateCreateData(
 				return input, errors.Wrap(err, "net.reserveIpWithDuration")
 			}
 		}
-		zoneObj := net.GetZone()
+		zoneObj, _ := net.GetZone()
 		if zoneObj == nil {
 			return input, httperrors.NewInputParameterError("IPMI network has no zone???")
 		}
@@ -3352,7 +3395,7 @@ func (manager *SHostManager) ValidateCreateData(
 				return input, httperrors.NewConflictError("Access ip %s has been used", accessIpAddr)
 			}
 
-			zoneObj := accessNet.GetZone()
+			zoneObj, _ := accessNet.GetZone()
 			if zoneObj == nil {
 				return input, httperrors.NewInputParameterError("Access network has no zone???")
 			}
@@ -3438,7 +3481,7 @@ func (self *SHost) ValidateUpdateData(ctx context.Context, userCred mcclient.Tok
 			if net == nil {
 				return input, httperrors.NewInputParameterError("%s is out of network IP ranges", ipmiIpAddr)
 			}
-			zoneObj := net.GetZone()
+			zoneObj, _ := net.GetZone()
 			if zoneObj == nil {
 				return input, httperrors.NewInputParameterError("IPMI network has not zone???")
 			}
@@ -3495,6 +3538,14 @@ func (self *SHost) PostUpdate(ctx context.Context, userCred mcclient.TokenCreden
 			return nil
 		}); err != nil {
 			log.Errorf("baremetal host %s update related server %s spec error: %v", self.GetName(), guest.GetName(), err)
+		}
+	}
+
+	notSyncConf, _ := data.Bool("not_sync_config")
+
+	if !notSyncConf {
+		if err := self.startSyncConfig(ctx, userCred, "", true); err != nil {
+			log.Errorf("start sync host %q config after updated", self.GetName())
 		}
 	}
 }
@@ -3902,6 +3953,25 @@ func (self *SHost) AllowPerformPrepare(ctx context.Context,
 	return db.IsAdminAllowPerform(userCred, self, "prepare")
 }
 
+func (self *SHost) HasBMC() bool {
+	ipmiInfo, _ := self.GetIpmiInfo()
+	if ipmiInfo.Username != "" && ipmiInfo.Password != "" {
+		return true
+	}
+	return false
+}
+
+func (self *SHost) IsUEFIBoot() bool {
+	info, _ := self.GetUEFIInfo()
+	if info == nil {
+		return false
+	}
+	if len(info.PxeBootNum) == 0 {
+		return false
+	}
+	return true
+}
+
 func (self *SHost) isRedfishCapable() bool {
 	ipmiInfo, _ := self.GetIpmiInfo()
 	if ipmiInfo.Verified && ipmiInfo.RedfishApi {
@@ -3963,7 +4033,7 @@ func (self *SHost) AllowPerformIpmiProbe(ctx context.Context,
 }
 
 func (self *SHost) PerformIpmiProbe(ctx context.Context, userCred mcclient.TokenCredential, query jsonutils.JSONObject, data jsonutils.JSONObject) (jsonutils.JSONObject, error) {
-	if utils.IsInStringArray(self.Status, []string{api.BAREMETAL_INIT, api.BAREMETAL_READY, api.BAREMETAL_RUNNING}) {
+	if utils.IsInStringArray(self.Status, []string{api.BAREMETAL_INIT, api.BAREMETAL_READY, api.BAREMETAL_RUNNING, api.BAREMETAL_PROBE_FAIL, api.BAREMETAL_UNKNOWN}) {
 		return nil, self.StartIpmiProbeTask(ctx, userCred, "")
 	}
 	return nil, httperrors.NewInvalidStatusError("Cannot do Ipmi-probe in status %s", self.Status)
@@ -4244,6 +4314,7 @@ func (self *SHost) addNetif(ctx context.Context, userCred mcclient.TokenCredenti
 			return httperrors.NewBadRequestError("%v", err)
 		}
 	}
+	self.ClearSchedDescCache()
 	return nil
 }
 
@@ -4394,6 +4465,9 @@ func (self *SHost) PerformDisableNetif(ctx context.Context, userCred mcclient.To
 	return nil, nil
 }
 
+/*
+ * Disable a net interface, remove IP address if assigned
+ */
 func (self *SHost) DisableNetif(ctx context.Context, userCred mcclient.TokenCredential, netif *SNetInterface, reserve bool) error {
 	bn := netif.GetBaremetalNetwork()
 	var ipAddr string
@@ -4556,6 +4630,7 @@ func (self *SHost) RemoveNetif(ctx context.Context, userCred mcclient.TokenCrede
 			}
 		}
 	}
+	self.ClearSchedDescCache()
 	return nil
 }
 
@@ -4908,6 +4983,93 @@ func (self *SHost) UpdateDiskConfig(userCred mcclient.TokenCredential, layouts [
 	return nil
 }
 
+// TODO: support multithreaded operation
+func (host *SHost) SyncEsxiHostWires(ctx context.Context, userCred mcclient.TokenCredential, remoteHost cloudprovider.ICloudHost) compare.SyncResult {
+	lockman.LockObject(ctx, host)
+	defer lockman.ReleaseObject(ctx, host)
+
+	result := compare.SyncResult{}
+	ca := host.GetCloudaccount()
+	host2wires, err := ca.GetHost2Wire(ctx, userCred)
+	if err != nil {
+		result.Error(errors.Wrap(err, "unable to GetHost2Wire"))
+		return result
+	}
+	log.Infof("host2wires: %s", jsonutils.Marshal(host2wires))
+	ihost := remoteHost.(*esxi.SHost)
+	remoteHostId := ihost.GetId()
+	vsWires := host2wires[remoteHostId]
+
+	log.Infof("vsWires: %s", jsonutils.Marshal(vsWires))
+	netIfs := host.GetNetInterfaces()
+	hostwires, err := host.getHostwires()
+	if err != nil {
+		result.Error(errors.Wrapf(err, "unable to getHostwires of host %s", host.GetId()))
+		return result
+	}
+
+	for i := range vsWires {
+		vsWire := vsWires[i]
+		if vsWire.SyncTimes > 0 {
+			continue
+		}
+		netif := host.findNetIfs(netIfs, vsWire.Mac)
+		if netif == nil {
+			// do nothing
+			continue
+		}
+		hostwire := host.findHostwire(hostwires, vsWire.WireId, vsWire.Mac)
+		if hostwire == nil {
+			hostwire = &SHostwire{
+				Bridge:  vsWire.VsId,
+				MacAddr: vsWire.Mac,
+				HostId:  host.GetId(),
+				WireId:  vsWire.WireId,
+			}
+			hostwire.MacAddr = vsWire.Mac
+			err := HostwireManager.TableSpec().Insert(ctx, hostwire)
+			if err != nil {
+				result.Error(errors.Wrapf(err, "unable to create hostwire for host %q", host.GetId()))
+				continue
+			}
+		}
+		if hostwire.Bridge != vsWire.VsId {
+			db.Update(hostwire, func() error {
+				hostwire.Bridge = vsWire.VsId
+				return nil
+			})
+		}
+		if len(netif.WireId) == 0 {
+			db.Update(netif, func() error {
+				netif.WireId = vsWire.WireId
+				return nil
+			})
+		}
+		vsWires[i].SyncTimes += 1
+	}
+	log.Infof("after sync: %s", jsonutils.Marshal(host2wires))
+	ca.SetHost2Wire(ctx, userCred, host2wires)
+	return result
+}
+
+func (host *SHost) findHostwire(hostwires []SHostwire, wireId string, mac string) *SHostwire {
+	for i := range hostwires {
+		if hostwires[i].WireId == wireId && hostwires[i].MacAddr == mac {
+			return &hostwires[i]
+		}
+	}
+	return nil
+}
+
+func (host *SHost) findNetIfs(netIfs []SNetInterface, mac string) *SNetInterface {
+	for i := range netIfs {
+		if netIfs[i].Mac == mac {
+			return &netIfs[i]
+		}
+	}
+	return nil
+}
+
 func (host *SHost) SyncHostExternalNics(ctx context.Context, userCred mcclient.TokenCredential, ihost cloudprovider.ICloudHost) compare.SyncResult {
 	result := compare.SyncResult{}
 
@@ -4960,7 +5122,7 @@ func (host *SHost) SyncHostExternalNics(ctx context.Context, userCred mcclient.T
 					if hw != nil && (hw.Bridge != extNics[i].GetBridge() || hw.Interface != extNics[i].GetDevice()) {
 						db.Update(hw, func() error {
 							hw.Interface = extNics[i].GetDevice()
-							hw.Bridge = extNics[i].GetBridge()
+							// hw.Bridge = extNics[i].GetBridge()
 							return nil
 						})
 					}
@@ -5121,9 +5283,9 @@ func (manager *SHostManager) GetHostByIp(hostIp string) (*SHost, error) {
 
 func (self *SHost) getCloudProviderInfo() SCloudProviderInfo {
 	var region *SCloudregion
-	zone := self.GetZone()
+	zone, _ := self.GetZone()
 	if zone != nil {
-		region = zone.GetRegion()
+		region, _ = zone.GetRegion()
 	}
 	provider := self.GetCloudprovider()
 	return MakeCloudProviderInfo(region, zone, provider)
@@ -5499,6 +5661,35 @@ func (host *SHost) GetIpmiInfo() (types.SIPMIInfo, error) {
 	return info, nil
 }
 
+func (host *SHost) GetNics() []*types.SNic {
+	netifs := host.GetNetInterfaces()
+	nicInfos := []*types.SNic{}
+	if netifs != nil && len(netifs) > 0 {
+		for i := 0; i < len(netifs); i += 1 {
+			desc := netifs[i].getBaremetalJsonDesc()
+			if desc == nil {
+				log.Errorf("netif %s get baremetal desc failed", netifs[i].GetId())
+				continue
+			}
+			nicInfo := new(types.SNic)
+			desc.Unmarshal(nicInfo)
+			nicInfos = append(nicInfos, nicInfo)
+		}
+	}
+	return nicInfos
+}
+
+func (host *SHost) GetUEFIInfo() (*types.EFIBootMgrInfo, error) {
+	if host.UefiInfo == nil {
+		return nil, nil
+	}
+	info := new(types.EFIBootMgrInfo)
+	if err := host.UefiInfo.Unmarshal(info); err != nil {
+		return nil, errors.Wrap(err, "host.UefiInfo.Unmarshal")
+	}
+	return info, nil
+}
+
 func (self *SHost) AllowGetDetailsJnlp(ctx context.Context, userCred mcclient.TokenCredential, query jsonutils.JSONObject) bool {
 	return db.IsAdminAllowGetSpec(userCred, self, "jnlp")
 }
@@ -5600,7 +5791,13 @@ func (self *SHost) PerformSyncConfig(ctx context.Context, userCred mcclient.Toke
 }
 
 func (self *SHost) StartSyncConfig(ctx context.Context, userCred mcclient.TokenCredential, parentTaskId string) error {
-	task, err := taskman.TaskManager.NewTask(ctx, "BaremetalSyncConfigTask", self, userCred, nil, parentTaskId, "", nil)
+	return self.startSyncConfig(ctx, userCred, parentTaskId, false)
+}
+
+func (self *SHost) startSyncConfig(ctx context.Context, userCred mcclient.TokenCredential, parentTaskId string, noStatus bool) error {
+	data := jsonutils.NewDict()
+	data.Add(jsonutils.NewBool(noStatus), "not_sync_status")
+	task, err := taskman.TaskManager.NewTask(ctx, "BaremetalSyncConfigTask", self, userCred, data, parentTaskId, "", nil)
 	if err != nil {
 		return err
 	}
@@ -5626,8 +5823,22 @@ func (host *SHost) PerformChangeOwner(ctx context.Context, userCred mcclient.Tok
 			return nil, errors.Wrap(err, "local storage change owner")
 		}
 	}
-
+	err = host.StartSyncTask(ctx, userCred, "")
+	if err != nil {
+		return nil, errors.Wrap(err, "PerformChangeOwner StartSyncTask err")
+	}
 	return ret, nil
+}
+
+func (self *SHost) StartSyncTask(ctx context.Context, userCred mcclient.TokenCredential, parentTaskId string) error {
+	if task, err := taskman.TaskManager.NewTask(ctx, "HostSyncTask", self, userCred, jsonutils.NewDict(), parentTaskId, "",
+		nil); err != nil {
+		log.Errorln(err)
+		return err
+	} else {
+		task.ScheduleRun(nil)
+	}
+	return nil
 }
 
 func (host *SHost) GetChangeOwnerRequiredDomainIds() []string {
@@ -5653,7 +5864,7 @@ func GetHostQuotaKeysFromCreateInput(owner mcclient.IIdentityProvider, input api
 }
 
 func (model *SHost) GetQuotaKeys() quotas.SDomainRegionalCloudResourceKeys {
-	zone := model.GetZone()
+	zone, _ := model.GetZone()
 	manager := model.GetCloudprovider()
 	ownerId := model.GetOwnerId()
 	zoneKeys := fetchZonalQuotaKeys(rbacutils.ScopeDomain, ownerId, zone, manager)

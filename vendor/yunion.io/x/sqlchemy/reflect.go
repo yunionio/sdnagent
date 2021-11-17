@@ -28,6 +28,19 @@ import (
 	"yunion.io/x/pkg/util/timeutils"
 )
 
+func getQuoteStringValue(dat interface{}) string {
+	value := reflect.ValueOf(dat)
+	switch value.Kind() {
+	case reflect.Int, reflect.Int8, reflect.Int16, reflect.Int32, reflect.Int64:
+		return fmt.Sprintf("%d", value.Int())
+	case reflect.Uint, reflect.Uint8, reflect.Uint16, reflect.Uint32, reflect.Uint64:
+		return fmt.Sprintf("%d", value.Uint())
+	case reflect.Float32, reflect.Float64:
+		return fmt.Sprintf("%f", value.Float())
+	}
+	return strconv.Quote(getStringValue(dat))
+}
+
 func getStringValue(dat interface{}) string {
 	value := reflect.ValueOf(dat)
 	switch value.Type() {
@@ -60,9 +73,8 @@ func getStringValue(dat interface{}) string {
 	case reflect.Bool:
 		if value.Bool() {
 			return "true"
-		} else {
-			return "false"
 		}
+		return "false"
 	case reflect.Int, reflect.Int8, reflect.Int16, reflect.Int32, reflect.Int64:
 		return fmt.Sprintf("%d", value.Int())
 	case reflect.Uint, reflect.Uint8, reflect.Uint16, reflect.Uint32, reflect.Uint64:

@@ -30,7 +30,6 @@ import (
 	"yunion.io/x/onecloud/pkg/cloudcommon/db"
 	"yunion.io/x/onecloud/pkg/cloudcommon/db/lockman"
 	"yunion.io/x/onecloud/pkg/cloudprovider"
-	"yunion.io/x/onecloud/pkg/httperrors"
 	"yunion.io/x/onecloud/pkg/mcclient"
 )
 
@@ -65,6 +64,11 @@ type SQcloudCachedLbbg struct {
 	BackendGroupId string `width:"36" charset:"ascii" nullable:"true" list:"user" create:"optional"`
 	AssociatedId   string `width:"36" charset:"ascii" nullable:"true" list:"user" create:"optional"` // 关联ID
 	AssociatedType string `width:"36" charset:"ascii" nullable:"true" list:"user" create:"optional"` // 关联类型， listener || rule
+}
+
+func (manager *SQcloudCachedLbbgManager) GetResourceCount() ([]db.SScopeResourceCount, error) {
+	virts := manager.Query().IsFalse("pending_deleted")
+	return db.CalculateResourceCount(virts, "tenant_id")
 }
 
 func (lbb *SQcloudCachedLbbg) GetCustomizeColumns(context.Context, mcclient.TokenCredential, jsonutils.JSONObject) *jsonutils.JSONDict {
@@ -136,7 +140,7 @@ func (lbbg *SQcloudCachedLbbg) syncRemoveCloudLoadbalancerBackendgroup(ctx conte
 	lockman.LockObject(ctx, lbbg)
 	defer lockman.ReleaseObject(ctx, lbbg)
 
-	err := lbbg.ValidateDeleteCondition(ctx)
+	err := lbbg.ValidateDeleteCondition(ctx, nil)
 	if err != nil { // cannot delete
 		err = lbbg.SetStatus(userCred, api.LB_STATUS_UNKNOWN, "sync to delete")
 	} else {
@@ -321,9 +325,9 @@ func (man *SQcloudCachedLbbgManager) newFromCloudLoadbalancerBackendgroup(ctx co
 	lbbg := &SQcloudCachedLbbg{}
 	lbbg.SetModelManager(man, lbbg)
 
-	region := lb.GetRegion()
-	if region == nil {
-		return nil, errors.Wrap(httperrors.ErrInvalidStatus, "loadbalancer is not attached to any region")
+	region, err := lb.GetRegion()
+	if err != nil {
+		return nil, err
 	}
 	lbbg.ManagerId = provider.Id
 	lbbg.CloudregionId = region.Id

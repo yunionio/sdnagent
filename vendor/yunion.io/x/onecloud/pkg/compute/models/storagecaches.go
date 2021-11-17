@@ -18,6 +18,7 @@ import (
 	"context"
 	"database/sql"
 	"fmt"
+	"strings"
 
 	"github.com/serialx/hashring"
 
@@ -103,6 +104,26 @@ func (self *SStoragecache) getStorageNames() []string {
 	return names
 }
 
+func (self *SStoragecache) GetEsxiAgentHostDesc() (*jsonutils.JSONDict, error) {
+	if !strings.Contains(self.Name, "esxiagent") {
+		return nil, nil
+	}
+	obj, err := BaremetalagentManager.FetchById(self.ExternalId)
+	if err != nil {
+		return nil, errors.Wrapf(err, "unable to fetch baremetalagent %s", obj.GetId())
+	}
+	agent := obj.(*SBaremetalagent)
+	host := &SHost{}
+	host.Id = agent.Id
+	host.Name = agent.Name
+	host.ZoneId = agent.ZoneId
+	host.SetModelManager(HostManager, host)
+	ret := host.GetShortDesc(context.Background())
+	ret.Set("provider", jsonutils.NewString(api.CLOUD_PROVIDER_VMWARE))
+	ret.Set("brand", jsonutils.NewString(api.CLOUD_PROVIDER_VMWARE))
+	return ret, nil
+}
+
 func (self *SStoragecache) GetHost() (*SHost, error) {
 	hostId, err := self.getHostId()
 	if err != nil {
@@ -124,11 +145,11 @@ func (self *SStoragecache) GetHost() (*SHost, error) {
 func (self *SStoragecache) GetRegion() (*SCloudregion, error) {
 	host, err := self.GetHost()
 	if err != nil {
-		return nil, err
+		return nil, errors.Wrapf(err, "GetHost")
 	}
-	region := host.GetRegion()
-	if region == nil {
-		return nil, fmt.Errorf("failed to get region for host %s(%s)", host.Name, host.Id)
+	region, err := host.GetRegion()
+	if err != nil {
+		return nil, errors.Wrapf(err, "GetRegion")
 	}
 	return region, nil
 }
@@ -364,6 +385,10 @@ func (self *SStoragecache) getCachedImageSize() int64 {
 }
 
 func (self *SStoragecache) StartImageCacheTask(ctx context.Context, userCred mcclient.TokenCredential, imageId string, format string, isForce bool, parentTaskId string) error {
+	return self.StartImageCacheTaskFromHost(ctx, userCred, imageId, format, isForce, "", parentTaskId)
+}
+
+func (self *SStoragecache) StartImageCacheTaskFromHost(ctx context.Context, userCred mcclient.TokenCredential, imageId string, format string, isForce bool, srcHostId string, parentTaskId string) error {
 	StoragecachedimageManager.Register(ctx, userCred, self.Id, imageId, "")
 	data := jsonutils.NewDict()
 	data.Add(jsonutils.NewString(imageId), "image_id")
@@ -386,6 +411,10 @@ func (self *SStoragecache) StartImageCacheTask(ctx context.Context, userCred mcc
 
 	if isForce {
 		data.Add(jsonutils.JSONTrue, "is_force")
+	}
+
+	if srcHostId != "" {
+		data.Add(jsonutils.NewString(srcHostId), "source_host_id")
 	}
 	task, err := taskman.TaskManager.NewTask(ctx, "StorageCacheImageTask", self, userCred, data, parentTaskId, "", nil)
 	if err != nil {
@@ -510,7 +539,7 @@ func (manager *SStoragecacheManager) GetCachePathById(storageCacheId string) str
 	return sc.Path
 }
 
-func (self *SStoragecache) ValidateDeleteCondition(ctx context.Context) error {
+func (self *SStoragecache) ValidateDeleteCondition(ctx context.Context, info jsonutils.JSONObject) error {
 	if self.getCachedImageCount() > 0 {
 		return httperrors.NewNotEmptyError("storage cache not empty")
 	}
@@ -518,7 +547,7 @@ func (self *SStoragecache) ValidateDeleteCondition(ctx context.Context) error {
 	if len(storages) > 0 {
 		return httperrors.NewNotEmptyError("referered by storages")
 	}
-	return self.SStandaloneResourceBase.ValidateDeleteCondition(ctx)
+	return self.SStandaloneResourceBase.ValidateDeleteCondition(ctx, nil)
 }
 
 func (self *SStoragecache) AllowPerformUncacheImage(ctx context.Context, userCred mcclient.TokenCredential, query jsonutils.JSONObject, data jsonutils.JSONObject) bool {
@@ -690,7 +719,6 @@ func (cache *SStoragecache) syncCloudImages(
 	commondb := make([]SStoragecachedimage, 0)
 	commonext := make([]cloudprovider.ICloudImage, 0)
 	added := make([]cloudprovider.ICloudImage, 0)
-
 	err := compare.CompareSets(localCachedImages, remoteImages, &removed, &commondb, &commonext, &added)
 	if err != nil {
 		syncResult.Error(errors.Wrapf(err, "compare.CompareSets"))

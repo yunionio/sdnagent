@@ -126,7 +126,7 @@ func (self *SElasticcacheAcl) syncRemoveCloudElasticcacheAcl(ctx context.Context
 	lockman.LockObject(ctx, self)
 	defer lockman.ReleaseObject(ctx, self)
 
-	err := self.ValidateDeleteCondition(ctx)
+	err := self.ValidateDeleteCondition(ctx, nil)
 	if err != nil {
 		return errors.Wrapf(err, "newFromCloudElasticcacheAcl.Remove")
 	}
@@ -207,7 +207,7 @@ func (manager *SElasticcacheAclManager) ValidateCreateData(ctx context.Context, 
 		if err != nil {
 			return nil, fmt.Errorf("getting elastic cache instance failed")
 		}
-		region = ec.(*SElasticcache).GetRegion()
+		region, _ = ec.(*SElasticcache).GetRegion()
 
 		if region == nil {
 			return nil, fmt.Errorf("getting elastic cache region failed")
@@ -258,7 +258,8 @@ func (self *SElasticcacheAcl) GetRegion() *SCloudregion {
 		return nil
 	}
 
-	return ieb.(*SElasticcache).GetRegion()
+	region, _ := ieb.(*SElasticcache).GetRegion()
+	return region
 }
 
 func (self *SElasticcacheAcl) AllowUpdateItem(ctx context.Context, userCred mcclient.TokenCredential) bool {
@@ -310,7 +311,7 @@ func (self *SElasticcacheAcl) StartUpdateElasticcacheAclTask(ctx context.Context
 	return nil
 }
 
-func (self *SElasticcacheAcl) ValidateDeleteCondition(ctx context.Context) error {
+func (self *SElasticcacheAcl) ValidateDeleteCondition(ctx context.Context, info jsonutils.JSONObject) error {
 	return nil
 }
 

@@ -60,6 +60,11 @@ type SOpenstackCachedLb struct {
 	CachedBackendGroupId string `width:"36" charset:"ascii" nullable:"true" list:"user" create:"optional"`
 }
 
+func (manager *SOpenstackCachedLbManager) GetResourceCount() ([]db.SScopeResourceCount, error) {
+	virts := manager.Query().IsFalse("pending_deleted")
+	return db.CalculateResourceCount(virts, "tenant_id")
+}
+
 func (man *SOpenstackCachedLbManager) GetBackendsByLocalBackendId(backendId string) ([]SOpenstackCachedLb, error) {
 	loadbalancerBackends := []SOpenstackCachedLb{}
 	q := man.Query().IsFalse("pending_deleted").Equals("backend_id", backendId)
@@ -178,7 +183,7 @@ func (lbb *SOpenstackCachedLb) syncRemoveCloudLoadbalancerBackend(ctx context.Co
 	lockman.LockObject(ctx, lbb)
 	defer lockman.ReleaseObject(ctx, lbb)
 
-	err := lbb.ValidateDeleteCondition(ctx)
+	err := lbb.ValidateDeleteCondition(ctx, nil)
 	if err != nil { // cannot delete
 		lbb.SetStatus(userCred, api.LB_STATUS_UNKNOWN, "sync to delete")
 		return errors.Wrap(err, "lbb.ValidateDeleteCondition(ctx)")

@@ -51,6 +51,10 @@ type SCapabilities struct {
 	// 支持SAML 2.0
 	SamlAuthBrands              []string `json:",allowempty"`
 	DisabledSamlAuthBrands      []string `json:",allowempty"`
+	NatBrands                   []string `json:",allowempty"`
+	DisabledNatBrands           []string `json:",allowempty"`
+	NasBrands                   []string `json:",allowempty"`
+	DisabledNasBrands           []string `json:",allowempty"`
 	PublicIpBrands              []string `json:",allowempty"`
 	NetworkManageBrands         []string `json:",allowempty"`
 	DisabledNetworkManageBrands []string `json:",allowempty"`
@@ -82,6 +86,17 @@ type SCapabilities struct {
 	DataStorageTypes3 map[string]map[string]*SimpleStorageInfo `json:",allowempty"`
 
 	InstanceCapabilities []cloudprovider.SInstanceCapability
+}
+
+func GetDiskCapabilities(ctx context.Context, userCred mcclient.TokenCredential, query jsonutils.JSONObject, region *SCloudregion, zone *SZone) (SCapabilities, error) {
+	capa := SCapabilities{}
+	s1, d1, s2, s3, d2, d3 := getStorageTypes(region, zone, "")
+	capa.StorageTypes, capa.DataStorageTypes = s1, d1
+	capa.StorageTypes2, capa.StorageTypes3 = s2, s3
+	capa.DataStorageTypes2, capa.DataStorageTypes3 = d2, d3
+	capa.MinDataDiskCount = getMinDataDiskCount(region, zone)
+	capa.MaxDataDiskCount = getMaxDataDiskCount(region, zone)
+	return capa, nil
 }
 
 func GetCapabilities(ctx context.Context, userCred mcclient.TokenCredential, query jsonutils.JSONObject, region *SCloudregion, zone *SZone) (SCapabilities, error) {
@@ -235,7 +250,7 @@ func getDomainManagerProviderSubq(domainId string) *sqlchemy.SSubQuery {
 
 func getDBInstanceInfo(region *SCloudregion, zone *SZone) map[string]map[string]map[string][]string {
 	if zone != nil {
-		region = zone.GetRegion()
+		region, _ = zone.GetRegion()
 	}
 	if region == nil {
 		return nil
@@ -286,6 +301,8 @@ func getBrands(region *SCloudregion, zone *SZone, domainId string, capa *SCapabi
 	capa.PublicIpBrands, _ = CloudaccountManager.getBrandsOfCapability(region, zone, domainId, tristate.True, cloudprovider.CLOUD_CAPABILITY_PUBLIC_IP)
 	capa.LoadbalancerEngineBrands, _ = CloudaccountManager.getBrandsOfCapability(region, zone, domainId, tristate.True, cloudprovider.CLOUD_CAPABILITY_LOADBALANCER)
 	capa.SamlAuthBrands, _ = CloudaccountManager.getBrandsOfCapability(region, zone, domainId, tristate.True, cloudprovider.CLOUD_CAPABILITY_SAML_AUTH)
+	capa.NatBrands, _ = CloudaccountManager.getBrandsOfCapability(region, zone, domainId, tristate.True, cloudprovider.CLOUD_CAPABILITY_NAT)
+	capa.NasBrands, _ = CloudaccountManager.getBrandsOfCapability(region, zone, domainId, tristate.True, cloudprovider.CLOUD_CAPABILITY_NAS)
 
 	if utils.IsInStringArray(api.HYPERVISOR_KVM, capa.Hypervisors) || utils.IsInStringArray(api.HYPERVISOR_BAREMETAL, capa.Hypervisors) {
 		capa.Brands = append(capa.Brands, api.ONECLOUD_BRAND_ONECLOUD)
@@ -305,6 +322,8 @@ func getBrands(region *SCloudregion, zone *SZone, domainId string, capa *SCapabi
 	capa.DisabledObjectStorageBrands, _ = CloudaccountManager.getBrandsOfCapability(region, zone, domainId, tristate.False, cloudprovider.CLOUD_CAPABILITY_OBJECTSTORE)
 	capa.DisabledCloudIdBrands, _ = CloudaccountManager.getBrandsOfCapability(region, zone, domainId, tristate.False, cloudprovider.CLOUD_CAPABILITY_CLOUDID)
 	capa.DisabledSamlAuthBrands, _ = CloudaccountManager.getBrandsOfCapability(region, zone, domainId, tristate.False, cloudprovider.CLOUD_CAPABILITY_SAML_AUTH)
+	capa.DisabledNatBrands, _ = CloudaccountManager.getBrandsOfCapability(region, zone, domainId, tristate.False, cloudprovider.CLOUD_CAPABILITY_NAT)
+	capa.DisabledNasBrands, _ = CloudaccountManager.getBrandsOfCapability(region, zone, domainId, tristate.False, cloudprovider.CLOUD_CAPABILITY_NAS)
 
 	return
 }
@@ -689,7 +708,7 @@ func getAutoAllocNetworkCount(ownerId mcclient.IIdentityProvider, scope rbacutil
 
 func getNetworkCountByFilter(ownerId mcclient.IIdentityProvider, scope rbacutils.TRbacScope, region *SCloudregion, zone *SZone, isAutoAlloc tristate.TriState, serverType string) (int, error) {
 	if zone != nil && region == nil {
-		region = zone.GetRegion()
+		region, _ = zone.GetRegion()
 	}
 
 	networks := NetworkManager.Query().SubQuery()

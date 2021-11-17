@@ -87,6 +87,49 @@ func (manager *SVirtualResourceBaseManager) GetIVirtualModelManager() IVirtualMo
 	return q
 }*/
 
+func (manager *SVirtualResourceBaseManager) AllowGetPropertyStatistics(ctx context.Context, userCred mcclient.TokenCredential, query jsonutils.JSONObject) bool {
+	return IsAdminAllowGetSpec(userCred, manager, "statistics")
+}
+
+func (manager *SVirtualResourceBaseManager) GetPropertyStatistics(ctx context.Context, userCred mcclient.TokenCredential, query jsonutils.JSONObject) (map[string]apis.StatusStatistic, error) {
+	im, ok := manager.GetVirtualObject().(IModelManager)
+	if !ok {
+		im = manager
+	}
+
+	var err error
+	q := manager.Query()
+	q, err = ListItemQueryFilters(im, ctx, q, userCred, query, policy.PolicyActionList)
+	if err != nil {
+		return nil, err
+	}
+
+	sq := q.SubQuery()
+	statQ := sq.Query(sq.Field("status"), sqlchemy.COUNT("total_count", sq.Field("id")), sqlchemy.SUM("pending_deleted_count", sq.Field("pending_deleted")))
+	statQ = statQ.GroupBy(sq.Field("status"))
+	ret := []struct {
+		Status              string
+		TotalCount          int64
+		PendingDeletedCount int64
+	}{}
+	err = statQ.All(&ret)
+	if err != nil {
+		return nil, errors.Wrapf(err, "q.All")
+	}
+	type sStatistic struct {
+		TotalCount          int64
+		PendingDeletedCount int64
+	}
+	result := map[string]apis.StatusStatistic{}
+	for _, s := range ret {
+		result[s.Status] = apis.StatusStatistic{
+			TotalCount:          s.TotalCount,
+			PendingDeletedCount: s.PendingDeletedCount,
+		}
+	}
+	return result, nil
+}
+
 func (manager *SVirtualResourceBaseManager) FilterByHiddenSystemAttributes(q *sqlchemy.SQuery, userCred mcclient.TokenCredential, query jsonutils.JSONObject, scope rbacutils.TRbacScope) *sqlchemy.SQuery {
 	q = manager.SStatusStandaloneResourceBaseManager.FilterByHiddenSystemAttributes(q, userCred, query, scope)
 
@@ -111,6 +154,14 @@ func (manager *SVirtualResourceBaseManager) FilterByHiddenSystemAttributes(q *sq
 		q = q.Filter(sqlchemy.OR(sqlchemy.IsNull(q.Field("is_system")), sqlchemy.IsFalse(q.Field("is_system"))))
 	}
 	return q
+}
+
+func (model *SVirtualResourceBase) SetSystemInfo(isSystem bool) error {
+	_, err := Update(model, func() error {
+		model.IsSystem = isSystem
+		return nil
+	})
+	return err
 }
 
 func (model *SVirtualResourceBase) SetProjectInfo(ctx context.Context, userCred mcclient.TokenCredential, projectId, domainId string) error {

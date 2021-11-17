@@ -21,6 +21,7 @@ import (
 	"strconv"
 	"strings"
 	"syscall"
+	"time"
 
 	"yunion.io/x/jsonutils"
 	"yunion.io/x/log"
@@ -52,12 +53,12 @@ type IBridgeDriver interface {
 	PersistentMac() error
 	DisableDHCPClient() (bool, error)
 
-	GenerateIfupScripts(scriptPath string, nic jsonutils.JSONObject) error
-	GenerateIfdownScripts(scriptPath string, nic jsonutils.JSONObject) error
+	GenerateIfupScripts(scriptPath string, nic jsonutils.JSONObject, isSlave bool) error
+	GenerateIfdownScripts(scriptPath string, nic jsonutils.JSONObject, isSlave bool) error
 	RegisterHostlocalServer(mac, ip string) error
 
-	getUpScripts(nic jsonutils.JSONObject) (string, error)
-	getDownScripts(nic jsonutils.JSONObject) (string, error)
+	getUpScripts(nic jsonutils.JSONObject, isSlave bool) (string, error)
+	getDownScripts(nic jsonutils.JSONObject, isSlave bool) (string, error)
 }
 
 type SBaseBridgeDriver struct {
@@ -233,7 +234,12 @@ func (d *SBaseBridgeDriver) SetupRoutes(routespecs []iproute2.RouteSpec) error {
 	br := d.bridge.String()
 	r := iproute2.NewRoute(br)
 	for _, routespec := range routespecs {
-		r.AddByRouteSpec(routespec)
+		rt := iproute2.RouteSpec{
+			Dst: routespec.Dst,
+			Src: routespec.Src,
+			Gw:  routespec.Gw,
+		}
+		r.AddByRouteSpec(rt)
 	}
 	if err := r.Err(); err != nil {
 		return errors.Wrapf(err, "set routes on %s", br)
@@ -272,14 +278,39 @@ func (d *SBaseBridgeDriver) Setup(o IBridgeDriver) error {
 			if err := o.SetupAddresses(d.inter.Mask); err != nil {
 				return err
 			}
+			time.Sleep(1 * time.Second)
 			if len(slaveAddrs) > 0 {
-				if err := o.SetupSlaveAddresses(slaveAddrs); err != nil {
-					return err
+				tried := 0
+				const MAX_TRIES = 4
+				for tried < MAX_TRIES {
+					if err := o.SetupSlaveAddresses(slaveAddrs); err != nil {
+						log.Errorf("SetupSlaveAddresses fail: %s", err)
+						tried += 1
+						if tried >= MAX_TRIES {
+							return err
+						} else {
+							time.Sleep(time.Duration(tried) * time.Second)
+						}
+					} else {
+						break
+					}
 				}
 			}
 			if len(routes) > 0 {
-				if err := o.SetupRoutes(routes); err != nil {
-					return err
+				tried := 0
+				const MAX_TRIES = 4
+				for {
+					if err := o.SetupRoutes(routes); err != nil {
+						log.Errorf("SetupRoutes fail: %s", err)
+						tried += 1
+						if tried >= MAX_TRIES {
+							return err
+						} else {
+							time.Sleep(time.Duration(tried) * time.Second)
+						}
+					} else {
+						break
+					}
 				}
 			}
 		} else {
@@ -303,8 +334,8 @@ func (d *SBaseBridgeDriver) saveFileExecutable(scriptPath, script string) error 
 	return os.Chmod(scriptPath, syscall.S_IRUSR|syscall.S_IWUSR|syscall.S_IXUSR)
 }
 
-func (d *SBaseBridgeDriver) generateIfdownScripts(driver IBridgeDriver, scriptPath string, nic jsonutils.JSONObject) error {
-	script, err := driver.getDownScripts(nic)
+func (d *SBaseBridgeDriver) generateIfdownScripts(driver IBridgeDriver, scriptPath string, nic jsonutils.JSONObject, isSlave bool) error {
+	script, err := driver.getDownScripts(nic, isSlave)
 	if err != nil {
 		log.Errorln(err)
 		return err
@@ -312,8 +343,8 @@ func (d *SBaseBridgeDriver) generateIfdownScripts(driver IBridgeDriver, scriptPa
 	return d.saveFileExecutable(scriptPath, script)
 }
 
-func (d *SBaseBridgeDriver) generateIfupScripts(driver IBridgeDriver, scriptPath string, nic jsonutils.JSONObject) error {
-	script, err := driver.getUpScripts(nic)
+func (d *SBaseBridgeDriver) generateIfupScripts(driver IBridgeDriver, scriptPath string, nic jsonutils.JSONObject, isSlave bool) error {
+	script, err := driver.getUpScripts(nic, isSlave)
 	if err != nil {
 		log.Errorln(err)
 		return err

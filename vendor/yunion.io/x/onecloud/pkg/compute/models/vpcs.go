@@ -86,6 +86,9 @@ type SVpc struct {
 
 	// Vpc外网访问模式
 	ExternalAccessMode string `width:"16" charset:"ascii" nullable:"true" list:"user" update:"user" create:"optional"`
+
+	// Can it be connected directly
+	Direct bool `default:"false" list:"user" update:"user"`
 }
 
 func (manager *SVpcManager) GetContextManagers() [][]db.IModelManager {
@@ -208,12 +211,9 @@ func (self *SVpc) ValidateUpdateData(ctx context.Context, userCred mcclient.Toke
 	return input, nil
 }
 
-func (self *SVpc) ValidateDeleteCondition(ctx context.Context) error {
+func (self *SVpc) ValidateDeleteCondition(ctx context.Context, info jsonutils.JSONObject) error {
 	if self.Id == api.DEFAULT_VPC_ID {
 		return httperrors.NewProtectedResourceError("not allow to delete default vpc")
-	}
-	if self.Status == api.VPC_STATUS_UNKNOWN {
-		return self.SEnabledStatusInfrasResourceBase.ValidateDeleteCondition(ctx)
 	}
 
 	cnt, err := self.GetNetworkCount()
@@ -238,7 +238,7 @@ func (self *SVpc) ValidateDeleteCondition(ctx context.Context) error {
 		return httperrors.NewNotEmptyError("VPC peering not empty, please delete vpc peering first")
 	}
 
-	return self.SEnabledStatusInfrasResourceBase.ValidateDeleteCondition(ctx)
+	return self.SEnabledStatusInfrasResourceBase.ValidateDeleteCondition(ctx, nil)
 }
 
 func (self *SVpc) getWireQuery() *sqlchemy.SQuery {
@@ -287,7 +287,7 @@ func (manager *SVpcManager) GetOrCreateVpcForClassicNetwork(ctx context.Context,
 	vpc.IsDefault = false
 	vpc.CloudregionId = region.Id
 	vpc.SetModelManager(manager, vpc)
-	vpc.Name = "-"
+	vpc.Name = api.CLASSIC_VPC_NAME
 	vpc.IsEmulated = true
 	vpc.SetEnabled(false)
 	vpc.Status = api.VPC_STATUS_UNAVAILABLE
@@ -519,7 +519,7 @@ func (self *SVpc) syncRemoveCloudVpc(ctx context.Context, userCred mcclient.Toke
 		return nil
 	}
 
-	err := self.ValidateDeleteCondition(ctx)
+	err := self.ValidateDeleteCondition(ctx, nil)
 	if err != nil { // cannot delete
 		self.markAllNetworksUnknown(userCred)
 		_, err = self.PerformDisable(ctx, userCred, nil, apis.PerformDisableInput{})
@@ -610,6 +610,8 @@ func (self *SVpc) SyncWithCloudVpc(ctx context.Context, userCred mcclient.TokenC
 		return err
 	}
 
+	syncMetadata(ctx, userCred, self, extVPC)
+
 	if provider != nil {
 		SyncCloudDomain(userCred, self, provider.GetOwnerId())
 		self.SyncShareState(ctx, userCred, provider.getAccountShareInfo())
@@ -645,6 +647,7 @@ func (manager *SVpcManager) newFromCloudVpc(ctx context.Context, userCred mcclie
 		return nil, err
 	}
 
+	syncMetadata(ctx, userCred, &vpc, extVPC)
 	SyncCloudDomain(userCred, &vpc, provider.GetOwnerId())
 
 	if provider != nil {
@@ -915,8 +918,7 @@ func (self *SVpc) GetIRegion() (cloudprovider.ICloudRegion, error) {
 func (self *SVpc) GetIVpc() (cloudprovider.ICloudVpc, error) {
 	provider, err := self.GetDriver()
 	if err != nil {
-		log.Errorf("fail to find cloud provider")
-		return nil, err
+		return nil, errors.Wrapf(err, "vpc.GetDriver")
 	}
 	var iregion cloudprovider.ICloudRegion
 	if provider.GetFactory().IsOnPremise() {
@@ -1049,7 +1051,7 @@ func (self *SVpc) AllowPerformPurge(ctx context.Context, userCred mcclient.Token
 }
 
 func (self *SVpc) PerformPurge(ctx context.Context, userCred mcclient.TokenCredential, query jsonutils.JSONObject, data jsonutils.JSONObject) (jsonutils.JSONObject, error) {
-	err := self.ValidateDeleteCondition(ctx)
+	err := self.ValidateDeleteCondition(ctx, nil)
 	if err != nil {
 		return nil, err
 	}
@@ -1125,19 +1127,12 @@ func (manager *SVpcManager) ListItemFilter(
 	vpcUsable := (query.UsableVpc != nil && *query.UsableVpc)
 	if vpcUsable || usable {
 		regions := CloudregionManager.Query().SubQuery()
-		cloudproviders := CloudproviderManager.Query().SubQuery()
-		providerSQ := cloudproviders.Query(cloudproviders.Field("id")).Filter(
-			sqlchemy.AND(
-				sqlchemy.IsTrue(cloudproviders.Field("enabled")),
-				sqlchemy.In(cloudproviders.Field("status"), api.CLOUD_PROVIDER_VALID_STATUS),
-				sqlchemy.In(cloudproviders.Field("health_status"), api.CLOUD_PROVIDER_VALID_HEALTH_STATUS),
-			),
-		)
+		providerSQ := usableCloudProviders().SubQuery()
 		q = q.Join(regions, sqlchemy.Equals(q.Field("cloudregion_id"), regions.Field("id"))).Filter(
 			sqlchemy.AND(
 				sqlchemy.Equals(regions.Field("status"), api.CLOUD_REGION_STATUS_INSERVER),
 				sqlchemy.OR(
-					sqlchemy.In(q.Field("manager_id"), providerSQ.SubQuery()),
+					sqlchemy.In(q.Field("manager_id"), providerSQ),
 					sqlchemy.IsNullOrEmpty(q.Field("manager_id")),
 				),
 			),
@@ -1490,12 +1485,32 @@ func (vpc *SVpc) PerformPublic(ctx context.Context, userCred mcclient.TokenCrede
 			}
 		}
 	}
+	nats, err := vpc.GetNatgateways()
+	if err != nil {
+		return nil, errors.Wrapf(err, "vpc.GetNatgateways")
+	}
+	for i := range nats {
+		_, err = nats[i].PerformPublic(ctx, userCred, query, input)
+		if err != nil {
+			return nil, errors.Wrapf(err, "nat.PerformPublic")
+		}
+	}
 	return nil, nil
 }
 
 func (vpc *SVpc) PerformPrivate(ctx context.Context, userCred mcclient.TokenCredential, query jsonutils.JSONObject, input apis.PerformPrivateInput) (jsonutils.JSONObject, error) {
 	if vpc.Id == "default" {
 		return nil, httperrors.NewForbiddenError("Prohibit making default vpc private")
+	}
+	nats, err := vpc.GetNatgateways()
+	if err != nil {
+		return nil, errors.Wrapf(err, "vpc.GetNatgateways")
+	}
+	for i := range nats {
+		_, err = nats[i].PerformPrivate(ctx, userCred, query, input)
+		if err != nil {
+			return nil, errors.Wrapf(err, "nat.PerformPrivate")
+		}
 	}
 	// perform private for all emulated wires
 	emptyNets := true

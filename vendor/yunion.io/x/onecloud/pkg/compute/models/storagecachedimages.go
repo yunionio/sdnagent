@@ -199,6 +199,15 @@ func (self *SStoragecachedimage) getExtraDetails(ctx context.Context, out api.St
 		host, _ := storagecache.GetHost()
 		if host != nil {
 			out.Host = host.GetShortDesc(ctx)
+		} else {
+			var err error
+			hostDesc, err := storagecache.GetEsxiAgentHostDesc()
+			if err != nil {
+				log.Errorf("unable to GetEsxiAgentHostDesc of stroagecache: %s", err.Error())
+			}
+			if hostDesc != nil {
+				out.Host = hostDesc
+			}
 		}
 	}
 	cachedImage := self.GetCachedimage()
@@ -272,7 +281,7 @@ func (self *SStoragecachedimage) Detach(ctx context.Context, userCred mcclient.T
 	return db.DetachJoint(ctx, userCred, self)
 }
 
-func (self *SStoragecachedimage) ValidateDeleteCondition(ctx context.Context) error {
+func (self *SStoragecachedimage) ValidateDeleteCondition(ctx context.Context, info jsonutils.JSONObject) error {
 	if self.Status != api.CACHED_IMAGE_STATUS_CACHE_FAILED {
 		cnt, err := self.getReferenceCount()
 		if err != nil {
@@ -282,7 +291,7 @@ func (self *SStoragecachedimage) ValidateDeleteCondition(ctx context.Context) er
 			return httperrors.NewNotEmptyError("Image is in use")
 		}
 	}
-	return self.SJointResourceBase.ValidateDeleteCondition(ctx)
+	return self.SJointResourceBase.ValidateDeleteCondition(ctx, nil)
 }
 
 func (self *SStoragecachedimage) isCachedImageInUse() error {
@@ -305,7 +314,7 @@ func (self *SStoragecachedimage) isDownloadSessionExpire() bool {
 }
 
 func (self *SStoragecachedimage) markDeleting(ctx context.Context, userCred mcclient.TokenCredential, isForce bool) error {
-	err := self.ValidateDeleteCondition(ctx)
+	err := self.ValidateDeleteCondition(ctx, nil)
 	if err != nil {
 		return err
 	}
@@ -435,6 +444,9 @@ func (self *SStoragecachedimage) syncRemoveCloudImage(ctx context.Context, userC
 
 func (self *SStoragecachedimage) syncWithCloudImage(ctx context.Context, userCred mcclient.TokenCredential, ownerId mcclient.IIdentityProvider, image cloudprovider.ICloudImage, managerId string) error {
 	cachedImage := self.GetCachedimage()
+	if len(self.ExternalId) == 0 {
+		self.SetExternalId(cachedImage.GetExternalId())
+	}
 	if len(cachedImage.ExternalId) > 0 {
 		self.SetStatus(userCred, image.GetStatus(), "")
 		return cachedImage.syncWithCloudImage(ctx, userCred, ownerId, image, managerId)

@@ -373,14 +373,6 @@ func (bucket *SBucket) StartBucketDeleteTask(ctx context.Context, userCred mccli
 	return nil
 }
 
-func (bucket *SBucket) GetRegion() (*SCloudregion, error) {
-	region, err := CloudregionManager.FetchById(bucket.CloudregionId)
-	if err != nil {
-		return nil, errors.Wrap(err, "CloudregionManager.FetchById")
-	}
-	return region.(*SCloudregion), nil
-}
-
 func (bucket *SBucket) GetIRegion() (cloudprovider.ICloudRegion, error) {
 	provider, err := bucket.GetDriver()
 	if err != nil {
@@ -480,6 +472,7 @@ func (bucket *SBucket) PostCreate(
 	query jsonutils.JSONObject,
 	data jsonutils.JSONObject,
 ) {
+	bucket.SSharableVirtualResourceBase.PostCreate(ctx, userCred, ownerId, query, data)
 	pendingUsage := SRegionQuota{Bucket: 1}
 	keys, err := bucket.GetQuotaKeys()
 	if err != nil {
@@ -495,10 +488,10 @@ func (bucket *SBucket) PostCreate(
 	bucket.SetStatus(userCred, api.BUCKET_STATUS_START_CREATE, "PostCreate")
 	task, err := taskman.TaskManager.NewTask(ctx, "BucketCreateTask", bucket, userCred, nil, "", "", nil)
 	if err != nil {
-		log.Errorf("BucketCreateTask newTask error %s", err)
-	} else {
-		task.ScheduleRun(nil)
+		bucket.SetStatus(userCred, api.BUCKET_STATUS_CREATE_FAIL, errors.Wrapf(err, "NewTask").Error())
+		return
 	}
+	task.ScheduleRun(nil)
 }
 
 func (bucket *SBucket) ValidateUpdateData(
@@ -538,14 +531,16 @@ func (bucket *SBucket) RemoteCreate(ctx context.Context, userCred mcclient.Token
 	if err != nil {
 		return errors.Wrap(err, "db.SetExternalId")
 	}
+	tags, _ := bucket.GetAllUserMetadata()
+	if len(tags) > 0 {
+		_, err = cloudprovider.SetBucketTags(ctx, extBucket, bucket.ManagerId, tags)
+		if err != nil {
+			logclient.AddSimpleActionLog(bucket, logclient.ACT_UPDATE_TAGS, err, userCred, false)
+		}
+	}
 	err = bucket.syncWithCloudBucket(ctx, userCred, extBucket, nil, false)
 	if err != nil {
 		return errors.Wrap(err, "bucket.syncWithCloudBucket")
-	}
-	tags, _ := bucket.GetAllUserMetadata()
-	err = cloudprovider.SetBucketMetadata(extBucket, tags, false)
-	if err != nil {
-		log.Errorf("iBucket.SetMetadata failed: %s", err)
 	}
 	return nil
 }
@@ -1185,15 +1180,15 @@ func (bucket *SBucket) PerformSync(
 }
 
 func (bucket *SBucket) ValidatePurgeCondition(ctx context.Context) error {
-	return bucket.SSharableVirtualResourceBase.ValidateDeleteCondition(ctx)
+	return bucket.SSharableVirtualResourceBase.ValidateDeleteCondition(ctx, nil)
 }
 
-func (bucket *SBucket) ValidateDeleteCondition(ctx context.Context) error {
+func (bucket *SBucket) ValidateDeleteCondition(ctx context.Context, info jsonutils.JSONObject) error {
 	if bucket.Status == api.BUCKET_STATUS_UNKNOWN {
-		return bucket.SSharableVirtualResourceBase.ValidateDeleteCondition(ctx)
+		return bucket.SSharableVirtualResourceBase.ValidateDeleteCondition(ctx, nil)
 	}
 	if bucket.ObjectCnt > 0 {
-		return httperrors.NewNotEmptyError("not an empty bucket")
+		return httperrors.NewNotEmptyError("Buckets that are not empty do not support this operation")
 	}
 	return bucket.ValidatePurgeCondition(ctx)
 }
@@ -1518,8 +1513,11 @@ func (bucket *SBucket) PerformSetReferer(
 	if err != nil {
 		return nil, errors.Wrap(err, "GetIBucket")
 	}
+
 	conf := cloudprovider.SBucketRefererConf{
-		WhiteList:       input.WhiteList,
+		Enabled:         input.Enabled,
+		DomainList:      input.DomainList,
+		RefererType:     input.RefererType,
 		AllowEmptyRefer: input.AllowEmptyRefer,
 	}
 
@@ -1554,9 +1552,12 @@ func (bucket *SBucket) GetDetailsReferer(
 	if err != nil {
 		return conf, httperrors.NewInternalServerError("iBucket.GetRefer error %s", err)
 	}
-	conf.WhiteList = referConf.WhiteList
-	conf.BlackList = referConf.BlackList
-	conf.AllowEmptyRefer = referConf.AllowEmptyRefer
+	conf.Enabled = referConf.Enabled
+	if conf.Enabled {
+		conf.DomainList = referConf.DomainList
+		conf.RefererType = referConf.RefererType
+		conf.AllowEmptyRefer = referConf.AllowEmptyRefer
+	}
 
 	return conf, nil
 }
@@ -1690,13 +1691,30 @@ type SBucketUsages struct {
 func (manager *SBucketManager) TotalCount(scope rbacutils.TRbacScope, ownerId mcclient.IIdentityProvider, rangeObjs []db.IStandaloneModel, providers []string, brands []string, cloudEnv string) SBucketUsages {
 	usage := SBucketUsages{}
 	buckets := manager.Query().SubQuery()
+	bucketsQ := buckets.Query(
+		sqlchemy.NewFunction(
+			sqlchemy.NewCase().When(
+				sqlchemy.GE(buckets.Field("object_cnt"), 0),
+				buckets.Field("object_cnt"),
+			).Else(sqlchemy.NewConstField(0)),
+			"object_cnt1",
+		),
+		sqlchemy.NewFunction(
+			sqlchemy.NewCase().When(
+				sqlchemy.GE(buckets.Field("size_bytes"), 0),
+				buckets.Field("size_bytes"),
+			).Else(sqlchemy.NewConstField(0)),
+			"size_bytes1",
+		),
+	)
+	bucketsQ = manager.usageQ(bucketsQ, rangeObjs, providers, brands, cloudEnv)
+	bucketsQ = scopeOwnerIdFilter(bucketsQ, scope, ownerId)
+	buckets = bucketsQ.SubQuery()
 	q := buckets.Query(
 		sqlchemy.COUNT("buckets"),
-		sqlchemy.SUM("objects", buckets.Field("object_cnt")),
-		sqlchemy.SUM("bytes", buckets.Field("size_bytes")),
+		sqlchemy.SUM("objects", buckets.Field("object_cnt1")),
+		sqlchemy.SUM("bytes", buckets.Field("size_bytes1")),
 	)
-	q = manager.usageQ(q, rangeObjs, providers, brands, cloudEnv)
-	q = scopeOwnerIdFilter(q, scope, ownerId)
 	err := q.First(&usage)
 	if err != nil {
 		log.Errorf("Query bucket usage error %s", err)
@@ -1874,26 +1892,21 @@ func (bucket *SBucket) OnMetadataUpdated(ctx context.Context, userCred mcclient.
 	}
 	iBucket, err := bucket.GetIBucket()
 	if err != nil {
-		log.Errorf("bucket.GetIBucket() failed: %s", err)
 		return
 	}
-	oldTags, err := iBucket.GetTags()
+	tags, err := bucket.GetAllUserMetadata()
+	if err != nil {
+		return
+	}
+	diff, err := cloudprovider.SetBucketTags(ctx, iBucket, bucket.ManagerId, tags)
 	if err != nil {
 		logclient.AddSimpleActionLog(bucket, logclient.ACT_UPDATE_TAGS, err, userCred, false)
-		log.Errorf("iBucket.GetTags failed: %s", err)
 		return
 	}
-	tags, _ := bucket.GetAllUserMetadata()
-	tagsUpdateInfo := cloudprovider.TagsUpdateInfo{OldTags: oldTags, NewTags: tags}
-
-	err = cloudprovider.SetBucketMetadata(iBucket, tags, true)
-	if err != nil {
-		logclient.AddSimpleActionLog(bucket, logclient.ACT_UPDATE_TAGS, err, userCred, false)
-		log.Errorf("iBucket.SetMetadata failed: %s", err)
-		return
+	if diff.IsChanged() {
+		logclient.AddSimpleActionLog(bucket, logclient.ACT_UPDATE_TAGS, diff, userCred, true)
 	}
-	syncMetadata(ctx, userCred, bucket, iBucket)
-	logclient.AddSimpleActionLog(bucket, logclient.ACT_UPDATE_TAGS, tagsUpdateInfo, userCred, true)
+	syncVirtualResourceMetadata(ctx, userCred, bucket, iBucket)
 }
 
 func (manager *SBucketManager) ListItemExportKeys(ctx context.Context,

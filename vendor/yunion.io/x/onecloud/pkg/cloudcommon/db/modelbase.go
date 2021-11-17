@@ -310,14 +310,7 @@ func (manager *SModelBaseManager) FetchCustomizeColumns(
 	fields stringutils2.SSortedStrings,
 	isList bool,
 ) []apis.ModelBaseDetails {
-	showReason := false
-	if query.Contains("show_fail_reason") {
-		showReason = true
-	}
 	ret := make([]apis.ModelBaseDetails, len(objs))
-	for i := range objs {
-		ret[i] = getModelExtraDetails(objs[i].(IModel), ctx, showReason)
-	}
 	return ret
 }
 
@@ -584,7 +577,7 @@ func (model *SModelBase) ValidateUpdateCondition(ctx context.Context) error {
 	return nil
 }
 
-func (model *SModelBase) ValidateDeleteCondition(ctx context.Context) error {
+func (model *SModelBase) ValidateDeleteCondition(ctx context.Context, info jsonutils.JSONObject) error {
 	return nil
 }
 

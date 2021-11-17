@@ -90,14 +90,18 @@ type SCachedimage struct {
 
 	// 镜像类型, system: 公有云镜像, customized: 自定义镜像
 	// example: system
-	ImageType string `width:"16" default:"customized" list:"user"`
+	ImageType string `width:"16" default:"customized" list:"user" index:"true"`
+}
+
+func (manager *SCachedimageManager) GetResourceCount() ([]db.SScopeResourceCount, error) {
+	return []db.SScopeResourceCount{}, nil
 }
 
 func (self SCachedimage) GetGlobalId() string {
 	return self.ExternalId
 }
 
-func (self *SCachedimage) ValidateDeleteCondition(ctx context.Context) error {
+func (self *SCachedimage) ValidateDeleteCondition(ctx context.Context, info jsonutils.JSONObject) error {
 	cnt, err := self.getStoragecacheCount()
 	if err != nil {
 		return httperrors.NewInternalServerError("ValidateDeleteCondition error %s", err)
@@ -108,7 +112,7 @@ func (self *SCachedimage) ValidateDeleteCondition(ctx context.Context) error {
 	if self.GetStatus() == api.CACHED_IMAGE_STATUS_ACTIVE && !self.isReferenceSessionExpire() {
 		return httperrors.NewConflictError("the image reference session has not been expired!")
 	}
-	return self.SSharableVirtualResourceBase.ValidateDeleteCondition(ctx)
+	return self.SSharableVirtualResourceBase.ValidateDeleteCondition(ctx, nil)
 }
 
 func (self *SCachedimage) isReferenceSessionExpire() bool {
@@ -168,6 +172,11 @@ func (self *SCachedimage) GetOSVersion() string {
 func (self *SCachedimage) GetHypervisor() string {
 	osType, _ := self.Info.GetString("properties", "hypervisor")
 	return osType
+}
+
+func (self *SCachedimage) GetChecksum() string {
+	checksum, _ := self.Info.GetString("checksum")
+	return checksum
 }
 
 func (self *SCachedimage) getStoragecacheQuery() *sqlchemy.SQuery {
@@ -295,6 +304,8 @@ func (manager *SCachedimageManager) GetImageById(ctx context.Context, userCred m
 		oSTypeOk := options.Options.NoCheckOsTypeForCachedImage || len(cachedImage.GetOSType()) > 0
 		if !refresh && cachedImage.GetStatus() == cloudprovider.IMAGE_STATUS_ACTIVE && oSTypeOk && !cachedImage.isRefreshSessionExpire() {
 			return cachedImage.GetImage()
+		} else if options.Options.ProhibitRefreshingCloudImage {
+			return cachedImage.GetImage()
 		} else if len(cachedImage.ExternalId) > 0 { // external image, request refresh
 			return cachedImage.requestRefreshExternalImage(ctx, userCred)
 		}
@@ -317,6 +328,8 @@ func (manager *SCachedimageManager) getImageByName(ctx context.Context, userCred
 	if imgObj != nil {
 		cachedImage := imgObj.(*SCachedimage)
 		if !refresh && cachedImage.GetStatus() == cloudprovider.IMAGE_STATUS_ACTIVE && len(cachedImage.GetOSType()) > 0 && !cachedImage.isRefreshSessionExpire() {
+			return cachedImage.GetImage()
+		} else if options.Options.ProhibitRefreshingCloudImage {
 			return cachedImage.GetImage()
 		} else if len(cachedImage.ExternalId) > 0 { // external image, request refresh
 			return cachedImage.requestRefreshExternalImage(ctx, userCred)
@@ -450,6 +463,8 @@ func (self *SCachedimage) ChooseSourceStoragecacheInRange(hostType string, exclu
 
 	for _, rangeObj := range rangeObjs {
 		switch v := rangeObj.(type) {
+		case *SHost:
+			q = q.Filter(sqlchemy.Equals(host.Field("id"), v.Id))
 		case *SZone:
 			q = q.Filter(sqlchemy.Equals(host.Field("zone_id"), v.Id))
 		case *SCloudprovider:
@@ -596,14 +611,11 @@ func (image *SCachedimage) requestRefreshExternalImage(ctx context.Context, user
 func (image *SCachedimage) getValidStoragecache() []SStoragecache {
 	storagecaches := StoragecacheManager.Query().SubQuery()
 	storagecacheimages := StoragecachedimageManager.Query().SubQuery()
-	providers := CloudproviderManager.Query().SubQuery()
+	providers := usableCloudProviders().SubQuery()
 
 	q := storagecaches.Query()
 	q = q.Join(providers, sqlchemy.Equals(providers.Field("id"), storagecaches.Field("manager_id")))
 	q = q.Join(storagecacheimages, sqlchemy.Equals(storagecaches.Field("id"), storagecacheimages.Field("storagecache_id")))
-	q = q.Filter(sqlchemy.IsTrue(providers.Field("enabled")))
-	q = q.Filter(sqlchemy.In(providers.Field("status"), api.CLOUD_PROVIDER_VALID_STATUS))
-	q = q.Filter(sqlchemy.In(providers.Field("health_status"), api.CLOUD_PROVIDER_VALID_HEALTH_STATUS))
 	q = q.Filter(sqlchemy.Equals(storagecacheimages.Field("cachedimage_id"), image.Id))
 	q = q.Filter(sqlchemy.Equals(storagecacheimages.Field("status"), api.CACHED_IMAGE_STATUS_ACTIVE))
 
@@ -634,16 +646,13 @@ func (image *SCachedimage) GetUsableZoneIds() ([]string, error) {
 	storages := StorageManager.Query().SubQuery()
 	storagecaches := StoragecacheManager.Query().SubQuery()
 	storagecacheimages := StoragecachedimageManager.Query().SubQuery()
-	providers := CloudproviderManager.Query().SubQuery()
+	providers := usableCloudProviders().SubQuery()
 
 	q := zones.Query(zones.Field("id"))
 	q = q.Join(storages, sqlchemy.Equals(q.Field("id"), storages.Field("zone_id")))
 	q = q.Join(storagecaches, sqlchemy.Equals(storages.Field("storagecache_id"), storagecaches.Field("id")))
 	q = q.Join(providers, sqlchemy.Equals(providers.Field("id"), storagecaches.Field("manager_id")))
 	q = q.Join(storagecacheimages, sqlchemy.Equals(storagecaches.Field("id"), storagecacheimages.Field("storagecache_id")))
-	q = q.Filter(sqlchemy.IsTrue(providers.Field("enabled")))
-	q = q.Filter(sqlchemy.In(providers.Field("status"), api.CLOUD_PROVIDER_VALID_STATUS))
-	q = q.Filter(sqlchemy.In(providers.Field("health_status"), api.CLOUD_PROVIDER_VALID_HEALTH_STATUS))
 	q = q.Filter(sqlchemy.Equals(storagecacheimages.Field("cachedimage_id"), image.Id))
 	q = q.Filter(sqlchemy.Equals(storagecacheimages.Field("status"), api.CACHED_IMAGE_STATUS_ACTIVE))
 	q = q.Filter(sqlchemy.Equals(q.Field("status"), api.ZONE_ENABLE))

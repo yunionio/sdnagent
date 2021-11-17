@@ -31,6 +31,8 @@ import (
 	"yunion.io/x/onecloud/pkg/cloudcommon/db"
 	"yunion.io/x/onecloud/pkg/cloudcommon/db/lockman"
 	"yunion.io/x/onecloud/pkg/cloudcommon/db/taskman"
+	"yunion.io/x/onecloud/pkg/cloudcommon/notifyclient"
+	"yunion.io/x/onecloud/pkg/cloudcommon/validators"
 	"yunion.io/x/onecloud/pkg/httperrors"
 	"yunion.io/x/onecloud/pkg/mcclient"
 	"yunion.io/x/onecloud/pkg/util/logclient"
@@ -136,7 +138,7 @@ func (sgm *SScalingGroupManager) ValidateCreateData(ctx context.Context, userCre
 	input.CloudregionId = cloudregion.GetId()
 
 	// check vpc
-	_, input.VpcResourceInput, err = ValidateVpcResourceInput(userCred, input.VpcResourceInput)
+	_, err = validators.ValidateModel(userCred, VpcManager, &input.VpcId)
 	if err != nil {
 		return input, err
 	}
@@ -162,7 +164,7 @@ func (sgm *SScalingGroupManager) ValidateCreateData(ctx context.Context, userCre
 
 	// check networks in vpc
 	for i := range networks {
-		vpc := networks[i].GetVpc()
+		vpc, _ := networks[i].GetVpc()
 		if vpc == nil {
 			return input, fmt.Errorf("Get vpc of network '%s' failed", networks[i].Id)
 		}
@@ -233,7 +235,7 @@ func (sgm *SScalingGroupManager) ValidateCreateData(ctx context.Context, userCre
 	return input, nil
 }
 
-func (sg *SScalingGroup) ValidateDeleteCondition(ctx context.Context) error {
+func (sg *SScalingGroup) ValidateDeleteCondition(ctx context.Context, info jsonutils.JSONObject) error {
 	// check enabled
 	if sg.Enabled.IsTrue() {
 		return httperrors.NewForbiddenError("Please disable this ScalingGroup firstly")
@@ -633,6 +635,10 @@ func (sg *SScalingGroup) PostCreate(ctx context.Context, userCred mcclient.Token
 		return nil
 	})
 	logclient.AddActionLogWithContext(ctx, sg, logclient.ACT_CREATE, "", userCred, true)
+	notifyclient.EventNotify(ctx, userCred, notifyclient.SEventNotifyParam{
+		Obj:    sg,
+		Action: notifyclient.ActionCreate,
+	})
 }
 
 func (sg *SScalingGroup) AllowScale() bool {

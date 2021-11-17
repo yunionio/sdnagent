@@ -69,7 +69,7 @@ type IGuestDriver interface {
 
 	PrepareDiskRaidConfig(userCred mcclient.TokenCredential, host *SHost, params []*api.BaremetalDiskConfig, disks []*api.DiskConfig) ([]*api.DiskConfig, error)
 
-	GetNamedNetworkConfiguration(guest *SGuest, ctx context.Context, userCred mcclient.TokenCredential, host *SHost, netConfig *api.NetworkConfig) (*SNetwork, []SNicConfig, api.IPAllocationDirection, bool)
+	GetNamedNetworkConfiguration(guest *SGuest, ctx context.Context, userCred mcclient.TokenCredential, host *SHost, netConfig *api.NetworkConfig) (*SNetwork, []SNicConfig, api.IPAllocationDirection, bool, error)
 
 	Attach2RandomNetwork(guest *SGuest, ctx context.Context, userCred mcclient.TokenCredential, host *SHost, netConfig *api.NetworkConfig, pendingUsage quotas.IQuota) ([]SGuestnetwork, error)
 	GetRandomNetworkTypes() []string
@@ -91,12 +91,13 @@ type IGuestDriver interface {
 
 	RequestDeployGuestOnHost(ctx context.Context, guest *SGuest, host *SHost, task taskman.ITask) error
 	RemoteDeployGuestForCreate(ctx context.Context, userCred mcclient.TokenCredential, guest *SGuest, host *SHost, desc cloudprovider.SManagedVMCreateConfig) (jsonutils.JSONObject, error)
+	RemoteDeployGuestSyncHost(ctx context.Context, userCred mcclient.TokenCredential, guest *SGuest, host *SHost, iVM cloudprovider.ICloudVM) (cloudprovider.ICloudHost, error)
 	RemoteActionAfterGuestCreated(ctx context.Context, userCred mcclient.TokenCredential, guest *SGuest, host *SHost, iVM cloudprovider.ICloudVM, desc *cloudprovider.SManagedVMCreateConfig)
 	RemoteDeployGuestForDeploy(ctx context.Context, guest *SGuest, ihost cloudprovider.ICloudHost, task taskman.ITask, desc cloudprovider.SManagedVMCreateConfig) (jsonutils.JSONObject, error)
 	RemoteDeployGuestForRebuildRoot(ctx context.Context, guest *SGuest, ihost cloudprovider.ICloudHost, task taskman.ITask, desc cloudprovider.SManagedVMCreateConfig) (jsonutils.JSONObject, error)
 	GetGuestInitialStateAfterCreate() string
 	GetGuestInitialStateAfterRebuild() string
-	GetLinuxDefaultAccount(desc cloudprovider.SManagedVMCreateConfig) string
+	GetDefaultAccount(desc cloudprovider.SManagedVMCreateConfig) string
 	GetInstanceCapability() cloudprovider.SInstanceCapability
 
 	OnGuestDeployTaskDataReceived(ctx context.Context, guest *SGuest, task taskman.ITask, data jsonutils.JSONObject) error
@@ -178,7 +179,6 @@ type IGuestDriver interface {
 	IsSupportEip() bool
 	IsSupportPublicIp() bool
 	ValidateCreateEip(ctx context.Context, userCred mcclient.TokenCredential, data jsonutils.JSONObject) error
-	RequestAssociateEip(ctx context.Context, userCred mcclient.TokenCredential, guest *SGuest, eip *SElasticip, task taskman.ITask) error
 
 	NeedStopForChangeSpec(guest *SGuest, cpuChanged, memChanged bool) bool
 
