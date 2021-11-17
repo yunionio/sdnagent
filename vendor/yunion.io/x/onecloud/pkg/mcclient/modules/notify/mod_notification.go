@@ -21,7 +21,7 @@ import (
 
 	"yunion.io/x/onecloud/pkg/mcclient"
 	"yunion.io/x/onecloud/pkg/mcclient/modulebase"
-	"yunion.io/x/onecloud/pkg/mcclient/modules"
+	"yunion.io/x/onecloud/pkg/mcclient/modules/identity"
 )
 
 var (
@@ -31,6 +31,7 @@ var (
 type SNotifyMessage struct {
 	Uid                       []string               `json:"uid,omitempty"`
 	Gid                       []string               `json:"gid,omitempty"`
+	Robots                    []string               `json:"robots,omitempty"`
 	ContactType               TNotifyChannel         `json:"contact_type,omitempty"`
 	Contacts                  []string               `json:"contracts"`
 	Topic                     string                 `json:"topic,omitempty"`
@@ -46,6 +47,7 @@ type SNotifyMessage struct {
 type SNotifyV2Message struct {
 	Receivers                 []string               `json:"receivers"`
 	Contacts                  []string               `json:"contacts"`
+	Robots                    []string               `json:"robots"`
 	ContactType               string                 `json:"contact_type"`
 	Topic                     string                 `json:"topic"`
 	Priority                  string                 `json:"priority"`
@@ -65,7 +67,7 @@ func (manager *NotificationManager) Send(s *mcclient.ClientSession, msg SNotifyM
 		// fetch uid
 		uidSet := sets.NewString()
 		for _, gid := range msg.Gid {
-			users, err := modules.Groups.GetUsers(s, gid, nil)
+			users, err := identity.Groups.GetUsers(s, gid, nil)
 			if err != nil {
 				return errors.Wrapf(err, "Groups.GetUsers for group %q", gid)
 			}
@@ -83,6 +85,7 @@ func (manager *NotificationManager) Send(s *mcclient.ClientSession, msg SNotifyM
 	v2msg := SNotifyV2Message{
 		Receivers:                 receiverIds,
 		Contacts:                  msg.Contacts,
+		Robots:                    msg.Robots,
 		ContactType:               string(msg.ContactType),
 		Topic:                     msg.Topic,
 		Priority:                  string(msg.Priority),
@@ -99,6 +102,6 @@ func (manager *NotificationManager) Send(s *mcclient.ClientSession, msg SNotifyM
 
 func init() {
 	Notifications = NotificationManager{
-		modules.Notification,
+		Notification,
 	}
 }

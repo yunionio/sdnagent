@@ -59,7 +59,6 @@ func InitDB() error {
 		ServerSkuManager,
 		ElasticcacheSkuManager,
 
-		ScheduledTaskActivityManager,
 		ExternalProjectManager,
 		CachedimageManager,
 		StoragecachedimageManager,
@@ -69,6 +68,8 @@ func InitDB() error {
 		DBInstanceDatabaseManager,
 
 		SnapshotPolicyDiskManager,
+		AccessGroupManager,
+		AccessGroupRuleManager,
 	} {
 		err := manager.InitializeData()
 		if err != nil {

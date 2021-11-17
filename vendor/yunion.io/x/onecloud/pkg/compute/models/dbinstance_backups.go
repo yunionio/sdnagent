@@ -230,9 +230,9 @@ func (manager *SDBInstanceBackupManager) ValidateCreateData(ctx context.Context,
 	if instance.Status != api.DBINSTANCE_RUNNING {
 		return nil, httperrors.NewInputParameterError("DBInstance %s(%s) status is %s require status is %s", instance.Name, instance.Id, instance.Status, api.DBINSTANCE_RUNNING)
 	}
-	region := instance.GetRegion()
-	if region == nil {
-		return nil, httperrors.NewInputParameterError("failed to found region for dbinstance %s(%s)", instance.Name, instance.Id)
+	region, err := instance.GetRegion()
+	if err != nil {
+		return nil, err
 	}
 	input.CloudregionId = region.Id
 	input, err = region.GetDriver().ValidateCreateDBInstanceBackupData(ctx, userCred, ownerId, instance, input)
@@ -302,15 +302,6 @@ func (self *SDBInstanceBackup) GetDBInstance() (*SDBInstance, error) {
 	return nil, fmt.Errorf("empty dbinstance id")
 }
 
-func (self *SDBInstanceBackup) GetExtraDetails(
-	ctx context.Context,
-	userCred mcclient.TokenCredential,
-	query jsonutils.JSONObject,
-	isList bool,
-) (api.DBInstanceBackupDetails, error) {
-	return api.DBInstanceBackupDetails{}, nil
-}
-
 func (manager *SDBInstanceBackupManager) FetchCustomizeColumns(
 	ctx context.Context,
 	userCred mcclient.TokenCredential,
@@ -356,9 +347,9 @@ func (self *SDBInstanceBackup) PerformSyncstatus(ctx context.Context, userCred m
 }
 
 func (backup *SDBInstanceBackup) GetIRegion() (cloudprovider.ICloudRegion, error) {
-	region := backup.GetRegion()
-	if region == nil {
-		return nil, errors.Wrap(httperrors.ErrInvalidStatus, "no valid cloudregion")
+	region, err := backup.GetRegion()
+	if err != nil {
+		return nil, err
 	}
 	provider, err := backup.GetDriver()
 	if err != nil {
@@ -400,8 +391,8 @@ func (backup *SDBInstanceBackup) GetIDBInstanceBackup() (cloudprovider.ICloudDBI
 }
 
 func (manager *SDBInstanceBackupManager) SyncDBInstanceBackups(ctx context.Context, userCred mcclient.TokenCredential, provider *SCloudprovider, instance *SDBInstance, region *SCloudregion, cloudBackups []cloudprovider.ICloudDBInstanceBackup) compare.SyncResult {
-	lockman.LockClass(ctx, manager, db.GetLockClassKey(manager, provider.GetOwnerId()))
-	defer lockman.ReleaseClass(ctx, manager, db.GetLockClassKey(manager, provider.GetOwnerId()))
+	lockman.LockRawObject(ctx, "dbinstance-backups", fmt.Sprintf("%s-%s", provider.Id, region.Id))
+	defer lockman.ReleaseRawObject(ctx, "dbinstance-backups", fmt.Sprintf("%s-%s", provider.Id, region.Id))
 
 	result := compare.SyncResult{}
 	dbBackups, err := region.GetDBInstanceBackups(provider, instance)
@@ -500,18 +491,9 @@ func (manager *SDBInstanceBackupManager) newFromCloudDBInstanceBackup(
 	region *SCloudregion,
 	extBackup cloudprovider.ICloudDBInstanceBackup,
 ) error {
-	lockman.LockClass(ctx, manager, db.GetLockClassKey(manager, userCred))
-	defer lockman.ReleaseClass(ctx, manager, db.GetLockClassKey(manager, userCred))
-
 	backup := SDBInstanceBackup{}
 	backup.SetModelManager(manager, &backup)
 
-	newName, err := db.GenerateName(manager, provider.GetOwnerId(), extBackup.GetName())
-	if err != nil {
-		return errors.Wrap(err, "newFromCloudDBInstanceBackup.GenerateName")
-	}
-
-	backup.Name = newName
 	backup.CloudregionId = region.Id
 	backup.ManagerId = provider.Id
 	backup.Status = extBackup.GetStatus()
@@ -539,7 +521,17 @@ func (manager *SDBInstanceBackupManager) newFromCloudDBInstanceBackup(
 		}
 	}
 
-	err = manager.TableSpec().Insert(ctx, &backup)
+	var err = func() error {
+		lockman.LockRawObject(ctx, manager.Keyword(), "name")
+		defer lockman.ReleaseRawObject(ctx, manager.Keyword(), "name")
+
+		newName, err := db.GenerateName(ctx, manager, provider.GetOwnerId(), extBackup.GetName())
+		if err != nil {
+			return errors.Wrap(err, "newFromCloudDBInstanceBackup.GenerateName")
+		}
+		backup.Name = newName
+		return manager.TableSpec().Insert(ctx, &backup)
+	}()
 	if err != nil {
 		return errors.Wrapf(err, "newFromCloudDBInstanceBackup.Insert")
 	}
@@ -576,10 +568,6 @@ func (self *SDBInstanceBackup) StartDBInstanceBackupDeleteTask(ctx context.Conte
 
 func (self *SDBInstanceBackup) GetCloudprovider() *SCloudprovider {
 	return self.SManagedResourceBase.GetCloudprovider()
-}
-
-func (self *SDBInstanceBackup) GetRegion() *SCloudregion {
-	return self.SCloudregionResourceBase.GetRegion()
 }
 
 func (manager *SDBInstanceBackupManager) ListItemExportKeys(ctx context.Context,

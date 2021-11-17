@@ -180,10 +180,12 @@ const (
 	ACT_UNCONVERT_COMPLETE = "unconverted"
 	ACT_UNCONVERT_FAIL     = "unconvert_fail"
 
-	ACT_SYNC_HOST_START    = "sync_host_start"
-	ACT_SYNCING_HOST       = "syncing_host"
-	ACT_SYNC_HOST_COMPLETE = "sync_host_end"
-	ACT_SYNC_HOST_FAILED   = "sync_host_fail"
+	ACT_SYNC_HOST_START     = "sync_host_start"
+	ACT_SYNCING_HOST        = "syncing_host"
+	ACT_SYNC_HOST_COMPLETE  = "sync_host_end"
+	ACT_SYNC_HOST_FAILED    = "sync_host_fail"
+	ACT_SYNC_NETWORK        = "sync_network"
+	ACT_SYNC_NETWORK_FAILED = "sync_network_failed"
 
 	ACT_SYNC_PROJECT_COMPLETE = "sync_project_end"
 
@@ -279,4 +281,10 @@ const (
 
 	ACT_UPDATE_RULE = "update_config"
 	ACT_UPDATE_TAGS = "update_tags"
+
+	ACT_UPDATE_MONITOR_RESOURCE_JOINT = "update_monitor_resource_joint"
+	ACT_DETACH_MONITOR_RESOURCE_JOINT = "detach_monitor_resource_joint"
+
+	ACT_MERGE_NETWORK        = "merge_network"
+	ACT_MERGE_NETWORK_FAILED = "merge_network_failed"
 )

@@ -1,3 +1,17 @@
+// Copyright 2019 Yunion
+//
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+//     http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
+
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
 // You may obtain a copy of the License at
@@ -20,7 +34,6 @@ import (
 	"yunion.io/x/sqlchemy"
 
 	"yunion.io/x/onecloud/pkg/apis"
-	"yunion.io/x/onecloud/pkg/apis/compute"
 	"yunion.io/x/onecloud/pkg/mcclient"
 )
 
@@ -40,10 +53,15 @@ func (manager *SMultiArchResourceBaseManager) ListItemFilter(
 	query apis.MultiArchResourceBaseListInput,
 ) (*sqlchemy.SQuery, error) {
 	if len(query.OsArch) > 0 {
-		if query.OsArch == compute.OS_ARCH_X86 {
+		if query.OsArch == apis.OS_ARCH_X86 {
 			q = q.Filter(sqlchemy.OR(
 				sqlchemy.Startswith(q.Field("os_arch"), query.OsArch),
 				sqlchemy.IsNullOrEmpty(q.Field("os_arch")),
+			))
+		} else if query.OsArch == apis.OS_ARCH_ARM {
+			q = q.Filter(sqlchemy.OR(
+				sqlchemy.Startswith(q.Field("os_arch"), query.OsArch),
+				sqlchemy.Equals(q.Field("os_arch"), apis.OS_ARCH_AARCH64),
 			))
 		} else {
 			q = q.Startswith("os_arch", query.OsArch)

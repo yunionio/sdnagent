@@ -30,6 +30,7 @@ import (
 
 type SVMTemplate struct {
 	multicloud.SImageBase
+	multicloud.STagBase
 	cache *SDatastoreImageCache
 	vm    *SVirtualMachine
 	uuid  string
@@ -145,8 +146,8 @@ func (t *SVMTemplate) GetImageStatus() string {
 	return cloudprovider.IMAGE_STATUS_DELETED
 }
 
-func (t *SVMTemplate) GetOsType() string {
-	return t.vm.GetOSType()
+func (t *SVMTemplate) GetOsType() cloudprovider.TOsType {
+	return t.vm.GetOsType()
 }
 
 func (t *SVMTemplate) GetOsDist() string {

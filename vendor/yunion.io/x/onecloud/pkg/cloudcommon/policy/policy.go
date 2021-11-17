@@ -34,7 +34,7 @@ import (
 	"yunion.io/x/onecloud/pkg/httperrors"
 	"yunion.io/x/onecloud/pkg/mcclient"
 	"yunion.io/x/onecloud/pkg/mcclient/auth"
-	"yunion.io/x/onecloud/pkg/mcclient/modules"
+	"yunion.io/x/onecloud/pkg/mcclient/modules/identity"
 	"yunion.io/x/onecloud/pkg/util/hashcache"
 	"yunion.io/x/onecloud/pkg/util/rbacutils"
 )
@@ -222,32 +222,52 @@ func (manager *SPolicyManager) Allow(targetScope rbacutils.TRbacScope, userCred 
 	return rbacutils.Deny
 }
 
+type fetchResult struct {
+	output *mcclient.SFetchMatchPoliciesOutput
+	err    error
+}
+
+type policyTask struct {
+	manager  *SPolicyManager
+	key      string
+	userCred mcclient.TokenCredential
+	resChan  chan fetchResult
+}
+
+func (t *policyTask) Run() {
+	val := t.manager.policyCache.Get(t.key)
+	result := fetchResult{}
+	if gotypes.IsNil(val) {
+		pg, err := DefaultPolicyFetcher(context.Background(), t.userCred)
+		if err != nil {
+			result.err = errors.Wrap(err, "DefaultPolicyFetcher")
+		} else {
+			t.manager.policyCache.Set(t.key, pg)
+			result.output = pg
+		}
+	} else {
+		result.output = val.(*mcclient.SFetchMatchPoliciesOutput)
+	}
+	t.resChan <- result
+}
+
+func (t *policyTask) Dump() string {
+	return ""
+}
+
 func (manager *SPolicyManager) fetchMatchedPolicies(userCred mcclient.TokenCredential) (*mcclient.SFetchMatchPoliciesOutput, error) {
 	key := policyKey(userCred)
 
-	type fetchResult struct {
-		output *mcclient.SFetchMatchPoliciesOutput
-		err    error
+	task := policyTask{
+		manager:  manager,
+		key:      key,
+		userCred: userCred,
 	}
-	resChan := make(chan fetchResult)
-	manager.fetchWorker.Run(func() {
-		val := manager.policyCache.Get(key)
-		result := fetchResult{}
-		if gotypes.IsNil(val) {
-			pg, err := DefaultPolicyFetcher(context.Background(), userCred)
-			if err != nil {
-				result.err = errors.Wrap(err, "DefaultPolicyFetcher")
-			} else {
-				manager.policyCache.Set(key, pg)
-				result.output = pg
-			}
-		} else {
-			result.output = val.(*mcclient.SFetchMatchPoliciesOutput)
-		}
-		resChan <- result
-	}, nil, nil)
+	task.resChan = make(chan fetchResult)
 
-	res := <-resChan
+	manager.fetchWorker.Run(&task, nil, nil)
+
+	res := <-task.resChan
 	return res.output, res.err
 }
 
@@ -388,7 +408,7 @@ func explainPolicy(userCred mcclient.TokenCredential, policyReq jsonutils.JSONOb
 
 func fetchPolicyDataByIdOrName(ctx context.Context, id string) (*sPolicyData, error) {
 	s := auth.GetAdminSession(ctx, consts.GetRegion(), "v1")
-	data, err := modules.Policies.Get(s, id, nil)
+	data, err := identity.Policies.Get(s, id, nil)
 	if err != nil {
 		return nil, errors.Wrap(err, "modules.Policies.Get")
 	}

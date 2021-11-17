@@ -1,3 +1,17 @@
+// Copyright 2019 Yunion
+//
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+//     http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
+
 package monitor
 
 var (
@@ -13,20 +27,26 @@ var (
 	}
 
 	MEASUREMENT_TAG_KEYWORD = map[string]string{
-		"host":         "host",
-		"guest":        "vm_name",
-		"redis":        "redis_name",
-		"rds":          "rds_name",
-		"oss":          "oss_name",
-		"cloudaccount": "cloudaccount_name",
+		METRIC_RES_TYPE_HOST:         "host",
+		METRIC_RES_TYPE_GUEST:        "vm_name",
+		METRIC_RES_TYPE_REDIS:        "redis_name",
+		METRIC_RES_TYPE_RDS:          "rds_name",
+		METRIC_RES_TYPE_OSS:          "oss_name",
+		METRIC_RES_TYPE_CLOUDACCOUNT: "cloudaccount_name",
+		METRIC_RES_TYPE_STORAGE:      "storage_name",
+		METRIC_RES_TYPE_AGENT:        "vm_name",
 	}
 	MEASUREMENT_TAG_ID = map[string]string{
-		"host":         "host_id",
-		"guest":        "vm_id",
-		"redis":        "redis_id",
-		"rds":          "rds_id",
-		"oss":          "oss_id",
-		"cloudaccount": "cloudaccount_id",
+		METRIC_RES_TYPE_HOST:         "host_id",
+		METRIC_RES_TYPE_GUEST:        "vm_id",
+		METRIC_RES_TYPE_AGENT:        "vm_id",
+		METRIC_RES_TYPE_REDIS:        "redis_id",
+		METRIC_RES_TYPE_RDS:          "rds_id",
+		METRIC_RES_TYPE_OSS:          "oss_id",
+		METRIC_RES_TYPE_CLOUDACCOUNT: "cloudaccount_id",
+		METRIC_RES_TYPE_TENANT:       "tenant_id",
+		METRIC_RES_TYPE_DOMAIN:       "domain_id",
+		METRIC_RES_TYPE_STORAGE:      "storage_id",
 	}
 	AlertReduceFunc = map[string]string{
 		"avg":          "average value",
@@ -49,9 +69,11 @@ type MetricFunc struct {
 }
 
 type MetricInputQuery struct {
-	From  string `json:"from"`
-	To    string `json:"to"`
-	Scope string `json:"scope"`
+	From    string `json:"from"`
+	To      string `json:"to"`
+	Scope   string `json:"scope"`
+	Slimit  string `json:"slimit"`
+	Soffset string `json:"soffset"`
 	//default group by
 	Unit        bool          `json:"unit"`
 	Interval    string        `json:"interval"`

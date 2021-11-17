@@ -169,11 +169,11 @@ type LoadbalancerDetails struct {
 	apis.VirtualResourceDetails
 
 	ManagedResourceInfo
-	CloudregionResourceInfo
 
 	LoadbalancerClusterResourceInfo
 
 	VpcResourceInfoBase
+	CloudregionResourceInfo
 	ZoneResourceInfoBase
 	Zone1ResourceInfoBase
 	NetworkResourceInfoBase
@@ -244,6 +244,9 @@ type LoadbalancerCreateInput struct {
 
 	// 计费类型
 	ChargeType string `json:"charge_type"`
+
+	// 出口带宽
+	EgressMbps int `json:"egress_mbps"`
 
 	// 套餐名称
 	LoadbalancerSpec string `json:"loadbalancer_spec"`

@@ -122,7 +122,7 @@ func (self *SInterVpcNetworkRouteSet) syncRemoveRouteSet(ctx context.Context, us
 	lockman.LockObject(ctx, self)
 	defer lockman.ReleaseObject(ctx, self)
 
-	err := self.ValidateDeleteCondition(ctx)
+	err := self.ValidateDeleteCondition(ctx, nil)
 	if err != nil {
 		return err
 	}
@@ -228,15 +228,6 @@ func (manager *SInterVpcNetworkRouteSetManager) QueryDistinctExtraField(q *sqlch
 		return q, nil
 	}
 	return q, httperrors.ErrNotFound
-}
-
-func (self *SInterVpcNetworkRouteSet) GetExtraDetails(
-	ctx context.Context,
-	userCred mcclient.TokenCredential,
-	query jsonutils.JSONObject,
-	isList bool,
-) (api.InterVpcNetworkRouteSetDetails, error) {
-	return api.InterVpcNetworkRouteSetDetails{}, nil
 }
 
 func (manager *SInterVpcNetworkRouteSetManager) FetchCustomizeColumns(

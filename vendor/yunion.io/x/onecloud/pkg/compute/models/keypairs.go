@@ -113,15 +113,6 @@ func (manager *SKeypairManager) QueryDistinctExtraField(q *sqlchemy.SQuery, fiel
 	return q, httperrors.ErrNotFound
 }
 
-func (self *SKeypair) GetExtraDetails(
-	ctx context.Context,
-	userCred mcclient.TokenCredential,
-	query jsonutils.JSONObject,
-	isList bool,
-) (api.KeypairDetails, error) {
-	return api.KeypairDetails{}, nil
-}
-
 func (manager *SKeypairManager) FetchCustomizeColumns(
 	ctx context.Context,
 	userCred mcclient.TokenCredential,
@@ -187,7 +178,7 @@ func (manager *SKeypairManager) ValidateCreateData(ctx context.Context, userCred
 	return input, nil
 }
 
-func (self *SKeypair) ValidateDeleteCondition(ctx context.Context) error {
+func (self *SKeypair) ValidateDeleteCondition(ctx context.Context, info jsonutils.JSONObject) error {
 	guestCnt, err := self.GetLinkedGuestsCount()
 	if err != nil {
 		return httperrors.NewInternalServerError("GetLinkedGuestsCount failed %s", err)
@@ -195,7 +186,7 @@ func (self *SKeypair) ValidateDeleteCondition(ctx context.Context) error {
 	if guestCnt > 0 {
 		return httperrors.NewNotEmptyError("Cannot delete keypair used by servers")
 	}
-	return self.SStandaloneResourceBase.ValidateDeleteCondition(ctx)
+	return self.SStandaloneResourceBase.ValidateDeleteCondition(ctx, nil)
 }
 
 func totalKeypairCount(userId string) (int, error) {

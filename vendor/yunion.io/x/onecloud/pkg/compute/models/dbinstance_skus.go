@@ -23,6 +23,7 @@ import (
 	"yunion.io/x/jsonutils"
 	"yunion.io/x/log"
 	"yunion.io/x/pkg/errors"
+	"yunion.io/x/pkg/tristate"
 	"yunion.io/x/pkg/util/compare"
 	"yunion.io/x/pkg/utils"
 	"yunion.io/x/sqlchemy"
@@ -189,10 +190,6 @@ func (manager *SDBInstanceSkuManager) ListItemFilter(
 	return q, nil
 }
 
-func (self *SDBInstanceSku) GetExtraDetails(ctx context.Context, userCred mcclient.TokenCredential, query jsonutils.JSONObject, isList bool) (api.DBInstanceSkuDetails, error) {
-	return api.DBInstanceSkuDetails{}, nil
-}
-
 func (manager *SDBInstanceSkuManager) FetchCustomizeColumns(
 	ctx context.Context,
 	userCred mcclient.TokenCredential,
@@ -298,6 +295,11 @@ func (manager *SDBInstanceSkuManager) GetPropertyInstanceSpecs(ctx context.Conte
 		return nil, errors.Wrap(err, "manager.ListItemFilter")
 	}
 
+	q2, err := manager.ListItemFilter(ctx, manager.Query(), userCred, listQuery)
+	if err != nil {
+		return nil, errors.Wrap(err, "manager.ListItemFilter")
+	}
+
 	input := &SDBInstanceSku{}
 	query.Unmarshal(input)
 	for k, v := range map[string]interface{}{
@@ -317,13 +319,28 @@ func (manager *SDBInstanceSkuManager) GetPropertyInstanceSpecs(ctx context.Conte
 			value := v.(string)
 			if len(value) > 0 {
 				q = q.Equals(k, v)
+				q2 = q2.Equals(k, v)
 			}
 		case int, int64:
 			value := fmt.Sprintf("%d", v)
 			if value != "0" {
 				q = q.Equals(k, v)
+				q2 = q2.Equals(k, v)
 			}
 		}
+	}
+
+	sq := q2.SubQuery()
+	q2 = sq.Query(sq.Field("zone1"), sq.Field("zone2"), sq.Field("zone3")).Distinct()
+
+	skuZones := []struct {
+		Zone1 string
+		Zone2 string
+		Zone3 string
+	}{}
+	err = q2.All(&skuZones)
+	if err != nil {
+		return nil, errors.Wrapf(err, "query sku zones")
 	}
 
 	skus := []SDBInstanceSku{}
@@ -360,23 +377,7 @@ func (manager *SDBInstanceSkuManager) GetPropertyInstanceSpecs(ctx context.Conte
 	result.Zones.Zone1 = map[string]string{}
 	result.Zones.Zone2 = map[string]string{}
 	result.Zones.Zone3 = map[string]string{}
-	for _, sku := range skus {
-		if _, ok := result.cpuMemsMb[sku.VcpuCount]; !ok {
-			result.cpuMemsMb[sku.VcpuCount] = map[int]bool{}
-			result.CpuMemsMb[fmt.Sprintf("%d", sku.VcpuCount)] = []int{}
-			result.Cpus = append(result.Cpus, sku.VcpuCount)
-		}
-
-		if _, ok := result.cpuMemsMb[sku.VcpuCount][sku.VmemSizeMb]; !ok {
-			result.cpuMemsMb[sku.VcpuCount][sku.VmemSizeMb] = true
-			result.CpuMemsMb[fmt.Sprintf("%d", sku.VcpuCount)] = append(result.CpuMemsMb[fmt.Sprintf("%d", sku.VcpuCount)], sku.VmemSizeMb)
-		}
-
-		if _, ok := result.memsMb[sku.VmemSizeMb]; !ok {
-			result.memsMb[sku.VmemSizeMb] = true
-			result.MemsMb = append(result.MemsMb, sku.VmemSizeMb)
-		}
-
+	for _, sku := range skuZones {
 		if _, ok := result.Zones.Zone1[sku.Zone1]; !ok && len(sku.Zone1) > 0 {
 			result.Zones.Zone1[sku.Zone1] = sku.Zone1
 		}
@@ -403,20 +404,36 @@ func (manager *SDBInstanceSkuManager) GetPropertyInstanceSpecs(ctx context.Conte
 			result.Zones.Zones[zoneId] = zoneId
 		}
 	}
-
-	zq := ZoneManager.Query("id", "name").In("id", result.zones)
-	rows, err := zq.Rows()
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-	for rows.Next() {
-		id, name := "", ""
-		err = rows.Scan(&id, &name)
-		if err != nil {
-			return nil, errors.Wrap(err, "rows.Scan")
+	for _, sku := range skus {
+		if _, ok := result.cpuMemsMb[sku.VcpuCount]; !ok {
+			result.cpuMemsMb[sku.VcpuCount] = map[int]bool{}
+			result.CpuMemsMb[fmt.Sprintf("%d", sku.VcpuCount)] = []int{}
+			result.Cpus = append(result.Cpus, sku.VcpuCount)
 		}
-		result.zoneNames[id] = name
+
+		if _, ok := result.cpuMemsMb[sku.VcpuCount][sku.VmemSizeMb]; !ok {
+			result.cpuMemsMb[sku.VcpuCount][sku.VmemSizeMb] = true
+			result.CpuMemsMb[fmt.Sprintf("%d", sku.VcpuCount)] = append(result.CpuMemsMb[fmt.Sprintf("%d", sku.VcpuCount)], sku.VmemSizeMb)
+		}
+
+		if _, ok := result.memsMb[sku.VmemSizeMb]; !ok {
+			result.memsMb[sku.VmemSizeMb] = true
+			result.MemsMb = append(result.MemsMb, sku.VmemSizeMb)
+		}
+
+	}
+
+	zones := []struct {
+		Id   string
+		Name string
+	}{}
+
+	err = ZoneManager.Query("id", "name").In("id", result.zones).All(&zones)
+	if err != nil {
+		return nil, errors.Wrapf(err, "query zones")
+	}
+	for _, zone := range zones {
+		result.zoneNames[zone.Id] = zone.Name
 	}
 
 	for _, zoneId := range result.Zones.Zone1 {
@@ -482,8 +499,8 @@ func (manager *SDBInstanceSkuManager) GetDBInstanceSkus(provider, cloudregionId,
 }
 
 func (manager *SDBInstanceSkuManager) SyncDBInstanceSkus(ctx context.Context, userCred mcclient.TokenCredential, region *SCloudregion, meta *SSkuResourcesMeta) compare.SyncResult {
-	lockman.LockClass(ctx, manager, db.GetLockClassKey(manager, userCred))
-	defer lockman.ReleaseClass(ctx, manager, db.GetLockClassKey(manager, userCred))
+	lockman.LockRawObject(ctx, "dbinstance-skus", region.Id)
+	defer lockman.ReleaseRawObject(ctx, "dbinstance-skus", region.Id)
 
 	syncResult := compare.SyncResult{}
 
@@ -635,9 +652,9 @@ func (manager *SDBInstanceSkuManager) ListItemExportKeys(ctx context.Context,
 
 func (self *SDBInstanceSku) GetZoneInfo() (cloudprovider.SZoneInfo, error) {
 	zoneInfo := cloudprovider.SZoneInfo{ZoneId: self.ZoneId}
-	region := self.GetRegion()
-	if region == nil {
-		return zoneInfo, fmt.Errorf("empyt region for rds sku %s(%s)", self.Name, self.Id)
+	region, err := self.GetRegion()
+	if err != nil {
+		return zoneInfo, nil
 	}
 	var cloudZoneId = func(id string) (string, error) {
 		if len(id) == 0 {
@@ -671,4 +688,109 @@ func (manager *SDBInstanceSkuManager) AllowGetPropertySyncTasks(ctx context.Cont
 
 func (manager *SDBInstanceSkuManager) GetPropertySyncTasks(ctx context.Context, userCred mcclient.TokenCredential, query api.SkuTaskQueryInput) (jsonutils.JSONObject, error) {
 	return GetPropertySkusSyncTasks(ctx, userCred, query)
+}
+
+func (self *SCloudregion) GetDBInstanceSkus() ([]SDBInstanceSku, error) {
+	q := DBInstanceSkuManager.Query().Equals("cloudregion_id", self.Id)
+	skus := []SDBInstanceSku{}
+	err := db.FetchModelObjects(DBInstanceSkuManager, q, &skus)
+	if err != nil {
+		return nil, errors.Wrapf(err, "db.FetchModelObjects")
+	}
+	return skus, nil
+}
+
+func (self *SCloudregion) SyncDBInstanceSkus(ctx context.Context, userCred mcclient.TokenCredential, provider *SCloudprovider, exts []cloudprovider.ICloudDBInstanceSku) compare.SyncResult {
+	lockman.LockRawObject(ctx, DBInstanceSkuManager.Keyword(), self.Id)
+	defer lockman.ReleaseRawObject(ctx, DBInstanceSkuManager.Keyword(), self.Id)
+
+	result := compare.SyncResult{}
+	dbSkus, err := self.GetDBInstanceSkus()
+	if err != nil {
+		result.Error(err)
+		return result
+	}
+
+	removed := make([]SDBInstanceSku, 0)
+	commondb := make([]SDBInstanceSku, 0)
+	commonext := make([]cloudprovider.ICloudDBInstanceSku, 0)
+	added := make([]cloudprovider.ICloudDBInstanceSku, 0)
+
+	err = compare.CompareSets(dbSkus, exts, &removed, &commondb, &commonext, &added)
+	if err != nil {
+		result.Error(err)
+		return result
+	}
+
+	for i := 0; i < len(removed); i += 1 {
+		err = removed[i].Delete(ctx, userCred)
+		if err != nil {
+			result.DeleteError(err)
+			continue
+		}
+		result.Delete()
+	}
+	for i := 0; i < len(added); i += 1 {
+		err = self.newFromCloudSku(ctx, userCred, added[i])
+		if err != nil {
+			result.AddError(err)
+			continue
+		}
+		result.Add()
+	}
+	return result
+}
+
+func (self *SCloudregion) newFromCloudSku(ctx context.Context, userCred mcclient.TokenCredential, ext cloudprovider.ICloudDBInstanceSku) error {
+	sku := &SDBInstanceSku{}
+	sku.SetModelManager(DBInstanceSkuManager, sku)
+	sku.Name = ext.GetName()
+	sku.Status = ext.GetStatus()
+	sku.CloudregionId = self.Id
+	sku.Enabled = tristate.True
+	sku.ExternalId = ext.GetGlobalId()
+	sku.Engine = ext.GetEngine()
+	sku.EngineVersion = ext.GetEngineVersion()
+	sku.StorageType = ext.GetStorageType()
+	sku.DiskSizeStep = ext.GetDiskSizeStep()
+	sku.MaxDiskSizeGb = ext.GetMaxDiskSizeGb()
+	sku.MinDiskSizeGb = ext.GetMinDiskSizeGb()
+	sku.IOPS = ext.GetIOPS()
+	sku.TPS = ext.GetTPS()
+	sku.QPS = ext.GetQPS()
+	sku.MaxConnections = ext.GetMaxConnections()
+	sku.VcpuCount = ext.GetVcpuCount()
+	sku.VmemSizeMb = ext.GetVmemSizeMb()
+	sku.Category = ext.GetCategory()
+	sku.ZoneId = ext.GetZoneId()
+	sku.Provider = self.Provider
+	zones, _ := self.GetZones()
+	if zone1 := ext.GetZone1Id(); len(zone1) > 0 {
+		for _, zone := range zones {
+			if strings.HasSuffix(zone.ExternalId, zone1) {
+				sku.Zone1 = zone.Id
+				break
+			}
+		}
+	}
+
+	if zone2 := ext.GetZone2Id(); len(zone2) > 0 {
+		for _, zone := range zones {
+			if strings.HasSuffix(zone.ExternalId, zone2) {
+				sku.Zone2 = zone.Id
+				break
+			}
+		}
+	}
+
+	if zone3 := ext.GetZone3Id(); len(zone3) > 0 {
+		for _, zone := range zones {
+			if strings.HasSuffix(zone.ExternalId, zone3) {
+				sku.Zone3 = zone.Id
+				break
+			}
+		}
+	}
+
+	return DBInstanceSkuManager.TableSpec().Insert(ctx, sku)
 }

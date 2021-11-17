@@ -22,6 +22,7 @@ import (
 	"yunion.io/x/sqlchemy"
 
 	"yunion.io/x/onecloud/pkg/apis"
+	"yunion.io/x/onecloud/pkg/cloudcommon/policy"
 	"yunion.io/x/onecloud/pkg/httperrors"
 	"yunion.io/x/onecloud/pkg/mcclient"
 	"yunion.io/x/onecloud/pkg/util/stringutils2"
@@ -55,6 +56,44 @@ func (self *SStatusStandaloneResourceBase) GetIStatusStandaloneModel() IStatusSt
 	return self.GetVirtualObject().(IStatusStandaloneModel)
 }
 
+func (manager *SStatusStandaloneResourceBaseManager) AllowGetPropertyStatistics(ctx context.Context, userCred mcclient.TokenCredential, query jsonutils.JSONObject) bool {
+	return IsAdminAllowGetSpec(userCred, manager, "statistics")
+}
+
+func (manager *SStatusStandaloneResourceBaseManager) GetPropertyStatistics(ctx context.Context, userCred mcclient.TokenCredential, query jsonutils.JSONObject) (map[string]apis.StatusStatistic, error) {
+	im, ok := manager.GetVirtualObject().(IModelManager)
+	if !ok {
+		im = manager
+	}
+
+	var err error
+	q := manager.Query()
+	q, err = ListItemQueryFilters(im, ctx, q, userCred, query, policy.PolicyActionList)
+	if err != nil {
+		return nil, err
+	}
+
+	sq := q.SubQuery()
+	statQ := sq.Query(sq.Field("status"), sqlchemy.COUNT("total_count", sq.Field("id")))
+	statQ = statQ.GroupBy(sq.Field("status"))
+
+	ret := []struct {
+		Status     string
+		TotalCount int64
+	}{}
+	err = statQ.All(&ret)
+	if err != nil {
+		return nil, errors.Wrapf(err, "q.All")
+	}
+	result := map[string]apis.StatusStatistic{}
+	for _, s := range ret {
+		result[s.Status] = apis.StatusStatistic{
+			TotalCount: s.TotalCount,
+		}
+	}
+	return result, nil
+}
+
 // 更新资源状态
 func (self *SStatusStandaloneResourceBase) PerformStatus(ctx context.Context, userCred mcclient.TokenCredential, query jsonutils.JSONObject, input apis.PerformStatusInput) (jsonutils.JSONObject, error) {
 	err := StatusBasePerformStatus(self.GetIStatusStandaloneModel(), userCred, input)
@@ -66,6 +105,19 @@ func (self *SStatusStandaloneResourceBase) PerformStatus(ctx context.Context, us
 
 func (model *SStatusStandaloneResourceBase) SetStatus(userCred mcclient.TokenCredential, status string, reason string) error {
 	return statusBaseSetStatus(model.GetIStatusStandaloneModel(), userCred, status, reason)
+}
+
+func (model *SStatusStandaloneResourceBase) SetProgress(progress float32) error {
+	return statusBaseSetProgress(model.GetIStatusStandaloneModel(), progress)
+}
+
+func (model *SStatusStandaloneResourceBase) PreUpdate(ctx context.Context, userCred mcclient.TokenCredential, query jsonutils.JSONObject, data jsonutils.JSONObject) {
+	// 减少更新日志
+	progress, _ := data.Float("progress")
+	if progress > 0 {
+		model.SetProgress(float32(progress))
+	}
+	model.SStandaloneResourceBase.PreUpdate(ctx, userCred, query, data)
 }
 
 func (manager *SStatusStandaloneResourceBaseManager) ValidateCreateData(ctx context.Context, userCred mcclient.TokenCredential, ownerId mcclient.IIdentityProvider, query jsonutils.JSONObject, input apis.StatusStandaloneResourceCreateInput) (apis.StatusStandaloneResourceCreateInput, error) {
@@ -130,15 +182,6 @@ func (manager *SStatusStandaloneResourceBaseManager) FetchCustomizeColumns(
 		}
 	}
 	return rows
-}
-
-func (model *SStatusStandaloneResourceBase) GetExtraDetails(
-	ctx context.Context,
-	userCred mcclient.TokenCredential,
-	query jsonutils.JSONObject,
-	isList bool,
-) (apis.StatusStandaloneResourceDetails, error) {
-	return apis.StatusStandaloneResourceDetails{}, nil
 }
 
 func (model *SStatusStandaloneResourceBase) ValidateUpdateData(

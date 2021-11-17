@@ -61,6 +61,11 @@ type SAwsCachedLb struct {
 	CachedBackendGroupId string `width:"36" charset:"ascii" nullable:"true" list:"user" create:"optional"`
 }
 
+func (manager *SAwsCachedLbManager) GetResourceCount() ([]db.SScopeResourceCount, error) {
+	virts := manager.Query().IsFalse("pending_deleted")
+	return db.CalculateResourceCount(virts, "tenant_id")
+}
+
 func (man *SAwsCachedLbManager) GetBackendsByLocalBackendId(backendId string) ([]SAwsCachedLb, error) {
 	loadbalancerBackends := []SAwsCachedLb{}
 	q := man.Query().Equals("backend_id", backendId)
@@ -80,20 +85,24 @@ func (man *SAwsCachedLbManager) CreateAwsCachedLb(ctx context.Context, userCred 
 	cachedlbb.BackendId = lbb.GetId()
 	cachedlbb.ExternalId = extLoadbalancerBackend.GetGlobalId()
 
-	newName, err := db.GenerateName(man, syncOwnerId, extLoadbalancerBackend.GetName())
-	if err != nil {
-		return nil, err
-	}
-	cachedlbb.Name = newName
-
 	if err := cachedlbb.constructFieldsFromCloudLoadbalancerBackend(extLoadbalancerBackend); err != nil {
 		return nil, err
 	}
 
-	err = man.TableSpec().Insert(ctx, cachedlbb)
+	var err = func() error {
+		lockman.LockRawObject(ctx, man.Keyword(), "name")
+		defer lockman.ReleaseRawObject(ctx, man.Keyword(), "name")
 
+		newName, err := db.GenerateName(ctx, man, syncOwnerId, extLoadbalancerBackend.GetName())
+		if err != nil {
+			return err
+		}
+		cachedlbb.Name = newName
+
+		return man.TableSpec().Insert(ctx, cachedlbb)
+	}()
 	if err != nil {
-		return nil, err
+		return nil, errors.Wrapf(err, "Insert")
 	}
 
 	SyncCloudProject(userCred, lbb, syncOwnerId, extLoadbalancerBackend, cachedLbbg.ManagerId)
@@ -124,8 +133,8 @@ func (man *SAwsCachedLbManager) getLoadbalancerBackendsByLoadbalancerBackendgrou
 func (man *SAwsCachedLbManager) SyncLoadbalancerBackends(ctx context.Context, userCred mcclient.TokenCredential, provider *SCloudprovider, loadbalancerBackendgroup *SAwsCachedLbbg, lbbs []cloudprovider.ICloudLoadbalancerBackend, syncRange *SSyncRange) compare.SyncResult {
 	syncOwnerId := provider.GetOwnerId()
 
-	lockman.LockClass(ctx, man, db.GetLockClassKey(man, syncOwnerId))
-	defer lockman.ReleaseClass(ctx, man, db.GetLockClassKey(man, syncOwnerId))
+	lockman.LockRawObject(ctx, "backends", loadbalancerBackendgroup.Id)
+	defer lockman.ReleaseRawObject(ctx, "backends", loadbalancerBackendgroup.Id)
 
 	syncResult := compare.SyncResult{}
 
@@ -177,7 +186,7 @@ func (lbb *SAwsCachedLb) syncRemoveCloudLoadbalancerBackend(ctx context.Context,
 	lockman.LockObject(ctx, lbb)
 	defer lockman.ReleaseObject(ctx, lbb)
 
-	err := lbb.ValidateDeleteCondition(ctx)
+	err := lbb.ValidateDeleteCondition(ctx, nil)
 	if err != nil { // cannot delete
 		err = lbb.SetStatus(userCred, api.LB_STATUS_UNKNOWN, "sync to delete")
 	} else {
@@ -261,20 +270,21 @@ func (man *SAwsCachedLbManager) newFromCloudLoadbalancerBackend(ctx context.Cont
 	lbb.BackendId = locallbb.GetId()
 	lbb.ExternalId = extLoadbalancerBackend.GetGlobalId()
 
-	newName, err := db.GenerateName(man, syncOwnerId, extLoadbalancerBackend.GetName())
-	if err != nil {
-		return nil, err
-	}
-	lbb.Name = newName
-
 	if err := lbb.constructFieldsFromCloudLoadbalancerBackend(extLoadbalancerBackend); err != nil {
 		return nil, err
 	}
 
-	err = man.TableSpec().Insert(ctx, lbb)
-
+	err = func() error {
+		lockman.LockRawObject(ctx, man.Keyword(), "name")
+		defer lockman.ReleaseRawObject(ctx, man.Keyword(), "name")
+		lbb.Name, err = db.GenerateName(ctx, man, syncOwnerId, extLoadbalancerBackend.GetName())
+		if err != nil {
+			return err
+		}
+		return man.TableSpec().Insert(ctx, lbb)
+	}()
 	if err != nil {
-		return nil, err
+		return nil, errors.Wrapf(err, "Insert")
 	}
 
 	SyncCloudProject(userCred, lbb, syncOwnerId, extLoadbalancerBackend, loadbalancerBackendgroup.ManagerId)

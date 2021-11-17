@@ -25,6 +25,7 @@ import (
 
 	api "yunion.io/x/onecloud/pkg/apis/compute"
 	"yunion.io/x/onecloud/pkg/cloudcommon/db"
+	"yunion.io/x/onecloud/pkg/cloudcommon/db/lockman"
 	"yunion.io/x/onecloud/pkg/cloudprovider"
 	"yunion.io/x/onecloud/pkg/httperrors"
 	"yunion.io/x/onecloud/pkg/mcclient"
@@ -116,15 +117,6 @@ func (self *SDnsTrafficPolicy) AllowUpdateItem(ctx context.Context, userCred mcc
 }
 
 // 详情
-func (self *SDnsTrafficPolicy) GetExtraDetails(
-	ctx context.Context,
-	userCred mcclient.TokenCredential,
-	query jsonutils.JSONObject,
-	isList bool,
-) (api.DnsTrafficPolicyDetails, error) {
-	return api.DnsTrafficPolicyDetails{}, nil
-}
-
 func (manager *SDnsTrafficPolicyManager) FetchCustomizeColumns(
 	ctx context.Context,
 	userCred mcclient.TokenCredential,
@@ -160,13 +152,19 @@ func (manager *SDnsTrafficPolicyManager) Register(ctx context.Context, userCred 
 	}
 	policy := &SDnsTrafficPolicy{}
 	policy.SetModelManager(manager, policy)
-	policy.Name, err = db.GenerateName(manager, userCred, fmt.Sprintf("%s-%s", provider, policyType))
-	if err != nil {
-		return nil, errors.Wrapf(err, "db.GenerateName")
-	}
 	policy.PolicyType = string(policyType)
 	policy.PolicyValue = string(policyValue)
 	policy.Provider = provider
 	policy.Options = options
-	return policy, manager.TableSpec().Insert(ctx, policy)
+	return func() (*SDnsTrafficPolicy, error) {
+		lockman.LockRawObject(ctx, manager.Keyword(), "name")
+		defer lockman.ReleaseRawObject(ctx, manager.Keyword(), "name")
+
+		policy.Name, err = db.GenerateName(ctx, manager, userCred, fmt.Sprintf("%s-%s", provider, policyType))
+		if err != nil {
+			return nil, errors.Wrapf(err, "db.GenerateName")
+		}
+
+		return policy, manager.TableSpec().Insert(ctx, policy)
+	}()
 }

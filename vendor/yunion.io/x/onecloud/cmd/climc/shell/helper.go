@@ -24,6 +24,7 @@ import (
 
 	"yunion.io/x/onecloud/pkg/mcclient"
 	"yunion.io/x/onecloud/pkg/mcclient/modulebase"
+	"yunion.io/x/onecloud/pkg/util/printutils"
 )
 
 type ResourceCmd struct {
@@ -32,12 +33,15 @@ type ResourceCmd struct {
 
 	keyword string
 	prefix  string
+
+	printObject func(jsonutils.JSONObject)
 }
 
 func NewResourceCmd(manager modulebase.IBaseManager) *ResourceCmd {
 	return &ResourceCmd{
-		manager: manager,
-		keyword: manager.GetKeyword(),
+		manager:     manager,
+		keyword:     manager.GetKeyword(),
+		printObject: printObjectRecursive,
 	}
 }
 
@@ -58,6 +62,30 @@ func (cmd *ResourceCmd) WithKeyword(keyword string) *ResourceCmd {
 func (cmd *ResourceCmd) SetKeyword(keyword string) *ResourceCmd {
 	if len(keyword) > 0 {
 		cmd.keyword = keyword
+	}
+	return cmd
+}
+
+func (cmd *ResourceCmd) PrintObjectYAML() *ResourceCmd {
+	cmd.printObject = func(obj jsonutils.JSONObject) {
+		fmt.Print(obj.YAMLString())
+	}
+	return cmd
+}
+
+func (cmd *ResourceCmd) PrintObjectTable() *ResourceCmd {
+	cmd.printObject = printutils.PrintJSONObject
+	return cmd
+}
+
+func (cmd *ResourceCmd) PrintObjectKV() *ResourceCmd {
+	cmd.printObject = printObjectFmtKv
+	return cmd
+}
+
+func (cmd *ResourceCmd) PrintObjectFlattenKV() *ResourceCmd {
+	cmd.printObject = func(obj jsonutils.JSONObject) {
+		printObjectRecursiveEx(obj, printObjectFmtKv)
 	}
 	return cmd
 }
@@ -100,7 +128,7 @@ func (cmd ResourceCmd) RunWithDesc(action, desc string, args interface{}, callba
 	if ok {
 		desc = descArgs.Description()
 	}
-	R(args, fmt.Sprintf("%s%s-%s", prefix, cmd.keyword, action), desc, callback)
+	R(args, fmt.Sprintf("%s%s-%s", prefix, strings.ReplaceAll(cmd.keyword, "_", "-"), action), desc, callback)
 }
 
 func (cmd ResourceCmd) Run(action string, args interface{}, callback interface{}) {
@@ -132,7 +160,7 @@ func (cmd ResourceCmd) List(args IListOpt) {
 			ExportList(result, exportFile, args.GetExportKeys(), args.GetExportTexts(), man.GetColumns(s))
 			return nil
 		}
-		printList(result, man.GetColumns(s))
+		PrintList(result, man.GetColumns(s))
 		return nil
 	}
 	cmd.Run("list", args, callback)
@@ -156,7 +184,7 @@ func (cmd ResourceCmd) create(s *mcclient.ClientSession, args ICreateOpt) error 
 	if err != nil {
 		return err
 	}
-	printObject(ret)
+	PrintObject(ret)
 	return nil
 }
 
@@ -196,6 +224,28 @@ type IShowOpt interface {
 	IIdOpt
 }
 
+type IPropertyOpt interface {
+	IOpt
+	Property() string
+}
+
+func (cmd ResourceCmd) GetProperty(args IPropertyOpt) {
+	man := cmd.manager
+	callback := func(s *mcclient.ClientSession, args IPropertyOpt) error {
+		params, err := args.Params()
+		if err != nil {
+			return err
+		}
+		ret, err := man.(modulebase.Manager).Get(s, args.Property(), params)
+		if err != nil {
+			return err
+		}
+		PrintObject(ret)
+		return nil
+	}
+	cmd.RunWithDesc(args.Property(), fmt.Sprintf("Get property of a %s", man.GetKeyword()), args, callback)
+}
+
 func (cmd ResourceCmd) Show(args IShowOpt) {
 	man := cmd.manager
 	callback := func(s *mcclient.ClientSession, args IShowOpt) error {
@@ -207,7 +257,7 @@ func (cmd ResourceCmd) Show(args IShowOpt) {
 		if err != nil {
 			return err
 		}
-		printObject(ret)
+		PrintObject(ret)
 		return nil
 	}
 	cmd.RunWithDesc("show", fmt.Sprintf("Show details of a %s", man.GetKeyword()), args, callback)
@@ -224,7 +274,7 @@ func (cmd ResourceCmd) ClassShow(args IShowOpt) {
 		if err != nil {
 			return err
 		}
-		printObject(ret)
+		PrintObject(ret)
 		return nil
 	}
 	cmd.RunWithDesc(args.GetId(), fmt.Sprintf("Show %s of a %s", args.GetId(), man.GetKeyword()), args, callback)
@@ -270,7 +320,7 @@ func (cmd ResourceCmd) Custom(action TCustomAction, funcname string, args IGetAc
 		if reterr.IsNil() {
 			v, ok := retobj.Interface().(jsonutils.JSONObject)
 			if ok {
-				printObject(v)
+				PrintObject(v)
 				return nil
 			}
 		}
@@ -299,7 +349,7 @@ func (cmd ResourceCmd) Delete(args IDeleteOpt) {
 		if err != nil {
 			return err
 		}
-		printObject(ret)
+		PrintObject(ret)
 		return nil
 	}
 	cmd.RunWithDesc("delete", fmt.Sprintf("Delete %s", man.GetKeyword()), args, callback)
@@ -325,7 +375,7 @@ func (cmd ResourceCmd) PerformWithKeyword(keyword, action string, args IPerformO
 		if err != nil {
 			return err
 		}
-		printObjectRecursive(ret)
+		cmd.printObject(ret)
 		return nil
 	}
 	cmd.Run(keyword, args, callback)
@@ -342,7 +392,7 @@ func (cmd ResourceCmd) PerformClassWithKeyword(keyword, action string, args IOpt
 		if err != nil {
 			return err
 		}
-		printObjectRecursive(ret)
+		cmd.printObject(ret)
 		return nil
 	}
 	cmd.Run(keyword, args, callback)
@@ -363,7 +413,7 @@ func (cmd ResourceCmd) PerformClass(action string, args IOpt) {
 		if err != nil {
 			return err
 		}
-		printObjectRecursive(ret)
+		cmd.printObject(ret)
 		return nil
 	}
 	cmd.Run(action, args, callback)
@@ -393,7 +443,7 @@ type IGetOpt interface {
 	IOpt
 }
 
-func (cmd ResourceCmd) Get(specific string, args IGetOpt) {
+func (cmd ResourceCmd) GetWithCustomShow(specific string, show func(data jsonutils.JSONObject), args IGetOpt) {
 	man := cmd.manager
 	callback := func(s *mcclient.ClientSession, args IGetOpt) error {
 		params, err := args.Params()
@@ -404,10 +454,14 @@ func (cmd ResourceCmd) Get(specific string, args IGetOpt) {
 		if err != nil {
 			return err
 		}
-		printObject(ret)
+		show(ret)
 		return nil
 	}
 	cmd.RunWithDesc(specific, fmt.Sprintf("Get %s of a %s", specific, man.GetKeyword()), args, callback)
+}
+
+func (cmd ResourceCmd) Get(specific string, args IGetOpt) {
+	cmd.GetWithCustomShow(specific, PrintObject, args)
 }
 
 type IUpdateOpt interface {
@@ -431,7 +485,7 @@ func (cmd ResourceCmd) UpdateWithKeyword(keyword string, args IUpdateOpt) {
 		if err != nil {
 			return err
 		}
-		printObject(ret)
+		PrintObject(ret)
 		return nil
 	}
 	cmd.Run(keyword, args, callback)
@@ -457,7 +511,7 @@ func (cmd ResourceCmd) GetMetadata(args IMetadataOpt) {
 		if err != nil {
 			return err
 		}
-		printObject(ret)
+		PrintObject(ret)
 		return nil
 	}
 	cmd.RunWithDesc("metadata", fmt.Sprintf("Show metadata of a %s", man.GetKeyword()), args, callback)
@@ -558,7 +612,7 @@ func (cmd JointCmd) List(args IJointListOpt) {
 		if err != nil {
 			return err
 		}
-		printList(result, man.GetColumns(s))
+		PrintList(result, man.GetColumns(s))
 		return nil
 	}
 	cmd.RunWithDesc("list", fmt.Sprintf("list %s %s pairs", man.MasterManager().KeyString(), man.SlaveManager().KeyString()), args, callback)
@@ -581,7 +635,7 @@ func (cmd JointCmd) Show(args IJointShowOpt) {
 		if err != nil {
 			return err
 		}
-		printObject(result)
+		PrintObject(result)
 		return nil
 	}
 	cmd.Run("show", args, callback)

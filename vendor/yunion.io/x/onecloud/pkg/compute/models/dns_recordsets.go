@@ -215,7 +215,6 @@ func (manager *SDnsRecordSetManager) ValidateCreateData(ctx context.Context, use
 					),
 				),
 			))
-			policyQuery.DebugQuery()
 			cnt, err = policyQuery.CountWithError()
 			if err != nil {
 				return input, httperrors.NewGeneralError(err)
@@ -276,15 +275,6 @@ func (manager *SDnsRecordSetManager) ListItemFilter(
 }
 
 // 解析详情
-func (self *SDnsRecordSet) GetExtraDetails(
-	ctx context.Context,
-	userCred mcclient.TokenCredential,
-	query jsonutils.JSONObject,
-	isList bool,
-) (api.DnsRecordSetDetails, error) {
-	return api.DnsRecordSetDetails{}, nil
-}
-
 func (manager *SDnsRecordSetManager) FetchCustomizeColumns(
 	ctx context.Context,
 	userCred mcclient.TokenCredential,
@@ -589,7 +579,6 @@ func (self *SDnsRecordSet) ValidateUpdateData(ctx context.Context, userCred mccl
 					),
 				),
 			))
-			policyQuery.DebugQuery()
 			cnt, err = policyQuery.CountWithError()
 			if err != nil {
 				return input, httperrors.NewGeneralError(err)

@@ -19,9 +19,11 @@ import (
 	"database/sql"
 	"fmt"
 	"net/http"
+	"time"
 
 	"yunion.io/x/jsonutils"
 	"yunion.io/x/log"
+	"yunion.io/x/pkg/errors"
 	"yunion.io/x/sqlchemy"
 
 	"yunion.io/x/onecloud/pkg/appsrv"
@@ -34,6 +36,8 @@ import (
 
 const (
 	MIN_DB_CONN_MAX = 5
+
+	ClickhouseDB = sqlchemy.DBName("clickhosue_db")
 )
 
 func InitDB(options *common_options.DBOptions) {
@@ -54,11 +58,26 @@ func InitDB(options *common_options.DBOptions) {
 	if err != nil {
 		log.Fatalf("Invalid SqlConnection string: %s error: %v", options.SqlConnection, err)
 	}
+	log.Infof("database dialect: %s sqlStr: %s", dialect, sqlStr)
 	dbConn, err := sql.Open(dialect, sqlStr)
 	if err != nil {
 		panic(err)
 	}
-	sqlchemy.SetDB(dbConn)
+	backend := sqlchemy.MySQLBackend
+	if dialect == "sqlite3" {
+		backend = sqlchemy.SQLiteBackend
+	}
+	sqlchemy.SetDBWithNameBackend(dbConn, sqlchemy.DefaultDB, backend)
+
+	dialect, sqlStr, err = options.GetClickhouseConnStr()
+	if err == nil {
+		// connect to clickcloud
+		click, err := sql.Open(dialect, sqlStr)
+		if err != nil {
+			panic(err)
+		}
+		sqlchemy.SetDBWithNameBackend(click, ClickhouseDB, sqlchemy.ClickhouseBackend)
+	}
 
 	switch options.LockmanMethod {
 	case common_options.LockMethodInMemory, "":
@@ -86,25 +105,45 @@ func InitDB(options *common_options.DBOptions) {
 	}
 	// lm := lockman.NewNoopLockManager()
 
-	if len(options.EtcdEndpoints) != 0 {
-		log.Infof("using etcd as resource informer backend")
-		tlsCfg, err := options.GetEtcdTLSConfig()
-		if err != nil {
-			log.Fatalf("get etcd informer backend tls config err: %v", err)
+	startInitInformer(options)
+}
+
+// startInitInformer starts goroutine init informer backend
+func startInitInformer(options *common_options.DBOptions) {
+	go func() {
+		if len(options.EtcdEndpoints) == 0 {
+			return
 		}
-		informerBackend, err := informer.NewEtcdBackend(&etcd.SEtcdOptions{
-			EtcdEndpoint:              options.EtcdEndpoints,
-			EtcdTimeoutSeconds:        5,
-			EtcdRequestTimeoutSeconds: 2,
-			EtcdLeaseExpireSeconds:    5,
-			EtcdEnabldSsl:             options.EtcdUseTLS,
-			TLSConfig:                 tlsCfg,
-		}, nil)
-		if err != nil {
-			log.Fatalf("new etcd informer backend error: %v", err)
+		for {
+			log.Infof("using etcd as resource informer backend")
+			if err := initInformer(options); err != nil {
+				log.Errorf("Init informer error: %v", err)
+				time.Sleep(10 * time.Second)
+			} else {
+				break
+			}
 		}
-		informer.Init(informerBackend)
+	}()
+}
+
+func initInformer(options *common_options.DBOptions) error {
+	tlsCfg, err := options.GetEtcdTLSConfig()
+	if err != nil {
+		return errors.Wrap(err, "get etcd informer backend tls config")
 	}
+	informerBackend, err := informer.NewEtcdBackend(&etcd.SEtcdOptions{
+		EtcdEndpoint:              options.EtcdEndpoints,
+		EtcdTimeoutSeconds:        5,
+		EtcdRequestTimeoutSeconds: 2,
+		EtcdLeaseExpireSeconds:    5,
+		EtcdEnabldSsl:             options.EtcdUseTLS,
+		TLSConfig:                 tlsCfg,
+	}, nil)
+	if err != nil {
+		return errors.Wrap(err, "new etcd informer backend")
+	}
+	informer.Init(informerBackend)
+	return nil
 }
 
 func CloseDB() {

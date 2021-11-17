@@ -63,13 +63,11 @@ type IGuestDriver interface {
 	ValidateImage(ctx context.Context, image *cloudprovider.SImage) error
 	ValidateCreateData(ctx context.Context, userCred mcclient.TokenCredential, data *api.ServerCreateInput) (*api.ServerCreateInput, error)
 
-	ValidateUpdateData(ctx context.Context, userCred mcclient.TokenCredential, data *jsonutils.JSONDict) (*jsonutils.JSONDict, error)
-
 	ValidateCreateDataOnHost(ctx context.Context, userCred mcclient.TokenCredential, bmName string, host *SHost, input *api.ServerCreateInput) (*api.ServerCreateInput, error)
 
 	PrepareDiskRaidConfig(userCred mcclient.TokenCredential, host *SHost, params []*api.BaremetalDiskConfig, disks []*api.DiskConfig) ([]*api.DiskConfig, error)
 
-	GetNamedNetworkConfiguration(guest *SGuest, ctx context.Context, userCred mcclient.TokenCredential, host *SHost, netConfig *api.NetworkConfig) (*SNetwork, []SNicConfig, api.IPAllocationDirection, bool)
+	GetNamedNetworkConfiguration(guest *SGuest, ctx context.Context, userCred mcclient.TokenCredential, host *SHost, netConfig *api.NetworkConfig) (*SNetwork, []SNicConfig, api.IPAllocationDirection, bool, error)
 
 	Attach2RandomNetwork(guest *SGuest, ctx context.Context, userCred mcclient.TokenCredential, host *SHost, netConfig *api.NetworkConfig, pendingUsage quotas.IQuota) ([]SGuestnetwork, error)
 	GetRandomNetworkTypes() []string
@@ -91,12 +89,13 @@ type IGuestDriver interface {
 
 	RequestDeployGuestOnHost(ctx context.Context, guest *SGuest, host *SHost, task taskman.ITask) error
 	RemoteDeployGuestForCreate(ctx context.Context, userCred mcclient.TokenCredential, guest *SGuest, host *SHost, desc cloudprovider.SManagedVMCreateConfig) (jsonutils.JSONObject, error)
+	RemoteDeployGuestSyncHost(ctx context.Context, userCred mcclient.TokenCredential, guest *SGuest, host *SHost, iVM cloudprovider.ICloudVM) (cloudprovider.ICloudHost, error)
 	RemoteActionAfterGuestCreated(ctx context.Context, userCred mcclient.TokenCredential, guest *SGuest, host *SHost, iVM cloudprovider.ICloudVM, desc *cloudprovider.SManagedVMCreateConfig)
 	RemoteDeployGuestForDeploy(ctx context.Context, guest *SGuest, ihost cloudprovider.ICloudHost, task taskman.ITask, desc cloudprovider.SManagedVMCreateConfig) (jsonutils.JSONObject, error)
 	RemoteDeployGuestForRebuildRoot(ctx context.Context, guest *SGuest, ihost cloudprovider.ICloudHost, task taskman.ITask, desc cloudprovider.SManagedVMCreateConfig) (jsonutils.JSONObject, error)
 	GetGuestInitialStateAfterCreate() string
 	GetGuestInitialStateAfterRebuild() string
-	GetLinuxDefaultAccount(desc cloudprovider.SManagedVMCreateConfig) string
+	GetDefaultAccount(desc cloudprovider.SManagedVMCreateConfig) string
 	GetInstanceCapability() cloudprovider.SInstanceCapability
 
 	OnGuestDeployTaskDataReceived(ctx context.Context, guest *SGuest, task taskman.ITask, data jsonutils.JSONObject) error
@@ -108,7 +107,7 @@ type IGuestDriver interface {
 
 	RequestSyncstatusOnHost(ctx context.Context, guest *SGuest, host *SHost, userCred mcclient.TokenCredential) (jsonutils.JSONObject, error)
 
-	RequestStartOnHost(ctx context.Context, guest *SGuest, host *SHost, userCred mcclient.TokenCredential, task taskman.ITask) (jsonutils.JSONObject, error)
+	RequestStartOnHost(ctx context.Context, guest *SGuest, host *SHost, userCred mcclient.TokenCredential, task taskman.ITask) error
 
 	RequestStopOnHost(ctx context.Context, guest *SGuest, host *SHost, task taskman.ITask) error
 
@@ -131,7 +130,7 @@ type IGuestDriver interface {
 
 	CheckDiskTemplateOnStorage(ctx context.Context, userCred mcclient.TokenCredential, imageId string, format string, storageId string, task taskman.ITask) error
 
-	GetGuestVncInfo(ctx context.Context, userCred mcclient.TokenCredential, guest *SGuest, host *SHost) (*jsonutils.JSONDict, error)
+	GetGuestVncInfo(ctx context.Context, userCred mcclient.TokenCredential, guest *SGuest, host *SHost, input *cloudprovider.ServerVncInput) (*cloudprovider.ServerVncOutput, error)
 
 	RequestAttachDisk(ctx context.Context, guest *SGuest, disk *SDisk, task taskman.ITask) error
 	RequestDetachDisk(ctx context.Context, guest *SGuest, disk *SDisk, task taskman.ITask) error
@@ -178,7 +177,6 @@ type IGuestDriver interface {
 	IsSupportEip() bool
 	IsSupportPublicIp() bool
 	ValidateCreateEip(ctx context.Context, userCred mcclient.TokenCredential, data jsonutils.JSONObject) error
-	RequestAssociateEip(ctx context.Context, userCred mcclient.TokenCredential, guest *SGuest, eip *SElasticip, task taskman.ITask) error
 
 	NeedStopForChangeSpec(guest *SGuest, cpuChanged, memChanged bool) bool
 
@@ -207,11 +205,16 @@ type IGuestDriver interface {
 	RequestMigrate(ctx context.Context, guest *SGuest, userCred mcclient.TokenCredential, data *jsonutils.JSONDict, task taskman.ITask) error
 	RequestLiveMigrate(ctx context.Context, guest *SGuest, userCred mcclient.TokenCredential, data *jsonutils.JSONDict, task taskman.ITask) error
 
+	ValidateUpdateData(ctx context.Context, guest *SGuest, userCred mcclient.TokenCredential, input api.ServerUpdateInput) (api.ServerUpdateInput, error)
 	RequestRemoteUpdate(ctx context.Context, guest *SGuest, userCred mcclient.TokenCredential, replaceTags bool) error
 
 	RequestOpenForward(ctx context.Context, userCred mcclient.TokenCredential, guest *SGuest, req *guestdriver_types.OpenForwardRequest) (*guestdriver_types.OpenForwardResponse, error)
 	RequestListForward(ctx context.Context, userCred mcclient.TokenCredential, guest *SGuest, req *guestdriver_types.ListForwardRequest) (*guestdriver_types.ListForwardResponse, error)
 	RequestCloseForward(ctx context.Context, userCred mcclient.TokenCredential, guest *SGuest, req *guestdriver_types.CloseForwardRequest) (*guestdriver_types.CloseForwardResponse, error)
+
+	ValidateChangeDiskStorage(ctx context.Context, userCred mcclient.TokenCredential, guest *SGuest, input *api.ServerChangeDiskStorageInput) error
+	StartChangeDiskStorageTask(guest *SGuest, ctx context.Context, userCred mcclient.TokenCredential, params *api.ServerChangeDiskStorageInternalInput, parentTaskId string) error
+	RequestChangeDiskStorage(ctx context.Context, userCred mcclient.TokenCredential, guest *SGuest, input *api.ServerChangeDiskStorageInternalInput, task taskman.ITask) error
 }
 
 var guestDrivers map[string]IGuestDriver

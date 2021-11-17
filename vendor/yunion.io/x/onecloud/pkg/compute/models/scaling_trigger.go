@@ -324,11 +324,14 @@ var indicatorMap = map[string]sTableField{
 	api.INDICATOR_FLOW_OUT:   {"vm_netio", "bps_sent"},
 }
 
+var alertConfigUsedBy = "scaling_group"
+
 func (sa *SScalingAlarm) generateAlertConfig(sp *SScalingPolicy) (*monitor.AlertConfig, error) {
 	config, err := monitor.NewAlertConfig(fmt.Sprintf("sp-%s", sp.Id), fmt.Sprintf("%ds", sa.Cycle), true)
 	if err != nil {
 		return nil, err
 	}
+	config.UsedBy = alertConfigUsedBy
 	cond := config.Condition("telegraf", indicatorMap[sa.Indicator].Table).Avg()
 	log.Debugf("alarm: %#v", sa)
 
@@ -338,7 +341,7 @@ func (sa *SScalingAlarm) generateAlertConfig(sp *SScalingPolicy) (*monitor.Alert
 	case api.OPERATOR_GT:
 		cond = cond.GT(sa.Value)
 	}
-	q := cond.Query().From(fmt.Sprintf("%ds", sa.Cycle))
+	q := cond.Query().From("1h")
 	sel := q.Selects().Select(indicatorMap[sa.Indicator].Field)
 	switch sa.Wrapper {
 	case api.WRAPPER_AVER:

@@ -69,7 +69,8 @@ func (self *SElasticcacheResourceBase) GetVpc() *SVpc {
 		log.Errorf("GetElasticcache fail %s", err)
 		return nil
 	}
-	return cache.GetVpc()
+	vpc, _ := cache.GetVpc()
+	return vpc
 }
 
 func (self *SElasticcacheResourceBase) GetIRegion() (cloudprovider.ICloudRegion, error) {
@@ -78,14 +79,6 @@ func (self *SElasticcacheResourceBase) GetIRegion() (cloudprovider.ICloudRegion,
 		return nil, errors.Wrap(httperrors.ErrNotFound, "no vpc found")
 	}
 	return vpc.GetIRegion()
-}
-
-func (self *SElasticcacheResourceBase) GetExtraDetails(
-	ctx context.Context,
-	userCred mcclient.TokenCredential,
-	query jsonutils.JSONObject,
-) api.ElasticcacheResourceInfo {
-	return api.ElasticcacheResourceInfo{}
 }
 
 func (manager *SElasticcacheResourceBaseManager) FetchCustomizeColumns(

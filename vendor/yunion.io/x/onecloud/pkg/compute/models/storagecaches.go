@@ -18,6 +18,7 @@ import (
 	"context"
 	"database/sql"
 	"fmt"
+	"strings"
 
 	"github.com/serialx/hashring"
 
@@ -103,20 +104,38 @@ func (self *SStoragecache) getStorageNames() []string {
 	return names
 }
 
+func (self *SStoragecache) GetEsxiAgentHostDesc() (*jsonutils.JSONDict, error) {
+	if !strings.Contains(self.Name, "esxiagent") {
+		return nil, nil
+	}
+	obj, err := BaremetalagentManager.FetchById(self.ExternalId)
+	if err != nil {
+		return nil, errors.Wrapf(err, "unable to fetch baremetalagent %s", obj.GetId())
+	}
+	agent := obj.(*SBaremetalagent)
+	host := &SHost{}
+	host.Id = agent.Id
+	host.Name = agent.Name
+	host.ZoneId = agent.ZoneId
+	host.SetModelManager(HostManager, host)
+	ret := host.GetShortDesc(context.Background())
+	ret.Set("provider", jsonutils.NewString(api.CLOUD_PROVIDER_VMWARE))
+	ret.Set("brand", jsonutils.NewString(api.CLOUD_PROVIDER_VMWARE))
+	return ret, nil
+}
+
 func (self *SStoragecache) GetHost() (*SHost, error) {
 	hostId, err := self.getHostId()
 	if err != nil {
 		return nil, errors.Wrap(err, "self.getHostId")
 	}
 	if len(hostId) == 0 {
-		return nil, nil
+		return nil, errors.Errorf("failed to get any available host for storagecache %s", self.Name)
 	}
 
 	host, err := HostManager.FetchById(hostId)
 	if err != nil {
 		return nil, errors.Wrap(err, "HostManager.FetchById")
-	} else if host == nil {
-		return nil, nil
 	}
 	return host.(*SHost), nil
 }
@@ -124,11 +143,11 @@ func (self *SStoragecache) GetHost() (*SHost, error) {
 func (self *SStoragecache) GetRegion() (*SCloudregion, error) {
 	host, err := self.GetHost()
 	if err != nil {
-		return nil, err
+		return nil, errors.Wrapf(err, "GetHost")
 	}
-	region := host.GetRegion()
-	if region == nil {
-		return nil, fmt.Errorf("failed to get region for host %s(%s)", host.Name, host.Id)
+	region, err := host.GetRegion()
+	if err != nil {
+		return nil, errors.Wrapf(err, "GetRegion")
 	}
 	return region, nil
 }
@@ -193,8 +212,7 @@ func (manager *SStoragecacheManager) SyncWithCloudStoragecache(ctx context.Conte
 				return localCache, true, nil
 			}
 		} else {
-			log.Errorf("%s", err)
-			return nil, false, err
+			return nil, false, errors.Wrapf(err, "db.FetchByExternalIdAndManagerId(%s)", cloudCache.GetGlobalId())
 		}
 	} else {
 		localCache := localCacheObj.(*SStoragecache)
@@ -207,11 +225,6 @@ func (manager *SStoragecacheManager) newFromCloudStoragecache(ctx context.Contex
 	local := SStoragecache{}
 	local.SetModelManager(manager, &local)
 
-	newName, err := db.GenerateName(manager, userCred, cloudCache.GetName())
-	if err != nil {
-		return nil, err
-	}
-	local.Name = newName
 	local.ExternalId = cloudCache.GetGlobalId()
 
 	local.IsEmulated = cloudCache.IsEmulated()
@@ -219,7 +232,18 @@ func (manager *SStoragecacheManager) newFromCloudStoragecache(ctx context.Contex
 
 	local.Path = cloudCache.GetPath()
 
-	err = manager.TableSpec().Insert(ctx, &local)
+	var err = func() error {
+		lockman.LockRawObject(ctx, manager.Keyword(), "name")
+		defer lockman.ReleaseRawObject(ctx, manager.Keyword(), "name")
+
+		newName, err := db.GenerateName(ctx, manager, userCred, cloudCache.GetName())
+		if err != nil {
+			return err
+		}
+		local.Name = newName
+
+		return manager.TableSpec().Insert(ctx, &local)
+	}()
 	if err != nil {
 		return nil, err
 	}
@@ -269,15 +293,6 @@ func (manager *SStoragecacheManager) FetchCustomizeColumns(
 	}
 
 	return rows
-}
-
-func (self *SStoragecache) GetExtraDetails(
-	ctx context.Context,
-	userCred mcclient.TokenCredential,
-	query jsonutils.JSONObject,
-	isList bool,
-) (api.StoragecacheDetails, error) {
-	return api.StoragecacheDetails{}, nil
 }
 
 func (self *SStoragecache) getMoreDetails(ctx context.Context, out api.StoragecacheDetails) api.StoragecacheDetails {
@@ -363,37 +378,26 @@ func (self *SStoragecache) getCachedImageSize() int64 {
 	return size
 }
 
-func (self *SStoragecache) StartImageCacheTask(ctx context.Context, userCred mcclient.TokenCredential, imageId string, format string, isForce bool, parentTaskId string) error {
-	StoragecachedimageManager.Register(ctx, userCred, self.Id, imageId, "")
-	data := jsonutils.NewDict()
-	data.Add(jsonutils.NewString(imageId), "image_id")
-	if len(format) > 0 {
-		data.Add(jsonutils.NewString(format), "format")
-	}
+func (self *SStoragecache) StartImageCacheTask(ctx context.Context, userCred mcclient.TokenCredential, input api.CacheImageInput) error {
+	StoragecachedimageManager.Register(ctx, userCred, self.Id, input.ImageId, "")
 
-	image, _ := CachedimageManager.GetImageById(ctx, userCred, imageId, false)
-
+	image, _ := CachedimageManager.GetImageById(ctx, userCred, input.ImageId, false)
 	if image != nil {
 		imgInfo := imagetools.NormalizeImageInfo(image.Name, image.Properties["os_arch"], image.Properties["os_type"],
 			image.Properties["os_distribution"], image.Properties["os_version"])
-		data.Add(jsonutils.NewString(imgInfo.OsType), "os_type")
-		data.Add(jsonutils.NewString(imgInfo.OsArch), "os_arch")
-		data.Add(jsonutils.NewString(imgInfo.OsDistro), "os_distribution")
-		data.Add(jsonutils.NewString(imgInfo.OsVersion), "os_version")
-		data.Add(jsonutils.NewString(imgInfo.OsFullVersion), "os_full_version")
-		data.Add(jsonutils.NewString(image.Name), "image_name")
+		input.OsType = imgInfo.OsType
+		input.OsArch = imgInfo.OsArch
+		input.OsDistribution = imgInfo.OsDistro
+		input.OsVersion = imgInfo.OsVersion
+		input.OsFullVersion = imgInfo.OsFullVersion
+		input.ImageName = image.Name
 	}
-
-	if isForce {
-		data.Add(jsonutils.JSONTrue, "is_force")
-	}
-	task, err := taskman.TaskManager.NewTask(ctx, "StorageCacheImageTask", self, userCred, data, parentTaskId, "", nil)
+	data := jsonutils.Marshal(input).(*jsonutils.JSONDict)
+	task, err := taskman.TaskManager.NewTask(ctx, "StorageCacheImageTask", self, userCred, data, input.ParentTaskId, "", nil)
 	if err != nil {
-		log.Errorf("create StorageCacheImageTask fail %s", err)
-		return err
+		return errors.Wrapf(err, "NewTask")
 	}
-	task.ScheduleRun(nil)
-	return nil
+	return task.ScheduleRun(nil)
 }
 
 func (self *SStoragecache) StartImageUncacheTask(ctx context.Context, userCred mcclient.TokenCredential, imageId string, isPurge bool, parentTaskId string) error {
@@ -510,7 +514,7 @@ func (manager *SStoragecacheManager) GetCachePathById(storageCacheId string) str
 	return sc.Path
 }
 
-func (self *SStoragecache) ValidateDeleteCondition(ctx context.Context) error {
+func (self *SStoragecache) ValidateDeleteCondition(ctx context.Context, info jsonutils.JSONObject) error {
 	if self.getCachedImageCount() > 0 {
 		return httperrors.NewNotEmptyError("storage cache not empty")
 	}
@@ -518,7 +522,7 @@ func (self *SStoragecache) ValidateDeleteCondition(ctx context.Context) error {
 	if len(storages) > 0 {
 		return httperrors.NewNotEmptyError("referered by storages")
 	}
-	return self.SStandaloneResourceBase.ValidateDeleteCondition(ctx)
+	return self.SStandaloneResourceBase.ValidateDeleteCondition(ctx, nil)
 }
 
 func (self *SStoragecache) AllowPerformUncacheImage(ctx context.Context, userCred mcclient.TokenCredential, query jsonutils.JSONObject, data jsonutils.JSONObject) bool {
@@ -581,27 +585,22 @@ func (self *SStoragecache) AllowPerformCacheImage(ctx context.Context, userCred 
 	return db.IsAdminAllowPerform(userCred, self, "cache-image")
 }
 
-func (self *SStoragecache) PerformCacheImage(ctx context.Context, userCred mcclient.TokenCredential, query jsonutils.JSONObject, data jsonutils.JSONObject) (jsonutils.JSONObject, error) {
-	imageStr, _ := data.GetString("image")
-	if len(imageStr) == 0 {
-		return nil, httperrors.NewInputParameterError("missing image id or name")
+func (self *SStoragecache) PerformCacheImage(ctx context.Context, userCred mcclient.TokenCredential, query jsonutils.JSONObject, input api.CacheImageInput) (jsonutils.JSONObject, error) {
+	if len(input.ImageId) == 0 {
+		return nil, httperrors.NewMissingParameterError("image_id")
 	}
-	isForce := jsonutils.QueryBoolean(data, "is_force", false)
 
-	image, err := CachedimageManager.getImageInfo(ctx, userCred, imageStr, isForce)
+	image, err := CachedimageManager.getImageInfo(ctx, userCred, input.ImageId, input.IsForce)
 	if err != nil {
-		log.Infof("image %s not found %s", imageStr, err)
-		return nil, httperrors.NewImageNotFoundError(imageStr)
+		return nil, httperrors.NewImageNotFoundError(input.ImageId)
 	}
 
 	if len(image.Checksum) == 0 {
 		return nil, httperrors.NewInvalidStatusError("Cannot cache image with no checksum")
 	}
 
-	format, _ := data.GetString("format")
-
-	err = self.StartImageCacheTask(ctx, userCred, image.Id, format, isForce, "")
-	return nil, err
+	input.ImageId = image.Id
+	return nil, self.StartImageCacheTask(ctx, userCred, input)
 }
 
 func (self *SStoragecache) SyncCloudImages(
@@ -690,7 +689,6 @@ func (cache *SStoragecache) syncCloudImages(
 	commondb := make([]SStoragecachedimage, 0)
 	commonext := make([]cloudprovider.ICloudImage, 0)
 	added := make([]cloudprovider.ICloudImage, 0)
-
 	err := compare.CompareSets(localCachedImages, remoteImages, &removed, &commondb, &commonext, &added)
 	if err != nil {
 		syncResult.Error(errors.Wrapf(err, "compare.CompareSets"))

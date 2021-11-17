@@ -58,7 +58,7 @@ func (manager *SGlobalVpcManager) AllowCreateItem(ctx context.Context, userCred 
 	return db.IsAdminAllowCreate(userCred, manager)
 }
 
-func (self *SGlobalVpc) ValidateDeleteCondition(ctx context.Context) error {
+func (self *SGlobalVpc) ValidateDeleteCondition(ctx context.Context, info jsonutils.JSONObject) error {
 	vpcs, err := self.GetVpcs()
 	if err != nil {
 		return errors.Wrap(err, "self.GetVpcs")
@@ -66,7 +66,7 @@ func (self *SGlobalVpc) ValidateDeleteCondition(ctx context.Context) error {
 	if len(vpcs) > 0 {
 		return fmt.Errorf("not an empty globalvpc")
 	}
-	return self.SEnabledStatusInfrasResourceBase.ValidateDeleteCondition(ctx)
+	return self.SEnabledStatusInfrasResourceBase.ValidateDeleteCondition(ctx, nil)
 }
 
 func (self *SGlobalVpc) GetVpcQuery() *sqlchemy.SQuery {
@@ -85,10 +85,6 @@ func (self *SGlobalVpc) GetVpcs() ([]SVpc, error) {
 
 func (self *SGlobalVpc) GetVpcCount() (int, error) {
 	return self.GetVpcQuery().CountWithError()
-}
-
-func (self *SGlobalVpc) GetExtraDetails(ctx context.Context, userCred mcclient.TokenCredential, query jsonutils.JSONObject, isList bool) (api.GlobalVpcDetails, error) {
-	return api.GlobalVpcDetails{}, nil
 }
 
 func (manager *SGlobalVpcManager) FetchCustomizeColumns(

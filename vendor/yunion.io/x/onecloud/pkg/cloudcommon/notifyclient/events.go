@@ -18,6 +18,7 @@ import (
 	"fmt"
 	"strings"
 
+	api "yunion.io/x/onecloud/pkg/apis/notify"
 	"yunion.io/x/onecloud/pkg/cloudcommon/db"
 )
 
@@ -38,22 +39,34 @@ const (
 	USER_LOGIN_EXCEPTION = "USER_LOGIN_EXCEPTION"
 )
 
-type SAction string
-
 var (
 	Event SEvent
 
-	ActionCreate        SAction = "create"
-	ActionUpdate        SAction = "update"
-	ActionDelete        SAction = "delete"
-	ActionPendingDelete SAction = "pending_delete"
-	ActionRebuildRoot   SAction = "rebuild_root"
-	ActionChangeConfig  SAction = "change_config"
+	ActionCreate         = api.ActionCreate
+	ActionDelete         = api.ActionDelete
+	ActionUpdate         = api.ActionUpdate
+	ActionRebuildRoot    = api.ActionRebuildRoot
+	ActionResetPassword  = api.ActionResetPassword
+	ActionChangeConfig   = api.ActionChangeConfig
+	ActionResize         = api.ActionResize
+	ActionExpiredRelease = api.ActionExpiredRelease
+	ActionExecute        = api.ActionExecute
+
+	ActionMigrate            = api.ActionMigrate
+	ActionCreateBackupServer = api.ActionCreateBackupServer
+	ActionDelBackupServer    = api.ActionDelBackupServer
+	ActionSyncStatus         = api.ActionSyncStatus
+
+	ActionPendingDelete = api.ActionPendingDelete
+
+	ActionSyncCreate = api.ActionSyncCreate
+	ActionSyncUpdate = api.ActionSyncUpdate
+	ActionSyncDelete = api.ActionSyncDelete
 )
 
 type SEvent struct {
 	resourceType string
-	action       SAction
+	action       api.SAction
 }
 
 func (se SEvent) WithResourceType(manager db.IModelManager) SEvent {
@@ -61,7 +74,7 @@ func (se SEvent) WithResourceType(manager db.IModelManager) SEvent {
 	return se
 }
 
-func (se SEvent) WithAction(a SAction) SEvent {
+func (se SEvent) WithAction(a api.SAction) SEvent {
 	se.action = a
 	return se
 }
