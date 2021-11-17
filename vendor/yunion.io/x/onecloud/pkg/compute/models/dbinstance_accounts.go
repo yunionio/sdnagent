@@ -174,10 +174,6 @@ func (self *SDBInstanceAccount) getMoreDetails(ctx context.Context, userCred mcc
 	return out, nil
 }
 
-func (self *SDBInstanceAccount) GetExtraDetails(ctx context.Context, userCred mcclient.TokenCredential, query jsonutils.JSONObject, isList bool) (api.DBInstanceAccountDetails, error) {
-	return api.DBInstanceAccountDetails{}, nil
-}
-
 func (manager *SDBInstanceAccountManager) FetchCustomizeColumns(
 	ctx context.Context,
 	userCred mcclient.TokenCredential,
@@ -332,9 +328,9 @@ func (manager *SDBInstanceAccountManager) ValidateCreateData(ctx context.Context
 	if instance.Status != api.DBINSTANCE_RUNNING {
 		return nil, httperrors.NewInputParameterError("DBInstance %s(%s) status is %s require status is %s", instance.Name, instance.Id, instance.Status, api.DBINSTANCE_RUNNING)
 	}
-	region := instance.GetRegion()
-	if region == nil {
-		return nil, httperrors.NewInputParameterError("failed to found region for dbinstance %s(%s)", instance.Name, instance.Id)
+	region, err := instance.GetRegion()
+	if err != nil {
+		return nil, httperrors.NewGeneralError(errors.Wrapf(err, "GetRegion"))
 	}
 	for i, privilege := range input.Privileges {
 		database, err := instance.GetDBInstanceDatabase(privilege.Database)
@@ -421,7 +417,12 @@ func (self *SDBInstanceAccount) PerformGrantPrivilege(ctx context.Context, userC
 		return nil, httperrors.NewInputParameterError("The account %s(%s) has permission %s to the database %s(%s)", self.Name, self.Id, privilege.Privilege, database.Name, database.Id)
 	}
 
-	err = instance.GetRegion().GetDriver().ValidateDBInstanceAccountPrivilege(ctx, userCred, instance, self.Name, privilegeStr)
+	region, err := instance.GetRegion()
+	if err != nil {
+		return nil, httperrors.NewGeneralError(errors.Wrapf(err, "GetRegion"))
+	}
+
+	err = region.GetDriver().ValidateDBInstanceAccountPrivilege(ctx, userCred, instance, self.Name, privilegeStr)
 	if err != nil {
 		return nil, err
 	}
@@ -451,13 +452,18 @@ func (self *SDBInstanceAccount) PerformSetPrivileges(ctx context.Context, userCr
 		"input":  map[string]string{},
 	}
 
+	region, err := instance.GetRegion()
+	if err != nil {
+		return nil, errors.Wrapf(err, "GetRegion")
+	}
 	for i, privilege := range input.Privileges {
 		database, err := instance.GetDBInstanceDatabase(privilege.Database)
 		if err != nil {
 			return nil, httperrors.NewInputParameterError("Failed to found database %s for dbinstance %s(%s): %v", privilege.Database, instance.Name, instance.Id, err)
 		}
 		input.Privileges[i].DBInstancedatabaseId = database.Id
-		err = instance.GetRegion().GetDriver().ValidateDBInstanceAccountPrivilege(ctx, userCred, instance, self.Name, privilege.Privilege)
+
+		err = region.GetDriver().ValidateDBInstanceAccountPrivilege(ctx, userCred, instance, self.Name, privilege.Privilege)
 		if err != nil {
 			return nil, err
 		}
@@ -575,7 +581,11 @@ func (self *SDBInstanceAccount) PerformResetPassword(ctx context.Context, userCr
 			return nil, err
 		}
 	}
-	err = instance.GetRegion().GetDriver().ValidateResetDBInstancePassword(ctx, userCred, instance, self.Name)
+	region, err := instance.GetRegion()
+	if err != nil {
+		return nil, err
+	}
+	err = region.GetDriver().ValidateResetDBInstancePassword(ctx, userCred, instance, self.Name)
 	if err != nil {
 		return nil, err
 	}
@@ -630,8 +640,8 @@ func (self *SDBInstanceAccount) GetDBInstanceDatabaseByName(dbName string) (*SDB
 }
 
 func (manager *SDBInstanceAccountManager) SyncDBInstanceAccounts(ctx context.Context, userCred mcclient.TokenCredential, instance *SDBInstance, cloudAccounts []cloudprovider.ICloudDBInstanceAccount) ([]SDBInstanceAccount, []cloudprovider.ICloudDBInstanceAccount, compare.SyncResult) {
-	lockman.LockClass(ctx, manager, db.GetLockClassKey(manager, instance.GetOwnerId()))
-	defer lockman.ReleaseClass(ctx, manager, db.GetLockClassKey(manager, instance.GetOwnerId()))
+	lockman.LockRawObject(ctx, "dbinstance-accounts", instance.Id)
+	defer lockman.ReleaseRawObject(ctx, "dbinstance-accounts", instance.Id)
 
 	result := compare.SyncResult{}
 	localAccounts := []SDBInstanceAccount{}

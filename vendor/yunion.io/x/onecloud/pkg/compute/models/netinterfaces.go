@@ -78,6 +78,14 @@ func (manager *SNetInterfaceManager) FetchByMac(mac string) (*SNetInterface, err
 	return netif.(*SNetInterface), nil
 }
 
+func (netif *SNetInterface) UnsetWire() error {
+	_, err := db.Update(netif, func() error {
+		netif.WireId = ""
+		return nil
+	})
+	return err
+}
+
 func (netif *SNetInterface) GetWire() *SWire {
 	if len(netif.WireId) > 0 {
 		wireModel, _ := WireManager.FetchById(netif.WireId)
@@ -147,6 +155,7 @@ func (self *SNetInterface) networkToJson(ipAddr string, network *SNetwork, desc 
 		}
 		desc.Add(jsonutils.NewString(network.GetDNS()), "dns")
 		desc.Add(jsonutils.NewString(network.GetDomain()), "domain")
+		desc.Add(jsonutils.NewString(network.GetNTP()), "ntp")
 
 		routes := network.GetRoutes()
 		if routes != nil && len(routes) > 0 {
@@ -188,12 +197,13 @@ func (self *SNetInterface) getServernetwork() *SGuestnetwork {
 	return obj.(*SGuestnetwork)
 }
 
-func (self *SNetInterface) getServerJsonDesc() *jsonutils.JSONDict {
-	desc := jsonutils.Marshal(self).(*jsonutils.JSONDict)
+func (self *SNetInterface) getServerJsonDesc() *api.GuestnetworkJsonDesc {
+	desc := &api.GuestnetworkJsonDesc{}
+	jsonutils.Update(desc, self)
 	gn := self.getServernetwork()
 	if gn != nil {
-		desc.Update(gn.getJsonDescAtBaremetal(self.GetBaremetal()))
-		desc.Set("index", jsonutils.NewInt(int64(self.Index))) // override, preserve orginal network interface index
+		jsonutils.Update(desc, gn.getJsonDescAtBaremetal(self.GetBaremetal()))
+		desc.Index = self.Index // override, preserve orginal network interface index
 	}
 	return desc
 }
@@ -273,6 +283,7 @@ func (self *SNetInterface) GetCandidateNetworkForIp(ownerId mcclient.IIdentityPr
 	if wire == nil {
 		return nil, nil
 	}
+	log.Infof("ipAddr: %s, netiName: %s, wire: %s", ipAddr, self.GetName(), wire.GetName())
 	return wire.GetCandidateNetworkForIp(ownerId, scope, ipAddr)
 }
 

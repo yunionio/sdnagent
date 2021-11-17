@@ -23,11 +23,14 @@ type sCaseFieldBranch struct {
 	thenField     IQueryField
 }
 
+// SCaseFunction represents function of case ... when ... branch
 type SCaseFunction struct {
 	branches  []sCaseFieldBranch
 	elseField IQueryField
 }
 
+// NewFunction creates a field with SQL function
+// for example: SUM(count) as total
 func NewFunction(ifunc IFunction, name string) IQueryField {
 	return &SFunctionFieldBase{
 		IFunction: ifunc,
@@ -35,11 +38,13 @@ func NewFunction(ifunc IFunction, name string) IQueryField {
 	}
 }
 
+// Else adds else clause for case when function
 func (cf *SCaseFunction) Else(field IQueryField) *SCaseFunction {
 	cf.elseField = field
 	return cf
 }
 
+// When adds when clause for case when function
 func (cf *SCaseFunction) When(when ICondition, then IQueryField) *SCaseFunction {
 	cf.branches = append(cf.branches, sCaseFieldBranch{
 		whenCondition: when,
@@ -48,6 +53,7 @@ func (cf *SCaseFunction) When(when ICondition, then IQueryField) *SCaseFunction 
 	return cf
 }
 
+// NewCase creates a case... when...else... representation instance
 func NewCase() *SCaseFunction {
 	return &SCaseFunction{}
 }
@@ -65,4 +71,17 @@ func (cf *SCaseFunction) expression() string {
 	buf.WriteString(cf.elseField.Reference())
 	buf.WriteString(" END")
 	return buf.String()
+}
+
+func (cf *SCaseFunction) variables() []interface{} {
+	vars := make([]interface{}, 0)
+	for i := range cf.branches {
+		fromvars := cf.branches[i].whenCondition.Variables()
+		vars = append(vars, fromvars...)
+		fromvars = cf.branches[i].thenField.Variables()
+		vars = append(vars, fromvars...)
+	}
+	fromvars := cf.elseField.Variables()
+	vars = append(vars, fromvars...)
+	return vars
 }

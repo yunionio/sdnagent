@@ -18,7 +18,6 @@ import (
 	"context"
 	"database/sql"
 	"fmt"
-	"io/ioutil"
 	"net/http"
 	"strings"
 
@@ -37,6 +36,10 @@ import (
 	"yunion.io/x/onecloud/pkg/util/httputils"
 )
 
+const (
+	EMPTY_MD5 = "d751713988987e9331980363e24189ce"
+)
+
 /*
 资源套餐下载连接信息
 server: 虚拟机
@@ -47,7 +50,12 @@ type SSkuResourcesMeta struct {
 	ServerBase       string `json:"server_base"`
 	ElasticCacheBase string `json:"elastic_cache_base"`
 	ImageBase        string `json:"image_base"`
+	NatBase          string `json:"nat_base"`
+	NasBase          string `json:"nas_base"`
+	WafBase          string `json:"waf_base"`
 }
+
+var skuIndex = map[string]string{}
 
 func (self *SSkuResourcesMeta) getZoneIdBySuffix(zoneMaps map[string]string, suffix string) string {
 	for externalId, id := range zoneMaps {
@@ -123,6 +131,80 @@ func (self *SSkuResourcesMeta) GetDBInstanceSkusByRegionExternalId(regionExterna
 	return result, nil
 }
 
+func (self *SSkuResourcesMeta) GetNatSkusByRegionExternalId(regionExternalId string) ([]SNatSku, error) {
+	regionId, zoneMaps, err := self.GetRegionIdAndZoneMaps(regionExternalId)
+	if err != nil {
+		return nil, errors.Wrap(err, "GetRegionIdAndZoneMaps")
+	}
+	result := []SNatSku{}
+	objs, err := self.getObjsByRegion(self.NatBase, regionExternalId)
+	if err != nil {
+		return nil, errors.Wrapf(err, "getSkusByRegion")
+	}
+	for _, obj := range objs {
+		sku := SNatSku{}
+		sku.SetModelManager(NatSkuManager, &sku)
+		err = obj.Unmarshal(&sku)
+		if err != nil {
+			return nil, errors.Wrapf(err, "obj.Unmarshal")
+		}
+		if len(sku.ZoneIds) > 0 {
+			zoneIds := []string{}
+			for _, zoneExtId := range strings.Split(sku.ZoneIds, ",") {
+				zoneId := self.getZoneIdBySuffix(zoneMaps, zoneExtId) // Huawei rds sku zone1 maybe is cn-north-4f
+				if len(zoneId) == 0 {
+					log.Warningf("invalid nat sku %s(%s) %s zone: %s", sku.Name, sku.Id, sku.CloudregionId, zoneExtId)
+					continue
+				}
+				zoneIds = append(zoneIds, zoneId)
+			}
+			sku.ZoneIds = strings.Join(zoneIds, ",")
+		}
+		sku.Id = ""
+		sku.CloudregionId = regionId
+
+		result = append(result, sku)
+	}
+	return result, nil
+}
+
+func (self *SSkuResourcesMeta) GetNasSkusByRegionExternalId(regionExternalId string) ([]SNasSku, error) {
+	regionId, zoneMaps, err := self.GetRegionIdAndZoneMaps(regionExternalId)
+	if err != nil {
+		return nil, errors.Wrap(err, "GetRegionIdAndZoneMaps")
+	}
+	result := []SNasSku{}
+	objs, err := self.getObjsByRegion(self.NasBase, regionExternalId)
+	if err != nil {
+		return nil, errors.Wrapf(err, "getSkusByRegion")
+	}
+	for _, obj := range objs {
+		sku := SNasSku{}
+		sku.SetModelManager(NasSkuManager, &sku)
+		err = obj.Unmarshal(&sku)
+		if err != nil {
+			return nil, errors.Wrapf(err, "obj.Unmarshal")
+		}
+		if len(sku.ZoneIds) > 0 {
+			zoneIds := []string{}
+			for _, zoneExtId := range strings.Split(sku.ZoneIds, ",") {
+				zoneId := self.getZoneIdBySuffix(zoneMaps, zoneExtId) // Huawei rds sku zone1 maybe is cn-north-4f
+				if len(zoneId) == 0 {
+					log.Warningf("invalid nat sku %s(%s) %s zone: %s", sku.Name, sku.Id, sku.CloudregionId, zoneExtId)
+					continue
+				}
+				zoneIds = append(zoneIds, zoneId)
+			}
+			sku.ZoneIds = strings.Join(zoneIds, ",")
+		}
+		sku.Id = ""
+		sku.CloudregionId = regionId
+
+		result = append(result, sku)
+	}
+	return result, nil
+}
+
 func (self *SSkuResourcesMeta) getCloudregion(regionExternalId string) (*SCloudregion, error) {
 	region, err := db.FetchByExternalId(CloudregionManager, regionExternalId)
 	if err != nil {
@@ -159,7 +241,7 @@ func (self *SSkuResourcesMeta) GetServerSkusByRegionExternalId(regionExternalId 
 	}
 	for _, obj := range objs {
 		sku := SServerSku{}
-		sku.SetModelManager(ElasticcacheSkuManager, &sku)
+		sku.SetModelManager(ServerSkuManager, &sku)
 		err = obj.Unmarshal(&sku)
 		if err != nil {
 			return nil, errors.Wrapf(err, "obj.Unmarshal")
@@ -248,41 +330,50 @@ func (self *SSkuResourcesMeta) getObjsByRegion(base string, region string) ([]js
 	return items, nil
 }
 
+func (self *SSkuResourcesMeta) request(url string) (jsonutils.JSONObject, error) {
+	client := httputils.GetAdaptiveTimeoutClient()
+
+	header := http.Header{}
+	header.Set("User-Agent", "vendor/yunion-OneCloud@"+v.Get().GitVersion)
+	_, resp, err := httputils.JSONRequest(client, context.TODO(), httputils.GET, url, header, nil, false)
+	return resp, err
+}
+
+func (self *SSkuResourcesMeta) getServerSkuIndex() (map[string]string, error) {
+	resp, err := self.request(fmt.Sprintf("%s/index.json", self.ServerBase))
+	if err != nil {
+		return map[string]string{}, errors.Wrapf(err, "request")
+	}
+	ret := map[string]string{}
+	err = resp.Unmarshal(ret)
+	if err != nil {
+		return map[string]string{}, errors.Wrapf(err, "resp.Unmarshal")
+	}
+	return ret, nil
+}
+
+func (self *SSkuResourcesMeta) getWafIndex() (map[string]string, error) {
+	resp, err := self.request(fmt.Sprintf("%s/index.json", self.WafBase))
+	if err != nil {
+		return map[string]string{}, errors.Wrapf(err, "request")
+	}
+	ret := map[string]string{}
+	err = resp.Unmarshal(ret)
+	if err != nil {
+		return map[string]string{}, errors.Wrapf(err, "resp.Unmarshal")
+	}
+	return ret, nil
+}
+
 func (self *SSkuResourcesMeta) _get(url string) ([]jsonutils.JSONObject, error) {
 	if !strings.HasPrefix(url, "http") {
 		return nil, fmt.Errorf("SkuResourcesMeta.get invalid url %s.expected has prefix 'http'", url)
 	}
 
-	req, err := http.NewRequest(http.MethodGet, url, nil)
+	jsonContent, err := self.request(url)
 	if err != nil {
-		return nil, fmt.Errorf("SkuResourcesMeta.get.NewRequest %s", err)
+		return nil, errors.Wrapf(err, "request %s", url)
 	}
-
-	userAgent := "vendor/yunion-OneCloud@" + v.Get().GitVersion
-	req.Header.Set("User-Agent", userAgent)
-
-	transport := httputils.GetTransport(true)
-	transport.Proxy = options.Options.HttpTransportProxyFunc()
-	client := &http.Client{
-		Transport: transport,
-	}
-
-	resp, err := client.Do(req)
-	if err != nil {
-		return nil, fmt.Errorf("SkuResourcesMeta.get.Get %s", err)
-	}
-
-	defer resp.Body.Close()
-	content, err := ioutil.ReadAll(resp.Body)
-	if err != nil {
-		return nil, fmt.Errorf("SkuResourcesMeta.get.ReadAll %s", err)
-	}
-
-	jsonContent, err := jsonutils.Parse(content)
-	if err != nil {
-		return nil, fmt.Errorf("SkuResourcesMeta.get.Parse %s", err)
-	}
-
 	var ret []jsonutils.JSONObject
 	err = jsonContent.Unmarshal(&ret)
 	if err != nil {
@@ -374,9 +465,30 @@ func SyncServerSkus(ctx context.Context, userCred mcclient.TokenCredential, isSt
 		return
 	}
 
+	index, err := meta.getServerSkuIndex()
+	if err != nil {
+		log.Errorf("getServerSkuIndex error: %v", err)
+	}
+
 	cloudregions := fetchSkuSyncCloudregions()
 	for i := range cloudregions {
 		region := &cloudregions[i]
+		oldMd5, _ := skuIndex[region.ExternalId]
+		newMd5, ok := index[region.ExternalId]
+		if ok {
+			skuIndex[region.ExternalId] = newMd5
+		}
+
+		if newMd5 == EMPTY_MD5 {
+			log.Infof("%s Server Skus is empty skip syncing", region.Name)
+			continue
+		}
+
+		if len(oldMd5) > 0 && newMd5 == oldMd5 {
+			log.Infof("%s Server Skus not Changed skip syncing", region.Name)
+			continue
+		}
+
 		result := ServerSkuManager.SyncServerSkus(ctx, userCred, region, meta)
 		notes := fmt.Sprintf("SyncServerSkusByRegion %s result: %s", region.Name, result.Result())
 		log.Infof(notes)
@@ -403,12 +515,6 @@ func SyncServerSkusByRegion(ctx context.Context, userCred mcclient.TokenCredenti
 	notes := fmt.Sprintf("SyncServerSkusByRegion %s result: %s", region.Name, result.Result())
 	log.Infof(notes)
 
-	// notfiy sched manager
-	_, err = modules.SchedManager.SyncSku(auth.GetAdminSession(ctx, options.Options.Region, ""), false)
-	if err != nil {
-		log.Errorf("SchedManager SyncSku %s", err)
-	}
-
 	return result
 }
 
@@ -431,6 +537,20 @@ func FetchSkuResourcesMeta() (*SSkuResourcesMeta, error) {
 	return ret, nil
 }
 
+func fetchCloudEnvs() ([]string, error) {
+	accounts := []SCloudaccount{}
+	q := CloudaccountManager.Query("provider", "access_url").In("provider", CloudproviderManager.GetPublicProviderProvidersQuery()).Distinct()
+	err := q.All(&accounts)
+	if err != nil {
+		return nil, errors.Wrapf(err, "q.All")
+	}
+	ret := []string{}
+	for i := range accounts {
+		ret = append(ret, apis.GetCloudEnv(accounts[i].Provider, accounts[i].AccessUrl))
+	}
+	return ret, nil
+}
+
 func fetchSkuSyncCloudregions() []SCloudregion {
 	cloudregions := []SCloudregion{}
 	q := CloudregionManager.Query()
@@ -442,4 +562,31 @@ func fetchSkuSyncCloudregions() []SCloudregion {
 	}
 
 	return cloudregions
+}
+
+type sWafGroup struct {
+	SWafRuleGroup
+	Rules []SWafRule
+}
+
+func (self sWafGroup) GetGlobalId() string {
+	return self.ExternalId
+}
+
+func (self SWafRule) GetGlobalId() string {
+	return self.ExternalId
+}
+
+func (self *SSkuResourcesMeta) getCloudWafGroups(cloudEnv string) ([]sWafGroup, error) {
+	url := fmt.Sprintf("%s/%s.json", self.WafBase, cloudEnv)
+	resp, err := self.request(url)
+	if err != nil {
+		return nil, errors.Wrapf(err, "_get(%s)", url)
+	}
+	ret := []sWafGroup{}
+	err = resp.Unmarshal(&ret)
+	if err != nil {
+		return nil, errors.Wrapf(err, "resp.Unmarshal")
+	}
+	return ret, nil
 }

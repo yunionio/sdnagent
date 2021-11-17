@@ -27,7 +27,8 @@ import (
 var RESOURCEPOOL_PROPS = []string{"name", "parent", "host"}
 
 type SResourcePool struct {
-	multicloud.SResourceBase
+	multicloud.SProjectBase
+	multicloud.STagBase
 	SManagedObject
 }
 

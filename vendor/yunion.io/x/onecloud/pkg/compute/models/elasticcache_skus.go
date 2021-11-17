@@ -119,10 +119,6 @@ func (self SElasticcacheSku) GetGlobalId() string {
 	return self.ExternalId
 }
 
-func (self *SElasticcacheSku) GetExtraDetails(ctx context.Context, userCred mcclient.TokenCredential, query jsonutils.JSONObject, isList bool) (api.ElasticcacheSkuDetails, error) {
-	return api.ElasticcacheSkuDetails{}, nil
-}
-
 func (manager *SElasticcacheSkuManager) FetchCustomizeColumns(
 	ctx context.Context,
 	userCred mcclient.TokenCredential,
@@ -280,7 +276,10 @@ func (manager *SElasticcacheSkuManager) ListItemFilter(
 	}
 
 	if query.Usable != nil && *query.Usable {
-		q = usableFilter(q, true)
+		q, err = usableFilter(q, true)
+		if err != nil {
+			return nil, err
+		}
 		sq := sqlchemy.OR(sqlchemy.Equals(q.Field("prepaid_status"), api.SkuStatusAvailable), sqlchemy.Equals(q.Field("postpaid_status"), api.SkuStatusAvailable))
 		q = q.Filter(sq)
 	}
@@ -413,8 +412,8 @@ func (manager *SElasticcacheSkuManager) FetchSkusByRegion(regionID string) ([]SE
 }
 
 func (manager *SElasticcacheSkuManager) SyncElasticcacheSkus(ctx context.Context, userCred mcclient.TokenCredential, region *SCloudregion, extSkuMeta *SSkuResourcesMeta) compare.SyncResult {
-	lockman.LockClass(ctx, manager, db.GetLockClassKey(manager, userCred))
-	defer lockman.ReleaseClass(ctx, manager, db.GetLockClassKey(manager, userCred))
+	lockman.LockRawObject(ctx, "elastic-cache-skus", region.Id)
+	defer lockman.ReleaseRawObject(ctx, "elastic-cache-skus", region.Id)
 
 	syncResult := compare.SyncResult{}
 

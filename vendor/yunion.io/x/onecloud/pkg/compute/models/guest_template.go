@@ -199,7 +199,7 @@ func (gtm *SGuestTemplateManager) validateContent(ctx context.Context, userCred 
 	}
 	// check Image
 	imageId := input.Disks[0].ImageId
-	image, err := CachedimageManager.getImageInfo(ctx, userCred, imageId, true)
+	image, err := CachedimageManager.getImageInfo(ctx, userCred, imageId, false)
 	if err != nil {
 		return nil, errors.Wrapf(err, "getImageInfo of '%s'", imageId)
 	}
@@ -253,7 +253,7 @@ func (gtm *SGuestTemplateManager) validateData(
 			return cinput, errors.Wrap(err, "NetworkManager.FetchById")
 		}
 		net := model.(*SNetwork)
-		vpc := net.GetVpc()
+		vpc, _ := net.GetVpc()
 		if vpc != nil {
 			cinput.VpcId = vpc.Id
 		}
@@ -326,15 +326,6 @@ func (manager *SGuestTemplateManager) FetchCustomizeColumns(
 	}
 
 	return rows
-}
-
-func (gt *SGuestTemplate) GetExtraDetails(
-	ctx context.Context,
-	userCred mcclient.TokenCredential,
-	query jsonutils.JSONObject,
-	isList bool,
-) (computeapis.GuestTemplateDetails, error) {
-	return computeapis.GuestTemplateDetails{}, nil
 }
 
 func (gt *SGuestTemplate) getMoreDetails(ctx context.Context, userCred mcclient.TokenCredential,
@@ -600,7 +591,7 @@ func (gt *SGuestTemplate) genForbiddenError(resourceName, resourceStr, scope str
 	return httperrors.NewForbiddenError(msgFmt, msgArgs...)
 }
 
-func (gt *SGuestTemplate) ValidateDeleteCondition(ctx context.Context) error {
+func (gt *SGuestTemplate) ValidateDeleteCondition(ctx context.Context, info jsonutils.JSONObject) error {
 	// check service catelog
 	q := ServiceCatalogManager.Query("name").Equals("guest_template_id", gt.Id)
 	names := make([]struct{ Name string }, 0, 1)

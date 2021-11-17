@@ -33,6 +33,7 @@ import (
 	"yunion.io/x/onecloud/pkg/cloudcommon/db"
 	"yunion.io/x/onecloud/pkg/cloudcommon/db/lockman"
 	"yunion.io/x/onecloud/pkg/cloudcommon/db/taskman"
+	"yunion.io/x/onecloud/pkg/cloudcommon/validators"
 	"yunion.io/x/onecloud/pkg/cloudprovider"
 	"yunion.io/x/onecloud/pkg/compute/options"
 	"yunion.io/x/onecloud/pkg/httperrors"
@@ -71,10 +72,10 @@ type SStorage struct {
 	SZoneResourceBase `update:""`
 
 	// 容量大小,单位Mb
-	Capacity int64 `nullable:"false" list:"domain" update:"domain" create:"domain_required"`
+	Capacity int64 `nullable:"false" list:"user" update:"domain" create:"domain_required"`
 	// 实际容量大小，单位Mb
 	// we always expect actual capacity great or equal than zero, otherwise something wrong
-	ActualCapacityUsed int64 `nullable:"true" list:"domain" update:"domain" create:"domain_optional"`
+	ActualCapacityUsed int64 `nullable:"true" list:"user" update:"domain" create:"domain_optional"`
 	// 预留容量大小
 	Reserved int64 `nullable:"true" default:"0" list:"domain" update:"domain"`
 	// 存储类型
@@ -125,12 +126,22 @@ func (self *SStorage) AllowUpdateItem(ctx context.Context, userCred mcclient.Tok
 	return db.IsAdminAllowUpdate(userCred, self)
 }
 
-func (self *SStorage) ValidateUpdateData(ctx context.Context, userCred mcclient.TokenCredential, query jsonutils.JSONObject, data *jsonutils.JSONDict) (*jsonutils.JSONDict, error) {
+func (self *SStorage) ValidateUpdateData(ctx context.Context, userCred mcclient.TokenCredential, query jsonutils.JSONObject, input api.StorageUpdateInput) (api.StorageUpdateInput, error) {
+	var err error
+	input.EnabledStatusInfrasResourceBaseUpdateInput, err = self.SEnabledStatusInfrasResourceBase.ValidateUpdateData(ctx, userCred, query, input.EnabledStatusInfrasResourceBaseUpdateInput)
+	if err != nil {
+		return input, err
+	}
+	input.StorageConf = jsonutils.NewDict()
+	if self.StorageConf != nil {
+		input.StorageConf.Update(jsonutils.Marshal(self.StorageConf))
+	}
+
 	driver := GetStorageDriver(self.StorageType)
 	if driver != nil {
-		return driver.ValidateUpdateData(ctx, userCred, data, self)
+		return driver.ValidateUpdateData(ctx, userCred, input)
 	}
-	return data, nil
+	return input, nil
 }
 
 func (self *SStorage) PostUpdate(ctx context.Context, userCred mcclient.TokenCredential, query jsonutils.JSONObject, data jsonutils.JSONObject) {
@@ -199,22 +210,22 @@ func (manager *SStorageManager) ValidateCreateData(
 	query jsonutils.JSONObject,
 	input api.StorageCreateInput,
 ) (api.StorageCreateInput, error) {
-	var err error
-
 	if !utils.IsInStringArray(input.StorageType, api.STORAGE_TYPES) {
 		return input, httperrors.NewInputParameterError("Invalid storage type %s", input.StorageType)
+	}
+	if len(input.MediumType) == 0 {
+		input.MediumType = api.DISK_TYPE_SSD
 	}
 	if !utils.IsInStringArray(input.MediumType, api.DISK_TYPES) {
 		return input, httperrors.NewInputParameterError("Invalid medium type %s", input.MediumType)
 	}
 	if len(input.ZoneId) == 0 {
-		return input, httperrors.NewMissingParameterError("zone")
+		return input, httperrors.NewMissingParameterError("zone_id")
 	}
-	_, input.ZoneResourceInput, err = ValidateZoneResourceInput(userCred, input.ZoneResourceInput)
+	_, err := validators.ValidateModel(userCred, ZoneManager, &input.ZoneId)
 	if err != nil {
-		return input, errors.Wrap(err, "ValidateZoneResourceInput")
+		return input, err
 	}
-
 	storageDirver := GetStorageDriver(input.StorageType)
 	if storageDirver == nil {
 		return input, httperrors.NewUnsupportOperationError("Not support create %s storage", input.StorageType)
@@ -239,7 +250,7 @@ func (self *SStorage) CustomizeCreate(ctx context.Context, userCred mcclient.Tok
 	return self.SEnabledStatusInfrasResourceBase.CustomizeCreate(ctx, userCred, ownerId, query, data)
 }
 
-func (self *SStorage) ValidateDeleteCondition(ctx context.Context) error {
+func (self *SStorage) ValidateDeleteCondition(ctx context.Context, info jsonutils.JSONObject) error {
 	cnt, err := self.GetHostCount()
 	if err != nil {
 		return httperrors.NewInternalServerError("GetHostCount fail %s", err)
@@ -261,7 +272,7 @@ func (self *SStorage) ValidateDeleteCondition(ctx context.Context) error {
 	if cnt > 0 {
 		return httperrors.NewNotEmptyError("storage has snapshots")
 	}
-	return self.SEnabledStatusInfrasResourceBase.ValidateDeleteCondition(ctx)
+	return self.SEnabledStatusInfrasResourceBase.ValidateDeleteCondition(ctx, nil)
 }
 
 func (self *SStorage) PostCreate(ctx context.Context, userCred mcclient.TokenCredential, ownerId mcclient.IIdentityProvider, query jsonutils.JSONObject, data jsonutils.JSONObject) {
@@ -426,10 +437,6 @@ func (self *SStorage) getMoreDetails(ctx context.Context, out api.StorageDetails
 	return out
 }
 
-func (self *SStorage) GetExtraDetails(ctx context.Context, userCred mcclient.TokenCredential, query jsonutils.JSONObject, isList bool) (api.StorageDetails, error) {
-	return api.StorageDetails{}, nil
-}
-
 func (manager *SStorageManager) FetchCustomizeColumns(
 	ctx context.Context,
 	userCred mcclient.TokenCredential,
@@ -563,18 +570,22 @@ func (self *SStorage) GetZoneId() string {
 	}
 }
 
-func (self *SStorage) getZone() *SZone {
+func (self *SStorage) getZone() (*SZone, error) {
 	zoneId := self.GetZoneId()
 	if len(zoneId) > 0 {
-		return ZoneManager.FetchZoneById(zoneId)
+		zone, err := ZoneManager.FetchById(zoneId)
+		if err != nil {
+			return nil, errors.Wrapf(err, "GetZone(%s)", zoneId)
+		}
+		return zone.(*SZone), nil
 	}
-	return nil
+	return nil, fmt.Errorf("empty zoneId for storage %s(%s)", self.Name, self.Id)
 }
 
-func (self *SStorage) GetRegion() *SCloudregion {
-	zone := self.getZone()
-	if zone == nil {
-		return nil
+func (self *SStorage) GetRegion() (*SCloudregion, error) {
+	zone, err := self.getZone()
+	if err != nil {
+		return nil, err
 	}
 	return zone.GetRegion()
 }
@@ -644,9 +655,12 @@ func (self *SStorage) SyncStatusWithHosts() {
 	}
 }
 
-func (manager *SStorageManager) getStoragesByZoneId(zoneId string, provider *SCloudprovider) ([]SStorage, error) {
+func (manager *SStorageManager) getStoragesByZone(zone *SZone, provider *SCloudprovider) ([]SStorage, error) {
 	storages := make([]SStorage, 0)
-	q := manager.Query().Equals("zone_id", zoneId)
+	q := manager.Query()
+	if zone != nil {
+		q = q.Equals("zone_id", zone.Id)
+	}
 	if provider != nil {
 		q = q.Equals("manager_id", provider.Id)
 	}
@@ -674,8 +688,14 @@ func (manager *SStorageManager) scanLegacyStorages() error {
 }
 
 func (manager *SStorageManager) SyncStorages(ctx context.Context, userCred mcclient.TokenCredential, provider *SCloudprovider, zone *SZone, storages []cloudprovider.ICloudStorage) ([]SStorage, []cloudprovider.ICloudStorage, compare.SyncResult) {
-	lockman.LockClass(ctx, manager, db.GetLockClassKey(manager, userCred))
-	defer lockman.ReleaseClass(ctx, manager, db.GetLockClassKey(manager, userCred))
+	var resId string
+	if zone != nil {
+		resId = fmt.Sprintf("%s-%s", provider.Id, zone.Id)
+	} else {
+		resId = provider.Id
+	}
+	lockman.LockRawObject(ctx, "storages", resId)
+	defer lockman.ReleaseRawObject(ctx, "storages", resId)
 
 	localStorages := make([]SStorage, 0)
 	remoteStorages := make([]cloudprovider.ICloudStorage, 0)
@@ -687,7 +707,7 @@ func (manager *SStorageManager) SyncStorages(ctx context.Context, userCred mccli
 		return nil, nil, syncResult
 	}
 
-	dbStorages, err := manager.getStoragesByZoneId(zone.Id, provider)
+	dbStorages, err := manager.getStoragesByZone(zone, provider)
 	if err != nil {
 		syncResult.Error(err)
 		return nil, nil, syncResult
@@ -746,7 +766,7 @@ func (self *SStorage) syncRemoveCloudStorage(ctx context.Context, userCred mccli
 	lockman.LockObject(ctx, self)
 	defer lockman.ReleaseObject(ctx, self)
 
-	err := self.ValidateDeleteCondition(ctx)
+	err := self.ValidateDeleteCondition(ctx, nil)
 	if err != nil { // cannot delete
 		err = self.SetStatus(userCred, api.STORAGE_OFFLINE, "sync to delete")
 		if err == nil {
@@ -905,11 +925,6 @@ func (manager *SStorageManager) newFromCloudStorage(ctx context.Context, userCre
 	storage := SStorage{}
 	storage.SetModelManager(manager, &storage)
 
-	newName, err := db.GenerateName(manager, userCred, extStorage.GetName())
-	if err != nil {
-		return nil, err
-	}
-	storage.Name = newName
 	storage.Status = extStorage.GetStatus()
 	storage.ExternalId = extStorage.GetGlobalId()
 	storage.ZoneId = zone.Id
@@ -927,10 +942,20 @@ func (manager *SStorageManager) newFromCloudStorage(ctx context.Context, userCre
 
 	storage.IsSysDiskStore = tristate.NewFromBool(extStorage.IsSysDiskStore())
 
-	err = manager.TableSpec().Insert(ctx, &storage)
+	var err = func() error {
+		lockman.LockRawObject(ctx, manager.Keyword(), "name")
+		defer lockman.ReleaseRawObject(ctx, manager.Keyword(), "name")
+
+		newName, err := db.GenerateName(ctx, manager, userCred, extStorage.GetName())
+		if err != nil {
+			return err
+		}
+		storage.Name = newName
+
+		return manager.TableSpec().Insert(ctx, &storage)
+	}()
 	if err != nil {
-		log.Errorf("newFromCloudStorage fail %s", err)
-		return nil, err
+		return nil, errors.Wrapf(err, "Insert")
 	}
 
 	SyncCloudDomain(userCred, &storage, provider.GetOwnerId())
@@ -1281,7 +1306,7 @@ func (self *SStorage) GetIStorage() (cloudprovider.ICloudStorage, error) {
 	if provider.GetFactory().IsOnPremise() {
 		iRegion, err = provider.GetOnPremiseIRegion()
 	} else {
-		region := self.GetRegion()
+		region, _ := self.GetRegion()
 		if region == nil {
 			msg := "cannot find region for storage???"
 			log.Errorf(msg)
@@ -1307,6 +1332,15 @@ func (manager *SStorageManager) FetchStorageById(storageId string) *SStorage {
 		return nil
 	}
 	return obj.(*SStorage)
+}
+
+func (manager *SStorageManager) FetchStorageByIds(ids []string) ([]SStorage, error) {
+	objs := make([]SStorage, 0)
+	q := manager.Query().In("id", ids)
+	if err := db.FetchModelObjects(manager, q, &objs); err != nil {
+		return nil, err
+	}
+	return objs, nil
 }
 
 func (manager *SStorageManager) InitializeData() error {
@@ -1422,13 +1456,10 @@ func (manager *SStorageManager) ListItemFilter(
 			Filter(sqlchemy.IsTrue(hostTable.Field("enabled"))).
 			Filter(sqlchemy.IsNullOrEmpty(hostTable.Field("manager_id")))
 
-		providerTable := CloudproviderManager.Query().SubQuery()
+		providerTable := usableCloudProviders().SubQuery()
 		sq2 := hostStorageTable.Query(hostStorageTable.Field("storage_id")).
 			Join(hostTable, sqlchemy.Equals(hostTable.Field("id"), hostStorageTable.Field("host_id"))).
-			Join(providerTable, sqlchemy.Equals(hostTable.Field("manager_id"), providerTable.Field("id"))).
-			Filter(sqlchemy.IsTrue(providerTable.Field("enabled"))).
-			Filter(sqlchemy.In(providerTable.Field("status"), api.CLOUD_PROVIDER_VALID_STATUS)).
-			Filter(sqlchemy.In(providerTable.Field("health_status"), api.CLOUD_PROVIDER_VALID_HEALTH_STATUS))
+			Join(providerTable, sqlchemy.Equals(hostTable.Field("manager_id"), providerTable.Field("id")))
 
 		q = q.Filter(
 			sqlchemy.OR(
@@ -1463,6 +1494,11 @@ func (manager *SStorageManager) ListItemFilter(
 		storagecaches := StoragecachedimageManager.Query("storagecache_id").Equals("cachedimage_id", image.Id).SubQuery()
 		subq = subq.Join(storagecaches, sqlchemy.Equals(subq.Field("storagecache_id"), storagecaches.Field("storagecache_id")))
 		q = q.In("id", subq.SubQuery())
+	}
+
+	if len(query.HostId) > 0 {
+		sq := HoststorageManager.Query("storage_id").Equals("host_id", query.HostId)
+		q = q.In("id", sq.SubQuery())
 	}
 
 	return q, err
@@ -1527,9 +1563,9 @@ func (self *SStorage) ClearSchedDescCache() error {
 
 func (self *SStorage) getCloudProviderInfo() SCloudProviderInfo {
 	var region *SCloudregion
-	zone := self.getZone()
+	zone, _ := self.getZone()
 	if zone != nil {
-		region = zone.GetRegion()
+		region, _ = zone.GetRegion()
 	}
 	provider := self.GetCloudprovider()
 	return MakeCloudProviderInfo(region, zone, provider)

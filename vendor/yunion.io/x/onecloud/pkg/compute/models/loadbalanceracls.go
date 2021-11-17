@@ -288,15 +288,6 @@ func (lbacl *SLoadbalancerAcl) PostCreate(ctx context.Context, userCred mcclient
 	lbacl.SetStatus(userCred, api.LB_STATUS_ENABLED, "")
 }
 
-func (lbacl *SLoadbalancerAcl) GetExtraDetails(
-	ctx context.Context,
-	userCred mcclient.TokenCredential,
-	query jsonutils.JSONObject,
-	isList bool,
-) (api.LoadbalancerAclDetails, error) {
-	return api.LoadbalancerAclDetails{}, nil
-}
-
 func (manager *SLoadbalancerAclManager) FetchCustomizeColumns(
 	ctx context.Context,
 	userCred mcclient.TokenCredential,
@@ -399,7 +390,7 @@ func (lbacl *SLoadbalancerAcl) PerformPatch(ctx context.Context, userCred mcclie
 	return nil, nil
 }
 
-func (lbacl *SLoadbalancerAcl) ValidateDeleteCondition(ctx context.Context) error {
+func (lbacl *SLoadbalancerAcl) ValidateDeleteCondition(ctx context.Context, info jsonutils.JSONObject) error {
 	men := []db.IModelManager{
 		LoadbalancerListenerManager,
 	}

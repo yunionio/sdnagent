@@ -29,6 +29,7 @@ import (
 	"yunion.io/x/onecloud/pkg/apis"
 	api "yunion.io/x/onecloud/pkg/apis/compute"
 	"yunion.io/x/onecloud/pkg/cloudcommon/db"
+	"yunion.io/x/onecloud/pkg/cloudcommon/notifyclient"
 	"yunion.io/x/onecloud/pkg/httperrors"
 	"yunion.io/x/onecloud/pkg/mcclient"
 	"yunion.io/x/onecloud/pkg/util/logclient"
@@ -131,11 +132,6 @@ func (spm *SScalingPolicyManager) FilterByUniqValues(q *sqlchemy.SQuery, values 
 func (spm *SScalingPolicyManager) OrderByExtraFields(ctx context.Context, q *sqlchemy.SQuery,
 	userCred mcclient.TokenCredential, query api.ScalingPolicyListInput) (*sqlchemy.SQuery, error) {
 	return spm.SVirtualResourceBaseManager.OrderByExtraFields(ctx, q, userCred, query.VirtualResourceListInput)
-}
-
-func (sgm *SScalingPolicy) GetExtraDetails(ctx context.Context, userCred mcclient.TokenCredential,
-	query jsonutils.JSONObject, isList bool) (api.ScalingGroupDetails, error) {
-	return api.ScalingGroupDetails{}, nil
 }
 
 func (spm *SScalingPolicyManager) FetchCustomizeColumns(
@@ -423,7 +419,15 @@ func (sp *SScalingPolicy) PerformTrigger(ctx context.Context, userCred mcclient.
 	if err != nil {
 		return nil, errors.Wrap(err, "ScalingPolicy.Scale")
 	}
+	sp.EventNotify(ctx, userCred)
 	return nil, err
+}
+
+func (sp *SScalingPolicy) EventNotify(ctx context.Context, userCred mcclient.TokenCredential) {
+	notifyclient.EventNotify(ctx, userCred, notifyclient.SEventNotifyParam{
+		Obj:    sp,
+		Action: notifyclient.ActionExecute,
+	})
 }
 
 func (sp *SScalingPolicy) ScalingGroup() (*SScalingGroup, error) {

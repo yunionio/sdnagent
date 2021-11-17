@@ -60,16 +60,12 @@ func (self *SNatgatewayResourceBase) GetNatgateway() (*SNatGateway, error) {
 	return obj.(*SNatGateway), nil
 }
 
-func (self *SNatgatewayResourceBase) GetVpc() *SVpc {
-	nat, _ := self.GetNatgateway()
-	if nat != nil {
-		return nat.GetVpc()
+func (self *SNatgatewayResourceBase) GetVpc() (*SVpc, error) {
+	nat, err := self.GetNatgateway()
+	if err != nil {
+		return nil, errors.Wrapf(err, "self.GetNatgateway")
 	}
-	return nil
-}
-
-func (self *SNatgatewayResourceBase) GetExtraDetails(ctx context.Context, userCred mcclient.TokenCredential, query jsonutils.JSONObject) api.NatGatewayResourceInfo {
-	return api.NatGatewayResourceInfo{}
+	return nat.GetVpc()
 }
 
 func (manager *SNatgatewayResourceBaseManager) FetchCustomizeColumns(

@@ -26,6 +26,7 @@ import (
 	"yunion.io/x/onecloud/pkg/appsrv"
 	"yunion.io/x/onecloud/pkg/cloudcommon/workmanager"
 	"yunion.io/x/onecloud/pkg/hostman/hostinfo/hostbridge"
+	"yunion.io/x/onecloud/pkg/hostman/hostutils/kubelet"
 	"yunion.io/x/onecloud/pkg/hostman/isolated_device"
 	"yunion.io/x/onecloud/pkg/hostman/options"
 	"yunion.io/x/onecloud/pkg/httperrors"
@@ -41,6 +42,7 @@ type IHost interface {
 	GetMediumType() string
 	GetMasterIp() string
 	GetCpuArchitecture() string
+	IsAarch64() bool
 	IsHugepagesEnabled() bool
 
 	IsKvmSupport() bool
@@ -53,6 +55,8 @@ type IHost interface {
 	GetIsolatedDeviceManager() *isolated_device.IsolatedDeviceManager
 
 	SyncRootPartitionUsedCapacity() error
+
+	GetKubeletConfig() kubelet.KubeletConfig
 }
 
 func GetComputeSession(ctx context.Context) *mcclient.ClientSession {
@@ -135,9 +139,12 @@ func RemoteStoragecacheCacheImage(ctx context.Context, storagecacheId, imageId, 
 		storagecacheId, imageId, query, params)
 }
 
-func UpdateServerStatus(ctx context.Context, sid, status string) (jsonutils.JSONObject, error) {
+func UpdateServerStatus(ctx context.Context, sid, status, reason string) (jsonutils.JSONObject, error) {
 	var stats = jsonutils.NewDict()
 	stats.Set("status", jsonutils.NewString(status))
+	if len(reason) > 0 {
+		stats.Set("reason", jsonutils.NewString(reason))
+	}
 	return modules.Servers.PerformAction(GetComputeSession(ctx), sid, "status", stats)
 }
 

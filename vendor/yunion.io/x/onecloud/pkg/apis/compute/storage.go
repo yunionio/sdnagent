@@ -47,6 +47,7 @@ type StorageCreateInput struct {
 	// 存储介质类型
 	// enum: rotate, ssd, hybird
 	// required: true
+	// default: ssd
 	MediumType string `json:"medium_type"`
 
 	ZoneResourceInput
@@ -74,6 +75,24 @@ type StorageCreateInput struct {
 	// swagger:ignore
 	Key string
 
+	RbdTimeoutInput
+
+	// swagger:ignore
+	ClientMountTimeout int
+
+	// swagger:ignore
+	StorageConf *jsonutils.JSONDict
+
+	// 网络文件系统主机, storage_type 为 nfs 时,此参数必传
+	// example: 192.168.222.2
+	NfsHost string `json:"nfs_host"`
+
+	// 网络文件系统共享目录, storage_type 为 nfs 时, 此参数必传
+	// example: /nfs_root/
+	NfsSharedDir string `json:"nfs_shared_dir"`
+}
+
+type RbdTimeoutInput struct {
 	// ceph集群连接超时时间, 单位秒
 	// default: 3
 	RbdRadosMonOpTimeout int `json:"rbd_rados_mon_op_timeout"`
@@ -91,25 +110,9 @@ type StorageCreateInput struct {
 	// ceph CephFS挂载超时时间, 单位秒
 	// default: 120
 	RbdClientMountTimeout int `json:"rbd_client_mount_timeout"`
-
-	// swagger:ignore
-	ClientMountTimeout int
-
-	// swagger:ignore
-	StorageConf *jsonutils.JSONDict
-
-	// 网络文件系统主机, storage_type 为 nfs 时,此参数必传
-	// example: 192.168.222.2
-	NfsHost string `json:"nfs_host"`
-
-	// 网络文件系统共享目录, storage_type 为 nfs 时, 此参数必传
-	// example: /nfs_root/
-	NfsSharedDir string `json:"nfs_shared_dir"`
 }
 
 type SStorageCapacityInfo struct {
-	// 容量大小, 单位Mb
-	Capacity int64 `json:"capacity"`
 	// 已使用容量大小
 	UsedCapacity int64 `json:"used_capacity"`
 	// 浪费容量大小(异常磁盘大小总和)
@@ -132,9 +135,9 @@ type StorageDetails struct {
 	ManagedResourceInfo
 	ZoneResourceInfo
 
-	SStorageCapacityInfo
-
 	SStorage
+
+	SStorageCapacityInfo
 
 	Hosts []StorageHost `json:"hosts"`
 
@@ -166,4 +169,20 @@ type StorageResourceInfo struct {
 
 	// 存储状态
 	StorageStatus string `json:"storage_status"`
+}
+
+type StorageUpdateInput struct {
+	apis.EnabledStatusInfrasResourceBaseUpdateInput
+
+	// ceph集群密码,若ceph集群开启cephx认证,此参数必传
+	// 可在ceph集群主机的/etc/ceph/ceph.client.admin.keyring文件中找到
+	// example: AQDigB9dtnDAKhAAxS6X4zi4BPR/lIle4nf4Dw==
+	RbdKey string `json:"rbd_key"`
+
+	RbdTimeoutInput
+
+	// swagger:ignore
+	StorageConf *jsonutils.JSONDict
+
+	UpdateStorageConf bool
 }

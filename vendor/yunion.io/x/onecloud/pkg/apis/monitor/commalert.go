@@ -1,3 +1,17 @@
+// Copyright 2019 Yunion
+//
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+//     http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
+
 package monitor
 
 const (
@@ -42,6 +56,10 @@ type CommonAlertCreateInput struct {
 	Channel []string `json:"channel"`
 	// 通知接受者
 	Recipients []string `json:"recipients"`
+
+	RobotIds []string `json:"robot_ids"`
+	// 静默期
+	SilentPeriod string `json:"silent_period"`
 	// 报警类型
 	AlertType string `json:"alert_type"`
 
@@ -84,6 +102,8 @@ type CommonAlertListInput struct {
 
 	Level   string   `json:"level"`
 	ResType []string `json:"res_type"`
+	UsedBy  string   `json:"used_by"`
+	Name    string   `json:"name"`
 }
 
 type CommonAlertUpdateInput struct {
@@ -98,6 +118,8 @@ type CommonAlertUpdateInput struct {
 	Channel []string `json:"channel"`
 	// 通知接受者
 	Recipients []string `json:"recipients"`
+	// 静默期
+	SilentPeriod string `json:"silent_period"`
 	// systemalert policy may need update through operator
 	ForceUpdate bool   `json:"force_update"`
 	GetPointStr bool   `json:"get_point_str"`
@@ -113,7 +135,10 @@ type CommonAlertDetails struct {
 	NotifierId    string   `json:"notifier_id"`
 	Channel       []string `json:"channel"`
 	Recipients    []string `json:"recipients"`
-	Status        string   `json:"status"`
+	RobotIds      []string `json:"robot_ids"`
+	// 静默期
+	SilentPeriod string `json:"silent_period"`
+	Status       string `json:"status"`
 	// 报警类型
 	AlertType                string                      `json:"alert_type"`
 	CommonAlertMetricDetails []*CommonAlertMetricDetails `json:"common_alert_metric_details"`

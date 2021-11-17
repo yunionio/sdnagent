@@ -7,6 +7,7 @@ require (
 	github.com/digitalocean/go-openvswitch v0.0.0-20190515160856-1141932ed5cf
 	github.com/fsnotify/fsnotify v1.4.9
 	github.com/golang/protobuf v1.4.2
+	github.com/kr/pty v1.1.5 // indirect
 	github.com/mitchellh/go-homedir v1.1.0
 	github.com/pkg/errors v0.9.1
 	github.com/spf13/cobra v0.0.5
@@ -14,13 +15,15 @@ require (
 	github.com/spf13/viper v1.3.2
 	github.com/vishvananda/netlink v1.0.0
 	github.com/vishvananda/netns v0.0.0-20191106174202-0a2b9b5464df
-	golang.org/x/net v0.0.0-20200707034311-ab3426394381
+	golang.org/x/net v0.0.0-20201110031124-69a78807bb2b
 	google.golang.org/grpc v1.29.0
 	google.golang.org/protobuf v1.24.0
-	yunion.io/x/jsonutils v0.0.0-20201110084044-3e4e1cb49769
+	gopkg.in/go-playground/assert.v1 v1.2.1 // indirect
+	gopkg.in/go-playground/validator.v9 v9.29.1 // indirect
+	yunion.io/x/jsonutils v0.0.0-20211105163012-d846c05a3c9a
 	yunion.io/x/log v0.0.0-20201210064738-43181789dc74
-	yunion.io/x/onecloud v0.0.0-20210128125021-0f028562876e
-	yunion.io/x/pkg v0.0.0-20210109071527-7e72daf56747
+	yunion.io/x/onecloud v0.0.0-20211117211655-270a4d01e8ce
+	yunion.io/x/pkg v0.0.0-20211116020154-6a76ba2f7e97
 )
 
 replace github.com/digitalocean/go-openvswitch => github.com/yousong/go-openvswitch v0.0.0-20200422025222-6b2d502be872

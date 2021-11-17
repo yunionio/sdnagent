@@ -30,7 +30,6 @@ import (
 	"yunion.io/x/pkg/utils"
 	"yunion.io/x/sqlchemy"
 
-	"yunion.io/x/onecloud/pkg/apis"
 	"yunion.io/x/onecloud/pkg/appsrv"
 	"yunion.io/x/onecloud/pkg/appsrv/dispatcher"
 	"yunion.io/x/onecloud/pkg/cloudcommon/consts"
@@ -184,7 +183,7 @@ func applyListItemsSearchFilters(manager IModelManager, ctx context.Context, q *
 	return q, nil
 }
 
-func applyListItemsGeneralFilters(manager IModelManager, q *sqlchemy.SQuery,
+func ApplyListItemsGeneralFilters(manager IModelManager, q *sqlchemy.SQuery,
 	userCred mcclient.TokenCredential, filters []string, filterAny bool) (*sqlchemy.SQuery, error) {
 	conds := make([]sqlchemy.ICondition, 0)
 	schFields := searchFields(manager, userCred) // only filter searchable fields
@@ -298,7 +297,7 @@ func listItemQueryFiltersRaw(manager IModelManager,
 	filterAny, _ := query.Bool("filter_any")
 	filters := jsonutils.GetQueryStringArray(query, "filter")
 	if len(filters) > 0 {
-		q, err = applyListItemsGeneralFilters(manager, q, userCred, filters, filterAny)
+		q, err = ApplyListItemsGeneralFilters(manager, q, userCred, filters, filterAny)
 	}
 	jointFilter := jsonutils.GetQueryStringArray(query, "joint_filter")
 	if len(jointFilter) > 0 {
@@ -424,9 +423,6 @@ func Query2List(manager IModelManager, ctx context.Context, userCred mcclient.To
 				if i < len(extraResults) {
 					extraResults[i].Update(jsonDict)
 					jsonDict = extraResults[i]
-				}
-				if len(exportKeys) > 0 {
-					jsonDict = jsonDict.CopyIncludes(exportKeys...)
 				}
 				if len(fieldFilter) > 0 {
 					jsonDict = jsonDict.CopyIncludes(fieldFilter...)
@@ -711,12 +707,14 @@ func ListItems(manager IModelManager, ctx context.Context, userCred mcclient.Tok
 			// skip markerField in pagingConf
 			continue
 		}
-		colSpec := manager.TableSpec().ColumnSpec(orderByField)
-		if colSpec != nil {
-			if order == sqlchemy.SQL_ORDER_ASC {
-				q = q.Asc(orderByField)
-			} else {
-				q = q.Desc(orderByField)
+		for _, field := range q.QueryFields() {
+			if orderByField == field.Name() {
+				if order == sqlchemy.SQL_ORDER_ASC {
+					q = q.Asc(field)
+				} else {
+					q = q.Desc(field)
+				}
+				break
 			}
 		}
 	}
@@ -791,6 +789,9 @@ func ListItems(manager IModelManager, ctx context.Context, userCred mcclient.Tok
 	if len(retList) != retCount {
 		totalCnt = len(retList)
 	}
+	if query.Contains("export_keys") {
+		retList = getExportCols(query, retList)
+	}
 	paginate := false
 	if !customizeFilters.IsEmpty() {
 		// query not use Limit and Offset, do manual pagination
@@ -822,6 +823,18 @@ func calculateListResult(data []jsonutils.JSONObject, total, limit, offset int64
 	return &retResult
 }
 
+func getExportCols(query jsonutils.JSONObject, retList []jsonutils.JSONObject) []jsonutils.JSONObject {
+	var exportKeys stringutils2.SSortedStrings
+	exportKeyStr, _ := query.GetString("export_keys")
+	exportKeys = stringutils2.NewSortedStrings(strings.Split(exportKeyStr, ","))
+	for i := range retList {
+		if len(exportKeys) > 0 {
+			retList[i] = retList[i].(*jsonutils.JSONDict).CopyIncludes(exportKeys...)
+		}
+	}
+	return retList
+}
+
 func (dispatcher *DBModelDispatcher) List(ctx context.Context, query jsonutils.JSONObject, ctxIds []dispatcher.SResourceContext) (*modulebase.ListResult, error) {
 	userCred := fetchUserCredential(ctx)
 
@@ -838,28 +851,6 @@ func (dispatcher *DBModelDispatcher) List(ctx context.Context, query jsonutils.J
 		}
 	}
 	return items, nil
-}
-
-func getModelExtraDetails(item IModel, ctx context.Context, showReason bool) apis.ModelBaseDetails {
-	out := apis.ModelBaseDetails{
-		CanDelete: true,
-		CanUpdate: true,
-	}
-	err := item.ValidateDeleteCondition(ctx)
-	if err != nil {
-		out.CanDelete = false
-		if showReason {
-			out.DeleteFailReason = httperrors.NewErrorFromGeneralError(ctx, err)
-		}
-	}
-	err = item.ValidateUpdateCondition(ctx)
-	if err != nil {
-		out.CanUpdate = false
-		if showReason {
-			out.UpdateFailReason = err.Error()
-		}
-	}
-	return out
 }
 
 func getModelItemDetails(manager IModelManager, item IModel, ctx context.Context, userCred mcclient.TokenCredential, query jsonutils.JSONObject, isHead bool) (jsonutils.JSONObject, error) {
@@ -884,6 +875,10 @@ func getModelItemDetails(manager IModelManager, item IModel, ctx context.Context
 	} else {
 		return getItemDetails(manager, item, ctx, userCred, query)
 	}
+}
+
+func GetItemDetails(manager IModelManager, item IModel, ctx context.Context, userCred mcclient.TokenCredential) (jsonutils.JSONObject, error) {
+	return getItemDetails(manager, item, ctx, userCred, jsonutils.NewDict())
 }
 
 func getItemDetails(manager IModelManager, item IModel, ctx context.Context, userCred mcclient.TokenCredential, query jsonutils.JSONObject) (jsonutils.JSONObject, error) {
@@ -920,11 +915,7 @@ func (dispatcher *DBModelDispatcher) tryGetModelProperty(ctx context.Context, pr
 	}
 
 	if consts.IsRbacEnabled() {
-		ownerId, err := fetchOwnerId(ctx, dispatcher.modelManager, userCred, query)
-		if err != nil {
-			return nil, httperrors.NewGeneralError(err)
-		}
-		err = isClassRbacAllowed(dispatcher.modelManager, userCred, ownerId, policy.PolicyActionList, property)
+		_, _, err := FetchCheckQueryOwnerScope(ctx, userCred, query, dispatcher.modelManager, policy.PolicyActionList, true)
 		if err != nil {
 			return nil, err
 		}
@@ -1196,8 +1187,11 @@ func _doCreateItem(
 			generateName, _ = dataDict.GetString("generate_name")
 			if len(generateName) > 0 {
 				if manager.EnableGenerateName() {
+					lockman.LockRawObject(ctx, manager.Keyword(), "name")
+					defer lockman.ReleaseRawObject(ctx, manager.Keyword(), "name")
+
 					// if enable generateName, alway generate name
-					newName, err := GenerateName2(manager, ownerId, generateName, nil, baseIndex)
+					newName, err := GenerateName2(ctx, manager, ownerId, generateName, nil, baseIndex)
 					if err != nil {
 						return nil, errors.Wrap(err, "GenerateName2")
 					}
@@ -1215,11 +1209,11 @@ func _doCreateItem(
 		}
 	}
 
+	funcName := "ValidateCreateData"
 	if batchCreate {
-		dataDict, err = manager.BatchCreateValidateCreateData(ctx, userCred, ownerId, query, dataDict)
-	} else {
-		dataDict, err = ValidateCreateData(manager, ctx, userCred, ownerId, query, dataDict)
+		funcName = "BatchCreateValidateCreateData"
 	}
+	dataDict, err = ValidateCreateData(funcName, manager, ctx, userCred, ownerId, query, dataDict)
 
 	if err != nil {
 		return nil, httperrors.NewGeneralError(err)
@@ -1254,6 +1248,15 @@ func _doCreateItem(
 	if err != nil {
 		return nil, httperrors.NewGeneralError(err)
 	}
+
+	dryRun := struct {
+		DryRun bool
+	}{}
+	data.Unmarshal(&dryRun)
+	if dryRun.DryRun {
+		return model, nil
+	}
+
 	err = manager.TableSpec().InsertOrUpdate(ctx, model)
 	if err != nil {
 		return nil, httperrors.NewGeneralError(err)
@@ -1527,7 +1530,8 @@ func managerPerformCheckCreateData(
 		}()
 	}
 
-	return ValidateCreateData(manager, ctx, userCred, ownerId, query, bodyDict)
+	funcName := "ValidateCreateData"
+	return ValidateCreateData(funcName, manager, ctx, userCred, ownerId, query, bodyDict)
 }
 
 func (dispatcher *DBModelDispatcher) PerformClassAction(ctx context.Context, action string, query jsonutils.JSONObject, data jsonutils.JSONObject) (jsonutils.JSONObject, error) {
@@ -1809,16 +1813,16 @@ func DeleteModel(ctx context.Context, userCred mcclient.TokenCredential, item IM
 
 func deleteItem(manager IModelManager, model IModel, ctx context.Context, userCred mcclient.TokenCredential, query jsonutils.JSONObject, data jsonutils.JSONObject) (jsonutils.JSONObject, error) {
 	// log.Debugf("deleteItem %s", jsonutils.Marshal(model))
-	err := model.ValidateDeleteCondition(ctx)
+
+	err := ValidateDeleteCondition(model, ctx, nil)
 	if err != nil {
-		log.Errorf("validate delete condition error: %s", err)
 		return nil, err
 	}
 
 	err = CustomizeDelete(model, ctx, userCred, query, data)
 	if err != nil {
 		log.Errorf("customize delete error: %s", err)
-		return nil, httperrors.NewNotAcceptableError("%v", err)
+		return nil, httperrors.NewGeneralError(err)
 	}
 
 	details, err := getItemDetails(manager, model, ctx, userCred, query)

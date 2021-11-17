@@ -14,6 +14,8 @@
 
 package apis
 
+import "time"
+
 type DomainizedResourceInput struct {
 	// 指定项目归属域名称或ID
 	// required: false
@@ -115,6 +117,18 @@ type EnabledBaseResourceCreateInput struct {
 	Disabled *bool `json:"disabled" help:"turn off enabled flag"`
 }
 
+func (self *EnabledBaseResourceCreateInput) SetEnabled() {
+	enabled := true
+	self.Enabled = &enabled
+	self.Disabled = nil
+}
+
+func (self *EnabledBaseResourceCreateInput) SetDisabled() {
+	disabled := true
+	self.Disabled = &disabled
+	self.Enabled = nil
+}
+
 func (input *EnabledBaseResourceCreateInput) AfterUnmarshal() {
 	if input.Disabled != nil && input.Enabled == nil {
 		enabled := !(*input.Disabled)
@@ -169,6 +183,10 @@ type StandaloneAnonResourceCreateInput struct {
 	// 标签列表,最多支持20个
 	// example: { "user:rd": "op" }
 	Metadata map[string]string `json:"__meta__" token:"tag" help:"tags in the form of key=value"`
+
+	// 预检验参数,若为true则仅检查参数,并不真正创建变更
+	// default: false
+	DryRun bool `json:"dry_run"`
 }
 
 type StandaloneResourceCreateInput struct {
@@ -345,3 +363,22 @@ type GetMetadataInput struct {
 
 // 获取资源标签（元数据）输出
 type GetMetadataOutput map[string]string
+
+type DistinctFieldInput struct {
+	Field      []string
+	ExtraField []string
+}
+
+type PostpaidExpireInput struct {
+	Duration   string    `json:"duration"`
+	ExpireTime time.Time `json:"expire_time"`
+}
+
+type AutoRenewInput struct {
+	// 是否自动续费
+	AutoRenew bool `json:"auto_renew"`
+}
+
+type RenewInput struct {
+	Duration string `json:"duration"`
+}

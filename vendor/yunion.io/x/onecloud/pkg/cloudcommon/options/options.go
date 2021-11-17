@@ -102,6 +102,8 @@ type BaseOptions struct {
 
 	GlobalHTTPProxy  string `help:"Global http proxy"`
 	GlobalHTTPSProxy string `help:"Global https proxy"`
+
+	IgnoreNonrunningGuests bool `default:"true" help:"Count memory for running guests only when do scheduling. Ignore memory allocation for non-running guests"`
 }
 
 const (
@@ -112,10 +114,10 @@ const (
 type CommonOptions struct {
 	AuthURL            string `help:"Keystone auth URL" alias:"auth-uri"`
 	AdminUser          string `help:"Admin username"`
-	AdminDomain        string `help:"Admin user domain"`
+	AdminDomain        string `help:"Admin user domain" default:"Default"`
 	AdminPassword      string `help:"Admin password" alias:"admin-passwd"`
 	AdminProject       string `help:"Admin project" default:"system" alias:"admin-tenant-name"`
-	AdminProjectDomain string `help:"Domain of Admin project"`
+	AdminProjectDomain string `help:"Domain of Admin project" default:"default"`
 	AuthTokenCacheSize uint32 `help:"Auth token Cache Size" default:"2048"`
 
 	TenantCacheExpireSeconds int `help:"expire seconds of cached tenant/domain info. defailt 15 minutes" default:"900"`

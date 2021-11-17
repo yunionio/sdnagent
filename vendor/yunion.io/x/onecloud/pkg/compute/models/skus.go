@@ -85,8 +85,8 @@ type SServerSku struct {
 	InstanceTypeCategory string `width:"32" charset:"utf8" nullable:"true" list:"user" create:"admin_optional" update:"admin"`            // 通用型
 	LocalCategory        string `width:"32" charset:"utf8" nullable:"true" list:"user" create:"admin_optional" update:"admin" default:""` // 记录本地分类
 
-	PrepaidStatus  string `width:"32" charset:"utf8" nullable:"true" list:"user" create:"admin_optional" default:"available"` // 预付费资源状态   available|soldout
-	PostpaidStatus string `width:"32" charset:"utf8" nullable:"true" list:"user" create:"admin_optional" default:"available"` // 按需付费资源状态  available|soldout
+	PrepaidStatus  string `width:"32" charset:"utf8" nullable:"true" list:"user" update:"admin" create:"admin_optional" default:"available"` // 预付费资源状态   available|soldout
+	PostpaidStatus string `width:"32" charset:"utf8" nullable:"true" list:"user" update:"admin" create:"admin_optional" default:"available"` // 按需付费资源状态  available|soldout
 
 	CpuArch      string `width:"16" charset:"ascii" nullable:"true" list:"user" create:"admin_optional" update:"admin"` // CPU 架构 x86|xarm
 	CpuCoreCount int    `nullable:"false" list:"user" create:"admin_required"`
@@ -238,10 +238,6 @@ func (self *SServerSku) AllowGetDetails(ctx context.Context, userCred mcclient.T
 	return true
 }
 
-func (self *SServerSku) GetExtraDetails(ctx context.Context, userCred mcclient.TokenCredential, query jsonutils.JSONObject, isList bool) (api.ServerSkuDetails, error) {
-	return api.ServerSkuDetails{}, nil
-}
-
 func (self *SServerSku) getTotalGuestCount() int {
 	// count
 	var count int
@@ -273,10 +269,8 @@ func (manager *SServerSkuManager) FetchCustomizeColumns(
 	for i := range rows {
 		rows[i] = api.ServerSkuDetails{
 			EnabledStatusStandaloneResourceDetails: stdRows[i],
-			ZoneResourceInfo:                       zoneRows[i],
-		}
-		if len(rows[i].Zone) == 0 {
-			rows[i].CloudregionResourceInfo = regRows[i]
+			ZoneResourceInfoBase:                   zoneRows[i].ZoneResourceInfoBase,
+			CloudregionResourceInfo:                regRows[i],
 		}
 
 		rows[i].CloudEnv = strings.Split(zoneRows[i].RegionExternalId, "/")[0]
@@ -312,7 +306,7 @@ func (self *SServerSkuManager) ValidateCreateData(ctx context.Context, userCred 
 		if input.CloudregionId != zone.CloudregionId {
 			return input, httperrors.NewConflictError("zone %s not in cloudregion %s", zone.Name, input.CloudregionId)
 		}
-		region = zone.GetRegion()
+		region, _ = zone.GetRegion()
 	}
 
 	if input.CpuCoreCount < 1 || input.CpuCoreCount > 256 {
@@ -402,14 +396,6 @@ func (self *SServerSku) GetPrivateCloudproviders() ([]SCloudprovider, error) {
 		return nil, err
 	}
 	return providers, nil
-}
-
-func (self *SServerSku) GetRegion() (*SCloudregion, error) {
-	regionObj, err := CloudregionManager.FetchById(self.CloudregionId)
-	if err != nil {
-		return nil, err
-	}
-	return regionObj.(*SCloudregion), nil
 }
 
 func (self *SServerSkuManager) ClearSchedDescCache(wait bool) error {
@@ -506,53 +492,36 @@ func normalizeProvider(provider string) string {
 }
 
 func networkUsableRegionQueries(f sqlchemy.IQueryField) []sqlchemy.ICondition {
-	iconditions := make([]sqlchemy.ICondition, 0)
-	providers := CloudproviderManager.Query().SubQuery()
-	networks := NetworkManager.Query().SubQuery()
-	wires := WireManager.Query().SubQuery()
-	vpcs := VpcManager.Query().SubQuery()
-
+	providers := usableCloudProviders()
+	networks := NetworkManager.Query("wire_id").Equals("status", api.NETWORK_STATUS_AVAILABLE)
+	wires := WireManager.Query("vpc_id").In("id", networks)
+	_vpcs := VpcManager.Query("cloudregion_id").
+		Equals("status", api.VPC_STATUS_AVAILABLE).
+		In("id", wires)
+	filters := sqlchemy.OR(sqlchemy.In(_vpcs.Field("manager_id"), providers), sqlchemy.IsNullOrEmpty(_vpcs.Field("manager_id")))
+	vpcs := _vpcs.Filter(filters).SubQuery()
 	sq := vpcs.Query(sqlchemy.DISTINCT("cloudregion_id", vpcs.Field("cloudregion_id")))
-	sq = sq.Join(wires, sqlchemy.Equals(vpcs.Field("id"), wires.Field("vpc_id")))
-	sq = sq.Join(networks, sqlchemy.Equals(wires.Field("id"), networks.Field("wire_id")))
-	sq = sq.Join(providers, sqlchemy.Equals(vpcs.Field("manager_id"), providers.Field("id")))
-	sq = sq.Filter(sqlchemy.Equals(networks.Field("status"), api.NETWORK_STATUS_AVAILABLE))
-	sq = sq.Filter(sqlchemy.IsTrue(providers.Field("enabled")))
-	sq = sq.Filter(sqlchemy.In(providers.Field("status"), api.CLOUD_PROVIDER_VALID_STATUS))
-	sq = sq.Filter(sqlchemy.In(providers.Field("health_status"), api.CLOUD_PROVIDER_VALID_HEALTH_STATUS))
-	sq = sq.Filter(sqlchemy.Equals(vpcs.Field("status"), api.VPC_STATUS_AVAILABLE))
-
-	sq2 := vpcs.Query(sqlchemy.DISTINCT("cloudregion_id", vpcs.Field("cloudregion_id")))
-	sq2 = sq2.Join(wires, sqlchemy.Equals(vpcs.Field("id"), wires.Field("vpc_id")))
-	sq2 = sq2.Join(networks, sqlchemy.Equals(wires.Field("id"), networks.Field("wire_id")))
-	sq2 = sq2.Filter(sqlchemy.Equals(networks.Field("status"), api.NETWORK_STATUS_AVAILABLE))
-	sq2 = sq2.Filter(sqlchemy.IsNullOrEmpty(vpcs.Field("manager_id")))
-	sq2 = sq2.Filter(sqlchemy.Equals(vpcs.Field("status"), api.VPC_STATUS_AVAILABLE))
-
-	iconditions = append(iconditions, sqlchemy.In(f, sq.SubQuery()))
-	iconditions = append(iconditions, sqlchemy.In(f, sq2.SubQuery()))
-	return iconditions
+	return []sqlchemy.ICondition{sqlchemy.In(f, sq.SubQuery())}
 }
 
-func usableFilter(q *sqlchemy.SQuery, public_cloud bool) *sqlchemy.SQuery {
+func usableFilter(q *sqlchemy.SQuery, public_cloud bool) (*sqlchemy.SQuery, error) {
 	// 过滤出公有云provider状态健康的sku
 	if public_cloud {
-		providerTable := CloudproviderManager.Query().SubQuery()
+		providerTable := usableCloudProviders().SubQuery()
 		providerRegionTable := CloudproviderRegionManager.Query().SubQuery()
 
-		subq := providerRegionTable.Query(sqlchemy.DISTINCT("cloudregion_id", providerRegionTable.Field("cloudregion_id")))
-		subq = subq.Join(providerTable, sqlchemy.Equals(providerRegionTable.Field("cloudprovider_id"), providerTable.Field("id")))
-		subq = subq.Filter(sqlchemy.IsTrue(providerTable.Field("enabled")))
-		subq = subq.Filter(sqlchemy.In(providerTable.Field("status"), api.CLOUD_PROVIDER_VALID_STATUS))
-		subq = subq.Filter(sqlchemy.In(providerTable.Field("health_status"), api.CLOUD_PROVIDER_VALID_HEALTH_STATUS))
-		q = q.Filter(sqlchemy.In(q.Field("cloudregion_id"), subq.SubQuery()))
+		_subq := providerRegionTable.Query(sqlchemy.DISTINCT("cloudregion_id", providerRegionTable.Field("cloudregion_id")))
+		subq := _subq.Join(providerTable, sqlchemy.Equals(providerRegionTable.Field("cloudprovider_id"), providerTable.Field("id"))).SubQuery()
+		q.Join(subq, sqlchemy.Equals(q.Field("cloudregion_id"), subq.Field("cloudregion_id")))
 	}
 
 	// 过滤出network usable的sku
 	if public_cloud {
-		iconditions := NetworkUsableZoneQueries(q.Field("zone_id"), true, true)
-		iconditions = append(iconditions, sqlchemy.IsNullOrEmpty(q.Field("zone_id"))) //Azure的zone_id可能为空
-		q = q.Filter(sqlchemy.OR(iconditions...))
+		zoneIds, err := NetworkUsableZoneIds(true, true, nil)
+		if err != nil {
+			return nil, errors.Wrap(err, "NetworkUsableZoneIds")
+		}
+		q = q.Filter(sqlchemy.OR(sqlchemy.In(q.Field("zone_id"), zoneIds), sqlchemy.IsNullOrEmpty(q.Field("zone_id")))) //Azure的zone_id可能为空
 	} else {
 		// 本地IDC sku 只定义到region层级, zone id 为空.因此只能按region查询
 		iconditions := networkUsableRegionQueries(q.Field("cloudregion_id"))
@@ -561,7 +530,7 @@ func usableFilter(q *sqlchemy.SQuery, public_cloud bool) *sqlchemy.SQuery {
 		q = q.Filter(sqlchemy.OR(iconditions...))
 	}
 
-	return q
+	return q, nil
 }
 
 func (manager *SServerSkuManager) GetPropertyInstanceSpecs(ctx context.Context, userCred mcclient.TokenCredential, query jsonutils.JSONObject) (jsonutils.JSONObject, error) {
@@ -629,11 +598,6 @@ func (self *SServerSku) AllowUpdateItem(ctx context.Context, userCred mcclient.T
 }
 
 func (self *SServerSku) ValidateUpdateData(ctx context.Context, userCred mcclient.TokenCredential, query jsonutils.JSONObject, input api.ServerSkuUpdateInput) (api.ServerSkuUpdateInput, error) {
-	// 目前不允许改sku信息
-	if !inWhiteList(self.Provider) {
-		return input, httperrors.NewForbiddenError("can not update instance_type for public cloud %s", self.Provider)
-	}
-
 	if len(input.Name) > 0 {
 		return input, httperrors.NewUnsupportOperationError("Cannot change server sku name")
 	}
@@ -678,7 +642,7 @@ func (self *SServerSku) StartServerSkuDeleteTask(ctx context.Context, userCred m
 	return nil
 }
 
-func (self *SServerSku) ValidateDeleteCondition(ctx context.Context) error {
+func (self *SServerSku) ValidateDeleteCondition(ctx context.Context, info jsonutils.JSONObject) error {
 	serverCount, err := skuRelatedGuestCount(self)
 	if err != nil {
 		return httperrors.NewInternalServerError("check instance")
@@ -737,10 +701,12 @@ func (manager *SServerSkuManager) ListItemFilter(
 	cloudEnvStr := query.CloudEnv
 	if cloudEnvStr == api.CLOUD_ENV_PUBLIC_CLOUD {
 		publicCloud = true
-		q = q.Filter(sqlchemy.In(q.Field("provider"), CloudproviderManager.GetPublicProviderProvidersQuery()))
+		pq := CloudproviderManager.GetPublicProviderProvidersQuery()
+		q = q.Join(pq, sqlchemy.Equals(q.Field("provider"), pq.Field("provider")))
 	}
 	if cloudEnvStr == api.CLOUD_ENV_PRIVATE_CLOUD {
-		q = q.Filter(sqlchemy.In(q.Field("provider"), CloudproviderManager.GetPrivateProviderProvidersQuery()))
+		pq := CloudproviderManager.GetPrivateProviderProvidersQuery()
+		q = q.Join(pq, sqlchemy.Equals(q.Field("provider"), pq.Field("provider")))
 	}
 	if cloudEnvStr == api.CLOUD_ENV_ON_PREMISE {
 		q = q.Filter(
@@ -789,7 +755,10 @@ func (manager *SServerSkuManager) ListItemFilter(
 	}
 
 	if query.Usable != nil && *query.Usable {
-		q = usableFilter(q, publicCloud)
+		q, err := usableFilter(q, publicCloud)
+		if err != nil {
+			return nil, err
+		}
 		q = q.IsTrue("enabled")
 	}
 
@@ -803,7 +772,7 @@ func (manager *SServerSkuManager) ListItemFilter(
 			return nil, httperrors.NewGeneralError(err)
 		}
 		zone := _zone.(*SZone)
-		region := zone.GetRegion()
+		region, _ := zone.GetRegion()
 		if region == nil {
 			return nil, httperrors.NewResourceNotFoundError("failed to find cloudregion for zone %s(%s)", zone.Name, zone.Id)
 		}
@@ -907,7 +876,7 @@ func (manager *SServerSkuManager) GetMatchedSku(regionId string, cpu int64, memM
 }
 
 func (manager *SServerSkuManager) FetchSkuByNameAndProvider(name string, provider string, checkConsistency bool) (*SServerSku, error) {
-	q := manager.Query()
+	q := manager.Query().IsTrue("enabled")
 	q = q.Equals("name", name)
 	if utils.IsInStringArray(provider, []string{api.CLOUD_PROVIDER_ONECLOUD, api.CLOUD_PROVIDER_VMWARE}) {
 		q = q.Filter(
@@ -1032,8 +1001,8 @@ func (manager *SServerSkuManager) PendingDeleteInvalidSku() error {
 }
 
 func (manager *SServerSkuManager) SyncPrivateCloudSkus(ctx context.Context, userCred mcclient.TokenCredential, region *SCloudregion, skus []cloudprovider.ICloudSku) compare.SyncResult {
-	lockman.LockClass(ctx, manager, db.GetLockClassKey(manager, userCred))
-	defer lockman.ReleaseClass(ctx, manager, db.GetLockClassKey(manager, userCred))
+	lockman.LockRawObject(ctx, "serverskus", region.Id)
+	defer lockman.ReleaseRawObject(ctx, "serverskus", region.Id)
 
 	result := compare.SyncResult{}
 
@@ -1093,12 +1062,14 @@ func (self *SServerSku) SyncWithPrivateCloudSku(ctx context.Context, userCred mc
 }
 
 func (self *SServerSku) constructSku(extSku cloudprovider.ICloudSku) {
+	self.ExternalId = extSku.GetGlobalId()
 	self.InstanceTypeFamily = extSku.GetInstanceTypeFamily()
 	self.InstanceTypeCategory = extSku.GetInstanceTypeCategory()
 
 	self.PrepaidStatus = extSku.GetPrepaidStatus()
 	self.PostpaidStatus = extSku.GetPostpaidStatus()
 
+	self.CpuArch = extSku.GetCpuArch()
 	self.CpuCoreCount = extSku.GetCpuCoreCount()
 	self.MemorySizeMB = extSku.GetMemorySizeMB()
 
@@ -1143,6 +1114,7 @@ func (self *SServerSku) setPrepaidPostpaidStatus(userCred mcclient.TokenCredenti
 
 func (manager *SServerSkuManager) newFromCloudSku(ctx context.Context, userCred mcclient.TokenCredential, region *SCloudregion, extSku cloudprovider.ICloudSku) error {
 	sku := &SServerSku{Provider: region.Provider}
+
 	sku.SetModelManager(manager, sku)
 	// 第一次同步新建的套餐是启用状态
 	sku.Enabled = tristate.True
@@ -1150,10 +1122,22 @@ func (manager *SServerSkuManager) newFromCloudSku(ctx context.Context, userCred 
 	sku.constructSku(extSku)
 
 	sku.CloudregionId = region.Id
+
 	sku.SetModelManager(manager, sku)
-	err := manager.TableSpec().Insert(ctx, sku)
+	var err = func() error {
+		lockman.LockRawObject(ctx, manager.Keyword(), "name")
+		defer lockman.ReleaseRawObject(ctx, manager.Keyword(), "name")
+
+		var err error
+		sku.Name, err = db.GenerateName(ctx, manager, userCred, extSku.GetName())
+		if err != nil {
+			return errors.Wrap(err, "db.GenerateName")
+		}
+
+		return manager.TableSpec().Insert(ctx, sku)
+	}()
 	if err != nil {
-		return errors.Wrapf(err, "newFromCloudSku.Insert")
+		return errors.Wrapf(err, "Insert")
 	}
 	db.OpsLog.LogEvent(sku, db.ACT_CREATE, sku.GetShortDesc(ctx), userCred)
 
@@ -1204,8 +1188,8 @@ func (manager *SServerSkuManager) FetchSkusByRegion(regionID string) ([]SServerS
 }
 
 func (manager *SServerSkuManager) SyncServerSkus(ctx context.Context, userCred mcclient.TokenCredential, region *SCloudregion, extSkuMeta *SSkuResourcesMeta) compare.SyncResult {
-	lockman.LockClass(ctx, manager, db.GetLockClassKey(manager, userCred))
-	defer lockman.ReleaseClass(ctx, manager, db.GetLockClassKey(manager, userCred))
+	lockman.LockRawObject(ctx, "serverskus", region.Id)
+	defer lockman.ReleaseRawObject(ctx, "serverskus", region.Id)
 
 	syncResult := compare.SyncResult{}
 
@@ -1256,6 +1240,13 @@ func (manager *SServerSkuManager) SyncServerSkus(ctx context.Context, userCred m
 			syncResult.Add()
 		}
 	}
+
+	// notfiy sched manager
+	_, err = modules.SchedManager.SyncSku(auth.GetAdminSession(ctx, options.Options.Region, ""), false)
+	if err != nil {
+		log.Errorf("SchedManager SyncSku %s", err)
+	}
+
 	return syncResult
 }
 

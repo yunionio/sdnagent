@@ -84,8 +84,8 @@ type SElasticcacheBackup struct {
 }
 
 func (manager *SElasticcacheBackupManager) SyncElasticcacheBackups(ctx context.Context, userCred mcclient.TokenCredential, elasticcache *SElasticcache, cloudElasticcacheBackups []cloudprovider.ICloudElasticcacheBackup) compare.SyncResult {
-	lockman.LockClass(ctx, manager, db.GetLockClassKey(manager, elasticcache.GetOwnerId()))
-	defer lockman.ReleaseClass(ctx, manager, db.GetLockClassKey(manager, elasticcache.GetOwnerId()))
+	lockman.LockRawObject(ctx, "elastic-cache-backups", elasticcache.Id)
+	defer lockman.ReleaseRawObject(ctx, "elastic-cache-backups", elasticcache.Id)
 
 	syncResult := compare.SyncResult{}
 
@@ -139,7 +139,7 @@ func (self *SElasticcacheBackup) syncRemoveCloudElasticcacheBackup(ctx context.C
 	lockman.LockObject(ctx, self)
 	defer lockman.ReleaseObject(ctx, self)
 
-	err := self.ValidateDeleteCondition(ctx)
+	err := self.ValidateDeleteCondition(ctx, nil)
 	if err != nil {
 		return errors.Wrapf(err, "newFromCloudElasticcacheBackup.Remove")
 	}
@@ -242,7 +242,7 @@ func (manager *SElasticcacheBackupManager) ValidateCreateData(ctx context.Contex
 		return nil, httperrors.NewMissingParameterError("elasticcache")
 	}
 
-	region = ec.GetRegion()
+	region, _ = ec.GetRegion()
 	driver := region.GetDriver()
 	if err := driver.AllowCreateElasticcacheBackup(ctx, userCred, ownerId, ec); err != nil {
 		return nil, err
@@ -328,10 +328,11 @@ func (self *SElasticcacheBackup) GetRegion() *SCloudregion {
 		return nil
 	}
 
-	return ieb.(*SElasticcache).GetRegion()
+	region, _ := ieb.(*SElasticcache).GetRegion()
+	return region
 }
 
-func (self *SElasticcacheBackup) ValidateDeleteCondition(ctx context.Context) error {
+func (self *SElasticcacheBackup) ValidateDeleteCondition(ctx context.Context, info jsonutils.JSONObject) error {
 	icache, err := db.FetchById(ElasticcacheManager, self.ElasticcacheId)
 	if err != nil {
 		return err
@@ -416,15 +417,6 @@ func (manager *SElasticcacheBackupManager) QueryDistinctExtraField(q *sqlchemy.S
 	}
 
 	return q, httperrors.ErrNotFound
-}
-
-func (self *SElasticcacheBackup) GetExtraDetails(
-	ctx context.Context,
-	userCred mcclient.TokenCredential,
-	query jsonutils.JSONObject,
-	isList bool,
-) (api.ElasticcacheBackupDetails, error) {
-	return api.ElasticcacheBackupDetails{}, nil
 }
 
 func (manager *SElasticcacheBackupManager) FetchCustomizeColumns(
