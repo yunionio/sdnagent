@@ -16,6 +16,7 @@ package logclient
 
 import (
 	"context"
+	"fmt"
 	"strings"
 	"time"
 
@@ -32,7 +33,8 @@ import (
 	"yunion.io/x/onecloud/pkg/cloudcommon/consts"
 	"yunion.io/x/onecloud/pkg/mcclient"
 	"yunion.io/x/onecloud/pkg/mcclient/auth"
-	"yunion.io/x/onecloud/pkg/mcclient/modules"
+	"yunion.io/x/onecloud/pkg/mcclient/modules/logger"
+	// "yunion.io/x/onecloud/pkg/mcclient/modules/websocket"
 )
 
 type SessionGenerator func(ctx context.Context, token mcclient.TokenCredential, region, apiVersion string) *mcclient.ClientSession
@@ -42,7 +44,7 @@ var (
 )
 
 // golang 不支持 const 的string array, http://t.cn/EzAvbw8
-var BLACK_LIST_OBJ_TYPE = []string{"parameter"}
+var BLACK_LIST_OBJ_TYPE = []string{} // "parameter"}
 
 var logclientWorkerMan *appsrv.SWorkerManager
 
@@ -67,21 +69,21 @@ type IModule interface {
 
 // save log to db.
 func AddSimpleActionLog(model IObject, action string, iNotes interface{}, userCred mcclient.TokenCredential, success bool) {
-	addLog(model, action, iNotes, userCred, success, time.Time{}, &modules.Actions)
+	addLog(model, action, iNotes, userCred, success, time.Time{}, &logger.Actions)
 }
 
 func AddActionLogWithContext(ctx context.Context, model IObject, action string, iNotes interface{}, userCred mcclient.TokenCredential, success bool) {
-	addLog(model, action, iNotes, userCred, success, appctx.AppContextStartTime(ctx), &modules.Actions)
+	addLog(model, action, iNotes, userCred, success, appctx.AppContextStartTime(ctx), &logger.Actions)
 }
 
 func AddActionLogWithStartable(task cloudcommon.IStartable, model IObject, action string, iNotes interface{}, userCred mcclient.TokenCredential, success bool) {
-	addLog(model, action, iNotes, userCred, success, task.GetStartTime(), &modules.Actions)
+	addLog(model, action, iNotes, userCred, success, task.GetStartTime(), &logger.Actions)
 }
 
 // add websocket log to notify active browser users
-func PostWebsocketNotify(model IObject, action string, iNotes interface{}, userCred mcclient.TokenCredential, success bool) {
-	addLog(model, action, iNotes, userCred, success, time.Time{}, &modules.Websockets)
-}
+// func PostWebsocketNotify(model IObject, action string, iNotes interface{}, userCred mcclient.TokenCredential, success bool) {
+// 	addLog(model, action, iNotes, userCred, success, time.Time{}, &websocket.Websockets)
+// }
 
 func addLog(model IObject, action string, iNotes interface{}, userCred mcclient.TokenCredential, success bool, startTime time.Time, api IModule) {
 	if !consts.OpsLogEnabled() {
@@ -160,11 +162,33 @@ func addLog(model IObject, action string, iNotes interface{}, userCred mcclient.
 
 	logentry.Add(jsonutils.NewString(notes), "notes")
 
-	logclientWorkerMan.Run(func() {
-		s := DefaultSessionGenerator(context.Background(), userCred, "", "")
-		_, err := api.Create(s, logentry)
-		if err != nil {
-			log.Errorf("create action log %s failed %s", logentry, err)
-		}
-	}, nil, nil)
+	task := &logTask{
+		userCred: userCred,
+		api:      api,
+		logentry: logentry,
+	}
+	// keystone no need to auth
+	if auth.IsAuthed() {
+		task.userCred = auth.AdminCredential()
+	}
+
+	logclientWorkerMan.Run(task, nil, nil)
+}
+
+type logTask struct {
+	userCred mcclient.TokenCredential
+	api      IModule
+	logentry *jsonutils.JSONDict
+}
+
+func (t *logTask) Run() {
+	s := DefaultSessionGenerator(context.Background(), t.userCred, "", "")
+	_, err := t.api.Create(s, t.logentry)
+	if err != nil {
+		log.Errorf("create action log %s failed %s", t.logentry, err)
+	}
+}
+
+func (t *logTask) Dump() string {
+	return fmt.Sprintf("logTask %v %s", t.api, t.logentry)
 }

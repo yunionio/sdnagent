@@ -77,7 +77,7 @@ type SLoadbalancerCertificate struct {
 
 func (lbcert *SLoadbalancerCertificate) GetCachedCerts() ([]SCachedLoadbalancerCertificate, error) {
 	ret := []SCachedLoadbalancerCertificate{}
-	q := CachedLoadbalancerCertificateManager.Query().Equals("certificate_id", lbcert.Id)
+	q := CachedLoadbalancerCertificateManager.Query().Equals("certificate_id", lbcert.Id).IsFalse("pending_deleted")
 	err := db.FetchModelObjects(CachedLoadbalancerCertificateManager, q, &ret)
 	if err != nil {
 		return nil, err
@@ -122,13 +122,8 @@ func (lbcert *SLoadbalancerCertificate) PostCreate(ctx context.Context, userCred
 	lbcert.SetStatus(userCred, api.LB_STATUS_ENABLED, "")
 }
 
-func (lbcert *SLoadbalancerCertificate) GetExtraDetails(
-	ctx context.Context,
-	userCred mcclient.TokenCredential,
-	query jsonutils.JSONObject,
-	isList bool,
-) (api.LoadbalancerCertificateDetails, error) {
-	return api.LoadbalancerCertificateDetails{}, nil
+func (lbcert *SLoadbalancerCertificate) IsComplete() bool {
+	return lbcert.PrivateKey != "" && lbcert.Certificate != ""
 }
 
 func (manager *SLoadbalancerCertificateManager) FetchCustomizeColumns(
@@ -146,6 +141,7 @@ func (manager *SLoadbalancerCertificateManager) FetchCustomizeColumns(
 	for i := range rows {
 		rows[i] = api.LoadbalancerCertificateDetails{
 			SharableVirtualResourceDetails: virtRows[i],
+			IsComplete:                     objs[i].(*SLoadbalancerCertificate).IsComplete(),
 		}
 	}
 
@@ -169,7 +165,7 @@ func (manager *SLoadbalancerCertificateManager) FetchCustomizeColumns(
 	return rows
 }
 
-func (lbcert *SLoadbalancerCertificate) ValidateDeleteCondition(ctx context.Context) error {
+func (lbcert *SLoadbalancerCertificate) ValidateDeleteCondition(ctx context.Context, info jsonutils.JSONObject) error {
 	men := []db.IModelManager{
 		LoadbalancerListenerManager,
 	}
@@ -197,7 +193,7 @@ func (lbcert *SLoadbalancerCertificate) ValidateDeleteCondition(ctx context.Cont
 	}
 
 	for i := range caches {
-		err := caches[i].ValidateDeleteCondition(ctx)
+		err := caches[i].ValidateDeleteCondition(ctx, nil)
 		if err != nil {
 			return errors.Wrap(err, "ValidateDeleteCondition")
 		}
@@ -472,4 +468,17 @@ func (man *SLoadbalancerCertificateManager) CreateCertificate(ctx context.Contex
 func (manager *SLoadbalancerCertificateManager) GetResourceCount() ([]db.SScopeResourceCount, error) {
 	virts := manager.Query().IsFalse("pending_deleted")
 	return db.CalculateResourceCount(virts, "tenant_id")
+}
+
+func (manager *SLoadbalancerCertificateManager) GetLbCertByFingerprint(tenantId, fingerprint string) (*SLoadbalancerCertificate, error) {
+	c := SLoadbalancerCertificate{}
+	c.SetModelManager(manager, &c)
+	q1 := LoadbalancerCertificateManager.Query().IsFalse("pending_deleted")
+	q1 = q1.Equals("fingerprint", fingerprint)
+	q1 = q1.Equals("tenant_id", tenantId)
+	if err := q1.First(&c); err != nil {
+		return nil, err
+	}
+
+	return &c, nil
 }

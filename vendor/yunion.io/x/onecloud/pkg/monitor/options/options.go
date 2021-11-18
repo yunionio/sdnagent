@@ -29,6 +29,12 @@ type AlerterOptions struct {
 	AlertingNotificationTimeoutSeconds             int64 `help:"alerting notification timeout" default:"30"`
 	InitScopeSuggestConfigIntervalSeconds          int   `help:"internal to init scope suggest configs" default:"900"`
 	InitAlertResourceAdminRoleUsersIntervalSeconds int   `help:"internal to init alert resource admin role users " default:"3600"`
+	MonitorResourceSyncIntervalSeconds             int   `help:"internal to sync monitor resource,unit: h " default:"1"`
+
+	APISyncInterval  int `default:"3600"`
+	APIListBatchSize int `default:"1024"`
+
+	WorkerCheckInterval int `default:"180"`
 }
 
 var (

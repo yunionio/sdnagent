@@ -143,6 +143,10 @@ func (manager *SVpcPeeringConnectionManager) ValidateCreateData(
 	}
 	peerVpc := _peerVpc.(*SVpc)
 
+	if len(vpc.ManagerId) == 0 || len(peerVpc.ManagerId) == 0 {
+		return input, httperrors.NewInputParameterError("Only public cloud support vpcpeering")
+	}
+
 	// get account,providerFactory
 	account := vpc.GetCloudaccount()
 	peerAccount := peerVpc.GetCloudaccount()
@@ -162,19 +166,19 @@ func (manager *SVpcPeeringConnectionManager) ValidateCreateData(
 		vpcCidrBlocks := strings.Split(vpc.CidrBlock, ",")
 		peervpcCidrBlocks := strings.Split(peerVpc.CidrBlock, ",")
 		for i := range vpcCidrBlocks {
-			vpcIpv4Range, err := newIPv4RangeFromCIDR(vpcCidrBlocks[i])
+			vpcIpv4Range, err := netutils.NewIPV4Prefix(vpcCidrBlocks[i])
 			if err != nil {
 				return input, httperrors.NewGeneralError(errors.Wrapf(err, "convert vpc cidr %s to ipv4range error", vpcCidrBlocks[i]))
 			}
-			vpcIpv4Ranges = append(vpcIpv4Ranges, vpcIpv4Range)
+			vpcIpv4Ranges = append(vpcIpv4Ranges, vpcIpv4Range.ToIPRange())
 		}
 
 		for i := range peervpcCidrBlocks {
-			peervpcIpv4Range, err := newIPv4RangeFromCIDR(peervpcCidrBlocks[i])
+			peervpcIpv4Range, err := netutils.NewIPV4Prefix(peervpcCidrBlocks[i])
 			if err != nil {
 				return input, httperrors.NewGeneralError(errors.Wrapf(err, "convert vpc cidr %s to ipv4range error", peervpcCidrBlocks[i]))
 			}
-			peervpcIpv4Ranges = append(peervpcIpv4Ranges, peervpcIpv4Range)
+			peervpcIpv4Ranges = append(peervpcIpv4Ranges, peervpcIpv4Range.ToIPRange())
 		}
 		for i := range vpcIpv4Ranges {
 			for j := range peervpcIpv4Ranges {
@@ -239,15 +243,6 @@ func (manager *SVpcPeeringConnectionManager) QueryDistinctExtraField(q *sqlchemy
 	return q, httperrors.ErrNotFound
 }
 
-func (self *SVpcPeeringConnection) GetExtraDetails(
-	ctx context.Context,
-	userCred mcclient.TokenCredential,
-	query jsonutils.JSONObject,
-	isList bool,
-) (api.VpcPeeringConnectionDetails, error) {
-	return api.VpcPeeringConnectionDetails{}, nil
-}
-
 func (manager *SVpcPeeringConnectionManager) FetchCustomizeColumns(
 	ctx context.Context,
 	userCred mcclient.TokenCredential,
@@ -258,20 +253,21 @@ func (manager *SVpcPeeringConnectionManager) FetchCustomizeColumns(
 ) []api.VpcPeeringConnectionDetails {
 	rows := make([]api.VpcPeeringConnectionDetails, len(objs))
 	stdRows := manager.SEnabledStatusInfrasResourceBaseManager.FetchCustomizeColumns(ctx, userCred, query, objs, fields, isList)
-	vpcIds := make([]string, len(objs))
+	vpcObjs := make([]interface{}, len(objs))
 	peerVpcIds := make([]string, len(objs))
 	for i := range rows {
 		rows[i] = api.VpcPeeringConnectionDetails{
 			EnabledStatusInfrasResourceBaseDetails: stdRows[i],
 		}
 		vpcPC := objs[i].(*SVpcPeeringConnection)
-		vpcIds[i] = vpcPC.VpcId
+		vpcObj := &SVpcResourceBase{VpcId: vpcPC.VpcId}
+		vpcObjs[i] = vpcObj
 		peerVpcIds[i] = vpcPC.PeerVpcId
 	}
 
-	vpcMap, err := db.FetchIdNameMap2(VpcManager, vpcIds)
-	if err != nil {
-		return rows
+	vpcRows := manager.SVpcResourceBaseManager.FetchCustomizeColumns(ctx, userCred, query, vpcObjs, fields, isList)
+	for i := range rows {
+		rows[i].VpcResourceInfo = vpcRows[i]
 	}
 	peerVpcMap, err := db.FetchIdNameMap2(VpcManager, peerVpcIds)
 	if err != nil {
@@ -279,7 +275,6 @@ func (manager *SVpcPeeringConnectionManager) FetchCustomizeColumns(
 	}
 
 	for i := range rows {
-		rows[i].VpcName, _ = vpcMap[vpcIds[i]]
 		rows[i].PeerVpcName, _ = peerVpcMap[peerVpcIds[i]]
 	}
 	return rows
@@ -346,6 +341,7 @@ func (manager *SVpcPeeringConnectionManager) ListItemExportKeys(ctx context.Cont
 	if err != nil {
 		return nil, errors.Wrap(err, "SEnabledStatusInfrasResourceBaseManager.ListItemExportKeys")
 	}
+
 	return q, nil
 }
 

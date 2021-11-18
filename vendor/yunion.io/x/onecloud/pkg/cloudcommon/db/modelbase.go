@@ -53,11 +53,19 @@ type SModelBaseManager struct {
 }
 
 func NewModelBaseManager(model interface{}, tableName string, keyword string, keywordPlural string) SModelBaseManager {
-	return NewModelBaseManagerWithSplitable(model, tableName, keyword, keywordPlural, "", "", 0, 0)
+	return NewModelBaseManagerWithDBName(model, tableName, keyword, keywordPlural, sqlchemy.DefaultDB)
+}
+
+func NewModelBaseManagerWithDBName(model interface{}, tableName string, keyword string, keywordPlural string, dbName sqlchemy.DBName) SModelBaseManager {
+	return NewModelBaseManagerWithSplitableDBName(model, tableName, keyword, keywordPlural, "", "", 0, 0, dbName)
 }
 
 func NewModelBaseManagerWithSplitable(model interface{}, tableName string, keyword string, keywordPlural string, indexField string, dateField string, maxDuration time.Duration, maxSegments int) SModelBaseManager {
-	ts := newTableSpec(model, tableName, indexField, dateField, maxDuration, maxSegments)
+	return NewModelBaseManagerWithSplitableDBName(model, tableName, keyword, keywordPlural, indexField, dateField, maxDuration, maxSegments, sqlchemy.DefaultDB)
+}
+
+func NewModelBaseManagerWithSplitableDBName(model interface{}, tableName string, keyword string, keywordPlural string, indexField string, dateField string, maxDuration time.Duration, maxSegments int, dbName sqlchemy.DBName) SModelBaseManager {
+	ts := newTableSpec(model, tableName, indexField, dateField, maxDuration, maxSegments, dbName)
 	modelMan := SModelBaseManager{tableSpec: ts, keyword: keyword, keywordPlural: keywordPlural}
 	return modelMan
 }
@@ -298,10 +306,6 @@ func (manager *SModelBaseManager) GetSkipLog(ctx context.Context, userCred mccli
 	return false
 }
 
-func (model *SModelBase) GetExtraDetails(ctx context.Context, userCred mcclient.TokenCredential, query jsonutils.JSONObject, isList bool) (apis.ModelBaseDetails, error) {
-	return apis.ModelBaseDetails{}, nil
-}
-
 func (manager *SModelBaseManager) FetchCustomizeColumns(
 	ctx context.Context,
 	userCred mcclient.TokenCredential,
@@ -310,14 +314,7 @@ func (manager *SModelBaseManager) FetchCustomizeColumns(
 	fields stringutils2.SSortedStrings,
 	isList bool,
 ) []apis.ModelBaseDetails {
-	showReason := false
-	if query.Contains("show_fail_reason") {
-		showReason = true
-	}
 	ret := make([]apis.ModelBaseDetails, len(objs))
-	for i := range objs {
-		ret[i] = getModelExtraDetails(objs[i].(IModel), ctx, showReason)
-	}
 	return ret
 }
 
@@ -584,7 +581,7 @@ func (model *SModelBase) ValidateUpdateCondition(ctx context.Context) error {
 	return nil
 }
 
-func (model *SModelBase) ValidateDeleteCondition(ctx context.Context) error {
+func (model *SModelBase) ValidateDeleteCondition(ctx context.Context, info jsonutils.JSONObject) error {
 	return nil
 }
 

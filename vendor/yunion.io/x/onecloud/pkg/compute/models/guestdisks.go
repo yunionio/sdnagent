@@ -16,7 +16,6 @@ package models
 
 import (
 	"context"
-	"fmt"
 
 	"yunion.io/x/jsonutils"
 	"yunion.io/x/log"
@@ -107,15 +106,6 @@ func (self *SGuestdisk) ValidateUpdateData(ctx context.Context, userCred mcclien
 	return input, nil
 }
 
-func (self *SGuestdisk) GetExtraDetails(
-	ctx context.Context,
-	userCred mcclient.TokenCredential,
-	query jsonutils.JSONObject,
-	isList bool,
-) (api.GuestDiskDetails, error) {
-	return api.GuestDiskDetails{}, nil
-}
-
 func (manager *SGuestdiskManager) FetchCustomizeColumns(
 	ctx context.Context,
 	userCred mcclient.TokenCredential,
@@ -148,7 +138,7 @@ func (manager *SGuestdiskManager) FetchCustomizeColumns(
 			rows[i].Status = disk.Status
 			rows[i].DiskSize = disk.DiskSize
 			rows[i].DiskType = disk.DiskType
-			storage := disk.GetStorage()
+			storage, _ := disk.GetStorage()
 			if storage != nil {
 				rows[i].StorageType = storage.StorageType
 				rows[i].MediumType = storage.MediumType
@@ -165,14 +155,18 @@ func (self *SGuestdisk) DoSave(ctx context.Context, driver string, cache string,
 		driver = "scsi"
 	}
 	if len(cache) == 0 {
-		cache = "none"
+		cache = "writeback"
 	}
 	if len(mountpoint) > 0 {
 		self.Mountpoint = mountpoint
 	}
 	self.Driver = driver
 	self.CacheMode = cache
-	self.AioMode = "native"
+	if cache == "none" {
+		self.AioMode = "native"
+	} else {
+		self.AioMode = "threads"
+	}
 	return GuestdiskManager.TableSpec().Insert(ctx, self)
 }
 
@@ -185,124 +179,54 @@ func (self *SGuestdisk) GetDisk() *SDisk {
 	return disk.(*SDisk)
 }
 
-func (self *SGuestdisk) GetJsonDescAtHost(host *SHost) jsonutils.JSONObject {
+func (self *SGuestdisk) GetJsonDescAtHost(host *SHost) *api.GuestdiskJsonDesc {
 	disk := self.GetDisk()
-	desc := jsonutils.NewDict()
-	desc.Add(jsonutils.NewString(self.DiskId), "disk_id")
-	desc.Add(jsonutils.NewString(self.Driver), "driver")
-	desc.Add(jsonutils.NewString(self.CacheMode), "cache_mode")
-	desc.Add(jsonutils.NewString(self.AioMode), "aio_mode")
-	desc.Add(jsonutils.NewInt(int64(self.Iops)), "iops")
-	desc.Add(jsonutils.NewInt(int64(self.Bps)), "bps")
-	desc.Add(jsonutils.NewInt(int64(disk.DiskSize)), "size")
-	templateId := disk.GetTemplateId()
-	if len(templateId) > 0 {
-		desc.Add(jsonutils.NewString(templateId), "template_id")
-		storage := disk.GetStorage()
-		storagecacheimg := StoragecachedimageManager.GetStoragecachedimage(storage.StoragecacheId, templateId)
+	desc := &api.GuestdiskJsonDesc{
+		DiskId:    self.DiskId,
+		Driver:    self.Driver,
+		CacheMode: self.CacheMode,
+		AioMode:   self.AioMode,
+		Iops:      self.Iops,
+		Bps:       self.Bps,
+		Size:      disk.DiskSize,
+	}
+	desc.TemplateId = disk.GetTemplateId()
+	if len(desc.TemplateId) > 0 {
+		storage, _ := disk.GetStorage()
+		storagecacheimg := StoragecachedimageManager.GetStoragecachedimage(storage.StoragecacheId, desc.TemplateId)
 		if storagecacheimg != nil {
-			desc.Add(jsonutils.NewString(storagecacheimg.Path), "image_path")
+			desc.ImagePath = storagecacheimg.Path
 		}
 	}
 	if host.HostType == api.HOST_TYPE_HYPERVISOR {
-		desc.Add(jsonutils.NewString(disk.StorageId), "storage_id")
+		desc.StorageId = disk.StorageId
 		localpath := disk.GetPathAtHost(host)
 		if len(localpath) == 0 {
-			desc.Add(jsonutils.JSONTrue, "migrating")
+			desc.Migrating = true
 			// not used yet
 			// disk.SetStatus(nil, api.DISK_START_MIGRATE, "migration")
 		} else {
-			desc.Add(jsonutils.NewString(localpath), "path")
+			desc.Path = localpath
 		}
 	}
-	desc.Add(jsonutils.NewString(disk.DiskFormat), "format")
-	desc.Add(jsonutils.NewInt(int64(self.Index)), "index")
+	desc.Format = disk.DiskFormat
+	desc.Index = self.Index
 
-	tid := disk.GetTemplateId()
-	if len(tid) > 0 {
-		desc.Add(jsonutils.NewString(tid), "template_id")
-	}
 	if len(disk.SnapshotId) > 0 {
 		needMerge := disk.GetMetadata("merge_snapshot", nil)
 		if needMerge == "true" {
-			desc.Set("merge_snapshot", jsonutils.JSONTrue)
+			desc.MergeSnapshot = true
 		}
 	}
 	if fpath := disk.GetMetadata(api.DISK_META_ESXI_FLAT_FILE_PATH, nil); len(fpath) > 0 {
-		desc.Set("merge_snapshot", jsonutils.JSONTrue)
-		desc.Set("esxi_flat_file_path", jsonutils.NewString(fpath))
+		desc.MergeSnapshot = true
+		desc.EsxiFlatFilePath = fpath
 	}
-	fs := disk.GetFsFormat()
-	if len(fs) > 0 {
-		desc.Add(jsonutils.NewString(fs), "fs")
-	}
-	if len(self.Mountpoint) > 0 {
-		desc.Add(jsonutils.NewString(self.Mountpoint), "mountpoint")
-	}
-	dev := disk.getDev()
-	if len(dev) > 0 {
-		desc.Add(jsonutils.NewString(dev), "dev")
-	}
-	if disk.IsSsd {
-		desc.Add(jsonutils.JSONTrue, "is_ssd")
-	}
+	desc.Fs = disk.GetFsFormat()
+	desc.Mountpoint = self.Mountpoint
+	desc.Dev = disk.getDev()
+	desc.IsSSD = disk.IsSsd
 	return desc
-}
-
-func (self *SGuestdisk) GetDetailedInfo() api.GuestDiskInfo {
-	desc := api.GuestDiskInfo{}
-	disk := self.GetDisk()
-	if disk == nil {
-		return desc
-	}
-	desc.Id = disk.Id
-	desc.Name = disk.Name
-	desc.FsFormat = disk.FsFormat
-	desc.DiskType = disk.DiskType
-	desc.Index = self.Index
-	desc.SizeMb = disk.DiskSize
-	desc.DiskFormat = disk.DiskFormat
-	desc.Driver = self.Driver
-	desc.CacheMode = self.CacheMode
-	desc.AioMode = self.AioMode
-	desc.Iops = self.Iops
-	desc.Bps = self.Bps
-
-	imageId := disk.GetTemplateId()
-	if len(imageId) > 0 {
-		desc.ImageId = imageId
-		cachedImageObj, _ := CachedimageManager.FetchById(imageId)
-		if cachedImageObj != nil {
-			cachedImage := cachedImageObj.(*SCachedimage)
-			desc.Image = cachedImage.GetName()
-		}
-	}
-
-	storage := disk.GetStorage()
-	if storage == nil {
-		return desc
-	}
-	desc.MediumType = storage.MediumType
-	desc.StorageType = storage.StorageType
-	return desc
-}
-
-func (self *SGuestdisk) GetDetailedString() string {
-	disk := self.GetDisk()
-	if disk == nil {
-		return ""
-	}
-
-	var fs string
-	if len(disk.GetTemplateId()) > 0 {
-		fs = "root"
-	} else if len(disk.GetFsFormat()) > 0 {
-		fs = disk.GetFsFormat()
-	} else {
-		fs = "none"
-	}
-	return fmt.Sprintf("disk%d:%dM/%s/%s/%s/%s/%s", self.Index, disk.DiskSize,
-		disk.DiskFormat, self.Driver, self.CacheMode, self.AioMode, fs)
 }
 
 func (self *SGuestdisk) Delete(ctx context.Context, userCred mcclient.TokenCredential) error {

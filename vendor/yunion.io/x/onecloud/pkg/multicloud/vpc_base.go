@@ -76,3 +76,11 @@ func (self *SVpc) GetExternalAccessMode() string {
 func (self *SVpc) AttachInternetGateway(igwId string) error {
 	return errors.Wrap(cloudprovider.ErrNotSupported, "AttachInternetGateway")
 }
+
+func (self *SVpc) CreateINatGateway(opts *cloudprovider.NatGatewayCreateOptions) (cloudprovider.ICloudNatGateway, error) {
+	return nil, errors.Wrapf(cloudprovider.ErrNotImplemented, "CreateINatGateway")
+}
+
+func (self *SVpc) CreateIWire(opts *cloudprovider.SWireCreateOptions) (cloudprovider.ICloudWire, error) {
+	return nil, errors.Wrapf(cloudprovider.ErrNotImplemented, "CreateIWire")
+}

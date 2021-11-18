@@ -219,6 +219,13 @@ func (manager *SSchedtagManager) ListItemFilter(
 		q = q.In("default_strategy", query.DefaultStrategy)
 	}
 
+	if len(query.CloudproviderId) > 0 {
+		hostSubq := HostManager.Query("id").Equals("manager_id", query.CloudproviderId).SubQuery()
+		hostSchedtagQ := HostschedtagManager.Query("schedtag_id")
+		hostSchedtagSubq := hostSchedtagQ.Join(hostSubq, sqlchemy.Equals(hostSchedtagQ.Field("host_id"), hostSubq.Field("id"))).SubQuery()
+		q = q.Join(hostSchedtagSubq, sqlchemy.Equals(q.Field("id"), hostSchedtagSubq.Field("schedtag_id")))
+	}
+
 	return q, nil
 }
 
@@ -373,7 +380,7 @@ func (self *SSchedtag) ValidateUpdateData(ctx context.Context, userCred mcclient
 	return data, nil
 }
 
-func (self *SSchedtag) ValidateDeleteCondition(ctx context.Context) error {
+func (self *SSchedtag) ValidateDeleteCondition(ctx context.Context, info jsonutils.JSONObject) error {
 	cnt, err := self.GetObjectCount()
 	if err != nil {
 		return httperrors.NewInternalServerError("GetObjectCount fail %s", err)
@@ -395,7 +402,7 @@ func (self *SSchedtag) ValidateDeleteCondition(ctx context.Context) error {
 	if cnt > 0 {
 		return httperrors.NewNotEmptyError("tag is associate with sched policies")
 	}
-	return self.SStandaloneResourceBase.ValidateDeleteCondition(ctx)
+	return self.SStandaloneResourceBase.ValidateDeleteCondition(ctx, nil)
 }
 
 // GetObjectPtr wraps the given value with pointer: V => *V, *V => **V, etc.
@@ -491,15 +498,6 @@ func (self *SSchedtag) getMoreColumns(out api.SchedtagDetails) api.SchedtagDetai
 		out.ResourceCount = 0
 	}
 	return out
-}
-
-func (self *SSchedtag) GetExtraDetails(
-	ctx context.Context,
-	userCred mcclient.TokenCredential,
-	query jsonutils.JSONObject,
-	isList bool,
-) (api.SchedtagDetails, error) {
-	return api.SchedtagDetails{}, nil
 }
 
 func (manager *SSchedtagManager) FetchCustomizeColumns(

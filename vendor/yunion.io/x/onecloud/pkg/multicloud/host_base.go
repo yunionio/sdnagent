@@ -16,6 +16,7 @@ package multicloud
 
 type SHostBase struct {
 	SResourceBase
+	STagBase
 }
 
 func (self *SHostBase) GetCpuCmtbound() float32 {
@@ -32,4 +33,8 @@ func (self *SHostBase) GetReservedMemoryMb() int {
 
 func (self *SHostBase) GetSchedtags() ([]string, error) {
 	return nil, nil
+}
+
+func (self *SHostBase) GetOvnVersion() string {
+	return ""
 }

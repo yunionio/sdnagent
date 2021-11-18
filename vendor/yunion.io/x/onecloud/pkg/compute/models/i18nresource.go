@@ -1,3 +1,17 @@
+// Copyright 2019 Yunion
+//
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+//     http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
+
 package models
 
 import (
@@ -31,11 +45,10 @@ func (man *SI18nResourceBaseManager) SyncI18ns(ctx context.Context, userCred mcc
 	itable := man.getSModelI18nTable(model, table)
 	_, _, r := db.I18nManager.SyncI18ns(ctx, userCred, model, itable)
 	if r.IsError() {
-		log.Infof("SyncI18ns for %s %s result: %s", model.Keyword(), model.GetId(), r.Result())
+		log.Errorf("SyncI18ns for %s %s result: %s", model.Keyword(), model.GetId(), r.Result())
 		return errors.Wrap(r.AllError(), "SyncI18ns")
 	}
 
-	log.Debugf("SyncI18ns for %s %s result: %s", model.Keyword(), model.GetId(), r.Result())
 	return nil
 }
 
@@ -51,7 +64,7 @@ func (self *SI18nResourceBase) RemoveI18ns(ctx context.Context, userCred mcclien
 func (self *SI18nResourceBase) GetModelI18N(ctx context.Context, model db.IModel) *jsonutils.JSONDict {
 	entries, err := db.I18nManager.GetModelI18N(ctx, model)
 	if err != nil {
-		log.Infof("GetI18N %s", err)
+		log.Errorf("GetModelI18N error %s", err)
 		return nil
 	}
 
@@ -66,7 +79,7 @@ func (self *SI18nResourceBase) GetModelI18N(ctx context.Context, model db.IModel
 func (self *SI18nResourceBase) GetModelKeyI18N(ctx context.Context, model db.IModel, keyName string) (string, bool) {
 	entries, err := db.I18nManager.GetModelKeyI18N(ctx, model, keyName)
 	if err != nil {
-		log.Infof("GetModelKeyI18N %s", err)
+		log.Errorf("GetModelKeyI18N error %s", err)
 		return "", false
 	}
 

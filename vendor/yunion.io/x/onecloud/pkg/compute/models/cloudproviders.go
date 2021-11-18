@@ -37,12 +37,13 @@ import (
 	"yunion.io/x/onecloud/pkg/cloudcommon/db/lockman"
 	"yunion.io/x/onecloud/pkg/cloudcommon/db/proxy"
 	"yunion.io/x/onecloud/pkg/cloudcommon/db/taskman"
+	"yunion.io/x/onecloud/pkg/cloudcommon/validators"
 	"yunion.io/x/onecloud/pkg/cloudprovider"
 	"yunion.io/x/onecloud/pkg/compute/options"
 	"yunion.io/x/onecloud/pkg/httperrors"
 	"yunion.io/x/onecloud/pkg/mcclient"
 	"yunion.io/x/onecloud/pkg/mcclient/auth"
-	"yunion.io/x/onecloud/pkg/mcclient/modules"
+	"yunion.io/x/onecloud/pkg/mcclient/modules/identity"
 	"yunion.io/x/onecloud/pkg/util/logclient"
 	"yunion.io/x/onecloud/pkg/util/rbacutils"
 	"yunion.io/x/onecloud/pkg/util/stringutils2"
@@ -52,6 +53,7 @@ type SCloudproviderManager struct {
 	db.SEnabledStatusStandaloneResourceBaseManager
 	db.SProjectizedResourceBaseManager
 
+	SProjectMappingResourceBaseManager
 	SSyncableBaseResourceManager
 }
 
@@ -108,9 +110,70 @@ type SCloudprovider struct {
 
 	// 云账号的平台信息
 	Provider string `width:"64" charset:"ascii" list:"domain" create:"domain_required"`
+
+	SProjectMappingResourceBase
 }
 
-func (self *SCloudprovider) ValidateDeleteCondition(ctx context.Context) error {
+type pmCache struct {
+	Id                      string
+	CloudaccountId          string
+	AccountProjectMappingId string
+	ManagerProjectMappingId string
+}
+
+func (self *pmCache) GetProjectMapping() (*SProjectMapping, error) {
+	if len(self.ManagerProjectMappingId) > 0 {
+		pm, err := GetRuleMapping(self.ManagerProjectMappingId)
+		if err != nil {
+			return nil, errors.Wrapf(err, "GetRuleMapping(%s)", self.ManagerProjectMappingId)
+		}
+		if pm.Enabled.IsTrue() {
+			return pm, nil
+		}
+	}
+	if len(self.AccountProjectMappingId) > 0 {
+		return GetRuleMapping(self.AccountProjectMappingId)
+	}
+	return nil, errors.Wrapf(cloudprovider.ErrNotFound, "empty project mapping id")
+}
+
+var pmCaches map[string]*pmCache = map[string]*pmCache{}
+
+func refreshPmCaches() error {
+	q := CloudproviderManager.Query().SubQuery()
+	providers := q.Query(q.Field("cloudaccount_id"), q.Field("id"), q.Field("project_mapping_id").Label("manager_project_mapping_id"))
+	sq := CloudaccountManager.Query().SubQuery()
+	mq := providers.LeftJoin(sq, sqlchemy.Equals(q.Field("cloudaccount_id"), sq.Field("id"))).AppendField(sq.Field("project_mapping_id").Label("account_project_mapping_id"))
+	caches := []pmCache{}
+	err := mq.All(&caches)
+	if err != nil {
+		return errors.Wrapf(err, "q.All")
+	}
+	for i := range caches {
+		pmCaches[caches[i].Id] = &caches[i]
+	}
+	return nil
+}
+
+func (self *SCloudprovider) GetProjectMapping() (*SProjectMapping, error) {
+	cache, err := func() (*pmCache, error) {
+		mp, ok := pmCaches[self.Id]
+		if ok {
+			return mp, nil
+		}
+		err := refreshPmCaches()
+		if err != nil {
+			return nil, errors.Wrapf(err, "refreshPmCaches")
+		}
+		return pmCaches[self.Id], nil
+	}()
+	if err != nil {
+		return nil, errors.Wrapf(err, "get project mapping cache")
+	}
+	return cache.GetProjectMapping()
+}
+
+func (self *SCloudprovider) ValidateDeleteCondition(ctx context.Context, info jsonutils.JSONObject) error {
 	// allow delete cloudprovider if it is disabled
 	// account := self.GetCloudaccount()
 	// if account != nil && account.EnableAutoSync {
@@ -126,7 +189,7 @@ func (self *SCloudprovider) ValidateDeleteCondition(ctx context.Context) error {
 	// if !usage.isEmpty() {
 	// 	return httperrors.NewNotEmptyError("Not an empty cloud provider")
 	// }
-	return self.SEnabledStatusStandaloneResourceBase.ValidateDeleteCondition(ctx)
+	return self.SEnabledStatusStandaloneResourceBase.ValidateDeleteCondition(ctx, nil)
 }
 
 func (manager *SCloudproviderManager) GetPublicProviderIdsQuery() *sqlchemy.SSubQuery {
@@ -181,11 +244,11 @@ func (manager *SCloudproviderManager) GetProviderFieldQuery(field string, isPubl
 	} else if isOnPremise.IsFalse() {
 		q = q.Filter(sqlchemy.IsFalse(account.Field("is_on_premise")))
 	}
-	if len(providers) > 0 {
-		q = q.Filter(sqlchemy.In(account.Field("provider"), providers))
-	}
-	if len(brands) > 0 {
-		q = q.Filter(sqlchemy.In(account.Field("brand"), brands))
+	if len(providers) > 0 || len(brands) > 0 {
+		q = q.Filter(sqlchemy.OR(
+			sqlchemy.In(account.Field("provider"), providers),
+			sqlchemy.In(account.Field("brand"), brands),
+		))
 	}
 	return q.SubQuery()
 }
@@ -345,7 +408,7 @@ func createTenant(ctx context.Context, name, domainId, desc string) (string, str
 	params.Add(jsonutils.NewString(domainId), "domain_id")
 	params.Add(jsonutils.NewString(desc), "description")
 
-	resp, err := modules.Projects.Create(s, params)
+	resp, err := identity.Projects.Create(s, params)
 	if err != nil {
 		return "", "", errors.Wrap(err, "Projects.Create")
 	}
@@ -356,20 +419,23 @@ func createTenant(ctx context.Context, name, domainId, desc string) (string, str
 	return domainId, projectId, nil
 }
 
-func (self *SCloudaccount) getOrCreateTenant(ctx context.Context, name, projectId, desc string) (string, string, error) {
+func (self *SCloudaccount) getOrCreateTenant(ctx context.Context, name, domainId, projectId, desc string) (string, string, error) {
+	if len(domainId) == 0 {
+		domainId = self.DomainId
+	}
 	tenant, err := getTenant(ctx, projectId, name)
 	if err != nil {
 		if errors.Cause(err) != sql.ErrNoRows {
 			return "", "", errors.Wrapf(err, "getTenan")
 		}
-		return createTenant(ctx, name, self.DomainId, desc)
+		return createTenant(ctx, name, domainId, desc)
 	}
 	share := self.GetSharedInfo()
 	if tenant.DomainId == self.DomainId || (share.PublicScope == rbacutils.ScopeSystem ||
 		(share.PublicScope == rbacutils.ScopeDomain && utils.IsInStringArray(tenant.DomainId, share.SharedDomains))) {
 		return tenant.DomainId, tenant.Id, nil
 	}
-	return createTenant(ctx, name, self.DomainId, desc)
+	return createTenant(ctx, name, domainId, desc)
 }
 
 func (self *SCloudprovider) syncProject(ctx context.Context, userCred mcclient.TokenCredential) error {
@@ -379,7 +445,7 @@ func (self *SCloudprovider) syncProject(ctx context.Context, userCred mcclient.T
 	}
 
 	desc := fmt.Sprintf("auto create from cloud provider %s (%s)", self.Name, self.Id)
-	domainId, projectId, err := account.getOrCreateTenant(ctx, self.Name, self.ProjectId, desc)
+	domainId, projectId, err := account.getOrCreateTenant(ctx, self.Name, "", self.ProjectId, desc)
 	if err != nil {
 		return errors.Wrap(err, "getOrCreateTenant")
 	}
@@ -404,14 +470,7 @@ func (self *SCloudprovider) saveProject(userCred mcclient.TokenCredential, domai
 }
 
 type SSyncRange struct {
-	Force    bool
-	FullSync bool
-	DeepSync bool
-	// ProjectSync bool
-
-	Region []string
-	Zone   []string
-	Host   []string
+	api.SyncRangeInput
 }
 
 func (sr *SSyncRange) GetRegionIds() ([]string, error) {
@@ -452,17 +511,18 @@ func (sr *SSyncRange) GetRegionIds() ([]string, error) {
 	return regionIds, nil
 }
 
+func (sr *SSyncRange) NeedSyncResource(res string) bool {
+	if len(sr.Resources) == 0 {
+		return true
+	}
+	return utils.IsInStringArray(res, sr.Resources)
+}
+
 func (sr *SSyncRange) NeedSyncInfo() bool {
 	if sr.FullSync {
 		return true
 	}
-	if sr.Region != nil && len(sr.Region) > 0 {
-		return true
-	}
-	if sr.Zone != nil && len(sr.Zone) > 0 {
-		return true
-	}
-	if sr.Host != nil && len(sr.Host) > 0 {
+	if len(sr.Region) > 0 || len(sr.Zone) > 0 || len(sr.Host) > 0 || len(sr.Resources) > 0 {
 		return true
 	}
 	return false
@@ -494,7 +554,7 @@ func (sr *SSyncRange) normalizeZoneIds() error {
 			}
 		}
 		zone := obj.(*SZone)
-		region := zone.GetRegion()
+		region, _ := zone.GetRegion()
 		if region == nil {
 			continue
 		}
@@ -517,11 +577,11 @@ func (sr *SSyncRange) normalizeHostIds() error {
 			}
 		}
 		host := obj.(*SHost)
-		zone := host.GetZone()
+		zone, _ := host.GetZone()
 		if zone == nil {
 			continue
 		}
-		region := zone.GetRegion()
+		region, _ := zone.GetRegion()
 		if region == nil {
 			continue
 		}
@@ -568,7 +628,7 @@ func (self *SCloudprovider) AllowPerformSync(ctx context.Context, userCred mccli
 	return db.IsAdminAllowPerform(userCred, self, "sync")
 }
 
-func (self *SCloudprovider) PerformSync(ctx context.Context, userCred mcclient.TokenCredential, query jsonutils.JSONObject, data jsonutils.JSONObject) (jsonutils.JSONObject, error) {
+func (self *SCloudprovider) PerformSync(ctx context.Context, userCred mcclient.TokenCredential, query jsonutils.JSONObject, input api.SyncRangeInput) (jsonutils.JSONObject, error) {
 	if !self.GetEnabled() {
 		return nil, httperrors.NewInvalidStatusError("Cloudprovider disabled")
 	}
@@ -576,21 +636,17 @@ func (self *SCloudprovider) PerformSync(ctx context.Context, userCred mcclient.T
 	if !account.GetEnabled() {
 		return nil, httperrors.NewInvalidStatusError("Cloudaccount disabled")
 	}
-	if account.EnableAutoSync {
-		return nil, httperrors.NewInvalidStatusError("Account auto sync enabled")
+	if account.EnableAutoSync && self.SyncStatus != api.CLOUD_PROVIDER_SYNC_STATUS_IDLE {
+		return nil, httperrors.NewInvalidStatusError("Cloudprovider is not idle")
 	}
-	syncRange := SSyncRange{}
-	err := data.Unmarshal(&syncRange)
-	if err != nil {
-		return nil, httperrors.NewInputParameterError("invalid input %s", err)
-	}
-	if syncRange.FullSync || len(syncRange.Region) > 0 || len(syncRange.Zone) > 0 || len(syncRange.Host) > 0 {
+	syncRange := SSyncRange{input}
+	if syncRange.FullSync || len(syncRange.Region) > 0 || len(syncRange.Zone) > 0 || len(syncRange.Host) > 0 || len(syncRange.Resources) > 0 {
 		syncRange.DeepSync = true
 	}
 	if self.CanSync() || syncRange.Force {
-		err = self.StartSyncCloudProviderInfoTask(ctx, userCred, &syncRange, "")
+		return nil, self.StartSyncCloudProviderInfoTask(ctx, userCred, &syncRange, "")
 	}
-	return nil, err
+	return nil, nil
 }
 
 func (self *SCloudprovider) StartSyncCloudProviderInfoTask(ctx context.Context, userCred mcclient.TokenCredential, syncRange *SSyncRange, parentTaskId string) error {
@@ -675,7 +731,9 @@ func (self *SCloudprovider) PerformChangeProject(ctx context.Context, userCred m
 		return nil, nil
 	}
 
-	return nil, self.StartSyncCloudProviderInfoTask(ctx, userCred, &SSyncRange{FullSync: true, DeepSync: true}, "")
+	return nil, self.StartSyncCloudProviderInfoTask(ctx, userCred, &SSyncRange{SyncRangeInput: api.SyncRangeInput{
+		FullSync: true, DeepSync: true,
+	}}, "")
 }
 
 func (self *SCloudprovider) markStartingSync(userCred mcclient.TokenCredential, syncRange *SSyncRange) error {
@@ -769,8 +827,7 @@ func (self *SCloudprovider) markEndSync(userCred mcclient.TokenCredential) error
 		return nil
 	})
 	if err != nil {
-		log.Errorf("Failed to markEndSync error: %v", err)
-		return err
+		return errors.Wrapf(err, "markEndSync")
 	}
 	return nil
 }
@@ -812,11 +869,6 @@ func (self *SCloudprovider) GetProvider() (cloudprovider.ICloudProvider, error) 
 
 	account := self.GetCloudaccount()
 
-	endpoints := cloudprovider.SApsaraEndpoints{}
-	if account.Options != nil {
-		account.Options.Unmarshal(&endpoints)
-	}
-
 	return cloudprovider.GetProvider(cloudprovider.ProviderConfig{
 		Id:        self.Id,
 		Name:      self.Name,
@@ -826,7 +878,7 @@ func (self *SCloudprovider) GetProvider() (cloudprovider.ICloudProvider, error) 
 		Secret:    passwd,
 		ProxyFunc: account.proxyFunc(),
 
-		SApsaraEndpoints: endpoints,
+		Options: account.Options,
 	})
 }
 
@@ -912,16 +964,6 @@ func (self *SCloudprovider) getProject(ctx context.Context) *db.STenant {
 	return proj
 }
 
-func (self *SCloudprovider) GetExtraDetails(
-	ctx context.Context,
-	userCred mcclient.TokenCredential,
-	query jsonutils.JSONObject,
-	isList bool,
-) (api.CloudproviderDetails, error) {
-
-	return api.CloudproviderDetails{}, nil
-}
-
 func (manager *SCloudproviderManager) FetchCustomizeColumns(
 	ctx context.Context,
 	userCred mcclient.TokenCredential,
@@ -934,6 +976,7 @@ func (manager *SCloudproviderManager) FetchCustomizeColumns(
 
 	stdRows := manager.SEnabledStatusStandaloneResourceBaseManager.FetchCustomizeColumns(ctx, userCred, query, objs, fields, isList)
 	projRows := manager.SProjectizedResourceBaseManager.FetchCustomizeColumns(ctx, userCred, query, objs, fields, isList)
+	pmRows := manager.SProjectMappingResourceBaseManager.FetchCustomizeColumns(ctx, userCred, query, objs, fields, isList)
 	accountIds := make([]string, len(objs))
 	for i := range rows {
 		provider := objs[i].(*SCloudprovider)
@@ -943,6 +986,7 @@ func (manager *SCloudproviderManager) FetchCustomizeColumns(
 			ProjectizedResourceInfo:                projRows[i],
 			SCloudproviderUsage:                    provider.getUsage(),
 			SyncStatus2:                            provider.getSyncStatus2(),
+			ProjectMappingResourceInfo:             pmRows[i],
 		}
 		capabilities, _ := CloudproviderCapabilityManager.getCapabilities(provider.Id)
 		if len(capabilities) > 0 {
@@ -1053,7 +1097,7 @@ func (manager *SCloudproviderManager) migrateVCenterInfo(vc *SVCenter) error {
 	cp := SCloudprovider{}
 	cp.SetModelManager(manager, &cp)
 
-	newName, err := db.GenerateName(manager, nil, vc.Name)
+	newName, err := db.GenerateName(context.Background(), manager, nil, vc.Name)
 	if err != nil {
 		return err
 	}
@@ -1080,7 +1124,7 @@ func (manager *SCloudproviderManager) ListItemFilter(
 	if len(accountArr) > 0 {
 		cpq := CloudaccountManager.Query().SubQuery()
 		subcpq := cpq.Query(cpq.Field("id")).Filter(sqlchemy.OR(
-			sqlchemy.In(cpq.Field("id"), accountArr),
+			sqlchemy.In(cpq.Field("id"), stringutils2.RemoveUtf8Strings(accountArr)),
 			sqlchemy.In(cpq.Field("name"), accountArr),
 		)).SubQuery()
 		q = q.In("cloudaccount_id", subcpq)
@@ -1117,7 +1161,7 @@ func (manager *SCloudproviderManager) ListItemFilter(
 	}
 
 	if query.Usable != nil && *query.Usable {
-		providers := CloudproviderManager.Query().SubQuery()
+		providers := usableCloudProviders().SubQuery()
 		networks := NetworkManager.Query().SubQuery()
 		wires := WireManager.Query().SubQuery()
 		vpcs := VpcManager.Query().SubQuery()
@@ -1128,9 +1172,6 @@ func (manager *SCloudproviderManager) ListItemFilter(
 		sq = sq.Join(vpcs, sqlchemy.Equals(providerRegions.Field("cloudregion_id"), vpcs.Field("cloudregion_id")))
 		sq = sq.Join(wires, sqlchemy.Equals(vpcs.Field("id"), wires.Field("vpc_id")))
 		sq = sq.Join(networks, sqlchemy.Equals(wires.Field("id"), networks.Field("wire_id")))
-		sq = sq.Filter(sqlchemy.IsTrue(providers.Field("enabled")))
-		sq = sq.Filter(sqlchemy.In(providers.Field("status"), api.CLOUD_PROVIDER_VALID_STATUS))
-		sq = sq.Filter(sqlchemy.In(providers.Field("health_status"), api.CLOUD_PROVIDER_VALID_HEALTH_STATUS))
 		sq = sq.Filter(sqlchemy.Equals(vpcs.Field("status"), api.VPC_STATUS_AVAILABLE))
 		sq = sq.Filter(sqlchemy.Equals(networks.Field("status"), api.NETWORK_STATUS_AVAILABLE))
 		sq = sq.Filter(sqlchemy.OR(
@@ -1150,6 +1191,10 @@ func (manager *SCloudproviderManager) ListItemFilter(
 	q, err := manager.SEnabledStatusStandaloneResourceBaseManager.ListItemFilter(ctx, q, userCred, query.EnabledStatusStandaloneResourceListInput)
 	if err != nil {
 		return nil, errors.Wrap(err, "SEnabledStatusStandaloneResourceBaseManager.ListItemFilter")
+	}
+	q, err = manager.SProjectizedResourceBaseManager.ListItemFilter(ctx, q, userCred, query.ProjectizedResourceListInput)
+	if err != nil {
+		return nil, errors.Wrapf(err, "SProjectizedResourceBaseManager.ListItemFilter")
 	}
 	q, err = manager.SSyncableBaseResourceManager.ListItemFilter(ctx, q, userCred, query.SyncableBaseResourceListInput)
 	if err != nil {
@@ -1252,6 +1297,13 @@ func (manager *SCloudproviderManager) QueryDistinctExtraField(q *sqlchemy.SQuery
 		return q, nil
 	}
 
+	if field == "account" {
+		accounts := CloudaccountManager.Query("name", "id").SubQuery()
+		q.AppendField(accounts.Field("name", field)).Distinct()
+		q = q.Join(accounts, sqlchemy.Equals(q.Field("cloudaccount_id"), accounts.Field("id")))
+		return q, nil
+	}
+
 	q, err = manager.SEnabledStatusStandaloneResourceBaseManager.QueryDistinctExtraField(q, field)
 	if err == nil {
 		return q, nil
@@ -1270,6 +1322,20 @@ func (provider *SCloudprovider) markProviderDisconnected(ctx context.Context, us
 	}
 	provider.SetStatus(userCred, api.CLOUD_PROVIDER_DISCONNECTED, reason)
 	return provider.ClearSchedDescCache()
+}
+
+func (self *SCloudprovider) updateName(ctx context.Context, userCred mcclient.TokenCredential, name string) error {
+	if self.Name != name {
+		diff, err := db.Update(self, func() error {
+			self.Name = name
+			return nil
+		})
+		if err != nil {
+			return errors.Wrapf(err, "db.Update")
+		}
+		db.OpsLog.LogEvent(self, db.ACT_UPDATE, diff, userCred)
+	}
+	return nil
 }
 
 func (provider *SCloudprovider) markProviderConnected(ctx context.Context, userCred mcclient.TokenCredential, healthStatus string) error {
@@ -1334,20 +1400,20 @@ func (provider *SCloudprovider) syncCloudproviderRegions(ctx context.Context, us
 	for i := range cprs {
 		if cprs[i].Enabled && cprs[i].CanSync() && (!autoSync || cprs[i].needAutoSync()) && (len(regionIds) == 0 || utils.IsInStringArray(cprs[i].CloudregionId, regionIds)) {
 			syncCnt += 1
-			var waitChan chan bool = nil
 			if wg != nil {
 				wg.Add(1)
-				waitChan = make(chan bool)
 			}
-			cprs[i].submitSyncTask(ctx, userCred, syncRange, waitChan)
+			cprs[i].submitSyncTask(ctx, userCred, syncRange)
 			if wg != nil {
-				<-waitChan
 				wg.Done()
 			}
 		}
 	}
 	if syncCnt == 0 {
-		provider.markEndSyncWithLock(ctx, userCred)
+		err := provider.markEndSyncWithLock(ctx, userCred)
+		if err != nil {
+			log.Errorf("markEndSyncWithLock for %s error: %v", provider.Name, err)
+		}
 	}
 }
 
@@ -1391,13 +1457,27 @@ func (self *SCloudprovider) RealDelete(ctx context.Context, userCred mcclient.To
 		LoadbalancerBackendGroupManager,
 		CachedLoadbalancerAclManager,
 		CachedLoadbalancerCertificateManager,
+		LoadbalancerCertificateManager,
 		NatGatewayManager,
 		DBInstanceManager,
 		DBInstanceBackupManager,
 		ElasticcacheManager,
+		AccessGroupCacheManager,
+		FileSystemManager,
+		WafRuleGroupCacheManager,
+		WafIPSetCacheManager,
+		WafRegexSetCacheManager,
+		WafInstanceManager,
+		AppManager,
 		VpcManager,
 		ElasticipManager,
+		MongoDBManager,
+		ElasticSearchManager,
+		KafkaManager,
+		CDNDomainManager,
 		NetworkInterfaceManager,
+		KubeClusterManager,
+		InterVpcNetworkManager,
 		CloudproviderRegionManager,
 		CloudregionManager,
 		CloudproviderQuotaManager,
@@ -1497,27 +1577,53 @@ func (self *SCloudprovider) PerformDisable(ctx context.Context, userCred mcclien
 	return nil, nil
 }
 
+func (manager *SCloudproviderManager) filterByDomainId(q *sqlchemy.SQuery, domainId string) *sqlchemy.SQuery {
+	subq := db.SharedResourceManager.Query("resource_id")
+	subq = subq.Equals("resource_type", CloudaccountManager.Keyword())
+	subq = subq.Equals("target_project_id", domainId)
+	subq = subq.Equals("target_type", db.SharedTargetDomain)
+
+	cloudaccounts := CloudaccountManager.Query().SubQuery()
+	q = q.Join(cloudaccounts, sqlchemy.Equals(
+		q.Field("cloudaccount_id"),
+		cloudaccounts.Field("id"),
+	))
+	q = q.Filter(sqlchemy.OR(
+		sqlchemy.AND(
+			sqlchemy.Equals(q.Field("domain_id"), domainId),
+			sqlchemy.Equals(cloudaccounts.Field("share_mode"), api.CLOUD_ACCOUNT_SHARE_MODE_PROVIDER_DOMAIN),
+		),
+		sqlchemy.AND(
+			sqlchemy.Equals(cloudaccounts.Field("share_mode"), api.CLOUD_ACCOUNT_SHARE_MODE_SYSTEM),
+			sqlchemy.OR(
+				sqlchemy.AND(
+					sqlchemy.Equals(cloudaccounts.Field("public_scope"), rbacutils.ScopeNone),
+					sqlchemy.Equals(cloudaccounts.Field("domain_id"), domainId),
+				),
+				sqlchemy.AND(
+					sqlchemy.Equals(cloudaccounts.Field("public_scope"), rbacutils.ScopeDomain),
+					sqlchemy.OR(
+						sqlchemy.Equals(cloudaccounts.Field("domain_id"), domainId),
+						sqlchemy.In(cloudaccounts.Field("id"), subq.SubQuery()),
+					),
+				),
+				sqlchemy.Equals(cloudaccounts.Field("public_scope"), rbacutils.ScopeSystem),
+			),
+		),
+		sqlchemy.AND(
+			sqlchemy.Equals(cloudaccounts.Field("domain_id"), domainId),
+			sqlchemy.Equals(cloudaccounts.Field("share_mode"), api.CLOUD_ACCOUNT_SHARE_MODE_ACCOUNT_DOMAIN),
+		),
+	))
+	return q
+}
+
 func (manager *SCloudproviderManager) FilterByOwner(q *sqlchemy.SQuery, owner mcclient.IIdentityProvider, scope rbacutils.TRbacScope) *sqlchemy.SQuery {
 	if owner != nil {
 		switch scope {
 		case rbacutils.ScopeProject, rbacutils.ScopeDomain:
 			if len(owner.GetProjectDomainId()) > 0 {
-				cloudaccounts := CloudaccountManager.Query().SubQuery()
-				q = q.Join(cloudaccounts, sqlchemy.Equals(
-					q.Field("cloudaccount_id"),
-					cloudaccounts.Field("id"),
-				))
-				q = q.Filter(sqlchemy.OR(
-					sqlchemy.AND(
-						sqlchemy.Equals(q.Field("domain_id"), owner.GetProjectDomainId()),
-						sqlchemy.Equals(cloudaccounts.Field("share_mode"), api.CLOUD_ACCOUNT_SHARE_MODE_PROVIDER_DOMAIN),
-					),
-					sqlchemy.Equals(cloudaccounts.Field("share_mode"), api.CLOUD_ACCOUNT_SHARE_MODE_SYSTEM),
-					sqlchemy.AND(
-						sqlchemy.Equals(cloudaccounts.Field("domain_id"), owner.GetProjectDomainId()),
-						sqlchemy.Equals(cloudaccounts.Field("share_mode"), api.CLOUD_ACCOUNT_SHARE_MODE_ACCOUNT_DOMAIN),
-					),
-				))
+				q = manager.filterByDomainId(q, owner.GetProjectDomainId())
 			}
 		}
 	}
@@ -1569,7 +1675,14 @@ func (provider *SCloudprovider) GetDetailsClirc(ctx context.Context, userCred mc
 	if err != nil {
 		return nil, err
 	}
-	rc, err := cloudprovider.GetClientRC(provider.Name, accessUrl, provider.Account, passwd, provider.Provider)
+
+	account := provider.GetCloudaccount()
+	var options *jsonutils.JSONDict
+	if account != nil {
+		options = account.Options
+	}
+
+	rc, err := cloudprovider.GetClientRC(provider.Name, accessUrl, provider.Account, passwd, provider.Provider, options)
 	if err != nil {
 		return nil, err
 	}
@@ -1810,4 +1923,49 @@ func (self *SCloudprovider) SyncCallSyncCloudproviderInterVpcNetwork(ctx context
 			return
 		}
 	}
+}
+
+func (manager *SCloudproviderManager) ListItemExportKeys(ctx context.Context, q *sqlchemy.SQuery, userCred mcclient.TokenCredential, keys stringutils2.SSortedStrings) (*sqlchemy.SQuery, error) {
+	q, err := manager.SEnabledStatusStandaloneResourceBaseManager.ListItemExportKeys(ctx, q, userCred, keys)
+	if err != nil {
+		return nil, errors.Wrap(err, "SEnabledStatusStandaloneResourceBaseManager.ListItemExportKeys")
+	}
+	q, err = manager.SProjectizedResourceBaseManager.ListItemExportKeys(ctx, q, userCred, keys)
+	if err != nil {
+		return nil, errors.Wrapf(err, "SProjectizedResourceBaseManager.ListItemExportKeys")
+	}
+	q, err = manager.SProjectMappingResourceBaseManager.ListItemExportKeys(ctx, q, userCred, keys)
+	if err != nil {
+		return nil, errors.Wrapf(err, "SProjectMappingResourceBaseManager.ListItemExportKeys")
+	}
+	return q, nil
+}
+
+func (self *SCloudprovider) AllowPerformProjectMapping(ctx context.Context, userCred mcclient.TokenCredential, query jsonutils.JSONObject) bool {
+	return db.IsAdminAllowPerform(userCred, self, "project-mapping")
+}
+
+// 绑定同步策略
+func (self *SCloudprovider) PerformProjectMapping(ctx context.Context, userCred mcclient.TokenCredential, query jsonutils.JSONObject, input api.CloudaccountProjectMappingInput) (jsonutils.JSONObject, error) {
+	if len(input.ProjectMappingId) > 0 {
+		_, err := validators.ValidateModel(userCred, ProjectMappingManager, &input.ProjectMappingId)
+		if err != nil {
+			return nil, err
+		}
+		if len(self.ProjectMappingId) > 0 && self.ProjectMappingId != input.ProjectMappingId {
+			return nil, httperrors.NewInputParameterError("cloudprovider %s has aleady bind project mapping %s", self.Name, self.ProjectMappingId)
+		}
+	}
+	// no changes
+	if self.ProjectMappingId == input.ProjectMappingId {
+		return nil, nil
+	}
+	_, err := db.Update(self, func() error {
+		self.ProjectMappingId = input.ProjectMappingId
+		return nil
+	})
+	if err != nil {
+		return nil, err
+	}
+	return nil, refreshPmCaches()
 }

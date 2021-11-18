@@ -17,6 +17,12 @@ package types
 import (
 	"net"
 	"strings"
+
+	"yunion.io/x/pkg/errors"
+)
+
+const (
+	ErrIPMIToolNull = errors.Error("IPMI tool is null")
 )
 
 type SSHConfig struct {
@@ -35,6 +41,7 @@ const (
 	OEM_NAME_FOXCONN    = "foxconn"
 	OEM_NAME_QEMU       = "qemu"
 	OEM_NAME_SUPERMICRO = "supermicro"
+	OEM_NAME_H3C        = "h3c"
 )
 
 var (
@@ -48,6 +55,7 @@ var (
 		OEM_NAME_FOXCONN,
 		OEM_NAME_QEMU,
 		OEM_NAME_SUPERMICRO,
+		OEM_NAME_H3C,
 	}
 )
 
@@ -91,7 +99,7 @@ type SNicDevInfo struct {
 	Dev   string           `json:"dev"`
 	Mac   net.HardwareAddr `json:"mac"`
 	Speed int              `json:"speed"`
-	Up    bool             `json:"up"`
+	Up    *bool            `json:"up"`
 	Mtu   int              `json:"mtu"`
 }
 

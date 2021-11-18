@@ -159,6 +159,12 @@ type ElasticcacheCreateInput struct {
 	// 主可用区名称或Id
 	Zone string `json:"zone"`
 
+	// 备可用区名称或Id列表
+	// 默认副本与主可用区一致
+	// 支持此参数的云厂商: 腾讯云
+	// required: false
+	SlaveZones []string `json:"slave_zones"`
+
 	// Ip子网名称或Id,建议使用Id
 	// required: true
 	Network string `json:"network"`
@@ -169,7 +175,7 @@ type ElasticcacheCreateInput struct {
 	NetworkType string `json:"network_type"`
 
 	// 弹性缓存Engine
-	//  enum: redis, memcache
+	//  enum: redis, memcached
 	// required: true
 	Engine string `json:"engine"`
 

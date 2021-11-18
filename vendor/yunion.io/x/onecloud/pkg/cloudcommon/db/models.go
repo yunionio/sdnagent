@@ -91,23 +91,6 @@ func mustCheckModelManager(modelMan IModelManager) {
 				panic(msg)
 			}
 		}
-		requiredModelFuncNames := []string{
-			"GetExtraDetails",
-		}
-		for _, name := range requiredModelFuncNames {
-			model, err := NewModelObject(modelMan)
-			if err != nil {
-				msg := fmt.Sprintf("model manager %T: new model object: %v", modelMan, err)
-				panic(msg)
-			}
-			modelV := reflect.ValueOf(model)
-			methV := modelV.MethodByName(name)
-			if !methV.IsValid() {
-				msg := fmt.Sprintf("model %T: has no valid %s, likely caused by ambiguity",
-					model, name)
-				panic(msg)
-			}
-		}
 	}
 }
 
@@ -155,8 +138,8 @@ func CheckSync(autoSync bool) bool {
 	return inSync
 }
 
-func EnsureAppInitSyncDB(app *appsrv.Application, opt *common_options.DBOptions, modelInitDBFunc func() error) {
-	cloudcommon.InitDB(opt)
+func EnsureAppSyncDB(app *appsrv.Application, opt *common_options.DBOptions, modelInitDBFunc func() error) {
+	// cloudcommon.InitDB(opt)
 
 	if !CheckSync(opt.AutoSyncTable) {
 		log.Fatalf("database schema not in sync!")

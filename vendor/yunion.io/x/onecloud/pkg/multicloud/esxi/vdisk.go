@@ -46,14 +46,18 @@ var driverMap = map[string]string{
 
 type SVirtualDisk struct {
 	multicloud.SDisk
+	multicloud.STagBase
 
 	SVirtualDevice
+	IsRoot bool
 }
 
 func NewVirtualDisk(vm *SVirtualMachine, dev types.BaseVirtualDevice, index int) SVirtualDisk {
+	isRoot := dev.GetVirtualDevice().DeviceInfo.GetDescription().Label == rootDiskMark
 	return SVirtualDisk{
-		multicloud.SDisk{},
-		NewVirtualDevice(vm, dev, index),
+		SDisk:          multicloud.SDisk{},
+		SVirtualDevice: NewVirtualDevice(vm, dev, index),
+		IsRoot:         isRoot,
 	}
 }
 
@@ -378,7 +382,7 @@ func (disk *SVirtualDisk) GetTemplateId() string {
 }
 
 func (disk *SVirtualDisk) GetDiskType() string {
-	if disk.index == 0 {
+	if disk.IsRoot {
 		return api.DISK_TYPE_SYS
 	}
 	return api.DISK_TYPE_DATA

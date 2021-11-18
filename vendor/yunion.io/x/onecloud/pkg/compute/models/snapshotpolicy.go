@@ -32,11 +32,13 @@ import (
 	"yunion.io/x/onecloud/pkg/cloudcommon/db"
 	"yunion.io/x/onecloud/pkg/cloudcommon/db/lockman"
 	"yunion.io/x/onecloud/pkg/cloudcommon/db/taskman"
+	"yunion.io/x/onecloud/pkg/cloudcommon/notifyclient"
 	"yunion.io/x/onecloud/pkg/cloudprovider"
 	"yunion.io/x/onecloud/pkg/compute/options"
 	"yunion.io/x/onecloud/pkg/httperrors"
 	"yunion.io/x/onecloud/pkg/mcclient"
 	"yunion.io/x/onecloud/pkg/util/bitmap"
+	"yunion.io/x/onecloud/pkg/util/logclient"
 	"yunion.io/x/onecloud/pkg/util/stringutils2"
 	"yunion.io/x/onecloud/pkg/util/validate"
 )
@@ -222,6 +224,12 @@ func (manager *SSnapshotPolicyManager) OnCreateComplete(ctx context.Context, ite
 			sp.Status = api.SNAPSHOT_POLICY_READY
 			return nil
 		})
+		db.OpsLog.LogEvent(sp, db.ACT_DELETE, sp.GetShortDesc(ctx), userCred)
+		logclient.AddActionLogWithContext(ctx, sp, logclient.ACT_DELOCATE, nil, userCred, true)
+		notifyclient.EventNotify(ctx, userCred, notifyclient.SEventNotifyParam{
+			Obj:    sp,
+			Action: notifyclient.ActionDelete,
+		})
 	}
 }
 
@@ -361,13 +369,14 @@ func (manager *SSnapshotPolicyManager) FetchCustomizeColumns(
 	return rows
 }
 
-func (sp *SSnapshotPolicy) GetExtraDetails(
-	ctx context.Context,
-	userCred mcclient.TokenCredential,
-	query jsonutils.JSONObject,
-	isList bool,
-) (api.SnapshotPolicyDetails, error) {
-	return api.SnapshotPolicyDetails{}, nil
+func (sp *SSnapshotPolicy) ExecuteNotify(ctx context.Context, userCred mcclient.TokenCredential, diskName string) {
+	notifyclient.EventNotify(ctx, userCred, notifyclient.SEventNotifyParam{
+		Obj:    sp,
+		Action: notifyclient.ActionExecute,
+		ObjDetailsDecorator: func(ctx context.Context, details *jsonutils.JSONDict) {
+			details.Set("disk", jsonutils.NewString(diskName))
+		},
+	})
 }
 
 func (sp *SSnapshotPolicy) getMoreDetails(out api.SnapshotPolicyDetails) api.SnapshotPolicyDetails {
@@ -386,8 +395,8 @@ func (manager *SSnapshotPolicyManager) SyncSnapshotPolicies(ctx context.Context,
 	provider *SCloudprovider, region *SCloudregion, cloudSPs []cloudprovider.ICloudSnapshotPolicy,
 	syncOwnerId mcclient.IIdentityProvider) compare.SyncResult {
 
-	lockman.LockClass(ctx, manager, db.GetLockClassKey(manager, syncOwnerId))
-	defer lockman.ReleaseClass(ctx, manager, db.GetLockClassKey(manager, syncOwnerId))
+	lockman.LockRawObject(ctx, "snapshotpolicies", fmt.Sprintf("%s-%s", provider.Id, region.Id))
+	defer lockman.ReleaseRawObject(ctx, "snapshotpolicies", fmt.Sprintf("%s-%s", provider.Id, region.Id))
 	syncResult := compare.SyncResult{}
 
 	// Fetch allsnapshotpolicy caches
@@ -528,7 +537,6 @@ func (manager *SSnapshotPolicyManager) newFromCloudSnapshotPolicy(
 	ctx context.Context, userCred mcclient.TokenCredential, snapshotpolicyCluster map[uint64][]*SSnapshotPolicy,
 	ext cloudprovider.ICloudSnapshotPolicy, region *SCloudregion, syncOwnerId mcclient.IIdentityProvider, provider *SCloudprovider,
 ) (*SSnapshotPolicy, error) {
-
 	snapshotPolicyTmp := SSnapshotPolicy{}
 	snapshotPolicyTmp.RetentionDays = ext.GetRetentionDays()
 	arw, err := ext.GetRepeatWeekdays()
@@ -580,17 +588,22 @@ func (manager *SSnapshotPolicyManager) newFromCloudSnapshotPolicy(
 	// no such suitable snapshotpolicy
 	if snapshotPolicy == nil {
 		snapshotPolicyTmp.SetModelManager(manager, &snapshotPolicyTmp)
-		newName, err := db.GenerateName(manager, syncOwnerId, ext.GetName())
-		if err != nil {
-			return nil, err
-		}
-		snapshotPolicyTmp.Name = newName
 		snapshotPolicyTmp.Status = ext.GetStatus()
 
-		err = manager.TableSpec().Insert(ctx, &snapshotPolicyTmp)
+		var err = func() error {
+			lockman.LockRawObject(ctx, manager.Keyword(), "name")
+			defer lockman.ReleaseRawObject(ctx, manager.Keyword(), "name")
+
+			newName, err := db.GenerateName(ctx, manager, syncOwnerId, ext.GetName())
+			if err != nil {
+				return err
+			}
+			snapshotPolicyTmp.Name = newName
+
+			return manager.TableSpec().Insert(ctx, &snapshotPolicyTmp)
+		}()
 		if err != nil {
-			log.Errorf("newFromCloudEip fail %s", err)
-			return nil, err
+			return nil, errors.Wrapf(err, "Insert")
 		}
 		// sync project
 		SyncCloudProject(userCred, &snapshotPolicyTmp, syncOwnerId, ext, provider.GetId())

@@ -239,13 +239,13 @@ func (self *SInstanceSnapshot) getMoreDetails(userCred mcclient.TokenCredential,
 				out.StorageType = snapshots[i].GetStorageType()
 			}
 		}
-	} else {
+	} else if guest != nil {
 		out.Size = self.SizeMb
 		disk, err := guest.GetSystemDisk()
 		if err != nil {
 			log.Errorf("unable to GetSystemDisk of guest %q", guest.GetId())
 		} else {
-			s := disk.GetStorage()
+			s, _ := disk.GetStorage()
 			if s != nil {
 				out.StorageType = s.StorageType
 			}
@@ -255,10 +255,6 @@ func (self *SInstanceSnapshot) getMoreDetails(userCred mcclient.TokenCredential,
 		out.Properties = map[string]string{"os_type": osType}
 	}
 	return out
-}
-
-func (self *SInstanceSnapshot) GetExtraDetails(ctx context.Context, userCred mcclient.TokenCredential, query jsonutils.JSONObject, isList bool) (api.InstanceSnapshotDetails, error) {
-	return api.InstanceSnapshotDetails{}, nil
 }
 
 func (manager *SInstanceSnapshotManager) FetchCustomizeColumns(
@@ -307,9 +303,9 @@ func (manager *SInstanceSnapshotManager) fillInstanceSnapshot(userCred mcclient.
 	instanceSnapshot.GuestId = guest.Id
 	guestSchedInput := guest.ToSchedDesc()
 
-	host := guest.GetHost()
+	host, _ := guest.GetHost()
 	instanceSnapshot.ManagerId = host.ManagerId
-	zone := host.GetZone()
+	zone, _ := host.GetZone()
 	instanceSnapshot.CloudregionId = zone.CloudregionId
 
 	for i := 0; i < len(guestSchedInput.Disks); i++ {
@@ -462,10 +458,11 @@ func (self *SInstanceSnapshot) GetSnapshots() ([]SSnapshot, error) {
 }
 
 func (self *SInstanceSnapshot) GetQuotaKeys() quotas.IQuotaKeys {
+	region, _ := self.GetRegion()
 	return fetchRegionalQuotaKeys(
 		rbacutils.ScopeProject,
 		self.GetOwnerId(),
-		self.GetRegion(),
+		region,
 		self.GetCloudprovider(),
 	)
 }
@@ -505,7 +502,7 @@ func (self *SInstanceSnapshot) GetInstanceSnapshotJointAt(diskIndex int) (*SInst
 	return ispj, err
 }
 
-func (self *SInstanceSnapshot) ValidateDeleteCondition(ctx context.Context) error {
+func (self *SInstanceSnapshot) ValidateDeleteCondition(ctx context.Context, info jsonutils.JSONObject) error {
 	if self.Status == api.INSTANCE_SNAPSHOT_START_DELETE || self.Status == api.INSTANCE_SNAPSHOT_RESET {
 		return httperrors.NewForbiddenError("can't delete instance snapshot with wrong status")
 	}
@@ -568,7 +565,7 @@ func (is *SInstanceSnapshot) syncRemoveCloudInstanceSnapshot(ctx context.Context
 	lockman.LockObject(ctx, is)
 	defer lockman.ReleaseObject(ctx, is)
 
-	err := is.ValidateDeleteCondition(ctx)
+	err := is.ValidateDeleteCondition(ctx, nil)
 	if err != nil {
 		err = is.SetStatus(userCred, api.INSTANCE_SNAPSHOT_UNKNOWN, "sync to delete")
 	} else {
@@ -593,16 +590,22 @@ func (is *SInstanceSnapshot) SyncWithCloudInstanceSnapshot(ctx context.Context, 
 func (manager *SInstanceSnapshotManager) newFromCloudInstanceSnapshot(ctx context.Context, userCred mcclient.TokenCredential, extSnapshot cloudprovider.ICloudInstanceSnapshot, guest *SGuest) (*SInstanceSnapshot, error) {
 	instanceSnapshot := SInstanceSnapshot{}
 	instanceSnapshot.SetModelManager(manager, &instanceSnapshot)
-	newName, err := db.GenerateName(manager, nil, extSnapshot.GetName())
-	if err == nil {
-		instanceSnapshot.Name = extSnapshot.GetName()
-	} else {
-		instanceSnapshot.Name = newName
-	}
+
 	instanceSnapshot.ExternalId = extSnapshot.GetGlobalId()
 	instanceSnapshot.Status = extSnapshot.GetStatus()
 	manager.fillInstanceSnapshot(userCred, guest, &instanceSnapshot)
-	err = manager.TableSpec().Insert(ctx, &instanceSnapshot)
+	var err = func() error {
+		lockman.LockClass(ctx, manager, "name")
+		defer lockman.ReleaseClass(ctx, manager, "name")
+
+		newName, err := db.GenerateName(ctx, manager, nil, extSnapshot.GetName())
+		if err == nil {
+			instanceSnapshot.Name = extSnapshot.GetName()
+		} else {
+			instanceSnapshot.Name = newName
+		}
+		return manager.TableSpec().Insert(ctx, &instanceSnapshot)
+	}()
 	if err != nil {
 		return nil, err
 	}
@@ -634,8 +637,8 @@ func (ism *SInstanceSnapshotManager) InitializeData() error {
 		if err != nil {
 			return errors.Wrapf(err, "unable to GetGuest for isp %q", isp.GetId())
 		} else {
-			host := guest.GetHost()
-			zone := host.GetZone()
+			host, _ := guest.GetHost()
+			zone, _ := host.GetZone()
 			cloudregionId = zone.CloudregionId
 		}
 		_, err = db.Update(isp, func() error {

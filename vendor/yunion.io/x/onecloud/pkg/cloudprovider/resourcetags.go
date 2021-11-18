@@ -14,7 +14,56 @@
 
 package cloudprovider
 
+import (
+	"context"
+	"reflect"
+	"time"
+
+	"yunion.io/x/log"
+	"yunion.io/x/pkg/errors"
+
+	"yunion.io/x/onecloud/pkg/cloudcommon/db/lockman"
+)
+
+const (
+	SET_TAGS = "set-tags"
+)
+
 type TagsUpdateInfo struct {
 	OldTags map[string]string
 	NewTags map[string]string
+}
+
+func (t TagsUpdateInfo) IsChanged() bool {
+	return !reflect.DeepEqual(t.OldTags, t.NewTags)
+}
+
+func SetTags(ctx context.Context, res ICloudResource, managerId string, tags map[string]string, replace bool) error {
+	// 避免同时设置多个资源标签出现以下错误
+	// Code=ResourceInUse.TagDuplicate, Message=tagKey-tagValue have exists., RequestId=e87714c0-e50b-4241-b79d-32897437174d
+	lockman.LockRawObject(ctx, SET_TAGS, managerId)
+	defer lockman.ReleaseRawObject(ctx, SET_TAGS, managerId)
+
+	err := res.SetTags(tags, replace)
+	if err != nil {
+		return errors.Wrapf(err, "SetTags")
+	}
+
+	// 避免设置标签后未及时生效，导致本地同步和云上不一致
+	Wait(time.Second*5, time.Minute, func() (bool, error) {
+		res.Refresh()
+		newTags, err := res.GetTags()
+		if err != nil {
+			return false, errors.Wrapf(err, "GetTags")
+		}
+		for k, v := range tags {
+			_, ok := newTags[k]
+			if !ok {
+				log.Warningf("tag %s:%s not found waitting....", k, v)
+				return false, nil
+			}
+		}
+		return true, nil
+	})
+	return nil
 }

@@ -27,7 +27,6 @@ import (
 	"yunion.io/x/pkg/util/regutils"
 	"yunion.io/x/pkg/utils"
 
-	ansible_apis "yunion.io/x/onecloud/pkg/apis/ansible"
 	compute_apis "yunion.io/x/onecloud/pkg/apis/compute"
 	identity_apis "yunion.io/x/onecloud/pkg/apis/identity"
 	"yunion.io/x/onecloud/pkg/cloudcommon/db"
@@ -35,8 +34,9 @@ import (
 	"yunion.io/x/onecloud/pkg/httperrors"
 	"yunion.io/x/onecloud/pkg/mcclient"
 	"yunion.io/x/onecloud/pkg/mcclient/auth"
-	mcclient_models "yunion.io/x/onecloud/pkg/mcclient/models"
-	mcclient_modules "yunion.io/x/onecloud/pkg/mcclient/modules"
+	ansible_model "yunion.io/x/onecloud/pkg/mcclient/models"
+	ansible_modules "yunion.io/x/onecloud/pkg/mcclient/modules/ansible"
+	compute_modules "yunion.io/x/onecloud/pkg/mcclient/modules/compute"
 	"yunion.io/x/onecloud/pkg/util/ansible"
 	"yunion.io/x/onecloud/pkg/util/logclient"
 )
@@ -286,7 +286,7 @@ func (lbagent *SLoadbalancerAgent) validateHost(ctx context.Context, userCred mc
 			params := jsonutils.NewDict()
 			params.Set("src_ip_check", jsonutils.JSONFalse)
 			params.Set("src_mac_check", jsonutils.JSONFalse)
-			_, err := mcclient_modules.Servers.PerformAction(sess, guest.Id, "modify-src-check", params)
+			_, err := compute_modules.Servers.PerformAction(sess, guest.Id, "modify-src-check", params)
 			if err != nil {
 				return errors.Wrapf(err, "turn off src check of guest %s(%s)", guest.Name, guest.Id)
 			}
@@ -370,49 +370,12 @@ func (lbagent *SLoadbalancerAgent) updateOrCreatePbModel(ctx context.Context,
 	pbId string,
 	pbName string,
 	pb *ansible.Playbook,
-) (*mcclient_models.AnsiblePlaybook, error) {
+) (*ansible_model.AnsiblePlaybook, error) {
 	cliSess := auth.GetSession(ctx, userCred, "", "")
-
-	if pbId == "" {
-		pbJson, err := mcclient_modules.AnsiblePlaybooks.Get(cliSess, pbName, nil)
-		if err == nil {
-			pbModel := &mcclient_models.AnsiblePlaybook{}
-			if err := pbJson.Unmarshal(pbModel); err == nil {
-				pbId = pbModel.Id
-			}
-		}
-	}
-
-	var pbJson jsonutils.JSONObject
-	if pbId != "" {
-		var err error
-		ansiblePbInput := &ansible_apis.AnsiblePlaybookUpdateInput{
-			Name:     pbName,
-			Playbook: *pb,
-		}
-		params := ansiblePbInput.JSON(ansiblePbInput)
-		pbJson, err = mcclient_modules.AnsiblePlaybooks.Update(cliSess, pbId, params)
-		if err != nil {
-			return nil, errors.WithMessage(err, "update ansibleplaybook")
-		}
-	} else {
-		var err error
-		ansiblePbInput := &ansible_apis.AnsiblePlaybookCreateInput{
-			Name:     pbName,
-			Playbook: *pb,
-		}
-		params := ansiblePbInput.JSON(ansiblePbInput)
-		pbJson, err = mcclient_modules.AnsiblePlaybooks.Create(cliSess, params)
-		if err != nil {
-			return nil, errors.WithMessage(err, "create ansibleplaybook")
-		}
-	}
-
-	pbModel := &mcclient_models.AnsiblePlaybook{}
-	if err := pbJson.Unmarshal(pbModel); err != nil {
-		return nil, errors.WithMessage(err, "unmarshal ansibleplaybook")
-	}
-	return pbModel, nil
+	pbModel, err := ansible_modules.AnsiblePlaybooks.UpdateOrCreatePbModel(
+		ctx, cliSess, pbId, pbName, pb,
+	)
+	return pbModel, err
 }
 
 func (lbagent *SLoadbalancerAgent) PerformUndeploy(ctx context.Context, userCred mcclient.TokenCredential, query jsonutils.JSONObject, data *jsonutils.JSONDict) (*jsonutils.JSONDict, error) {

@@ -137,8 +137,8 @@ func (manager *SDBInstanceParameterManager) ValidateCreateData(ctx context.Conte
 }
 
 func (manager *SDBInstanceParameterManager) SyncDBInstanceParameters(ctx context.Context, userCred mcclient.TokenCredential, instance *SDBInstance, cloudParameters []cloudprovider.ICloudDBInstanceParameter) compare.SyncResult {
-	lockman.LockClass(ctx, manager, db.GetLockClassKey(manager, instance.GetOwnerId()))
-	defer lockman.ReleaseClass(ctx, manager, db.GetLockClassKey(manager, instance.GetOwnerId()))
+	lockman.LockRawObject(ctx, "dbinstance-parameters", instance.Id)
+	defer lockman.ReleaseRawObject(ctx, "dbinstance-parameters", instance.Id)
 
 	result := compare.SyncResult{}
 	dbParameters, err := instance.GetDBInstanceParameters()
@@ -216,10 +216,6 @@ func (manager *SDBInstanceParameterManager) newFromCloudDBInstanceParameter(ctx 
 		return errors.Wrapf(err, "newFromCloudDBInstanceParameter.Insert")
 	}
 	return nil
-}
-
-func (self *SDBInstanceParameter) GetExtraDetails(ctx context.Context, userCred mcclient.TokenCredential, query jsonutils.JSONObject, isList bool) (api.DBInstanceparameterDetails, error) {
-	return api.DBInstanceparameterDetails{}, nil
 }
 
 func (manager *SDBInstanceParameterManager) FetchCustomizeColumns(

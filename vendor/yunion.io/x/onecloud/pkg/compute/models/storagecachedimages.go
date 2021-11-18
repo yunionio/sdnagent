@@ -41,6 +41,8 @@ import (
 type SStoragecachedimageManager struct {
 	db.SJointResourceBaseManager
 	db.SExternalizedResourceBaseManager
+
+	SStoragecacheResourceBaseManager
 }
 
 var StoragecachedimageManager *SStoragecachedimageManager
@@ -65,8 +67,7 @@ type SStoragecachedimage struct {
 	db.SJointResourceBase
 	db.SExternalizedResourceBase
 
-	// 存储缓存Id
-	StoragecacheId string `width:"36" charset:"ascii" nullable:"false" list:"admin" create:"admin_required"`
+	SStoragecacheResourceBase
 	// 镜像缓存Id
 	CachedimageId string `width:"36" charset:"ascii" nullable:"false" list:"admin" create:"admin_required"`
 
@@ -133,20 +134,8 @@ func (self *SStoragecachedimage) getStorageHostId() (string, error) {
 }
 
 func (self *SStoragecachedimage) GetHost() (*SHost, error) {
-	sc, err := self.GetStoragecache()
-	if err != nil {
-		return nil, errors.Wrap(err, "self.GetStoragecache")
-	}
+	sc := self.GetStoragecache()
 	return sc.GetHost()
-}
-
-func (self *SStoragecachedimage) GetExtraDetails(
-	ctx context.Context,
-	userCred mcclient.TokenCredential,
-	query jsonutils.JSONObject,
-	isList bool,
-) (api.StoragecachedimageDetails, error) {
-	return api.StoragecachedimageDetails{}, nil
 }
 
 func (manager *SStoragecachedimageManager) FetchCustomizeColumns(
@@ -160,10 +149,11 @@ func (manager *SStoragecachedimageManager) FetchCustomizeColumns(
 	rows := make([]api.StoragecachedimageDetails, len(objs))
 
 	jointRows := manager.SJointResourceBaseManager.FetchCustomizeColumns(ctx, userCred, query, objs, fields, isList)
-
+	scRows := manager.SStoragecacheResourceBaseManager.FetchCustomizeColumns(ctx, userCred, query, objs, fields, isList)
 	for i := range rows {
 		rows[i] = api.StoragecachedimageDetails{
 			JointResourceBaseDetails: jointRows[i],
+			StoragecacheResourceInfo: scRows[i],
 		}
 		rows[i] = objs[i].(*SStoragecachedimage).getExtraDetails(ctx, rows[i])
 	}
@@ -183,22 +173,23 @@ func (self *SStoragecachedimage) GetCachedimage() *SCachedimage {
 	return nil
 }
 
-func (self *SStoragecachedimage) GetStoragecache() (*SStoragecache, error) {
-	cache, err := StoragecacheManager.FetchById(self.StoragecacheId)
-	if err != nil {
-		return nil, errors.Wrap(err, "StoragecacheManager.FetchById")
-	}
-	return cache.(*SStoragecache), nil
-}
-
 func (self *SStoragecachedimage) getExtraDetails(ctx context.Context, out api.StoragecachedimageDetails) api.StoragecachedimageDetails {
-	storagecache, _ := self.GetStoragecache()
+	storagecache := self.GetStoragecache()
 	if storagecache != nil {
-		out.Storagecache = storagecache.Name
+		// out.Storagecache = storagecache.Name
 		out.Storages = storagecache.getStorageNames()
 		host, _ := storagecache.GetHost()
 		if host != nil {
 			out.Host = host.GetShortDesc(ctx)
+		} else {
+			var err error
+			hostDesc, err := storagecache.GetEsxiAgentHostDesc()
+			if err != nil {
+				log.Errorf("unable to GetEsxiAgentHostDesc of stroagecache: %s", err.Error())
+			}
+			if hostDesc != nil {
+				out.Host = hostDesc
+			}
 		}
 	}
 	cachedImage := self.GetCachedimage()
@@ -272,7 +263,7 @@ func (self *SStoragecachedimage) Detach(ctx context.Context, userCred mcclient.T
 	return db.DetachJoint(ctx, userCred, self)
 }
 
-func (self *SStoragecachedimage) ValidateDeleteCondition(ctx context.Context) error {
+func (self *SStoragecachedimage) ValidateDeleteCondition(ctx context.Context, info jsonutils.JSONObject) error {
 	if self.Status != api.CACHED_IMAGE_STATUS_CACHE_FAILED {
 		cnt, err := self.getReferenceCount()
 		if err != nil {
@@ -282,7 +273,7 @@ func (self *SStoragecachedimage) ValidateDeleteCondition(ctx context.Context) er
 			return httperrors.NewNotEmptyError("Image is in use")
 		}
 	}
-	return self.SJointResourceBase.ValidateDeleteCondition(ctx)
+	return self.SJointResourceBase.ValidateDeleteCondition(ctx, nil)
 }
 
 func (self *SStoragecachedimage) isCachedImageInUse() error {
@@ -305,7 +296,7 @@ func (self *SStoragecachedimage) isDownloadSessionExpire() bool {
 }
 
 func (self *SStoragecachedimage) markDeleting(ctx context.Context, userCred mcclient.TokenCredential, isForce bool) error {
-	err := self.ValidateDeleteCondition(ctx)
+	err := self.ValidateDeleteCondition(ctx, nil)
 	if err != nil {
 		return err
 	}
@@ -316,7 +307,7 @@ func (self *SStoragecachedimage) markDeleting(ctx context.Context, userCred mccl
 		}
 	}
 
-	cache, _ := self.GetStoragecache()
+	cache := self.GetStoragecache()
 	image := self.GetCachedimage()
 
 	if image != nil {
@@ -435,6 +426,9 @@ func (self *SStoragecachedimage) syncRemoveCloudImage(ctx context.Context, userC
 
 func (self *SStoragecachedimage) syncWithCloudImage(ctx context.Context, userCred mcclient.TokenCredential, ownerId mcclient.IIdentityProvider, image cloudprovider.ICloudImage, managerId string) error {
 	cachedImage := self.GetCachedimage()
+	if len(self.ExternalId) == 0 {
+		self.SetExternalId(cachedImage.GetExternalId())
+	}
 	if len(cachedImage.ExternalId) > 0 {
 		self.SetStatus(userCred, image.GetStatus(), "")
 		return cachedImage.syncWithCloudImage(ctx, userCred, ownerId, image, managerId)
@@ -501,18 +495,11 @@ func (manager *SStoragecachedimageManager) ListItemFilter(
 	if err != nil {
 		return nil, errors.Wrap(err, "SExternalizedResourceBaseManager.ListItemFilter")
 	}
-
-	if len(query.StoragecacheId) > 0 {
-		storageCacheObj, err := StoragecacheManager.FetchByIdOrName(userCred, query.StoragecacheId)
-		if err != nil {
-			if errors.Cause(err) == sql.ErrNoRows {
-				return nil, httperrors.NewResourceNotFoundError2(StoragecacheManager.Keyword(), query.StoragecacheId)
-			} else {
-				return nil, errors.Wrap(err, "StoragecacheManager.FetchByIdOrName")
-			}
-		}
-		q = q.Equals("storagecache_id", storageCacheObj.GetId())
+	q, err = manager.SStoragecacheResourceBaseManager.ListItemFilter(ctx, q, userCred, query.StoragecacheFilterListInput)
+	if err != nil {
+		return nil, errors.Wrap(err, "SStoragecacheResourceBaseManager.ListItemFilter")
 	}
+
 	if len(query.CachedimageId) > 0 {
 		cachedImageObj, err := CachedimageManager.FetchByIdOrName(userCred, query.CachedimageId)
 		if err != nil {
@@ -543,6 +530,10 @@ func (manager *SStoragecachedimageManager) OrderByExtraFields(
 	q, err = manager.SJointResourceBaseManager.OrderByExtraFields(ctx, q, userCred, query.JointResourceBaseListInput)
 	if err != nil {
 		return nil, errors.Wrap(err, "SSchedtagJointsManager.OrderByExtraFields")
+	}
+	q, err = manager.SStoragecacheResourceBaseManager.OrderByExtraFields(ctx, q, userCred, query.StoragecacheFilterListInput)
+	if err != nil {
+		return nil, errors.Wrap(err, "SStoragecacheResourceBaseManager.OrderByExtraFields")
 	}
 
 	return q, nil
