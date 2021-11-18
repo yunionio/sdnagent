@@ -25,7 +25,7 @@ import (
 	"yunion.io/x/sdnagent/pkg/agent/utils"
 
 	"yunion.io/x/onecloud/pkg/mcclient/auth"
-	mcclient_modules "yunion.io/x/onecloud/pkg/mcclient/modules"
+	mcclient_modules "yunion.io/x/onecloud/pkg/mcclient/modules/compute"
 )
 
 var (

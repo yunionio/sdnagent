@@ -30,7 +30,7 @@ import (
 
 	apis "yunion.io/x/onecloud/pkg/apis/compute"
 	"yunion.io/x/onecloud/pkg/mcclient/auth"
-	mcclient_modules "yunion.io/x/onecloud/pkg/mcclient/modules"
+	mcclient_modules "yunion.io/x/onecloud/pkg/mcclient/modules/compute"
 	"yunion.io/x/onecloud/pkg/util/iproute2"
 	"yunion.io/x/onecloud/pkg/vpcagent/ovn/mac"
 
