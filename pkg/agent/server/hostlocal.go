@@ -56,6 +56,9 @@ func (hl *HostLocal) updateFlows(ctx context.Context) {
 }
 
 func (hl *HostLocal) updateTc(ctx context.Context) {
+	if hl.watcher.tcMan == nil {
+		return
+	}
 	data := []*utils.TcData{}
 	for _, hcn := range hl.watcher.hostConfig.HostNetworkConfigs() {
 		td := &utils.TcData{
