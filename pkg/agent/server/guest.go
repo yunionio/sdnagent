@@ -194,6 +194,9 @@ func (g *Guest) clearClassicFlows(ctx context.Context) {
 }
 
 func (g *Guest) updateTc(ctx context.Context) {
+	if g.watcher.tcMan == nil {
+		return
+	}
 	data := []*utils.TcData{}
 	for _, nic := range g.NICs {
 		d := nic.TcData()
@@ -203,6 +206,9 @@ func (g *Guest) updateTc(ctx context.Context) {
 }
 
 func (g *Guest) clearTc(ctx context.Context) {
+	if g.watcher.tcMan == nil {
+		return
+	}
 	g.watcher.tcMan.ClearIfaces(ctx, g.Who())
 }
 

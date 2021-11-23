@@ -76,7 +76,6 @@ func newServersWatcher() (*serversWatcher, error) {
 	w := &serversWatcher{
 		guests:  map[string]*Guest{},
 		zoneMan: utils.NewZoneMan(GuestCtZoneBase),
-		tcMan:   NewTcMan(),
 
 		cmdCh: make(chan wCmdReq),
 	}
@@ -186,8 +185,11 @@ func (w *serversWatcher) Start(ctx context.Context, agent *AgentServer) {
 		return
 	}
 
-	wg.Add(1)
-	go w.tcMan.Start(ctx)
+	if w.hostConfig.SdnEnableTcMan {
+		w.tcMan = NewTcMan()
+		wg.Add(1)
+		go w.tcMan.Start(ctx)
+	}
 
 	wg.Add(1)
 	go w.ovnMan.Start(ctx)
