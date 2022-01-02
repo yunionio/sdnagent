@@ -18,6 +18,7 @@ import (
 	"context"
 	"database/sql"
 	"fmt"
+	"sort"
 	"strings"
 
 	"yunion.io/x/jsonutils"
@@ -259,15 +260,14 @@ func (self *SVpc) GetWireCount() (int, error) {
 	return q.CountWithError()
 }
 
-func (self *SVpc) GetWires() []SWire {
+func (self *SVpc) GetWires() ([]SWire, error) {
 	wires := make([]SWire, 0)
 	q := self.getWireQuery()
 	err := db.FetchModelObjects(WireManager, q, &wires)
 	if err != nil {
-		log.Errorf("getWires fail %s", err)
-		return nil
+		return nil, errors.Wrapf(err, "db.FetchModelObjects")
 	}
-	return wires
+	return wires, nil
 }
 
 func (manager *SVpcManager) getVpcExternalIdForClassicNetwork(regionId, cloudproviderId string) string {
@@ -480,10 +480,6 @@ func (manager *SVpcManager) SyncVPCs(ctx context.Context, userCred mcclient.Toke
 		localVPCs = append(localVPCs, commondb[i])
 		remoteVPCs = append(remoteVPCs, commonext[i])
 		syncResult.Update()
-		err = commondb[i].SyncGlobalVpc(ctx, userCred, provider.GetOwnerId(), provider)
-		if err != nil {
-			log.Errorf("%s(%s) sync global vpc error: %v", commondb[i].Name, commondb[i].Id, err)
-		}
 	}
 	for i := 0; i < len(added); i += 1 {
 		newVpc, err := manager.newFromCloudVpc(ctx, userCred, added[i], provider, region)
@@ -495,10 +491,6 @@ func (manager *SVpcManager) SyncVPCs(ctx context.Context, userCred mcclient.Toke
 		localVPCs = append(localVPCs, *newVpc)
 		remoteVPCs = append(remoteVPCs, added[i])
 		syncResult.Add()
-		err = newVpc.SyncGlobalVpc(ctx, userCred, provider.GetOwnerId(), provider)
-		if err != nil {
-			log.Errorf("%s(%s) sync global vpc error: %v", newVpc.Name, newVpc.Id, err)
-		}
 	}
 
 	return localVPCs, remoteVPCs, syncResult
@@ -524,77 +516,11 @@ func (self *SVpc) syncRemoveCloudVpc(ctx context.Context, userCred mcclient.Toke
 		if err == nil {
 			notifyclient.EventNotify(ctx, userCred, notifyclient.SEventNotifyParam{
 				Obj:    self,
-				Action: notifyclient.ActionDelete,
+				Action: notifyclient.ActionSyncDelete,
 			})
 		}
 	}
 	return err
-}
-
-func (self *SVpc) SyncGlobalVpc(ctx context.Context, userCred mcclient.TokenCredential, ownerId mcclient.IIdentityProvider, provider *SCloudprovider) error {
-	if len(self.GlobalvpcId) > 0 {
-		gv, _ := self.GetGlobalVpc()
-		SyncCloudDomain(userCred, gv, ownerId)
-		gv.SyncShareState(ctx, userCred, provider.getAccountShareInfo())
-		return nil
-	}
-	region, err := self.GetRegion()
-	if err != nil {
-		return errors.Wrap(err, "GetRegion")
-	}
-	if region.GetDriver().IsVpcBelongGlobalVpc() {
-		externalId := strings.Replace(self.ExternalId, region.ExternalId+"/", "", -1)
-		vpcs := []SVpc{}
-		sq := VpcManager.Query().SubQuery()
-		q := sq.Query().Filter(
-			sqlchemy.AND(
-				sqlchemy.Equals(sq.Field("manager_id"), self.ManagerId),
-				sqlchemy.NOT(sqlchemy.IsNullOrEmpty(sq.Field("globalvpc_id"))),
-				sqlchemy.Endswith(sq.Field("external_id"), externalId),
-			),
-		)
-		err := db.FetchModelObjects(VpcManager, q, &vpcs)
-		if err != nil {
-			return errors.Wrap(err, "db.FetchModelObjects")
-		}
-		globalvpcId := ""
-		if len(vpcs) > 0 {
-			globalvpcId = vpcs[0].GlobalvpcId
-		} else {
-			gv := &SGlobalVpc{}
-			gv.Name = self.Name
-			idx := strings.Index(gv.Name, "(")
-			if idx > 0 {
-				gv.Name = gv.Name[:idx]
-			}
-			gv.SetEnabled(true)
-			gv.Status = api.GLOBAL_VPC_STATUS_AVAILABLE
-			gv.SetModelManager(GlobalVpcManager, gv)
-			err = func() error {
-				lockman.LockRawObject(ctx, GlobalVpcManager.Keyword(), "name")
-				defer lockman.ReleaseRawObject(ctx, GlobalVpcManager.Keyword(), "name")
-
-				gv.Name, err = db.GenerateName(ctx, GlobalVpcManager, userCred, gv.Name)
-				if err != nil {
-					return errors.Wrap(err, "db.GenerateName")
-				}
-
-				return GlobalVpcManager.TableSpec().Insert(ctx, gv)
-			}()
-			if err != nil {
-				return errors.Wrap(err, "GlobalVpcManager.Insert")
-			}
-			SyncCloudDomain(userCred, gv, ownerId)
-			gv.SyncShareState(ctx, userCred, provider.getAccountShareInfo())
-			globalvpcId = gv.Id
-		}
-		_, err = db.Update(self, func() error {
-			self.GlobalvpcId = globalvpcId
-			return nil
-		})
-		return err
-	}
-	return nil
 }
 
 func (self *SVpc) SyncWithCloudVpc(ctx context.Context, userCred mcclient.TokenCredential, extVPC cloudprovider.ICloudVpc, provider *SCloudprovider) error {
@@ -608,6 +534,17 @@ func (self *SVpc) SyncWithCloudVpc(ctx context.Context, userCred mcclient.TokenC
 
 		self.IsEmulated = extVPC.IsEmulated()
 		self.ExternalAccessMode = extVPC.GetExternalAccessMode()
+
+		if gId := extVPC.GetGlobalVpcId(); len(gId) > 0 {
+			gVpc, err := db.FetchByExternalIdAndManagerId(GlobalVpcManager, gId, func(q *sqlchemy.SQuery) *sqlchemy.SQuery {
+				return q.Equals("manager_id", self.ManagerId)
+			})
+			if err != nil {
+				log.Errorf("FetchGlobalVpc %s error: %v", gId, err)
+			} else {
+				self.GlobalvpcId = gVpc.GetId()
+			}
+		}
 
 		return nil
 	})
@@ -636,8 +573,17 @@ func (manager *SVpcManager) newFromCloudVpc(ctx context.Context, userCred mcclie
 	vpc.CidrBlock = extVPC.GetCidrBlock()
 	vpc.ExternalAccessMode = extVPC.GetExternalAccessMode()
 	vpc.CloudregionId = region.Id
-
 	vpc.ManagerId = provider.Id
+	if gId := extVPC.GetGlobalVpcId(); len(gId) > 0 {
+		gVpc, err := db.FetchByExternalIdAndManagerId(GlobalVpcManager, gId, func(q *sqlchemy.SQuery) *sqlchemy.SQuery {
+			return q.Equals("manager_id", provider.Id)
+		})
+		if err != nil {
+			log.Errorf("FetchGlobalVpc %s error: %v", gId, err)
+		} else {
+			vpc.GlobalvpcId = gVpc.GetId()
+		}
+	}
 
 	vpc.IsEmulated = extVPC.IsEmulated()
 
@@ -670,7 +616,7 @@ func (manager *SVpcManager) newFromCloudVpc(ctx context.Context, userCred mcclie
 }
 
 func (self *SVpc) markAllNetworksUnknown(userCred mcclient.TokenCredential) error {
-	wires := self.GetWires()
+	wires, _ := self.GetWires()
 	if wires == nil || len(wires) == 0 {
 		return nil
 	}
@@ -874,25 +820,25 @@ func (manager *SVpcManager) ValidateCreateData(
 
 func (self *SVpc) PostCreate(ctx context.Context, userCred mcclient.TokenCredential, ownerId mcclient.IIdentityProvider, query jsonutils.JSONObject, data jsonutils.JSONObject) {
 	input := api.VpcCreateInput{}
-	err := data.Unmarshal(&input)
-	if err != nil {
-		log.Errorf("input unmarshal error %s", err)
-	} else {
-		pendingUsage := &SInfrasQuota{Vpc: 1}
-		keys := GetVpcQuotaKeysFromCreateInput(ownerId, input)
-		pendingUsage.SetKeys(keys)
-		quotas.CancelPendingUsage(ctx, userCred, pendingUsage, pendingUsage, true)
-	}
+	data.Unmarshal(&input)
+	pendingUsage := &SInfrasQuota{Vpc: 1}
+	keys := GetVpcQuotaKeysFromCreateInput(ownerId, input)
+	pendingUsage.SetKeys(keys)
+	quotas.CancelPendingUsage(ctx, userCred, pendingUsage, pendingUsage, true)
+
+	defer func() {
+		self.SEnabledStatusInfrasResourceBase.PostCreate(ctx, userCred, ownerId, query, data)
+	}()
 
 	if len(self.ManagerId) == 0 {
 		return
 	}
 	task, err := taskman.TaskManager.NewTask(ctx, "VpcCreateTask", self, userCred, nil, "", "", nil)
 	if err != nil {
-		log.Errorf("VpcCreateTask newTask error %s", err)
-	} else {
-		task.ScheduleRun(nil)
+		self.SetStatus(userCred, api.VPC_STATUS_FAILED, errors.Wrapf(err, "NewTask").Error())
+		return
 	}
+	task.ScheduleRun(nil)
 }
 
 func (self *SVpc) GetIRegion() (cloudprovider.ICloudRegion, error) {
@@ -908,6 +854,9 @@ func (self *SVpc) GetIRegion() (cloudprovider.ICloudRegion, error) {
 }
 
 func (self *SVpc) GetIVpc() (cloudprovider.ICloudVpc, error) {
+	if len(self.ExternalId) == 0 {
+		return nil, errors.Wrapf(cloudprovider.ErrNotFound, "empty external id")
+	}
 	provider, err := self.GetDriver()
 	if err != nil {
 		return nil, errors.Wrapf(err, "vpc.GetDriver")
@@ -923,13 +872,11 @@ func (self *SVpc) GetIVpc() (cloudprovider.ICloudVpc, error) {
 		iregion, err = provider.GetIRegionById(region.ExternalId)
 	}
 	if err != nil {
-		log.Errorf("fail to find iregion: %s", err)
-		return nil, err
+		return nil, errors.Wrapf(err, "find iregion")
 	}
 	ivpc, err := iregion.GetIVpcById(self.ExternalId)
 	if err != nil {
-		log.Errorf("fail to find ivpc by id %s %s", self.ExternalId, err)
-		return nil, err
+		return nil, errors.Wrapf(err, "GetIVpcById")
 	}
 	return ivpc, nil
 }
@@ -1118,10 +1065,14 @@ func (manager *SVpcManager) ListItemFilter(
 		vpcs := VpcManager.Query().SubQuery()
 		managers := CloudproviderManager.Query().SubQuery()
 		accounts := CloudaccountManager.Query().SubQuery()
+		accUrl := sqlchemy.Equals(accounts.Field("access_url"), account.AccessUrl)
+		if len(account.AccessUrl) == 0 {
+			accUrl = sqlchemy.IsNullOrEmpty(accounts.Field("access_url"))
+		}
 		vpcSQ := vpcs.Query(vpcs.Field("id")).Join(managers, sqlchemy.Equals(vpcs.Field("manager_id"), managers.Field("id"))).Join(accounts, sqlchemy.Equals(managers.Field("cloudaccount_id"), accounts.Field("id"))).Filter(
 			sqlchemy.AND(
 				sqlchemy.Equals(accounts.Field("provider"), account.Provider),
-				sqlchemy.Equals(accounts.Field("access_url"), account.AccessUrl),
+				accUrl,
 			),
 		)
 		q = q.In("id", vpcSQ.SubQuery())
@@ -1438,7 +1389,7 @@ func (vpc *SVpc) GetChangeOwnerCandidateDomainIds() []string {
 
 func (vpc *SVpc) GetChangeOwnerRequiredDomainIds() []string {
 	requires := stringutils2.SSortedStrings{}
-	wires := vpc.GetWires()
+	wires, _ := vpc.GetWires()
 	for i := range wires {
 		requires = stringutils2.Append(requires, wires[i].DomainId)
 	}
@@ -1446,7 +1397,7 @@ func (vpc *SVpc) GetChangeOwnerRequiredDomainIds() []string {
 }
 
 func (vpc *SVpc) GetRequiredSharedDomainIds() []string {
-	wires := vpc.GetWires()
+	wires, _ := vpc.GetWires()
 	if len(wires) == 0 {
 		return vpc.SEnabledStatusInfrasResourceBase.GetRequiredSharedDomainIds()
 	}
@@ -1515,7 +1466,7 @@ func (vpc *SVpc) PerformPublic(ctx context.Context, userCred mcclient.TokenCrede
 		return nil, errors.Wrap(err, "SEnabledStatusInfrasResourceBase.PerformPublic")
 	}
 	// perform public for all emulated wires
-	wires := vpc.GetWires()
+	wires, _ := vpc.GetWires()
 	for i := range wires {
 		if wires[i].IsEmulated {
 			_, err := wires[i].PerformPublic(ctx, userCred, query, input)
@@ -1553,7 +1504,7 @@ func (vpc *SVpc) PerformPrivate(ctx context.Context, userCred mcclient.TokenCred
 	}
 	// perform private for all emulated wires
 	emptyNets := true
-	wires := vpc.GetWires()
+	wires, _ := vpc.GetWires()
 	for i := range wires {
 		if wires[i].DomainId == vpc.DomainId {
 			nets, _ := wires[i].getNetworks(nil, rbacutils.ScopeNone)
@@ -1610,7 +1561,7 @@ func (vpc *SVpc) PerformChangeOwner(ctx context.Context, userCred mcclient.Token
 	if err != nil {
 		return nil, errors.Wrap(err, "SEnabledStatusInfrasResourceBase.PerformChangeOwner")
 	}
-	wires := vpc.GetWires()
+	wires, _ := vpc.GetWires()
 	for i := range wires {
 		if wires[i].IsEmulated {
 			_, err := wires[i].PerformChangeOwner(ctx, userCred, query, input)
@@ -1781,4 +1732,87 @@ func (self *SVpc) IsSupportAssociateEip() bool {
 	}
 
 	return false
+}
+
+func (self *SVpc) AllowGetDetailsTopology(ctx context.Context, userCred mcclient.TokenCredential, query jsonutils.JSONObject) bool {
+	return self.IsOwner(userCred) || db.IsAdminAllowGetSpec(userCred, self, "topology")
+}
+
+func (self *SVpc) GetDetailsTopology(ctx context.Context, userCred mcclient.TokenCredential, input *api.VpcTopologyInput) (*api.VpcTopologyOutput, error) {
+	ret := &api.VpcTopologyOutput{
+		Name:   self.Name,
+		Status: self.Status,
+		Wires:  []api.WireTopologyOutput{},
+	}
+	wires, err := self.GetWires()
+	if err != nil {
+		return ret, errors.Wrapf(err, "GetWires")
+	}
+	for i := range wires {
+		wire := api.WireTopologyOutput{
+			Name:      wires[i].Name,
+			Status:    wires[i].Status,
+			Bandwidth: wires[i].Bandwidth,
+			Networks:  []api.NetworkTopologyOutput{},
+			Hosts:     []api.HostTopologyOutput{},
+		}
+		if len(wires[i].ZoneId) > 0 {
+			zone, _ := wires[i].GetZone()
+			if zone != nil {
+				wire.Zone = zone.Name
+			}
+		}
+		hosts, err := wires[i].GetHosts()
+		if err != nil {
+			return nil, errors.Wrapf(err, "GetHosts for wire %s", wires[i].Id)
+		}
+		for i := range hosts {
+			hns := hosts[i].GetBaremetalnetworks()
+			host := api.HostTopologyOutput{
+				Name:       hosts[i].Name,
+				Id:         hosts[i].Id,
+				Status:     hosts[i].Status,
+				HostStatus: hosts[i].HostStatus,
+				HostType:   hosts[i].HostType,
+				Networks:   []api.HostnetworkTopologyOutput{},
+			}
+			for j := range hns {
+				host.Networks = append(host.Networks, api.HostnetworkTopologyOutput{
+					IpAddr:  hns[j].IpAddr,
+					MacAddr: hns[j].MacAddr,
+				})
+			}
+			wire.Hosts = append(wire.Hosts, host)
+		}
+		networks, err := wires[i].GetNetworks(nil, rbacutils.ScopeSystem)
+		if err != nil {
+			return nil, errors.Wrapf(err, "GetNetworks")
+		}
+		for j := range networks {
+			network := api.NetworkTopologyOutput{
+				Name:         networks[j].Name,
+				Status:       networks[j].Status,
+				GuestIpStart: networks[j].GuestIpStart,
+				GuestIpEnd:   networks[j].GuestIpEnd,
+				GuestIpMask:  networks[j].GuestIpMask,
+				ServerType:   networks[j].ServerType,
+				VlanId:       networks[j].VlanId,
+				Address:      []api.SNetworkUsedAddress{},
+			}
+
+			netAddrs := make([]api.SNetworkUsedAddress, 0)
+
+			q := networks[j].getUsedAddressQuery(userCred, rbacutils.ScopeSystem, false)
+			err = q.All(&netAddrs)
+			if err != nil {
+				return nil, errors.Wrapf(err, "q.All")
+			}
+
+			sort.Sort(SNetworkUsedAddressList(netAddrs))
+			network.Address = netAddrs
+			wire.Networks = append(wire.Networks, network)
+		}
+		ret.Wires = append(ret.Wires, wire)
+	}
+	return ret, nil
 }

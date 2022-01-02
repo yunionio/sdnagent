@@ -148,7 +148,7 @@ func (self *SStorage) PostUpdate(ctx context.Context, userCred mcclient.TokenCre
 	self.SEnabledStatusInfrasResourceBase.PostUpdate(ctx, userCred, query, data)
 
 	if data.Contains("cmtbound") || data.Contains("capacity") {
-		hosts := self.GetAttachedHosts()
+		hosts, _ := self.GetAttachedHosts()
 		for _, host := range hosts {
 			if err := host.ClearSchedDescCache(); err != nil {
 				log.Errorf("clear host %s sched cache failed %v", host.GetName(), err)
@@ -246,7 +246,7 @@ func (manager *SStorageManager) ValidateCreateData(
 
 func (self *SStorage) CustomizeCreate(ctx context.Context, userCred mcclient.TokenCredential, ownerId mcclient.IIdentityProvider, query jsonutils.JSONObject, data jsonutils.JSONObject) error {
 	self.SetEnabled(true)
-	self.SetStatus(userCred, api.STORAGE_OFFLINE, "CustomizeCreate")
+	self.SetStatus(userCred, api.STORAGE_UNMOUNT, "CustomizeCreate")
 	return self.SEnabledStatusInfrasResourceBase.CustomizeCreate(ctx, userCred, ownerId, query, data)
 }
 
@@ -602,7 +602,7 @@ func (self *SStorage) GetFreeCapacity() int64 {
 	return int64(float32(self.GetCapacity())*self.GetOvercommitBound()) - self.GetUsedCapacity(tristate.None)
 }
 
-func (self *SStorage) GetAttachedHosts() []SHost {
+func (self *SStorage) GetAttachedHosts() ([]SHost, error) {
 	hosts := HostManager.Query().SubQuery()
 	hoststorages := HoststorageManager.Query().SubQuery()
 
@@ -613,15 +613,14 @@ func (self *SStorage) GetAttachedHosts() []SHost {
 	hostList := make([]SHost, 0)
 	err := db.FetchModelObjects(HostManager, q, &hostList)
 	if err != nil {
-		log.Errorf("GetAttachedHosts fail %s", err)
-		return nil
+		return nil, errors.Wrapf(err, "GetAttachedHosts")
 	}
-	return hostList
+	return hostList, nil
 }
 
 func (self *SStorage) SyncStatusWithHosts() {
-	hosts := self.GetAttachedHosts()
-	if hosts == nil {
+	hosts, err := self.GetAttachedHosts()
+	if err != nil {
 		return
 	}
 	total := 0
@@ -649,6 +648,9 @@ func (self *SStorage) SyncStatusWithHosts() {
 		status = api.STORAGE_OFFLINE
 	} else {
 		status = api.STORAGE_OFFLINE
+	}
+	if len(hosts) == 0 {
+		status = api.STORAGE_UNMOUNT
 	}
 	if status != self.Status {
 		self.SetStatus(nil, status, "SyncStatusWithHosts")
@@ -1061,6 +1063,8 @@ func (manager *SStorageManager) totalCapacityQ(
 		storages.Field("capacity"),
 		storages.Field("reserved"),
 		storages.Field("cmtbound"),
+		storages.Field("storage_type"),
+		storages.Field("medium_type"),
 		stmt.Field("used_capacity"),
 		stmt.Field("used_count"),
 		stmt2.Field("failed_capacity"),
@@ -1106,6 +1110,8 @@ type StorageStat struct {
 	Capacity             int
 	Reserved             int
 	Cmtbound             float32
+	StorageType          string
+	MediumType           string
 	UsedCapacity         int
 	UsedCount            int
 	FailedCapacity       int
@@ -1127,6 +1133,15 @@ type StoragesCapacityStat struct {
 	CountAttached    int
 	DetachedCapacity int64
 	CountDetached    int
+
+	MediumeCapacity             map[string]int64
+	StorageTypeCapacity         map[string]int64
+	MediumeCapacityUsed         map[string]int64
+	StorageTypeCapacityUsed     map[string]int64
+	AttachedMediumeCapacity     map[string]int64
+	AttachedStorageTypeCapacity map[string]int64
+	DetachedMediumeCapacity     map[string]int64
+	DetachedStorageTypeCapacity map[string]int64
 }
 
 func (manager *SStorageManager) calculateCapacity(q *sqlchemy.SQuery) StoragesCapacityStat {
@@ -1146,33 +1161,65 @@ func (manager *SStorageManager) calculateCapacity(q *sqlchemy.SQuery) StoragesCa
 		atCount int     = 0
 		dtCapa  int64   = 0
 		dtCount int     = 0
+
+		mCapa   = map[string]int64{}
+		sCapa   = map[string]int64{}
+		mFailed = map[string]int64{}
+		sFailed = map[string]int64{}
+		matCapa = map[string]int64{}
+		satCapa = map[string]int64{}
+		mdtCapa = map[string]int64{}
+		sdtCapa = map[string]int64{}
 	)
+	var add = func(m, s map[string]int64, mediumType, storageType string, capa int64) (map[string]int64, map[string]int64) {
+		_, ok := m[mediumType]
+		if !ok {
+			m[mediumType] = 0
+		}
+		m[mediumType] += capa
+		_, ok = s[storageType]
+		if !ok {
+			s[storageType] = 0
+		}
+		s[storageType] += capa
+		return m, s
+	}
 	for _, stat := range stats {
 		tCapa += int64(stat.Capacity - stat.Reserved)
 		if stat.Cmtbound == 0 {
 			stat.Cmtbound = options.Options.DefaultStorageOvercommitBound
 		}
+		mCapa, sCapa = add(mCapa, sCapa, stat.MediumType, stat.StorageType, int64(stat.Capacity-stat.Reserved))
 		tVCapa += float64(stat.Capacity-stat.Reserved) * float64(stat.Cmtbound)
 		tUsed += int64(stat.UsedCapacity)
 		cUsed += stat.UsedCount
 		tFailed += int64(stat.FailedCapacity)
+		mFailed, sFailed = add(mFailed, sFailed, stat.MediumType, stat.StorageType, int64(stat.FailedCapacity))
 		cFailed += stat.FailedCount
 		atCapa += int64(stat.AttachedUsedCapacity)
+		matCapa, satCapa = add(matCapa, satCapa, stat.MediumType, stat.StorageType, int64(stat.AttachedUsedCapacity))
 		atCount += stat.AttachedCount
 		dtCapa += int64(stat.DetachedUsedCapacity)
+		mdtCapa, sdtCapa = add(mdtCapa, sdtCapa, stat.MediumType, stat.StorageType, int64(stat.DetachedUsedCapacity))
 		dtCount += stat.DetachedCount
 	}
 	return StoragesCapacityStat{
-		Capacity:         tCapa,
-		CapacityVirtual:  tVCapa,
-		CapacityUsed:     tUsed,
-		CountUsed:        cUsed,
-		CapacityUnready:  tFailed,
-		CountUnready:     cFailed,
-		AttachedCapacity: atCapa,
-		CountAttached:    atCount,
-		DetachedCapacity: dtCapa,
-		CountDetached:    dtCount,
+		Capacity:                    tCapa,
+		MediumeCapacity:             mCapa,
+		StorageTypeCapacity:         sCapa,
+		CapacityVirtual:             tVCapa,
+		CapacityUsed:                tUsed,
+		CountUsed:                   cUsed,
+		CapacityUnready:             tFailed,
+		CountUnready:                cFailed,
+		AttachedCapacity:            atCapa,
+		AttachedMediumeCapacity:     matCapa,
+		AttachedStorageTypeCapacity: satCapa,
+		CountAttached:               atCount,
+		DetachedCapacity:            dtCapa,
+		DetachedMediumeCapacity:     mdtCapa,
+		DetachedStorageTypeCapacity: sdtCapa,
+		CountDetached:               dtCount,
 	}
 }
 
@@ -1353,7 +1400,7 @@ func (manager *SStorageManager) InitializeData() error {
 	for _, s := range storages {
 		if len(s.ZoneId) == 0 {
 			zoneId := ""
-			hosts := s.GetAttachedHosts()
+			hosts, _ := s.GetAttachedHosts()
 			if hosts != nil && len(hosts) > 0 {
 				zoneId = hosts[0].ZoneId
 			} else {
@@ -1582,7 +1629,7 @@ func (self *SStorage) IsPrepaidRecycleResource() bool {
 	if !self.IsLocal() {
 		return false
 	}
-	hosts := self.GetAttachedHosts()
+	hosts, _ := self.GetAttachedHosts()
 	if len(hosts) != 1 {
 		return false
 	}
@@ -1644,7 +1691,7 @@ func (self *SStorage) StartDeleteRbdDisks(ctx context.Context, userCred mcclient
 func (storage *SStorage) PerformChangeOwner(ctx context.Context, userCred mcclient.TokenCredential, query jsonutils.JSONObject, input apis.PerformChangeDomainOwnerInput) (jsonutils.JSONObject, error) {
 	// not allow to perform public for locally connected storage
 	if storage.IsLocal() {
-		hosts := storage.GetAttachedHosts()
+		hosts, _ := storage.GetAttachedHosts()
 		if len(hosts) > 0 {
 			return nil, errors.Wrap(httperrors.ErrForbidden, "not allow to change owner for local storage")
 		}
@@ -1668,7 +1715,7 @@ func (storage *SStorage) GetChangeOwnerRequiredDomainIds() []string {
 func (storage *SStorage) PerformPublic(ctx context.Context, userCred mcclient.TokenCredential, query jsonutils.JSONObject, input apis.PerformPublicDomainInput) (jsonutils.JSONObject, error) {
 	// not allow to perform public for locally connected storage
 	if storage.IsLocal() {
-		hosts := storage.GetAttachedHosts()
+		hosts, _ := storage.GetAttachedHosts()
 		if len(hosts) > 0 {
 			return nil, errors.Wrap(httperrors.ErrForbidden, "not allow to perform public for local storage")
 		}
@@ -1683,7 +1730,7 @@ func (storage *SStorage) performPublicInternal(ctx context.Context, userCred mcc
 func (storage *SStorage) PerformPrivate(ctx context.Context, userCred mcclient.TokenCredential, query jsonutils.JSONObject, input apis.PerformPrivateInput) (jsonutils.JSONObject, error) {
 	// not allow to perform private for locally conencted storage
 	if storage.IsLocal() {
-		hosts := storage.GetAttachedHosts()
+		hosts, _ := storage.GetAttachedHosts()
 		if len(hosts) > 0 {
 			return nil, errors.Wrap(httperrors.ErrForbidden, "not allow to perform private for local storage")
 		}

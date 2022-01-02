@@ -158,7 +158,7 @@ type SHost struct {
 	HostType string `width:"36" charset:"ascii" nullable:"false" list:"domain" update:"domain" create:"domain_required"`
 
 	// host服务软件版本
-	Version string `width:"64" charset:"ascii" list:"domain" update:"domain" create:"domain_optional"`
+	Version string `width:"128" charset:"ascii" list:"domain" update:"domain" create:"domain_optional"`
 	// OVN软件版本
 	OvnVersion string `width:"64" charset:"ascii" list:"domain" update:"domain" create:"domain_optional"`
 
@@ -442,6 +442,9 @@ func (manager *SHostManager) ListItemFilter(
 	}
 	if len(query.CpuArchitecture) > 0 {
 		q = q.Equals("cpu_architecture", query.CpuArchitecture)
+	}
+	if len(query.OsArch) > 0 {
+		q = db.ListQueryByArchitecture(q, "cpu_architecture", query.OsArch)
 	}
 
 	// for provider onecloud
@@ -2381,7 +2384,7 @@ func (self *SHost) SyncHostVMs(ctx context.Context, userCred mcclient.TokenCrede
 	}
 
 	for i := 0; i < len(commondb); i += 1 {
-		err := commondb[i].syncWithCloudVM(ctx, userCred, iprovider, self, commonext[i], syncOwnerId)
+		err := commondb[i].syncWithCloudVM(ctx, userCred, iprovider, self, commonext[i], syncOwnerId, true)
 		if err != nil {
 			syncResult.UpdateError(err)
 		} else {
@@ -2419,7 +2422,7 @@ func (self *SHost) SyncHostVMs(ctx context.Context, userCred mcclient.TokenCrede
 				continue
 			}
 			host := _host.(*SHost)
-			err = guest.syncWithCloudVM(ctx, userCred, iprovider, host, added[i], syncOwnerId)
+			err = guest.syncWithCloudVM(ctx, userCred, iprovider, host, added[i], syncOwnerId, true)
 			if err != nil {
 				syncResult.UpdateError(err)
 			} else {
@@ -6034,4 +6037,8 @@ func (host *SHost) IsAssignable(userCred mcclient.TokenCredential) error {
 	} else {
 		return httperrors.NewNotSufficientPrivilegeError("Only system admin can assign host")
 	}
+}
+
+func (self *SHost) PerformProbeIsolatedDevices(ctx context.Context, userCred mcclient.TokenCredential, query jsonutils.JSONObject, data jsonutils.JSONObject) (jsonutils.JSONObject, error) {
+	return self.GetHostDriver().RequestProbeIsolatedDevices(ctx, userCred, self, data)
 }

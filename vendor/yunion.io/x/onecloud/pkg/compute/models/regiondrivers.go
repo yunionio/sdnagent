@@ -124,6 +124,8 @@ type IRegionDriver interface {
 	RequestCacheSecurityGroup(ctx context.Context, userCred mcclient.TokenCredential, region *SCloudregion, vpc *SVpc, secgroup *SSecurityGroup, classic bool, removeProjectId string, task taskman.ITask) error
 	RequestSyncSecurityGroup(ctx context.Context, userCred mcclient.TokenCredential, vpcId string, vpc *SVpc, secgroup *SSecurityGroup, removeProjectId, service string) (string, error)
 	GetDefaultSecurityGroupInRule() cloudprovider.SecurityRule
+	GenerateSecurityGroupName(name string) string
+	IsAllowSecurityGroupNameRepeat() bool
 	GetDefaultSecurityGroupOutRule() cloudprovider.SecurityRule
 	GetSecurityGroupRuleMaxPriority() int
 	GetSecurityGroupRuleMinPriority() int
@@ -148,6 +150,8 @@ type IRegionDriver interface {
 	RequestSyncDBInstanceBackupStatus(ctx context.Context, userCred mcclient.TokenCredential, backup *SDBInstanceBackup, task taskman.ITask) error
 
 	RequestCreateNetwork(ctx context.Context, userCred mcclient.TokenCredential, network *SNetwork) error
+
+	ValidateCreateCdnData(ctx context.Context, userCred mcclient.TokenCredential, input api.CDNDomainCreateInput) (api.CDNDomainCreateInput, error)
 }
 
 type IDBInstanceDriver interface {
