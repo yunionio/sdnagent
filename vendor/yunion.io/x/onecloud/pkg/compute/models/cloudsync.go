@@ -1724,7 +1724,9 @@ func syncPublicCloudProviderInfo(
 
 	storageCachePairs := make([]sStoragecacheSyncPair, 0)
 
-	syncRegionQuotas(ctx, userCred, syncResults, driver, provider, localRegion, remoteRegion)
+	if cloudprovider.IsSupportQuota(driver) && syncRange.NeedSyncResource(cloudprovider.CLOUD_CAPABILITY_QUOTA) {
+		syncRegionQuotas(ctx, userCred, syncResults, driver, provider, localRegion, remoteRegion)
+	}
 
 	localZones, remoteZones, _ := syncRegionZones(ctx, userCred, syncResults, provider, localRegion, remoteRegion)
 
@@ -1749,33 +1751,38 @@ func syncPublicCloudProviderInfo(
 		syncRegionBuckets(ctx, userCred, syncResults, provider, localRegion, remoteRegion)
 	}
 
-	if cloudprovider.IsSupportCompute(driver) && syncRange.NeedSyncResource(cloudprovider.CLOUD_CAPABILITY_COMPUTE) {
-		// 需要先同步vpc，避免私有云eip找不到network
-		syncRegionVPCs(ctx, userCred, syncResults, provider, localRegion, remoteRegion, syncRange)
+	if cloudprovider.IsSupportCompute(driver) {
+		if syncRange.NeedSyncResource(cloudprovider.CLOUD_CAPABILITY_NETWORK) {
+			// 需要先同步vpc，避免私有云eip找不到network
+			syncRegionVPCs(ctx, userCred, syncResults, provider, localRegion, remoteRegion, syncRange)
 
-		syncRegionEips(ctx, userCred, syncResults, provider, localRegion, remoteRegion, syncRange)
-		// sync snapshot policies before sync disks
-		syncRegionSnapshotPolicies(ctx, userCred, syncResults, provider, localRegion, remoteRegion, syncRange)
-
-		for j := 0; j < len(localZones); j += 1 {
-
-			if len(syncRange.Zone) > 0 && !utils.IsInStringArray(localZones[j].Id, syncRange.Zone) {
-				continue
-			}
-			// no need to lock zone as public cloud zone is read-only
-
-			newPairs := syncZoneStorages(ctx, userCred, syncResults, provider, driver, &localZones[j], remoteZones[j], syncRange, storageCachePairs)
-			if len(newPairs) > 0 {
-				storageCachePairs = append(storageCachePairs, newPairs...)
-			}
-			newPairs = syncZoneHosts(ctx, userCred, syncResults, provider, driver, &localZones[j], remoteZones[j], syncRange, storageCachePairs)
-			if len(newPairs) > 0 {
-				storageCachePairs = append(storageCachePairs, newPairs...)
-			}
+			syncRegionEips(ctx, userCred, syncResults, provider, localRegion, remoteRegion, syncRange)
 		}
 
-		// sync snapshots after sync disks
-		syncRegionSnapshots(ctx, userCred, syncResults, provider, localRegion, remoteRegion, syncRange)
+		if syncRange.NeedSyncResource(cloudprovider.CLOUD_CAPABILITY_COMPUTE) {
+			// sync snapshot policies before sync disks
+			syncRegionSnapshotPolicies(ctx, userCred, syncResults, provider, localRegion, remoteRegion, syncRange)
+
+			for j := 0; j < len(localZones); j += 1 {
+
+				if len(syncRange.Zone) > 0 && !utils.IsInStringArray(localZones[j].Id, syncRange.Zone) {
+					continue
+				}
+				// no need to lock zone as public cloud zone is read-only
+
+				newPairs := syncZoneStorages(ctx, userCred, syncResults, provider, driver, &localZones[j], remoteZones[j], syncRange, storageCachePairs)
+				if len(newPairs) > 0 {
+					storageCachePairs = append(storageCachePairs, newPairs...)
+				}
+				newPairs = syncZoneHosts(ctx, userCred, syncResults, provider, driver, &localZones[j], remoteZones[j], syncRange, storageCachePairs)
+				if len(newPairs) > 0 {
+					storageCachePairs = append(storageCachePairs, newPairs...)
+				}
+			}
+
+			// sync snapshots after sync disks
+			syncRegionSnapshots(ctx, userCred, syncResults, provider, localRegion, remoteRegion, syncRange)
+		}
 	}
 
 	if cloudprovider.IsSupportNAS(driver) && syncRange.NeedSyncResource(cloudprovider.CLOUD_CAPABILITY_NAS) {
@@ -2131,4 +2138,148 @@ func SyncCloudDomain(userCred mcclient.TokenCredential, model db.IDomainLevelMod
 		newOwnerId = userCred
 	}
 	model.SyncCloudDomainId(userCred, newOwnerId)
+}
+
+func SyncCloudaccountResources(ctx context.Context, userCred mcclient.TokenCredential, account *SCloudaccount, syncRange *SSyncRange) error {
+	provider, err := account.GetProvider()
+	if err != nil {
+		return errors.Wrapf(err, "GetProvider")
+	}
+
+	if cloudprovider.IsSupportProject(provider) && syncRange.NeedSyncResource(cloudprovider.CLOUD_CAPABILITY_PROJECT) {
+		syncProjects(ctx, userCred, SSyncResultSet{}, account, provider)
+	}
+
+	if cloudprovider.IsSupportDnsZone(provider) && syncRange.NeedSyncResource(cloudprovider.CLOUD_CAPABILITY_DNSZONE) {
+		syncDns(ctx, userCred, SSyncResultSet{}, account, provider)
+	}
+
+	return nil
+}
+
+func syncProjects(ctx context.Context, userCred mcclient.TokenCredential, syncResults SSyncResultSet, account *SCloudaccount, provider cloudprovider.ICloudProvider) error {
+	lockman.LockRawObject(ctx, ExternalProjectManager.Keyword(), account.Id)
+	defer lockman.ReleaseRawObject(ctx, ExternalProjectManager.Keyword(), account.Id)
+
+	projects, err := func() ([]cloudprovider.ICloudProject, error) {
+		defer syncResults.AddRequestCost(ExternalProjectManager)()
+		return provider.GetIProjects()
+	}()
+	if err != nil {
+		return errors.Wrapf(err, "GetIProjects")
+	}
+
+	result := func() compare.SyncResult {
+		defer syncResults.AddSqlCost(ExternalProjectManager)()
+		return ExternalProjectManager.SyncProjects(ctx, userCred, account, projects)
+	}()
+
+	syncResults.Add(ExternalProjectManager, result)
+
+	msg := result.Result()
+	log.Infof("SyncProjects for account %s result: %s", account.Name, msg)
+	if result.IsError() {
+		return err
+	}
+	return nil
+}
+
+func syncDns(ctx context.Context, userCred mcclient.TokenCredential, syncResults SSyncResultSet, account *SCloudaccount, provider cloudprovider.ICloudProvider) error {
+	lockman.LockRawObject(ctx, DnsZoneCacheManager.Keyword(), account.Id)
+	defer lockman.ReleaseRawObject(ctx, DnsZoneCacheManager.Keyword(), account.Id)
+
+	dnsZones, err := provider.GetICloudDnsZones()
+	if err != nil {
+		return errors.Wrapf(err, "GetICloudDnsZones")
+	}
+	localZones, remoteZones, result := account.SyncDnsZones(ctx, userCred, dnsZones)
+	log.Infof("Sync dns zones for cloudaccount %s result: %s", account.Name, result.Result())
+	for i := 0; i < len(localZones); i++ {
+		func() {
+			lockman.LockObject(ctx, &localZones[i])
+			defer lockman.ReleaseObject(ctx, &localZones[i])
+
+			if localZones[i].Deleted {
+				return
+			}
+
+			result := localZones[i].SyncDnsRecordSets(ctx, userCred, account.Provider, remoteZones[i])
+			log.Infof("Sync dns records for dns zone %s result: %s", localZones[i].GetName(), result.Result())
+		}()
+	}
+	return nil
+}
+
+func SyncCloudproviderResources(ctx context.Context, userCred mcclient.TokenCredential, provider *SCloudprovider, syncRange *SSyncRange) error {
+	driver, err := provider.GetProvider()
+	if err != nil {
+		return errors.Wrapf(err, "GetProvider")
+	}
+
+	if cloudprovider.IsSupportCDN(driver) && syncRange.NeedSyncResource(cloudprovider.CLOUD_CAPABILITY_CDN) {
+		err = syncCdnDomains(ctx, userCred, SSyncResultSet{}, provider, driver)
+		if err != nil {
+			log.Errorf("syncCdnDomains error: %v", err)
+		}
+	}
+
+	if cloudprovider.IsSupportInterVpcNetwork(driver) && syncRange.NeedSyncResource(cloudprovider.CLOUD_CAPABILITY_INTERVPCNETWORK) {
+		err = syncInterVpcNetworks(ctx, userCred, SSyncResultSet{}, provider, driver)
+		if err != nil {
+			log.Errorf("syncInterVpcNetworks error: %v", err)
+		}
+	}
+
+	if syncRange.NeedSyncResource(cloudprovider.CLOUD_CAPABILITY_NETWORK) {
+		err = syncGlobalVpcs(ctx, userCred, SSyncResultSet{}, provider, driver)
+		if err != nil {
+			log.Errorf("syncGlobalVpcs error: %v", err)
+		}
+	}
+
+	return nil
+}
+
+func syncCdnDomains(ctx context.Context, userCred mcclient.TokenCredential, syncResults SSyncResultSet, provider *SCloudprovider, driver cloudprovider.ICloudProvider) error {
+	domains, err := driver.GetICloudCDNDomains()
+	if err != nil {
+		return err
+	}
+
+	result := provider.SyncCDNDomains(ctx, userCred, domains)
+	log.Infof("Sync CDN for provider %s result: %s", provider.Name, result.Result())
+	return nil
+}
+
+func syncInterVpcNetworks(ctx context.Context, userCred mcclient.TokenCredential, syncResults SSyncResultSet, provider *SCloudprovider, driver cloudprovider.ICloudProvider) error {
+	networks, err := driver.GetICloudInterVpcNetworks()
+	if err != nil {
+		return errors.Wrapf(err, "GetICloudInterVpcNetworks")
+	}
+	localNetwork, remoteNetwork, result := provider.SyncInterVpcNetwork(ctx, userCred, networks)
+	log.Infof("Sync inter vpc network for cloudprovider %s result: %s", provider.GetName(), result.Result())
+	for i := range localNetwork {
+		lockman.LockObject(ctx, &localNetwork[i])
+		defer lockman.ReleaseObject(ctx, &localNetwork[i])
+
+		if localNetwork[i].Deleted {
+			continue
+		}
+		localNetwork[i].SyncInterVpcNetworkRouteSets(ctx, userCred, remoteNetwork[i])
+	}
+	return nil
+}
+
+func syncGlobalVpcs(ctx context.Context, userCred mcclient.TokenCredential, syncResults SSyncResultSet, provider *SCloudprovider, driver cloudprovider.ICloudProvider) error {
+	gvpcs, err := driver.GetICloudGlobalVpcs()
+	if err != nil {
+		if errors.Cause(err) == cloudprovider.ErrNotImplemented || errors.Cause(err) == cloudprovider.ErrNotSupported {
+			return nil
+		}
+		return err
+	}
+
+	result := provider.SyncGlobalVpcs(ctx, userCred, gvpcs)
+	log.Infof("Sync global vpcs for cloudprovider %s result: %s", provider.GetName(), result.Result())
+	return nil
 }

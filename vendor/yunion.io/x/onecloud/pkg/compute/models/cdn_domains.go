@@ -30,6 +30,7 @@ import (
 	"yunion.io/x/onecloud/pkg/cloudcommon/db/lockman"
 	"yunion.io/x/onecloud/pkg/cloudcommon/db/taskman"
 	"yunion.io/x/onecloud/pkg/cloudcommon/notifyclient"
+	"yunion.io/x/onecloud/pkg/cloudcommon/validators"
 	"yunion.io/x/onecloud/pkg/cloudprovider"
 	"yunion.io/x/onecloud/pkg/httperrors"
 	"yunion.io/x/onecloud/pkg/mcclient"
@@ -68,11 +69,11 @@ type SCDNDomain struct {
 	Cname string `list:"user" width:"256"`
 
 	// 源站信息
-	Origins *cloudprovider.SCdnOrigins `list:"user"`
+	Origins *cloudprovider.SCdnOrigins `list:"user" create:"domain_required"`
 	// 服务类别
-	ServiceType string `list:"user" width:"32" update:"admin" create:"admin_required"`
+	ServiceType string `list:"user" width:"32" create:"domain_required"`
 	// 加速区域
-	Area string `list:"user" width:"32" update:"admin" create:"admin_required"`
+	Area string `list:"user" width:"32" update:"domain" create:"domain_required"`
 }
 
 func (manager *SCDNDomainManager) GetContextManagers() [][]db.IModelManager {
@@ -272,11 +273,45 @@ func (manager *SCDNDomainManager) ValidateCreateData(
 	query jsonutils.JSONObject,
 	input api.CDNDomainCreateInput,
 ) (api.CDNDomainCreateInput, error) {
+	if len(input.CloudproviderId) == 0 {
+		return input, httperrors.NewMissingParameterError("cloudprovider_id")
+	}
+	_provider, err := validators.ValidateModel(userCred, CloudproviderManager, &input.CloudproviderId)
+	if err != nil {
+		return input, err
+	}
+	input.ManagerId = input.CloudproviderId
+	provider := _provider.(*SCloudprovider)
+	pp, err := provider.GetProvider()
+	if err != nil {
+		return input, errors.Wrapf(err, "GetProvider")
+	}
+	if !cloudprovider.IsSupportCDN(pp) {
+		return input, httperrors.NewNotSupportedError("%s not support cdn", provider.Provider)
+	}
+	input, err = GetRegionDriver(provider.Provider).ValidateCreateCdnData(ctx, userCred, input)
+	if err != nil {
+		return input, err
+	}
 	return input, nil
 }
 
-func (self *SCDNDomain) CustomizeDelete(ctx context.Context, userCred mcclient.TokenCredential, query jsonutils.JSONObject, data jsonutils.JSONObject) error {
+func (self *SCDNDomain) PostCreate(ctx context.Context, userCred mcclient.TokenCredential, ownerId mcclient.IIdentityProvider, query jsonutils.JSONObject, data jsonutils.JSONObject) {
+	self.SEnabledStatusInfrasResourceBase.PostCreate(ctx, userCred, ownerId, query, data)
+	self.StartCdnCreateTask(ctx, userCred, "")
+}
 
+func (self *SCDNDomain) StartCdnCreateTask(ctx context.Context, userCred mcclient.TokenCredential, parentTaskId string) error {
+	params := jsonutils.NewDict()
+	task, err := taskman.TaskManager.NewTask(ctx, "CDNDomainCreateTask", self, userCred, params, parentTaskId, "", nil)
+	if err != nil {
+		return errors.Wrapf(err, "NewTask")
+	}
+	self.SetStatus(userCred, apis.STATUS_CREATING, "")
+	return task.ScheduleRun(nil)
+}
+
+func (self *SCDNDomain) CustomizeDelete(ctx context.Context, userCred mcclient.TokenCredential, query jsonutils.JSONObject, data jsonutils.JSONObject) error {
 	return self.StartDeleteTask(ctx, userCred, "")
 }
 
@@ -405,10 +440,6 @@ func (manager *SCDNDomainManager) ListItemExportKeys(ctx context.Context,
 	return q, nil
 }
 
-func (self *SCDNDomain) AllowPerformSyncstatus(ctx context.Context, userCred mcclient.TokenCredential, query jsonutils.JSONObject, data jsonutils.JSONObject) bool {
-	return db.IsAdminAllowPerform(userCred, self, "syncstatus")
-}
-
 // 同步域名状态
 func (self *SCDNDomain) PerformSyncstatus(ctx context.Context, userCred mcclient.TokenCredential, query jsonutils.JSONObject, input api.NatGatewaySyncstatusInput) (jsonutils.JSONObject, error) {
 	var openTask = true
@@ -425,10 +456,6 @@ func (self *SCDNDomain) PerformSyncstatus(ctx context.Context, userCred mcclient
 
 func (self *SCDNDomain) StartSyncstatus(ctx context.Context, userCred mcclient.TokenCredential, parentTaskId string) error {
 	return StartResourceSyncStatusTask(ctx, userCred, self, "CDNDomainSyncstatusTask", parentTaskId)
-}
-
-func (self *SCDNDomain) AllowPerformRemoteUpdate(ctx context.Context, userCred mcclient.TokenCredential, query jsonutils.JSONObject, data jsonutils.JSONObject) bool {
-	return self.IsOwner(userCred) || db.IsAdminAllowPerform(userCred, self, "remote-update")
 }
 
 func (self *SCDNDomain) PerformRemoteUpdate(ctx context.Context, userCred mcclient.TokenCredential, query jsonutils.JSONObject, input api.MongoDBRemoteUpdateInput) (jsonutils.JSONObject, error) {

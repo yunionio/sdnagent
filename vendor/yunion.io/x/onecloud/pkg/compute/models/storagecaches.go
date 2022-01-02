@@ -84,7 +84,8 @@ func (self *SStoragecache) getValidStorages() []SStorage {
 	q := StorageManager.Query()
 	q = q.Equals("storagecache_id", self.Id).
 		Filter(sqlchemy.In(q.Field("status"), []string{api.STORAGE_ENABLED, api.STORAGE_ONLINE})).
-		Filter(sqlchemy.IsTrue(q.Field("enabled")))
+		Filter(sqlchemy.IsTrue(q.Field("enabled"))).
+		Filter(sqlchemy.IsFalse(q.Field("deleted")))
 	err := db.FetchModelObjects(StorageManager, q, &storages)
 	if err != nil {
 		return nil
@@ -525,10 +526,6 @@ func (self *SStoragecache) ValidateDeleteCondition(ctx context.Context, info jso
 	return self.SStandaloneResourceBase.ValidateDeleteCondition(ctx, nil)
 }
 
-func (self *SStoragecache) AllowPerformUncacheImage(ctx context.Context, userCred mcclient.TokenCredential, query jsonutils.JSONObject, data jsonutils.JSONObject) bool {
-	return db.IsAdminAllowPerform(userCred, self, "uncache-image")
-}
-
 func (self *SStoragecache) PerformUncacheImage(ctx context.Context, userCred mcclient.TokenCredential, query jsonutils.JSONObject, data jsonutils.JSONObject) (jsonutils.JSONObject, error) {
 	imageStr, _ := data.GetString("image")
 	if len(imageStr) == 0 {
@@ -579,10 +576,6 @@ func (self *SStoragecache) PerformUncacheImage(ctx context.Context, userCred mcc
 	err = self.StartImageUncacheTask(ctx, userCred, imageId, isForce, "")
 
 	return nil, err
-}
-
-func (self *SStoragecache) AllowPerformCacheImage(ctx context.Context, userCred mcclient.TokenCredential, query jsonutils.JSONObject, data jsonutils.JSONObject) bool {
-	return db.IsAdminAllowPerform(userCred, self, "cache-image")
 }
 
 func (self *SStoragecache) PerformCacheImage(ctx context.Context, userCred mcclient.TokenCredential, query jsonutils.JSONObject, input api.CacheImageInput) (jsonutils.JSONObject, error) {

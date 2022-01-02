@@ -251,7 +251,10 @@ func (self *SDnsRecordSet) PostCreate(ctx context.Context, userCred mcclient.Tok
 		return
 	}
 	logclient.AddSimpleActionLog(dnsZone, logclient.ACT_ALLOCATE, data, userCred, true)
-	notifyclient.NotifyWebhook(ctx, userCred, self, notifyclient.ActionCreate)
+	notifyclient.EventNotify(ctx, userCred, notifyclient.SEventNotifyParam{
+		Obj:    self,
+		Action: notifyclient.ActionCreate,
+	})
 	dnsZone.DoSyncRecords(ctx, userCred)
 }
 
@@ -450,6 +453,10 @@ func (self *SDnsRecordSet) syncRemove(ctx context.Context, userCred mcclient.Tok
 			return errors.Wrapf(err, "RemovePolicy")
 		}
 	}
+	notifyclient.EventNotify(ctx, userCred, notifyclient.SEventNotifyParam{
+		Obj:    self,
+		Action: notifyclient.ActionSyncDelete,
+	})
 	return self.Delete(ctx, userCred)
 }
 
@@ -461,7 +468,10 @@ func (self *SDnsRecordSet) PreDelete(ctx context.Context, userCred mcclient.Toke
 		return
 	}
 	logclient.AddSimpleActionLog(dnsZone, logclient.ACT_ALLOCATE, self, userCred, true)
-	notifyclient.NotifyWebhook(ctx, userCred, self, notifyclient.ActionDelete)
+	notifyclient.EventNotify(ctx, userCred, notifyclient.SEventNotifyParam{
+		Obj:    self,
+		Action: notifyclient.ActionDelete,
+	})
 	dnsZone.DoSyncRecords(ctx, userCred)
 }
 
@@ -665,7 +675,7 @@ func (self *SDnsRecordSet) GetDnsZone() (*SDnsZone, error) {
 }
 
 func (self *SDnsRecordSet) syncWithCloudDnsRecord(ctx context.Context, userCred mcclient.TokenCredential, provider string, ext cloudprovider.DnsRecordSet) error {
-	_, err := db.Update(self, func() error {
+	diff, err := db.Update(self, func() error {
 		self.Name = ext.DnsName
 		self.Enabled = tristate.NewFromBool(ext.Enabled)
 		self.Status = ext.Status
@@ -677,6 +687,12 @@ func (self *SDnsRecordSet) syncWithCloudDnsRecord(ctx context.Context, userCred 
 	})
 	if err != nil {
 		return errors.Wrapf(err, "update")
+	}
+	if len(diff) > 0 {
+		notifyclient.EventNotify(ctx, userCred, notifyclient.SEventNotifyParam{
+			Obj:    self,
+			Action: notifyclient.ActionSyncUpdate,
+		})
 	}
 	return self.setTrafficPolicy(ctx, userCred, provider, ext.PolicyType, ext.PolicyValue, ext.PolicyOptions)
 }
@@ -725,10 +741,6 @@ func (self *SDnsRecordSet) setTrafficPolicy(ctx context.Context, userCred mcclie
 	return DnsRecordSetTrafficPolicyManager.TableSpec().Insert(ctx, recordPolicy)
 }
 
-func (self *SDnsRecordSet) AllowPerformEnable(ctx context.Context, userCred mcclient.TokenCredential, query jsonutils.JSONObject, input api.DnsRecordEnableInput) bool {
-	return db.IsDomainAllowPerform(userCred, self, "enable")
-}
-
 // 启用
 func (self *SDnsRecordSet) PerformEnable(ctx context.Context, userCred mcclient.TokenCredential, query jsonutils.JSONObject, input api.DnsRecordEnableInput) (jsonutils.JSONObject, error) {
 	_, err := self.SEnabledStatusStandaloneResourceBase.PerformEnable(ctx, userCred, query, input.PerformEnableInput)
@@ -743,10 +755,6 @@ func (self *SDnsRecordSet) PerformEnable(ctx context.Context, userCred mcclient.
 	return nil, nil
 }
 
-func (self *SDnsRecordSet) AllowPerformDisable(ctx context.Context, userCred mcclient.TokenCredential, query jsonutils.JSONObject, input api.DnsRecordDisableInput) bool {
-	return db.IsDomainAllowPerform(userCred, self, "disable")
-}
-
 // 禁用
 func (self *SDnsRecordSet) PerformDisable(ctx context.Context, userCred mcclient.TokenCredential, query jsonutils.JSONObject, input api.DnsRecordDisableInput) (jsonutils.JSONObject, error) {
 	_, err := self.SEnabledStatusStandaloneResourceBase.PerformDisable(ctx, userCred, query, input.PerformDisableInput)
@@ -759,10 +767,6 @@ func (self *SDnsRecordSet) PerformDisable(ctx context.Context, userCred mcclient
 	}
 	dnsZone.DoSyncRecords(ctx, userCred)
 	return nil, nil
-}
-
-func (self *SDnsRecordSet) AllowPerformSetTrafficPolicies(ctx context.Context, userCred mcclient.TokenCredential, query jsonutils.JSONObject, input api.DnsRecordDisableInput) bool {
-	return db.IsDomainAllowPerform(userCred, self, "set-traffic-policies")
 }
 
 // 设置流量策略

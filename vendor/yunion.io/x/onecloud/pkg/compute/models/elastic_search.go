@@ -629,10 +629,6 @@ func (manager *SElasticSearchManager) ListItemExportKeys(ctx context.Context,
 }
 
 //同步ElasticSearch实例状态
-func (self *SElasticSearch) AllowPerformSyncstatus(ctx context.Context, userCred mcclient.TokenCredential, query jsonutils.JSONObject, data jsonutils.JSONObject) bool {
-	return self.IsOwner(userCred) || db.IsAdminAllowPerform(userCred, self, "syncstatus")
-}
-
 func (self *SElasticSearch) PerformSyncstatus(ctx context.Context, userCred mcclient.TokenCredential, query jsonutils.JSONObject, data jsonutils.JSONObject) (jsonutils.JSONObject, error) {
 	var openTask = true
 	count, err := taskman.TaskManager.QueryTasksOfObject(self, time.Now().Add(-3*time.Minute), &openTask).CountWithError()
@@ -644,4 +640,12 @@ func (self *SElasticSearch) PerformSyncstatus(ctx context.Context, userCred mccl
 	}
 
 	return nil, StartResourceSyncStatusTask(ctx, userCred, self, "ElasticSearchSyncstatusTask", "")
+}
+
+func (self *SElasticSearch) GetDetailsAccessInfo(ctx context.Context, userCred mcclient.TokenCredential, input api.ElasticSearchAccessInfoInput) (*cloudprovider.ElasticSearchAccessInfo, error) {
+	iEs, err := self.GetIElasticSearch()
+	if err != nil {
+		return nil, err
+	}
+	return iEs.GetAccessInfo()
 }

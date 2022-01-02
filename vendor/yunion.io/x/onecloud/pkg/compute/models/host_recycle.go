@@ -46,10 +46,6 @@ func (self *SHost) GetResourceType() string {
 	return api.HostResourceTypeDefault
 }
 
-func (self *SGuest) AllowPerformPrepaidRecycle(ctx context.Context, userCred mcclient.TokenCredential, query jsonutils.JSONObject, data jsonutils.JSONObject) bool {
-	return db.IsAdminAllowPerform(userCred, self, "prepaid-recycle")
-}
-
 func (self *SGuest) CanPerformPrepaidRecycle() error {
 	if self.BillingType != billing_api.BILLING_TYPE_PREPAID {
 		return fmt.Errorf("recycle prepaid server only")
@@ -300,10 +296,6 @@ func (self *SGuest) doPrepaidRecycleNoLock(ctx context.Context, userCred mcclien
 	return nil
 }
 
-func (self *SGuest) AllowPerformUndoPrepaidRecycle(ctx context.Context, userCred mcclient.TokenCredential, query jsonutils.JSONObject, data jsonutils.JSONObject) bool {
-	return db.IsAdminAllowPerform(userCred, self, "undo-prepaid-recycle")
-}
-
 func (self *SGuest) PerformUndoPrepaidRecycle(ctx context.Context, userCred mcclient.TokenCredential, query jsonutils.JSONObject, data jsonutils.JSONObject) (jsonutils.JSONObject, error) {
 	if !self.IsInStatus(api.VM_READY, api.VM_RUNNING) {
 		return nil, httperrors.NewInvalidStatusError("cannot undo recycle in status %s", self.Status)
@@ -333,10 +325,6 @@ func (self *SGuest) PerformUndoPrepaidRecycle(ctx context.Context, userCred mccl
 	logclient.AddActionLogWithContext(ctx, self, logclient.ACT_UNDO_RECYCLE_PREPAID, self.GetShortDesc(ctx), userCred, true)
 
 	return nil, nil
-}
-
-func (self *SHost) AllowPerformUndoPrepaidRecycle(ctx context.Context, userCred mcclient.TokenCredential, query jsonutils.JSONObject, data jsonutils.JSONObject) bool {
-	return db.IsAdminAllowPerform(userCred, self, "undo-prepaid-recycle")
 }
 
 func (self *SHost) PerformUndoPrepaidRecycle(ctx context.Context, userCred mcclient.TokenCredential, query jsonutils.JSONObject, data jsonutils.JSONObject) (jsonutils.JSONObject, error) {
@@ -673,7 +661,7 @@ func (host *SHost) RebuildRecycledGuest(ctx context.Context, userCred mcclient.T
 		return err
 	}
 
-	err = guest.syncWithCloudVM(ctx, userCred, iprovider, &oHost, extVM, nil)
+	err = guest.syncWithCloudVM(ctx, userCred, iprovider, &oHost, extVM, nil, true)
 	if err != nil {
 		log.Errorf("guest.syncWithCloudVM fail %s", err)
 		return err
@@ -717,10 +705,6 @@ func (manager *SHostManager) GetHostByRealExternalId(eid string) *SHost {
 	}
 
 	return &host
-}
-
-func (self *SHost) AllowPerformRenewPrepaidRecycle(ctx context.Context, userCred mcclient.TokenCredential, query jsonutils.JSONObject, data jsonutils.JSONObject) bool {
-	return db.IsAdminAllowPerform(userCred, self, "renew-prepaid-recycle")
 }
 
 func (self *SHost) PerformRenewPrepaidRecycle(ctx context.Context, userCred mcclient.TokenCredential, query jsonutils.JSONObject, data jsonutils.JSONObject) (jsonutils.JSONObject, error) {

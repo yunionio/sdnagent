@@ -60,6 +60,7 @@ const (
 	ACT_VM_START                     = "vm_start"
 	ACT_VM_STOP                      = "vm_stop"
 	ACT_VM_RESTART                   = "vm_restart"
+	ACT_VM_RESUME                    = "vm_resume"
 	ACT_VM_SYNC_CONF                 = "vm_sync_conf"
 	ACT_VM_SYNC_STATUS               = "vm_sync_status"
 	ACT_VM_UNBIND_KEYPAIR            = "vm_unbind_keypair"
@@ -97,9 +98,11 @@ const (
 	ACT_VM_SNAPSHOT_AND_CLONE        = "vm_snapshot_and_clone"
 	ACT_VM_BLOCK_STREAM              = "vm_block_stream"
 	ACT_ATTACH_NETWORK               = "attach_network"
+	ACT_DETACH_NETWORK               = "detach_network"
 	ACT_VM_CONVERT                   = "vm_convert"
 	ACT_FREEZE                       = "freeze"
 	ACT_UNFREEZE                     = "unfreeze"
+	ACT_VM_SYNC_ISOLATED_DEVICE      = "vm_sync_isolated_device"
 
 	ACT_CACHED_IMAGE = "cached_image"
 
@@ -156,6 +159,8 @@ const (
 	ACT_NATGATEWAY_DISSOCIATE   = "natgateway_dissociate"
 	ACT_LOADBALANCER_DISSOCIATE = "loadbalancer_dissociate"
 
+	ACT_INSTANCE_GROUP_DISSOCIATE = "instancegroup_dissociate"
+
 	ACT_PREPARE = "prepare"
 	ACT_PROBE   = "probe"
 
@@ -207,4 +212,6 @@ const (
 	ACT_CLOUDACCOUNT_SYNC_NETWORK = "sync_network"
 
 	ACT_MERGE_NETWORK = "merge_network"
+
+	ACT_RESTART_NETWORK = "restart_network"
 )

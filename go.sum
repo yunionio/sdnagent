@@ -47,6 +47,7 @@ github.com/BurntSushi/toml v0.3.0/go.mod h1:xHWCNGjB5oqiDr8zfno3MHue2Ht5sIBksp03
 github.com/BurntSushi/toml v0.3.1 h1:WXkYYl6Yr3qBf1K79EBnL4mak0OimBfB0XUf9Vl28OQ=
 github.com/BurntSushi/toml v0.3.1/go.mod h1:xHWCNGjB5oqiDr8zfno3MHue2Ht5sIBksp03qcyfWMU=
 github.com/BurntSushi/xgb v0.0.0-20160522181843-27f122750802/go.mod h1:IVnqGOEym/WlBOVXweHU+Q+/VP0lqqI8lqeDx9IjBqo=
+github.com/ClickHouse/clickhouse-go v1.4.7 h1:NNZQmlW8dVxGn19pF65BmWr0vq8Pj5Iy8ykyBKhFCPw=
 github.com/ClickHouse/clickhouse-go v1.4.7/go.mod h1:EaI/sW7Azgz9UATzd5ZdZHRUhHgv5+JMS9NSr2smCJI=
 github.com/DataDog/dd-trace-go v0.6.1/go.mod h1:SmQTTcC37XMyEm75HV0AWiZIYxDiaNhRi49zorIpW+o=
 github.com/DataDog/zstd v1.3.4/go.mod h1:1jcaCB/ufaK+sKp1NBhlGmpz41jOoPQ35bpF36t7BBo=
@@ -148,6 +149,7 @@ github.com/cheekybits/genny v0.0.0-20170328200008-9127e812e1e9/go.mod h1:+tQajlR
 github.com/cheggaaa/pb/v3 v3.0.8/go.mod h1:UICbiLec/XO6Hw6k+BHEtHeQFzzBH4i2/qk/ow1EJTA=
 github.com/client9/misspell v0.3.4/go.mod h1:qj6jICC3Q7zFZvVWo7KLAzC3yx5G7kyvSDkc90ppPyw=
 github.com/cloudflare/cfssl v0.0.0-20180726162950-56268a613adf/go.mod h1:yMWuSON2oQp+43nFtAV/uvKQIFpSPerB57DCt9t8sSA=
+github.com/cloudflare/golz4 v0.0.0-20150217214814-ef862a3cdc58 h1:F1EaeKL/ta07PY/k9Os/UFtwERei2/XzGemhpGnBKNg=
 github.com/cloudflare/golz4 v0.0.0-20150217214814-ef862a3cdc58/go.mod h1:EOBUe0h4xcZ5GoxqC5SDxFQ8gwyZPKQoEzownBlhI80=
 github.com/clusterhq/flocker-go v0.0.0-20160920122132-2b8b7259d313/go.mod h1:P1wt9Z3DP8O6W3rvwCt0REIlshg1InHImaLW0t3ObY0=
 github.com/cncf/udpa/go v0.0.0-20191209042840-269d4d468f6f/go.mod h1:M8M6+tZqaGXZJjfX53e64911xZQV5JYwmTeXPW+k8Sc=
@@ -533,6 +535,8 @@ github.com/mattn/go-shellwords v1.0.5/go.mod h1:3xCvwCdWdlDJUrvuMn7Wuy9eWs4pE8vq
 github.com/mattn/go-sqlite3 v1.7.0/go.mod h1:FPy6KqzDD04eiIsT53CuJW3U88zkxoIYsOqkbpncsNc=
 github.com/mattn/go-sqlite3 v1.9.0/go.mod h1:FPy6KqzDD04eiIsT53CuJW3U88zkxoIYsOqkbpncsNc=
 github.com/mattn/go-sqlite3 v1.10.0/go.mod h1:FPy6KqzDD04eiIsT53CuJW3U88zkxoIYsOqkbpncsNc=
+github.com/mattn/go-sqlite3 v1.14.9 h1:10HX2Td0ocZpYEjhilsuo6WWtUqttj2Kb0KtD86/KYA=
+github.com/mattn/go-sqlite3 v1.14.9/go.mod h1:NyWgC/yNuGj7Q9rpYnZvas74GogHl5/Z4A/KQRfk6bU=
 github.com/mattn/go-tty v0.0.0-20181127064339-e4f871175a2f/go.mod h1:XPvLUNfbS4fJH25nqRHfWLMa1ONC8Amw+mIA639KxkE=
 github.com/matttproud/golang_protobuf_extensions v1.0.1 h1:4hp9jkHxhMHkqkrB3Ix0jegS5sx/RkqARlsWZ6pIwiU=
 github.com/matttproud/golang_protobuf_extensions v1.0.1/go.mod h1:D8He9yQNgCq6Z5Ld7szi9bcBfOoFv/3dc6xSMkL2PC0=
@@ -587,6 +591,7 @@ github.com/morikuni/aec v0.0.0-20170113033406-39771216ff4c/go.mod h1:BbKIizmSmc5
 github.com/moul/http2curl v1.0.0 h1:dRMWoAtb+ePxMlLkrCbAqh4TlPHXvoGUSQ323/9Zahs=
 github.com/moul/http2curl v1.0.0/go.mod h1:8UbvGypXm98wA/IqH45anm5Y2Z6ep6O31QGOAZ3H0fQ=
 github.com/mozillazg/go-httpheader v0.2.1/go.mod h1:jJ8xECTlalr6ValeXYdOF8fFUISeBAdw6E61aqQma60=
+github.com/mozillazg/go-pinyin v0.15.0 h1:sSwlnsogK/WMzcf0HnjgxyAI4GU6LFqwXnhr77q1Z80=
 github.com/mozillazg/go-pinyin v0.15.0/go.mod h1:bO+dztNW6O2lSJdYLha7LO3bujXzjjU3UvKb2IGANfg=
 github.com/mrunalp/fileutils v0.0.0-20160930181131-4ee1cc9a8058/go.mod h1:x8F1gnqOkIEiO4rqoeEEEqQbo7HjGMTvyoq3gej4iT0=
 github.com/mschoch/smat v0.0.0-20160514031455-90eadee771ae/go.mod h1:qAyveg+e4CE+eKJXWVjKXM4ck2QobLqTDytGJbLLhJg=
@@ -623,6 +628,7 @@ github.com/pelletier/go-toml v1.2.0/go.mod h1:5z9KED0ma1S8pY6P1sdut58dfprrGBbd/9
 github.com/peterbourgon/diskv v2.0.1+incompatible/go.mod h1:uqqh8zWWbv1HBMNONnaR/tNboyR3/BZd58JJSHlUSCU=
 github.com/philhofer/fwd v1.0.0/go.mod h1:gk3iGcWd9+svBvR0sR+KPcfE+RNWozjowpeBVG3ZVNU=
 github.com/pierrec/lz4 v2.0.5+incompatible/go.mod h1:pdkljMzZIN41W+lC3N2tnIh5sFi+IEE17M5jbnwPHcY=
+github.com/pierrec/lz4/v4 v4.1.12/go.mod h1:gZWDp/Ze/IJXGXf23ltt2EXimqmTUXEy0GFuRQyBid4=
 github.com/pkg/errors v0.8.0/go.mod h1:bwawxfHBFNV+L2hUp1rHADufV3IMtnDRdf1r5NINEl0=
 github.com/pkg/errors v0.8.1 h1:iURUrRGxPUNPdy5/HRSm+Yj6okJ6UtLINN0Q9M4+h3I=
 github.com/pkg/errors v0.8.1/go.mod h1:bwawxfHBFNV+L2hUp1rHADufV3IMtnDRdf1r5NINEl0=
@@ -1192,6 +1198,10 @@ yunion.io/x/jsonutils v0.0.0-20201110084044-3e4e1cb49769 h1:LIQ4hhLGQuQK+XxlV+8J
 yunion.io/x/jsonutils v0.0.0-20201110084044-3e4e1cb49769/go.mod h1:p0nyMqGA/apTxxyLIU/o1k4V7Vujl2O6ey30L594sYE=
 yunion.io/x/jsonutils v0.0.0-20211105163012-d846c05a3c9a h1:X/ucfLNcYsCfc4GFEX7R7GNWiDPr3vopLdnE4PuU46U=
 yunion.io/x/jsonutils v0.0.0-20211105163012-d846c05a3c9a/go.mod h1:p0nyMqGA/apTxxyLIU/o1k4V7Vujl2O6ey30L594sYE=
+yunion.io/x/jsonutils v0.0.0-20211130131136-1ecbe9b96761 h1:UYAZqKFv5qebn6vFUe8gTXbKxMRiveecGRXk9VgdSmM=
+yunion.io/x/jsonutils v0.0.0-20211130131136-1ecbe9b96761/go.mod h1:p0nyMqGA/apTxxyLIU/o1k4V7Vujl2O6ey30L594sYE=
+yunion.io/x/jsonutils v0.0.0-20211213041607-f6733e38783e h1:zOVxZ0HrDOHLTm5YxkDKUm1x5jMVKbQ/iBSAyn5l1+Q=
+yunion.io/x/jsonutils v0.0.0-20211213041607-f6733e38783e/go.mod h1:p0nyMqGA/apTxxyLIU/o1k4V7Vujl2O6ey30L594sYE=
 yunion.io/x/log v0.0.0-20190514041436-04ce53b17c6b/go.mod h1:+gauLs73omeJAPlsXcevLsJLKixV+sR/E7WSYTSx1fE=
 yunion.io/x/log v0.0.0-20190629062853-9f6483a7103d h1:59zrDL7Ft+hDukguJRmLr/Gdu/9V75x+yX99ovZwfaA=
 yunion.io/x/log v0.0.0-20190629062853-9f6483a7103d/go.mod h1:LC6f/4FozL0iaAbnFt2eDX9jlsyo3WiOUPm03d7+U4U=
@@ -1215,6 +1225,10 @@ yunion.io/x/onecloud v0.0.0-20210128125021-0f028562876e h1:6VR9x00h04cvy7N4bWgK2
 yunion.io/x/onecloud v0.0.0-20210128125021-0f028562876e/go.mod h1:Oi0lusneZlmm+SQw8AywU13dxmk6fM+RO2a+soNnzyI=
 yunion.io/x/onecloud v0.0.0-20211117211642-ae3104e9809f h1:JHxC+RsHY00Nucc8RXDc0V1hCKSQsFLQ/kLgi7JsD7k=
 yunion.io/x/onecloud v0.0.0-20211117211642-ae3104e9809f/go.mod h1:B+BcdgLB2QNAWWCwvjPbqVwYY9uTKT6TwKmiZ9h9Iqw=
+yunion.io/x/onecloud v0.0.0-20211227075724-c97469296265 h1:h9PvcdaWv9XA+/ez06TOMCnfxpx5vHwOWv3hBpPlLYk=
+yunion.io/x/onecloud v0.0.0-20211227075724-c97469296265/go.mod h1:PPZj+4b0og0cc4R7UKwsblQzJ4Mubj2v8ufPvUwFUDc=
+yunion.io/x/onecloud v0.0.0-20220102004932-9fa6696e3c97 h1:bqVbZ4S4eix/stb60H47p9VHKniW2cLZzZ/7ywi9/Ps=
+yunion.io/x/onecloud v0.0.0-20220102004932-9fa6696e3c97/go.mod h1:Y9lBUShzlyJcNXapNLkWGU1bheC6qB65BihlKVDgcKM=
 yunion.io/x/ovsdb v0.0.0-20200526071744-27bf0940cbc7/go.mod h1:0vLkNEhlmA64HViPBAnSTUMrx5QP1CLsxXmxDKQ80tc=
 yunion.io/x/pkg v0.0.0-20190620104149-945c25821dbf/go.mod h1:t6rEGG2sQ4J7DhFxSZVOTjNd0YO/KlfWQyK1W4tog+E=
 yunion.io/x/pkg v0.0.0-20190628082551-f4033ba2ea30/go.mod h1:t6rEGG2sQ4J7DhFxSZVOTjNd0YO/KlfWQyK1W4tog+E=
@@ -1240,5 +1254,9 @@ yunion.io/x/sqlchemy v0.0.0-20201219153152-2d901261898c h1:71nVDQq1oUjvZknEUNfet
 yunion.io/x/sqlchemy v0.0.0-20201219153152-2d901261898c/go.mod h1:FTdwPdGhMgh4E+UFXc9klI1Ok34fMuybTT+jLhOaIjI=
 yunion.io/x/sqlchemy v0.0.0-20211116231750-5ec40db49db1 h1:WxvTLANfa01EFTORGY2GapbdjQkuLaQ/CwMDdBy632U=
 yunion.io/x/sqlchemy v0.0.0-20211116231750-5ec40db49db1/go.mod h1:FTdwPdGhMgh4E+UFXc9klI1Ok34fMuybTT+jLhOaIjI=
+yunion.io/x/sqlchemy v0.0.0-20211212072622-e63b8097854a h1:2x6ee1ZTSEqrUpNWKByKP+BxejEYTYxx09pFmWems4A=
+yunion.io/x/sqlchemy v0.0.0-20211212072622-e63b8097854a/go.mod h1:FTdwPdGhMgh4E+UFXc9klI1Ok34fMuybTT+jLhOaIjI=
+yunion.io/x/sqlchemy v0.0.0-20211226083340-1ba177bc58be h1:LCmMlLgRLr6EmnMQtzbsys6QGY2wfFk+1IOgb2tG/7E=
+yunion.io/x/sqlchemy v0.0.0-20211226083340-1ba177bc58be/go.mod h1:FTdwPdGhMgh4E+UFXc9klI1Ok34fMuybTT+jLhOaIjI=
 yunion.io/x/structarg v0.0.0-20200720093445-9f850fa222ce h1:kU8xE7O5uZ1GSJVMZHoJ+jrNL7csUQHYGyAPW9QfNpE=
 yunion.io/x/structarg v0.0.0-20200720093445-9f850fa222ce/go.mod h1:EP6NSv2C0zzqBDTKumv8hPWLb3XvgMZDHQRfyuOrQng=

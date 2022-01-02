@@ -1,7 +1,18 @@
 # github.com/360EntSecGroup-Skylar/excelize v1.4.0
 github.com/360EntSecGroup-Skylar/excelize
+# github.com/ClickHouse/clickhouse-go v1.4.7
+github.com/ClickHouse/clickhouse-go
+github.com/ClickHouse/clickhouse-go/lib/binary
+github.com/ClickHouse/clickhouse-go/lib/cityhash102
+github.com/ClickHouse/clickhouse-go/lib/column
+github.com/ClickHouse/clickhouse-go/lib/data
+github.com/ClickHouse/clickhouse-go/lib/lz4
+github.com/ClickHouse/clickhouse-go/lib/protocol
+github.com/ClickHouse/clickhouse-go/lib/types
 # github.com/beevik/etree v1.1.0
 github.com/beevik/etree
+# github.com/cloudflare/golz4 v0.0.0-20150217214814-ef862a3cdc58
+github.com/cloudflare/golz4
 # github.com/coredns/coredns v1.3.0
 github.com/coredns/coredns/plugin/pkg/log
 # github.com/coreos/go-iptables v0.4.5
@@ -88,6 +99,8 @@ github.com/magiconair/properties
 github.com/mattn/go-colorable
 # github.com/mattn/go-isatty v0.0.14
 github.com/mattn/go-isatty
+# github.com/mattn/go-sqlite3 v1.14.9
+github.com/mattn/go-sqlite3
 # github.com/mgutz/ansi v0.0.0-20170206155736-9520e82c474b
 github.com/mgutz/ansi
 # github.com/minio/minio-go v6.0.14+incompatible
@@ -110,6 +123,8 @@ github.com/modern-go/reflect2
 github.com/mohae/deepcopy
 # github.com/moul/http2curl v1.0.0
 github.com/moul/http2curl
+# github.com/mozillazg/go-pinyin v0.15.0
+github.com/mozillazg/go-pinyin
 # github.com/pelletier/go-toml v1.2.0
 github.com/pelletier/go-toml
 # github.com/pkg/errors v0.9.1
@@ -338,12 +353,12 @@ k8s.io/apimachinery/pkg/api/resource
 # yunion.io/x/executor v0.0.0-20211018100936-39a2cd966656
 yunion.io/x/executor/apis
 yunion.io/x/executor/client
-# yunion.io/x/jsonutils v0.0.0-20211105163012-d846c05a3c9a
+# yunion.io/x/jsonutils v0.0.0-20211213041607-f6733e38783e
 yunion.io/x/jsonutils
 # yunion.io/x/log v0.0.0-20201210064738-43181789dc74
 yunion.io/x/log
 yunion.io/x/log/hooks
-# yunion.io/x/onecloud v0.0.0-20211117211642-ae3104e9809f
+# yunion.io/x/onecloud v0.0.0-20220102004932-9fa6696e3c97
 yunion.io/x/onecloud/cmd/climc/shell
 yunion.io/x/onecloud/locales
 yunion.io/x/onecloud/pkg/apihelper
@@ -449,6 +464,7 @@ yunion.io/x/onecloud/pkg/util/logclient
 yunion.io/x/onecloud/pkg/util/netutils2
 yunion.io/x/onecloud/pkg/util/nopanic
 yunion.io/x/onecloud/pkg/util/panicutils
+yunion.io/x/onecloud/pkg/util/pinyinutils
 yunion.io/x/onecloud/pkg/util/printutils
 yunion.io/x/onecloud/pkg/util/procutils
 yunion.io/x/onecloud/pkg/util/rand
@@ -461,6 +477,7 @@ yunion.io/x/onecloud/pkg/util/splitable
 yunion.io/x/onecloud/pkg/util/ssh
 yunion.io/x/onecloud/pkg/util/streamutils
 yunion.io/x/onecloud/pkg/util/stringutils2
+yunion.io/x/onecloud/pkg/util/tagutils
 yunion.io/x/onecloud/pkg/util/validate
 yunion.io/x/onecloud/pkg/util/version
 yunion.io/x/onecloud/pkg/util/vmdkutils
@@ -494,7 +511,8 @@ yunion.io/x/pkg/util/version
 yunion.io/x/pkg/utils
 # yunion.io/x/s3cli v0.0.0-20190917004522-13ac36d8687e
 yunion.io/x/s3cli
-# yunion.io/x/sqlchemy v0.0.0-20211116231750-5ec40db49db1
+# yunion.io/x/sqlchemy v0.0.0-20211226083340-1ba177bc58be
 yunion.io/x/sqlchemy
+yunion.io/x/sqlchemy/backends/clickhouse
 # yunion.io/x/structarg v0.0.0-20200720093445-9f850fa222ce
 yunion.io/x/structarg
