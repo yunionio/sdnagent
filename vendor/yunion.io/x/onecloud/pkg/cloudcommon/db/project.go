@@ -31,6 +31,7 @@ import (
 	"yunion.io/x/onecloud/pkg/mcclient"
 	"yunion.io/x/onecloud/pkg/util/rbacutils"
 	"yunion.io/x/onecloud/pkg/util/stringutils2"
+	"yunion.io/x/onecloud/pkg/util/tagutils"
 )
 
 type SProjectizedResourceBaseManager struct {
@@ -109,6 +110,19 @@ func (manager *SProjectizedResourceBaseManager) ListItemFilter(
 			sqlchemy.In(tenants.Field("name"), query.ProjectIds),
 		)).SubQuery()
 		q = q.In("tenant_id", subq)
+	}
+	tagFilters := tagutils.STagFilters{}
+	if !query.ProjectTags.IsEmpty() {
+		tagFilters.AddFilters(query.ProjectTags)
+	}
+	if !query.NoProjectTags.IsEmpty() {
+		tagFilters.AddNoFilters(query.NoProjectTags)
+	}
+	q = ObjectIdQueryWithTagFilters(q, "tenant_id", "project", tagFilters)
+	if !query.PolicyProjectTags.IsEmpty() {
+		policyTagFilters := tagutils.STagFilters{}
+		policyTagFilters.AddFilters(query.PolicyProjectTags)
+		q = ObjectIdQueryWithTagFilters(q, "tenant_id", "project", policyTagFilters)
 	}
 	return q, nil
 }

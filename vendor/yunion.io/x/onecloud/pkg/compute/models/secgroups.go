@@ -64,7 +64,6 @@ func init() {
 		),
 	}
 	SecurityGroupManager.NameLength = 128
-	SecurityGroupManager.NameRequireAscii = true
 	SecurityGroupManager.SetVirtualObject(SecurityGroupManager)
 }
 
@@ -132,13 +131,9 @@ func (manager *SSecurityGroupManager) ListItemFilter(
 		filters = append(filters, sqlchemy.In(q.Field("id"), GuestsecgroupManager.Query("secgroup_id").Equals("guest_id", serverId).SubQuery()))
 
 		isAdmin := false
-		admin := (input.Admin != nil && *input.Admin)
-		if consts.IsRbacEnabled() {
-			allowScope := policy.PolicyManager.AllowScope(userCred, consts.GetServiceType(), manager.KeywordPlural(), policy.PolicyActionList)
-			if allowScope == rbacutils.ScopeSystem || allowScope == rbacutils.ScopeDomain {
-				isAdmin = true
-			}
-		} else if userCred.HasSystemAdminPrivilege() && admin {
+		// admin := (input.Admin != nil && *input.Admin)
+		allowScope, _ := policy.PolicyManager.AllowScope(userCred, consts.GetServiceType(), manager.KeywordPlural(), policy.PolicyActionList)
+		if allowScope == rbacutils.ScopeSystem || allowScope == rbacutils.ScopeDomain {
 			isAdmin = true
 		}
 
@@ -419,7 +414,7 @@ func (manager *SSecurityGroupManager) FetchCustomizeColumns(
 		sqlchemy.In(q.Field("admin_secgrp_id"), secgroupIds),
 	))
 
-	ownerId, queryScope, err := db.FetchCheckQueryOwnerScope(ctx, userCred, query, GuestManager, policy.PolicyActionList, true)
+	ownerId, queryScope, err, _ := db.FetchCheckQueryOwnerScope(ctx, userCred, query, GuestManager, policy.PolicyActionList, true)
 	if err != nil {
 		log.Errorf("FetchCheckQueryOwnerScope error: %v", err)
 		return rows
@@ -716,20 +711,12 @@ func totalSecurityGroupCount(scope rbacutils.TRbacScope, ownerId mcclient.IIdent
 	return q.CountWithError()
 }
 
-func (self *SSecurityGroup) AllowPerformPurge(ctx context.Context, userCred mcclient.TokenCredential, query jsonutils.JSONObject, data jsonutils.JSONObject) bool {
-	return self.IsOwner(userCred) || db.IsAdminAllowPerform(userCred, self, "purge")
-}
-
 func (self *SSecurityGroup) PerformPurge(ctx context.Context, userCred mcclient.TokenCredential, query jsonutils.JSONObject, data jsonutils.JSONObject) (jsonutils.JSONObject, error) {
 	err := self.ValidateDeleteCondition(ctx, nil)
 	if err != nil {
 		return nil, err
 	}
 	return nil, self.StartDeleteSecurityGroupTask(ctx, userCred, true, "")
-}
-
-func (self *SSecurityGroup) AllowPerformUncacheSecgroup(ctx context.Context, userCred mcclient.TokenCredential, query jsonutils.JSONObject, data jsonutils.JSONObject) bool {
-	return self.IsOwner(userCred) || db.IsAdminAllowPerform(userCred, self, "uncache-secgroup")
 }
 
 func (self *SSecurityGroup) PerformUncacheSecgroup(ctx context.Context, userCred mcclient.TokenCredential, query jsonutils.JSONObject, data jsonutils.JSONObject) (jsonutils.JSONObject, error) {
@@ -740,10 +727,6 @@ func (self *SSecurityGroup) PerformUncacheSecgroup(ctx context.Context, userCred
 	}
 	cache := cacheV.Model.(*SSecurityGroupCache)
 	return nil, cache.StartSecurityGroupCacheDeleteTask(ctx, userCred, "")
-}
-
-func (self *SSecurityGroup) AllowPerformCacheSecgroup(ctx context.Context, userCred mcclient.TokenCredential, query jsonutils.JSONObject, data jsonutils.JSONObject) bool {
-	return self.IsOwner(userCred) || db.IsAdminAllowPerform(userCred, self, "cache-secgroup")
 }
 
 func (self *SSecurityGroup) PerformCacheSecgroup(ctx context.Context, userCred mcclient.TokenCredential, query jsonutils.JSONObject, data jsonutils.JSONObject) (jsonutils.JSONObject, error) {
@@ -781,10 +764,6 @@ func (self *SSecurityGroup) StartSecurityGroupCacheTask(ctx context.Context, use
 	return nil
 }
 
-func (self *SSecurityGroup) AllowPerformAddRule(ctx context.Context, userCred mcclient.TokenCredential, query jsonutils.JSONObject, data jsonutils.JSONObject) bool {
-	return self.IsOwner(userCred) || db.IsAdminAllowPerform(userCred, self, "add-rule")
-}
-
 func (self *SSecurityGroup) PerformAddRule(ctx context.Context, userCred mcclient.TokenCredential, query jsonutils.JSONObject, data jsonutils.JSONObject) (jsonutils.JSONObject, error) {
 	secgrouprule := &SSecurityGroupRule{}
 	secgrouprule.SecgroupId = self.Id
@@ -819,10 +798,6 @@ func (self *SSecurityGroup) PerformAddRule(ctx context.Context, userCred mcclien
 	}
 	self.DoSync(ctx, userCred)
 	return nil, nil
-}
-
-func (self *SSecurityGroup) AllowPerformClone(ctx context.Context, userCred mcclient.TokenCredential, query jsonutils.JSONObject, data jsonutils.JSONObject) bool {
-	return true
 }
 
 func (self *SSecurityGroup) PerformClone(ctx context.Context, userCred mcclient.TokenCredential, query jsonutils.JSONObject, input api.SecurityGroupCloneInput) (api.SecurityGroupCloneInput, error) {
@@ -895,10 +870,6 @@ func (self *SSecurityGroup) PerformClone(ctx context.Context, userCred mcclient.
 
 	logclient.AddActionLogWithContext(ctx, secgroup, logclient.ACT_CREATE, secgroup.GetShortDesc(ctx), userCred, true)
 	return input, nil
-}
-
-func (self *SSecurityGroup) AllowPerformMerge(ctx context.Context, userCred mcclient.TokenCredential, query jsonutils.JSONObject, data jsonutils.JSONObject) bool {
-	return self.IsOwner(userCred) || db.IsAdminAllowPerform(userCred, self, "merge")
 }
 
 func (self *SSecurityGroup) PerformMerge(ctx context.Context, userCred mcclient.TokenCredential, query jsonutils.JSONObject, input api.SecgroupMergeInput) (jsonutils.JSONObject, error) {
@@ -1218,7 +1189,7 @@ func (manager *SSecurityGroupManager) InitializeData() error {
 		log.Debugf("Init default secgroup")
 		secGrp := &SSecurityGroup{}
 		secGrp.SetModelManager(manager, secGrp)
-		secGrp.Id = "default"
+		secGrp.Id = api.SECGROUP_DEFAULT_ID
 		secGrp.Name = "Default"
 		secGrp.Status = api.SECGROUP_STATUS_READY
 		secGrp.ProjectId = auth.AdminCredential().GetProjectId()
@@ -1239,7 +1210,7 @@ func (manager *SSecurityGroupManager) InitializeData() error {
 		defRule.Priority = 1
 		defRule.CIDR = "0.0.0.0/0"
 		defRule.Action = string(secrules.SecurityRuleAllow)
-		defRule.SecgroupId = "default"
+		defRule.SecgroupId = api.SECGROUP_DEFAULT_ID
 		err = SecurityGroupRuleManager.TableSpec().Insert(context.TODO(), &defRule)
 		if err != nil {
 			return errors.Wrapf(err, "Insert default secgroup rule")
@@ -1289,16 +1260,72 @@ func (self *SSecurityGroup) GetSecurityGroupReferences() ([]SSecurityGroup, erro
 	return groups, nil
 }
 
-func (self *SSecurityGroup) ValidateDeleteCondition(ctx context.Context, info jsonutils.JSONObject) error {
-	cnt, err := self.GetGuestsCount()
+func (sm *SSecurityGroupManager) query(manager db.IModelManager, field, label string, secIds []string) *sqlchemy.SSubQuery {
+	sq := manager.Query().SubQuery()
+
+	return sq.Query(
+		sq.Field(field),
+		sqlchemy.COUNT(label),
+	).In(field, secIds).GroupBy(sq.Field(field)).SubQuery()
+}
+
+type sSecuriyGroupCnts struct {
+	Id        string
+	Guest1Cnt int
+	api.SSecurityGroupRef
+}
+
+func (sm *SSecurityGroupManager) TotalCnt(secIds []string) (map[string]api.SSecurityGroupRef, error) {
+	g1SQ := sm.query(GuestsecgroupManager, "secgroup_id", "guest1", secIds)
+	g2SQ := sm.query(GuestManager, "secgrp_id", "guest2", secIds)
+	g3SQ := sm.query(GuestManager, "admin_secgrp_id", "guest3", secIds)
+
+	rdsSQ := sm.query(DBInstanceSecgroupManager, "secgroup_id", "rds", secIds)
+	redisSQ := sm.query(ElasticcachesecgroupManager, "secgroup_id", "redis", secIds)
+
+	secs := sm.Query().SubQuery()
+	secQ := secs.Query(
+		sqlchemy.SUM("guest_cnt", g1SQ.Field("guest1")),
+		sqlchemy.SUM("guest1_cnt", g2SQ.Field("guest2")),
+		sqlchemy.SUM("admin_guest_cnt", g3SQ.Field("guest3")),
+		sqlchemy.SUM("rds_cnt", rdsSQ.Field("rds")),
+		sqlchemy.SUM("redis_cnt", redisSQ.Field("redis")),
+	)
+
+	secQ.AppendField(secQ.Field("id"))
+
+	secQ = secQ.LeftJoin(g1SQ, sqlchemy.Equals(secQ.Field("id"), g1SQ.Field("secgroup_id")))
+	secQ = secQ.LeftJoin(g2SQ, sqlchemy.Equals(secQ.Field("id"), g2SQ.Field("secgrp_id")))
+	secQ = secQ.LeftJoin(g3SQ, sqlchemy.Equals(secQ.Field("id"), g3SQ.Field("admin_secgrp_id")))
+	secQ = secQ.LeftJoin(rdsSQ, sqlchemy.Equals(secQ.Field("id"), rdsSQ.Field("secgroup_id")))
+	secQ = secQ.LeftJoin(redisSQ, sqlchemy.Equals(secQ.Field("id"), redisSQ.Field("secgroup_id")))
+
+	secQ = secQ.Filter(sqlchemy.In(secQ.Field("id"), secIds)).GroupBy(secQ.Field("id"))
+
+	cnts := []sSecuriyGroupCnts{}
+	err := secQ.All(&cnts)
 	if err != nil {
-		return httperrors.NewInternalServerError("GetGuestsCount fail %s", err)
+		return nil, errors.Wrapf(err, "secQ.All")
 	}
-	if cnt > 0 {
-		return httperrors.NewNotEmptyError("the security group is in use")
+	result := map[string]api.SSecurityGroupRef{}
+	for i := range cnts {
+		cnts[i].GuestCnt += cnts[i].Guest1Cnt
+		cnts[i].Sum()
+		result[cnts[i].Id] = cnts[i].SSecurityGroupRef
 	}
-	if self.Id == "default" {
+	return result, nil
+}
+
+func (self *SSecurityGroup) ValidateDeleteCondition(ctx context.Context, info jsonutils.JSONObject) error {
+	if self.Id == api.SECGROUP_DEFAULT_ID {
 		return httperrors.NewProtectedResourceError("not allow to delete default security group")
+	}
+	cnts, err := SecurityGroupManager.TotalCnt([]string{self.Id})
+	if err != nil {
+		return errors.Wrapf(err, "SecurityGroupManager.TotalCnt")
+	}
+	if cnt, ok := cnts[self.Id]; ok && cnt.TotalCnt > 0 {
+		return httperrors.NewNotEmptyError("the security group %s is in use cnt: %s", self.Id, jsonutils.Marshal(cnt).String())
 	}
 	references, err := self.GetSecurityGroupReferences()
 	if err != nil {
@@ -1376,10 +1403,6 @@ func (sg *SSecurityGroup) GetUsages() []db.IUsage {
 	}
 }
 
-func (self *SSecurityGroup) AllowGetDetailsReferences(ctx context.Context, userCred mcclient.TokenCredential, query jsonutils.JSONObject) bool {
-	return db.IsProjectAllowGetSpec(userCred, self, "references")
-}
-
 // 获取引用信息
 func (self *SSecurityGroup) GetDetailsReferences(ctx context.Context, userCred mcclient.TokenCredential, query jsonutils.JSONObject) ([]cloudprovider.SecurityGroupReference, error) {
 	groups, err := self.GetSecurityGroupReferences()
@@ -1394,10 +1417,6 @@ func (self *SSecurityGroup) GetDetailsReferences(ctx context.Context, userCred m
 		})
 	}
 	return ret, nil
-}
-
-func (self *SSecurityGroup) AllowPerformImportRules(ctx context.Context, userCred mcclient.TokenCredential, query jsonutils.JSONObject, data jsonutils.JSONObject) bool {
-	return self.IsOwner(userCred) || db.IsAdminAllowPerform(userCred, self, "import-rules")
 }
 
 func (self *SSecurityGroup) PerformImportRules(ctx context.Context, userCred mcclient.TokenCredential, query jsonutils.JSONObject, input api.SecgroupImportRulesInput) (jsonutils.JSONObject, error) {

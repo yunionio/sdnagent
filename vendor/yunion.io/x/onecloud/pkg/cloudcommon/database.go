@@ -21,6 +21,8 @@ import (
 	"net/http"
 	"time"
 
+	"github.com/mattn/go-sqlite3"
+
 	"yunion.io/x/jsonutils"
 	"yunion.io/x/log"
 	"yunion.io/x/pkg/errors"
@@ -54,18 +56,30 @@ func InitDB(options *common_options.DBOptions) {
 		consts.DisableHistoricalUniqueName()
 	}
 
+	if options.OpsLogMaxKeepMonths > 0 {
+		consts.SetSplitableMaxKeepMonths(options.OpsLogMaxKeepMonths)
+	}
+
 	dialect, sqlStr, err := options.GetDBConnection()
 	if err != nil {
 		log.Fatalf("Invalid SqlConnection string: %s error: %v", options.SqlConnection, err)
+	}
+	backend := sqlchemy.MySQLBackend
+	if dialect == "sqlite3" {
+		backend = sqlchemy.SQLiteBackend
+		dialect = "sqlite3_with_extensions"
+		sql.Register(dialect,
+			&sqlite3.SQLiteDriver{
+				Extensions: []string{
+					"/opt/yunion/share/sqlite/inet",
+				},
+			},
+		)
 	}
 	log.Infof("database dialect: %s sqlStr: %s", dialect, sqlStr)
 	dbConn, err := sql.Open(dialect, sqlStr)
 	if err != nil {
 		panic(err)
-	}
-	backend := sqlchemy.MySQLBackend
-	if dialect == "sqlite3" {
-		backend = sqlchemy.SQLiteBackend
 	}
 	sqlchemy.SetDBWithNameBackend(dbConn, sqlchemy.DefaultDB, backend)
 
@@ -77,6 +91,10 @@ func InitDB(options *common_options.DBOptions) {
 			panic(err)
 		}
 		sqlchemy.SetDBWithNameBackend(click, ClickhouseDB, sqlchemy.ClickhouseBackend)
+
+		if options.OpsLogWithClickhouse {
+			consts.OpsLogWithClickhouse = true
+		}
 	}
 
 	switch options.LockmanMethod {

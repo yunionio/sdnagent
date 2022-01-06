@@ -36,7 +36,7 @@ import (
 	"yunion.io/x/onecloud/pkg/httperrors"
 	"yunion.io/x/onecloud/pkg/mcclient"
 	"yunion.io/x/onecloud/pkg/mcclient/auth"
-	modules "yunion.io/x/onecloud/pkg/mcclient/modules/identity"
+	"yunion.io/x/onecloud/pkg/mcclient/modules/identity"
 	"yunion.io/x/onecloud/pkg/util/logclient"
 	"yunion.io/x/onecloud/pkg/util/rbacutils"
 	"yunion.io/x/onecloud/pkg/util/stringutils2"
@@ -70,14 +70,6 @@ type SExternalProject struct {
 	ExternalDomainId string `width:"36" charset:"ascii" nullable:"true" list:"user"`
 	// 归属云账号ID
 	CloudaccountId string `width:"36" charset:"ascii" nullable:"false" list:"user"`
-}
-
-func (manager *SExternalProjectManager) AllowListItems(ctx context.Context, userCred mcclient.TokenCredential, query jsonutils.JSONObject) bool {
-	return db.IsDomainAllowList(userCred, manager)
-}
-
-func (self *SExternalProject) AllowUpdateItem(ctx context.Context, userCred mcclient.TokenCredential) bool {
-	return false
 }
 
 func (manager *SExternalProjectManager) FetchCustomizeColumns(
@@ -193,6 +185,7 @@ func (self *SExternalProject) syncRemoveCloudProject(ctx context.Context, userCr
 }
 
 func (self *SExternalProject) SyncWithCloudProject(ctx context.Context, userCred mcclient.TokenCredential, account *SCloudaccount, ext cloudprovider.ICloudProject) error {
+	s := auth.GetAdminSession(ctx, consts.GetRegion(), "v1")
 	diff, err := db.UpdateWithLock(ctx, self, func() error {
 		self.Name = ext.GetName()
 		self.IsEmulated = ext.IsEmulated()
@@ -223,9 +216,8 @@ func (self *SExternalProject) SyncWithCloudProject(ctx context.Context, userCred
 				proj, err := db.TenantCacheManager.FetchTenantByName(ctx, self.Name)
 				if err != nil {
 					if errors.Cause(err) == sql.ErrNoRows {
-						s := auth.GetAdminSession(ctx, consts.GetRegion(), "v1")
 						params := map[string]string{"name": self.Name}
-						_, err := modules.Projects.Update(s, tenant.Id, jsonutils.Marshal(params))
+						_, err := identity.Projects.Update(s, tenant.Id, jsonutils.Marshal(params))
 						if err != nil {
 							return errors.Wrapf(err, "update project name from %s -> %s", tenant.Name, self.Name)
 						}
@@ -251,6 +243,12 @@ func (self *SExternalProject) SyncWithCloudProject(ctx context.Context, userCred
 	if err != nil {
 		return errors.Wrapf(err, "db.UpdateWithLock")
 	}
+
+	tags, _ := ext.GetTags()
+	if len(tags) > 0 {
+		identity.Projects.PerformAction(s, self.ProjectId, "user-metadata", jsonutils.Marshal(tags))
+	}
+	syncMetadata(ctx, userCred, self, ext)
 	db.OpsLog.LogSyncUpdate(self, diff, userCred)
 	return nil
 }
@@ -272,7 +270,7 @@ func (self *SCloudaccount) getOrCreateDomain(ctx context.Context, userCred mccli
 		desc := fmt.Sprintf("auto create from cloud project %s (%s)", id, name)
 		params.Add(jsonutils.NewString(desc), "description")
 
-		resp, err := modules.Domains.Create(s, params)
+		resp, err := identity.Domains.Create(s, params)
 		if err != nil {
 			return "", errors.Wrap(err, "Projects.Create")
 		}
@@ -342,12 +340,15 @@ func (manager *SExternalProjectManager) newFromCloudProject(ctx context.Context,
 		return nil, errors.Wrapf(err, "Insert")
 	}
 
+	tags, _ := extProject.GetTags()
+	if len(tags) > 0 {
+		s := auth.GetAdminSession(ctx, consts.GetRegion(), "v1")
+		identity.Projects.PerformAction(s, project.ProjectId, "user-metadata", jsonutils.Marshal(tags))
+	}
+
+	syncMetadata(ctx, userCred, &project, extProject)
 	db.OpsLog.LogEvent(&project, db.ACT_CREATE, project.GetShortDesc(ctx), userCred)
 	return &project, nil
-}
-
-func (self *SExternalProject) AllowPerformChangeProject(ctx context.Context, userCred mcclient.TokenCredential, query jsonutils.JSONObject, data jsonutils.JSONObject) bool {
-	return db.IsAdminAllowPerform(userCred, self, "change-project")
 }
 
 func (self *SExternalProject) GetCloudaccount() (*SCloudaccount, error) {

@@ -20,9 +20,9 @@ require (
 	google.golang.org/protobuf v1.24.0
 	gopkg.in/go-playground/assert.v1 v1.2.1 // indirect
 	gopkg.in/go-playground/validator.v9 v9.29.1 // indirect
-	yunion.io/x/jsonutils v0.0.0-20211105163012-d846c05a3c9a
+	yunion.io/x/jsonutils v0.0.0-20211213041607-f6733e38783e
 	yunion.io/x/log v0.0.0-20201210064738-43181789dc74
-	yunion.io/x/onecloud v0.0.0-20211117211642-ae3104e9809f
+	yunion.io/x/onecloud v0.0.0-20220102004932-9fa6696e3c97
 	yunion.io/x/pkg v0.0.0-20211116020154-6a76ba2f7e97
 )
 

@@ -725,10 +725,6 @@ func (self *SDisk) StartAllocate(ctx context.Context, host *SHost, storage *SSto
 	}
 }
 
-func (self *SDisk) AllowGetDetailsConvertSnapshot(ctx context.Context, userCred mcclient.TokenCredential, query jsonutils.JSONObject) bool {
-	return self.IsOwner(userCred) || db.IsAdminAllowPerform(userCred, self, "convert-snapshot")
-}
-
 func (self *SDisk) GetDetailsConvertSnapshot(ctx context.Context, userCred mcclient.TokenCredential, query jsonutils.JSONObject) (jsonutils.JSONObject, error) {
 	needs, err := SnapshotManager.IsDiskSnapshotsNeedConvert(self.Id)
 	if err != nil {
@@ -788,10 +784,6 @@ func (self *SDisk) CleanUpDiskSnapshots(ctx context.Context, userCred mcclient.T
 		task.ScheduleRun(nil)
 	}
 	return nil
-}
-
-func (self *SDisk) AllowPerformDiskReset(ctx context.Context, userCred mcclient.TokenCredential, query jsonutils.JSONObject, data jsonutils.JSONObject) bool {
-	return self.IsOwner(userCred) || db.IsAdminAllowPerform(userCred, self, "disk-reset")
 }
 
 func (self *SDisk) PerformDiskReset(ctx context.Context, userCred mcclient.TokenCredential, query jsonutils.JSONObject, data jsonutils.JSONObject) (jsonutils.JSONObject, error) {
@@ -856,10 +848,6 @@ func (self *SDisk) StartResetDisk(
 	return nil
 }
 
-func (self *SDisk) AllowPerformResize(ctx context.Context, userCred mcclient.TokenCredential, query jsonutils.JSONObject, data jsonutils.JSONObject) bool {
-	return self.IsOwner(userCred) || db.IsAdminAllowPerform(userCred, self, "resize")
-}
-
 func (disk *SDisk) PerformResize(ctx context.Context, userCred mcclient.TokenCredential, query jsonutils.JSONObject, input api.DiskResizeInput) (jsonutils.JSONObject, error) {
 	guest := disk.GetGuest()
 	sizeMb, err := input.SizeMb()
@@ -881,7 +869,7 @@ func (disk *SDisk) getHypervisor() string {
 			return host.GetHostDriver().GetHypervisor()
 		}
 	}
-	hypervisor := disk.GetMetadata("hypervisor", nil)
+	hypervisor := disk.GetMetadata(context.Background(), "hypervisor", nil)
 	return hypervisor
 }
 
@@ -1035,10 +1023,6 @@ func (self *SDisk) PrepareSaveImage(ctx context.Context, userCred mcclient.Token
 	return imageId, nil
 }
 
-func (self *SDisk) AllowPerformSave(ctx context.Context, userCred mcclient.TokenCredential, query jsonutils.JSONObject, data jsonutils.JSONObject) bool {
-	return self.IsOwner(userCred) || db.IsAdminAllowPerform(userCred, self, "save")
-}
-
 func (self *SDisk) PerformSave(ctx context.Context, userCred mcclient.TokenCredential, query jsonutils.JSONObject, input api.DiskSaveInput) (jsonutils.JSONObject, error) {
 	if self.Status != api.DISK_READY {
 		return nil, httperrors.NewResourceNotReadyError("Save disk when disk is READY")
@@ -1140,10 +1124,10 @@ func (self *SDisk) AllowDeleteItem(ctx context.Context, userCred mcclient.TokenC
 		overridePendingDelete = jsonutils.QueryBoolean(query, "override_pending_delete", false)
 		purge = jsonutils.QueryBoolean(query, "purge", false)
 	}
-	if (overridePendingDelete || purge) && !db.IsAdminAllowDelete(userCred, self) {
+	if (overridePendingDelete || purge) && !db.IsAdminAllowDelete(ctx, userCred, self) {
 		return false
 	}
-	return self.IsOwner(userCred) || db.IsAdminAllowDelete(userCred, self)
+	return self.IsOwner(userCred) || db.IsAdminAllowDelete(ctx, userCred, self)
 }
 
 func (self *SDisk) GetTemplateId() string {
@@ -1480,7 +1464,6 @@ func (self *SDisk) syncWithCloudDisk(ctx context.Context, userCred mcclient.Toke
 	if provider.GetFactory().IsSupportPrepaidResources() && len(guests) == 1 && guests[0].IsPrepaidRecycle() {
 		recycle = true
 	}
-	extDisk.Refresh()
 
 	diff, err := db.UpdateWithLock(ctx, self, func() error {
 		// self.Name = extDisk.GetName()
@@ -1715,14 +1698,24 @@ func totalDiskSize(
 }
 
 func parseDiskInfo(ctx context.Context, userCred mcclient.TokenCredential, info *api.DiskConfig) (*api.DiskConfig, error) {
+	if info.Storage != "" {
+		if err := fillDiskConfigByStorage(userCred, info, info.Storage); err != nil {
+			return nil, errors.Wrap(err, "fillDiskConfigByStorage")
+		}
+	}
+	if info.DiskId != "" {
+		if err := fillDiskConfigByDisk(userCred, info, info.DiskId); err != nil {
+			return nil, errors.Wrap(err, "fillDiskConfigByDisk")
+		}
+	}
 	if info.SnapshotId != "" {
 		if err := fillDiskConfigBySnapshot(userCred, info, info.SnapshotId); err != nil {
-			return nil, err
+			return nil, errors.Wrap(err, "fillDiskConfigBySnapshot")
 		}
 	}
 	if info.ImageId != "" {
 		if err := fillDiskConfigByImage(ctx, userCred, info, info.ImageId); err != nil {
-			return nil, err
+			return nil, errors.Wrap(err, "fillDiskConfigByImage")
 		}
 	}
 	// XXX: do not set default disk size here, set it by each hypervisor driver
@@ -1795,6 +1788,71 @@ func fillDiskConfigByImage(ctx context.Context, userCred mcclient.TokenCredentia
 			diskConfig.OsArch = image.Properties["os_arch"]
 		}
 	}
+	return nil
+}
+
+func fillDiskConfigByDisk(userCred mcclient.TokenCredential,
+	diskConfig *api.DiskConfig, diskId string) error {
+	diskObj, err := DiskManager.FetchByIdOrName(userCred, diskId)
+	if err != nil {
+		if errors.Cause(err) == sql.ErrNoRows {
+			return httperrors.NewResourceNotFoundError2("disk", diskId)
+		} else {
+			return errors.Wrapf(err, "DiskManager.FetchByIdOrName %s", diskId)
+		}
+	}
+	disk := diskObj.(*SDisk)
+	if disk.Status != api.DISK_READY {
+		return errors.Wrapf(httperrors.ErrInvalidStatus, "disk status %s not ready", disk.Status)
+	}
+	guests := disk.GetGuests()
+	if len(guests) > 0 {
+		return errors.Wrapf(httperrors.ErrInvalidStatus, "disk %s has been used", diskId)
+	}
+
+	diskConfig.DiskId = disk.Id
+	diskConfig.SizeMb = disk.DiskSize
+	if disk.SnapshotId != "" {
+		diskConfig.SnapshotId = disk.SnapshotId
+	}
+	if disk.TemplateId != "" {
+		diskConfig.ImageId = disk.TemplateId
+	}
+	if disk.OsArch != "" {
+		diskConfig.OsArch = disk.OsArch
+	}
+	storage, err := disk.GetStorage()
+	if err != nil {
+		return errors.Wrap(err, "disk.GetStorage")
+	}
+	if !storage.Enabled.IsTrue() {
+		return errors.Wrap(httperrors.ErrInvalidStatus, "storage not enabled")
+	}
+	if storage.Status != api.STORAGE_ONLINE {
+		return errors.Wrap(httperrors.ErrInvalidStatus, "storage not online")
+	}
+	diskConfig.Storage = disk.StorageId
+	return nil
+}
+
+func fillDiskConfigByStorage(userCred mcclient.TokenCredential,
+	diskConfig *api.DiskConfig, storageId string) error {
+	storageObj, err := StorageManager.FetchByIdOrName(userCred, storageId)
+	if err != nil {
+		if errors.Cause(err) == sql.ErrNoRows {
+			return httperrors.NewResourceNotFoundError2("storage", storageId)
+		} else {
+			return errors.Wrapf(err, "StorageManager.FetchByIdOrName %s", storageId)
+		}
+	}
+	storage := storageObj.(*SStorage)
+	if !storage.Enabled.IsTrue() {
+		return errors.Wrap(httperrors.ErrInvalidStatus, "storage not enabled")
+	}
+	if storage.Status != api.STORAGE_ONLINE {
+		return errors.Wrap(httperrors.ErrInvalidStatus, "storage not online")
+	}
+	diskConfig.Storage = storageObj.GetId()
 	return nil
 }
 
@@ -1915,10 +1973,6 @@ func (self *SDisk) RealDelete(ctx context.Context, userCred mcclient.TokenCreden
 	return self.SVirtualResourceBase.Delete(ctx, userCred)
 }
 
-func (self *SDisk) AllowPerformSyncstatus(ctx context.Context, userCred mcclient.TokenCredential, query jsonutils.JSONObject, data jsonutils.JSONObject) bool {
-	return self.IsOwner(userCred) || db.IsAdminAllowPerform(userCred, self, "syncstatus")
-}
-
 // 同步磁盘状态
 func (self *SDisk) PerformSyncstatus(ctx context.Context, userCred mcclient.TokenCredential, query jsonutils.JSONObject, input api.DiskSyncstatusInput) (jsonutils.JSONObject, error) {
 	var openTask = true
@@ -1931,10 +1985,6 @@ func (self *SDisk) PerformSyncstatus(ctx context.Context, userCred mcclient.Toke
 	}
 
 	return nil, StartResourceSyncStatusTask(ctx, userCred, self, "DiskSyncstatusTask", "")
-}
-
-func (self *SDisk) AllowPerformPurge(ctx context.Context, userCred mcclient.TokenCredential, query jsonutils.JSONObject, data jsonutils.JSONObject) bool {
-	return self.IsOwner(userCred) || db.IsAdminAllowPerform(userCred, self, "purge")
 }
 
 func (self *SDisk) PerformPurge(ctx context.Context, userCred mcclient.TokenCredential, query jsonutils.JSONObject, data jsonutils.JSONObject) (jsonutils.JSONObject, error) {
@@ -2166,7 +2216,7 @@ func (self *SDisk) GetShortDesc(ctx context.Context) *jsonutils.JSONDict {
 		desc.Add(jsonutils.NewString(storage.MediumType), "medium_type")
 	}
 
-	if hypervisor := self.GetMetadata("hypervisor", nil); len(hypervisor) > 0 {
+	if hypervisor := self.GetMetadata(ctx, "hypervisor", nil); len(hypervisor) > 0 {
 		desc.Add(jsonutils.NewString(hypervisor), "hypervisor")
 	}
 
@@ -2189,7 +2239,7 @@ func (self *SDisk) GetShortDesc(ctx context.Context) *jsonutils.JSONDict {
 		billingInfo.SCloudProviderInfo = storage.getCloudProviderInfo()
 	}
 
-	if priceKey := self.GetMetadata("ext:price_key", nil); len(priceKey) > 0 {
+	if priceKey := self.GetMetadata(ctx, "ext:price_key", nil); len(priceKey) > 0 {
 		billingInfo.PriceKey = priceKey
 	}
 
@@ -2201,11 +2251,11 @@ func (self *SDisk) GetShortDesc(ctx context.Context) *jsonutils.JSONDict {
 }
 
 func (self *SDisk) getDev() string {
-	return self.GetMetadata("dev", nil)
+	return self.GetMetadata(context.Background(), "dev", nil)
 }
 
 func (self *SDisk) GetMountPoint() string {
-	return self.GetMetadata("mountpoint", nil)
+	return self.GetMetadata(context.Background(), "mountpoint", nil)
 }
 
 func (self *SDisk) isReady() bool {
@@ -2214,10 +2264,6 @@ func (self *SDisk) isReady() bool {
 
 func (self *SDisk) isInit() bool {
 	return self.Status == api.DISK_INIT
-}
-
-func (self *SDisk) AllowPerformCancelDelete(ctx context.Context, userCred mcclient.TokenCredential, query jsonutils.JSONObject, data jsonutils.JSONObject) bool {
-	return db.IsAdminAllowPerform(userCred, self, "cancel-delete")
 }
 
 func (self *SDisk) PerformCancelDelete(ctx context.Context, userCred mcclient.TokenCredential, query jsonutils.JSONObject, data jsonutils.JSONObject) (jsonutils.JSONObject, error) {
@@ -2739,12 +2785,6 @@ func (disk *SDisk) GetUsages() []db.IUsage {
 	}
 }
 
-func (disk *SDisk) AllowPerformBindSnapshotpolicy(ctx context.Context, userCred mcclient.TokenCredential,
-	query jsonutils.JSONObject) bool {
-
-	return disk.IsOwner(userCred) || db.IsAdminAllowPerform(userCred, disk, "bind-snapshotpolicy")
-}
-
 func (disk *SDisk) PerformBindSnapshotpolicy(ctx context.Context, userCred mcclient.TokenCredential,
 	query jsonutils.JSONObject, data jsonutils.JSONObject) (jsonutils.JSONObject, error) {
 
@@ -2784,12 +2824,6 @@ func (disk *SDisk) PerformBindSnapshotpolicy(ctx context.Context, userCred mccli
 		task.ScheduleRun(taskData)
 	}
 	return nil, nil
-}
-
-func (disk *SDisk) AllowPerformUnbindSnapshotpolicy(ctx context.Context, userCred mcclient.TokenCredential,
-	query jsonutils.JSONObject) bool {
-
-	return disk.IsOwner(userCred) || db.IsAdminAllowPerform(userCred, disk, "unbind-snapshotpolicy")
 }
 
 func (disk *SDisk) PerformUnbindSnapshotpolicy(ctx context.Context, userCred mcclient.TokenCredential,

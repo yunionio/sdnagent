@@ -18,6 +18,7 @@ import (
 	"context"
 	"database/sql"
 	"fmt"
+	"sort"
 
 	"yunion.io/x/jsonutils"
 	"yunion.io/x/log"
@@ -249,6 +250,17 @@ func (wire *SWire) GetHostwires() ([]SHostwire, error) {
 		return nil, err
 	}
 	return hostwires, nil
+}
+
+func (self *SWire) GetHosts() ([]SHost, error) {
+	sq := HostwireManager.Query("host_id").Equals("wire_id", self.Id)
+	q := HostManager.Query().In("id", sq)
+	hosts := []SHost{}
+	err := db.FetchModelObjects(HostManager, q, &hosts)
+	if err != nil {
+		return nil, errors.Wrapf(err, "db.FetchModelObjects")
+	}
+	return hosts, nil
 }
 
 func (wire *SWire) NetworkCount() (int, error) {
@@ -1105,10 +1117,6 @@ func (manager *SWireManager) GetOnPremiseWireOfIp(ipAddr string) (*SWire, error)
 	}
 }
 
-func (w *SWire) AllowPerformMergeNetwork(ctx context.Context, userCred mcclient.TokenCredential, query jsonutils.JSONObject) bool {
-	return w.IsOwner(userCred) || db.IsAdminAllowPerform(userCred, w, "merge-network")
-}
-
 func (w *SWire) PerformMergeNetwork(ctx context.Context, userCred mcclient.TokenCredential, query jsonutils.JSONObject, input api.WireMergeNetworkInput) (jsonutils.JSONObject, error) {
 	return nil, w.StartMergeNetwork(ctx, userCred, "")
 }
@@ -1129,10 +1137,6 @@ func (sm *SWireManager) FetchByIdsOrNames(idOrNames []string) ([]SWire, error) {
 		return nil, err
 	}
 	return ret, nil
-}
-
-func (w *SWire) AllowPerformMergeFrom(ctx context.Context, userCred mcclient.TokenCredential, query jsonutils.JSONObject) bool {
-	return w.IsOwner(userCred) || db.IsAdminAllowPerform(userCred, w, "merge-from")
 }
 
 func (w *SWire) PerformMergeFrom(ctx context.Context, userCred mcclient.TokenCredential, query jsonutils.JSONObject, input api.WireMergeFromInput) (ret jsonutils.JSONObject, err error) {
@@ -1187,10 +1191,6 @@ func (w *SWire) PerformMergeFrom(ctx context.Context, userCred mcclient.TokenCre
 		}
 	}
 	return
-}
-
-func (w *SWire) AllowPerformMergeTo(ctx context.Context, userCred mcclient.TokenCredential, query jsonutils.JSONObject) bool {
-	return w.IsOwner(userCred) || db.IsAdminAllowPerform(userCred, w, "merge-to")
 }
 
 func (w *SWire) PerformMergeTo(ctx context.Context, userCred mcclient.TokenCredential, query jsonutils.JSONObject, input api.WireMergeInput) (ret jsonutils.JSONObject, err error) {
@@ -1436,7 +1436,7 @@ func (self *SWire) IsManaged() bool {
 func (model *SWire) CustomizeCreate(ctx context.Context, userCred mcclient.TokenCredential, ownerId mcclient.IIdentityProvider, query jsonutils.JSONObject, data jsonutils.JSONObject) error {
 	if !data.Contains("public_scope") {
 		vpc, _ := model.GetVpc()
-		if !model.IsManaged() && db.IsAdminAllowPerform(userCred, model, "public") && ownerId.GetProjectDomainId() == userCred.GetProjectDomainId() && vpc != nil && vpc.IsPublic && vpc.PublicScope == string(rbacutils.ScopeSystem) {
+		if !model.IsManaged() && db.IsAdminAllowPerform(ctx, userCred, model, "public") && ownerId.GetProjectDomainId() == userCred.GetProjectDomainId() && vpc != nil && vpc.IsPublic && vpc.PublicScope == string(rbacutils.ScopeSystem) {
 			model.SetShare(rbacutils.ScopeSystem)
 		} else {
 			model.SetShare(rbacutils.ScopeNone)
@@ -1502,4 +1502,71 @@ func (manager *SWireManager) ListItemExportKeys(ctx context.Context,
 		}
 	}
 	return q, nil
+}
+
+func (self *SWire) GetDetailsTopology(ctx context.Context, userCred mcclient.TokenCredential, input *api.WireTopologyInput) (*api.WireTopologyOutput, error) {
+	ret := &api.WireTopologyOutput{
+		Name:      self.Name,
+		Status:    self.Status,
+		Bandwidth: self.Bandwidth,
+		Networks:  []api.NetworkTopologyOutput{},
+		Hosts:     []api.HostTopologyOutput{},
+	}
+	if len(self.ZoneId) > 0 {
+		zone, _ := self.GetZone()
+		if zone != nil {
+			ret.Zone = zone.Name
+		}
+	}
+	hosts, err := self.GetHosts()
+	if err != nil {
+		return nil, errors.Wrapf(err, "GetHosts for wire %s", self.Id)
+	}
+	for i := range hosts {
+		hns := hosts[i].GetBaremetalnetworks()
+		host := api.HostTopologyOutput{
+			Name:       hosts[i].Name,
+			Id:         hosts[i].Id,
+			Status:     hosts[i].Status,
+			HostStatus: hosts[i].HostStatus,
+			HostType:   hosts[i].HostType,
+			Networks:   []api.HostnetworkTopologyOutput{},
+		}
+		for j := range hns {
+			host.Networks = append(host.Networks, api.HostnetworkTopologyOutput{
+				IpAddr:  hns[j].IpAddr,
+				MacAddr: hns[j].MacAddr,
+			})
+		}
+		ret.Hosts = append(ret.Hosts, host)
+	}
+	networks, err := self.GetNetworks(nil, rbacutils.ScopeSystem)
+	if err != nil {
+		return nil, errors.Wrapf(err, "GetNetworks")
+	}
+	for j := range networks {
+		network := api.NetworkTopologyOutput{
+			Name:         networks[j].Name,
+			Status:       networks[j].Status,
+			GuestIpStart: networks[j].GuestIpStart,
+			GuestIpEnd:   networks[j].GuestIpEnd,
+			GuestIpMask:  networks[j].GuestIpMask,
+			ServerType:   networks[j].ServerType,
+			VlanId:       networks[j].VlanId,
+			Address:      []api.SNetworkUsedAddress{},
+		}
+
+		netAddrs := make([]api.SNetworkUsedAddress, 0)
+
+		q := networks[j].getUsedAddressQuery(userCred, rbacutils.ScopeSystem, false)
+		err = q.All(&netAddrs)
+		if err != nil {
+			return nil, errors.Wrapf(err, "q.All")
+		}
+
+		sort.Sort(SNetworkUsedAddressList(netAddrs))
+		network.Address = netAddrs
+		ret.Networks = append(ret.Networks, network)
+	}
+	return ret, nil
 }

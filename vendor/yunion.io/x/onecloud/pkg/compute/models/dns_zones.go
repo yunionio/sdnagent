@@ -192,10 +192,6 @@ func (self *SDnsZone) StartDnsZoneCreateTask(ctx context.Context, userCred mccli
 	return nil
 }
 
-func (manager *SDnsZoneManager) AllowListItems(ctx context.Context, userCred mcclient.TokenCredential, query jsonutils.JSONObject) bool {
-	return db.IsDomainAllowList(userCred, manager)
-}
-
 // 列表
 func (manager *SDnsZoneManager) ListItemFilter(
 	ctx context.Context,
@@ -223,10 +219,6 @@ func (manager *SDnsZoneManager) ListItemFilter(
 		q = q.In("id", sq.SubQuery())
 	}
 	return q, nil
-}
-
-func (self *SDnsZone) AllowUpdateItem(ctx context.Context, userCred mcclient.TokenCredential) bool {
-	return db.IsDomainAllowUpdate(userCred, self)
 }
 
 func (self *SDnsZone) PostUpdate(ctx context.Context, userCred mcclient.TokenCredential, query jsonutils.JSONObject, data jsonutils.JSONObject) {
@@ -262,7 +254,7 @@ func (manager *SDnsZoneManager) FetchCustomizeColumns(
 
 	ownedVpcs := []SVpc{}
 	q := VpcManager.Query()
-	ownerId, queryScope, err := db.FetchCheckQueryOwnerScope(ctx, userCred, query, VpcManager, policy.PolicyActionList, true)
+	ownerId, queryScope, err, _ := db.FetchCheckQueryOwnerScope(ctx, userCred, query, VpcManager, policy.PolicyActionList, true)
 	if err != nil {
 		log.Errorf("FetchCheckQueryOwnerScope error: %v", err)
 		return rows
@@ -700,12 +692,13 @@ func (self *SDnsZone) newFromCloudDnsRecordSet(ctx context.Context, userCred mcc
 		return nil, errors.Wrapf(err, "Insert")
 	}
 
+	notifyclient.EventNotify(ctx, userCred, notifyclient.SEventNotifyParam{
+		Obj:    record,
+		Action: notifyclient.ActionSyncCreate,
+	})
+
 	record.setTrafficPolicy(ctx, userCred, provider, ext.PolicyType, ext.PolicyValue, ext.PolicyOptions)
 	return record, nil
-}
-
-func (self *SDnsZone) AllowPerformSyncRecordsets(ctx context.Context, userCred mcclient.TokenCredential, query jsonutils.JSONObject, data jsonutils.JSONObject) bool {
-	return db.IsDomainAllowPerform(userCred, self, "sync-recordsets")
 }
 
 // 同步解析列表到云上
@@ -764,17 +757,9 @@ func (self *SDnsZone) StartDnsZoneSyncRecordSetsTask(ctx context.Context, userCr
 	return nil
 }
 
-func (self *SDnsZone) AllowPerformSyncstatus(ctx context.Context, userCred mcclient.TokenCredential, query jsonutils.JSONObject, data jsonutils.JSONObject) bool {
-	return db.IsDomainAllowPerform(userCred, self, "syncstatus")
-}
-
 // 同步状态
 func (self *SDnsZone) PerformSyncstatus(ctx context.Context, userCred mcclient.TokenCredential, query jsonutils.JSONObject, input api.DnsZoneSyncStatusInput) (jsonutils.JSONObject, error) {
 	return nil, StartResourceSyncStatusTask(ctx, userCred, self, "DnsZoneSyncstatusTask", "")
-}
-
-func (self *SDnsZone) AllowPerformCache(ctx context.Context, userCred mcclient.TokenCredential, query jsonutils.JSONObject, data jsonutils.JSONObject) bool {
-	return db.IsDomainAllowPerform(userCred, self, "cache")
 }
 
 // 指定云账号创建
@@ -805,10 +790,6 @@ func (self *SDnsZone) PerformCache(ctx context.Context, userCred mcclient.TokenC
 	return nil, cache.StartDnsZoneCacheCreateTask(ctx, userCred, "")
 }
 
-func (self *SDnsZone) AllowPerformUncache(ctx context.Context, userCred mcclient.TokenCredential, query jsonutils.JSONObject, data jsonutils.JSONObject) bool {
-	return db.IsDomainAllowPerform(userCred, self, "uncache")
-}
-
 // 删除云账号的云上资源
 func (self *SDnsZone) PerformUncache(ctx context.Context, userCred mcclient.TokenCredential, query jsonutils.JSONObject, input api.DnsZoneUnacheInput) (jsonutils.JSONObject, error) {
 	if self.Status != api.DNS_ZONE_STATUS_AVAILABLE {
@@ -829,10 +810,6 @@ func (self *SDnsZone) PerformUncache(ctx context.Context, userCred mcclient.Toke
 		return nil, httperrors.NewGeneralError(errors.Wrapf(err, "RegisterCache"))
 	}
 	return nil, cache.StartDnsZoneCacheDeleteTask(ctx, userCred, "")
-}
-
-func (self *SDnsZone) AllowPerformAddVpcs(ctx context.Context, userCred mcclient.TokenCredential, query jsonutils.JSONObject, data jsonutils.JSONObject) bool {
-	return db.IsDomainAllowPerform(userCred, self, "add-vpcs")
 }
 
 // 添加VPC
@@ -895,10 +872,6 @@ func (self *SDnsZone) StartDnsZoneSyncVpcsTask(ctx context.Context, userCred mcc
 	return nil
 }
 
-func (self *SDnsZone) AllowPerformRemoveVpcs(ctx context.Context, userCred mcclient.TokenCredential, query jsonutils.JSONObject, data jsonutils.JSONObject) bool {
-	return db.IsDomainAllowPerform(userCred, self, "remove-vpcs")
-}
-
 // 移除VPC
 func (self *SDnsZone) PerformRemoveVpcs(ctx context.Context, userCred mcclient.TokenCredential, query jsonutils.JSONObject, input api.DnsZoneRemoveVpcsInput) (jsonutils.JSONObject, error) {
 	if self.Status != api.DNS_ZONE_STATUS_AVAILABLE {
@@ -928,10 +901,6 @@ func (self *SDnsZone) PerformRemoveVpcs(ctx context.Context, userCred mcclient.T
 
 func (manager *SDnsZoneManager) GetPropertyCapability(ctx context.Context, userCred mcclient.TokenCredential, query jsonutils.JSONObject) (jsonutils.JSONObject, error) {
 	return jsonutils.Marshal(cloudprovider.GetDnsCapabilities()), nil
-}
-
-func (self *SDnsZone) AllowPerformPurge(ctx context.Context, userCred mcclient.TokenCredential, query jsonutils.JSONObject, data jsonutils.JSONObject) bool {
-	return db.IsDomainAllowPerform(userCred, self, "purge")
 }
 
 func (self *SDnsZone) PerformPurge(ctx context.Context, userCred mcclient.TokenCredential, query jsonutils.JSONObject, input api.DnsZonePurgeInput) (jsonutils.JSONObject, error) {

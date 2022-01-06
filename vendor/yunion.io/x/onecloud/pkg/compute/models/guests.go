@@ -59,6 +59,7 @@ import (
 	"yunion.io/x/onecloud/pkg/util/billing"
 	"yunion.io/x/onecloud/pkg/util/logclient"
 	"yunion.io/x/onecloud/pkg/util/netutils2"
+	"yunion.io/x/onecloud/pkg/util/pinyinutils"
 	"yunion.io/x/onecloud/pkg/util/rbacutils"
 	"yunion.io/x/onecloud/pkg/util/seclib2"
 	"yunion.io/x/onecloud/pkg/util/stringutils2"
@@ -77,6 +78,7 @@ type SGuestManager struct {
 	SDiskResourceBaseManager
 	SScalingGroupResourceBaseManager
 	db.SMultiArchResourceBaseManager
+	SHostnameResourceBaseManager
 }
 
 var GuestManager *SGuestManager
@@ -90,9 +92,9 @@ func init() {
 			"servers",
 		),
 	}
-	log.Infof("init GuestManager")
 	GuestManager.SetVirtualObject(GuestManager)
 	GuestManager.SetAlias("guest", "guests")
+	GuestManager.NameRequireAscii = false
 }
 
 type SGuest struct {
@@ -104,6 +106,7 @@ type SGuest struct {
 	SDeletePreventableResourceBase
 	db.SMultiArchResourceBase
 
+	SHostnameResourceBase
 	SHostResourceBase `width:"36" charset:"ascii" nullable:"true" list:"user" get:"user" index:"true"`
 
 	// CPU大小
@@ -123,6 +126,9 @@ type SGuest struct {
 
 	// 备份机所在宿主机Id
 	BackupHostId string `width:"36" charset:"ascii" nullable:"true" list:"user" get:"user"`
+
+	// 迁移或克隆的速度
+	ProgressMbps float64 `nullable:"false" default:"0" list:"user" create:"optional" update:"user"`
 
 	Vga     string `width:"36" charset:"ascii" nullable:"true" list:"user" update:"user" create:"optional"`
 	Vdi     string `width:"36" charset:"ascii" nullable:"true" list:"user" update:"user" create:"optional"`
@@ -150,15 +156,6 @@ type SGuest struct {
 	InstanceType string `width:"64" charset:"utf8" nullable:"true" list:"user" create:"optional"`
 
 	SshableLastState tristate.TriState `nullable:"false" default:"false" list:"user"`
-}
-
-func (manager *SGuestManager) AllowListItems(ctx context.Context, userCred mcclient.TokenCredential, query jsonutils.JSONObject) bool {
-	if query.Contains("host") || query.Contains("wire") || query.Contains("zone") {
-		if !db.IsAdminAllowList(userCred, manager) {
-			return false
-		}
-	}
-	return manager.SVirtualResourceBaseManager.AllowListItems(ctx, userCred, query)
 }
 
 // 云主机实例列表
@@ -284,13 +281,9 @@ func (manager *SGuestManager) ListItemFilter(
 		}
 
 		isAdmin := false
-		admin := (query.VirtualResourceListInput.Admin != nil && *query.VirtualResourceListInput.Admin)
-		if consts.IsRbacEnabled() {
-			allowScope := policy.PolicyManager.AllowScope(userCred, consts.GetServiceType(), manager.KeywordPlural(), policy.PolicyActionList)
-			if allowScope == rbacutils.ScopeSystem || allowScope == rbacutils.ScopeDomain {
-				isAdmin = true
-			}
-		} else if userCred.HasSystemAdminPrivilege() && admin {
+		// admin := (query.VirtualResourceListInput.Admin != nil && *query.VirtualResourceListInput.Admin)
+		allowScope, _ := policy.PolicyManager.AllowScope(userCred, consts.GetServiceType(), manager.KeywordPlural(), policy.PolicyActionList)
+		if allowScope == rbacutils.ScopeSystem || allowScope == rbacutils.ScopeDomain {
 			isAdmin = true
 		}
 
@@ -638,6 +631,29 @@ func (manager *SGuestManager) QueryDistinctExtraField(q *sqlchemy.SQuery, field 
 	return q, httperrors.ErrNotFound
 }
 
+func (manager *SGuestManager) initHostname() error {
+	guests := []SGuest{}
+	q := manager.Query().IsNullOrEmpty("hostname")
+	err := db.FetchModelObjects(manager, q, &guests)
+	if err != nil {
+		return errors.Wrapf(err, "db.FetchModelObjects")
+	}
+	for i := range guests {
+		db.Update(&guests[i], func() error {
+			hostname, _ := manager.SHostnameResourceBaseManager.ValidateHostname(
+				guests[i].Hostname,
+				guests[i].OsType,
+				api.HostnameInput{
+					Hostname: guests[i].Name,
+				},
+			)
+			guests[i].Hostname = hostname.Hostname
+			return nil
+		})
+	}
+	return nil
+}
+
 func (manager *SGuestManager) InitializeData() error {
 	guests := make([]SGuest, 0, 10)
 	q := manager.Query().Equals("hypervisor", "esxi")
@@ -655,7 +671,7 @@ func (manager *SGuestManager) InitializeData() error {
 			return nil
 		})
 	}
-	return nil
+	return manager.initHostname()
 }
 
 func (guest *SGuest) GetHypervisor() string {
@@ -978,6 +994,17 @@ func ValidateMemCpuData(vmemSize, vcpuCount int, hypervisor string) (int, int, e
 		return 0, 0, err
 	}
 	return vmemSize, vcpuCount, nil
+}
+
+func (self *SGuest) PreUpdate(ctx context.Context, userCred mcclient.TokenCredential, query jsonutils.JSONObject, data jsonutils.JSONObject) {
+	// 减少更新日志
+	if data.Contains("progress_mbps") {
+		db.Update(self, func() error {
+			self.ProgressMbps, _ = data.Float("progress_mbps")
+			return nil
+		})
+	}
+	self.SVirtualResourceBase.PreUpdate(ctx, userCred, query, data)
 }
 
 func (self *SGuest) ValidateUpdateData(ctx context.Context, userCred mcclient.TokenCredential, query jsonutils.JSONObject, input api.ServerUpdateInput) (api.ServerUpdateInput, error) {
@@ -1367,11 +1394,11 @@ func (manager *SGuestManager) validateCreateData(
 	}
 	netArray := input.Networks
 	for idx := 0; idx < len(netArray); idx += 1 {
-		netConfig, err := parseNetworkInfo(userCred, netArray[idx])
+		netConfig, err := parseNetworkInfo(ctx, userCred, netArray[idx])
 		if err != nil {
 			return nil, httperrors.NewInputParameterError("parse network description error %s", err)
 		}
-		err = isValidNetworkInfo(userCred, netConfig, "")
+		err = isValidNetworkInfo(ctx, userCred, netConfig, "")
 		if err != nil {
 			return nil, err
 		}
@@ -1460,6 +1487,14 @@ func (manager *SGuestManager) validateCreateData(
 	}
 
 	input.VirtualResourceCreateInput, err = manager.SVirtualResourceBaseManager.ValidateCreateData(ctx, userCred, ownerId, query, input.VirtualResourceCreateInput)
+	if err != nil {
+		return nil, err
+	}
+	name := input.Name
+	if len(name) == 0 {
+		name = input.GenerateName
+	}
+	input.HostnameInput, err = manager.SHostnameResourceBaseManager.ValidateHostname(name, input.OsType, input.HostnameInput)
 	if err != nil {
 		return nil, err
 	}
@@ -1713,6 +1748,10 @@ func getGuestResourceRequirements(
 	diskSize := 0
 
 	for _, diskConfig := range input.Disks {
+		if diskConfig.DiskId != "" {
+			// disk has been created, ignore resource requirement
+			continue
+		}
 		diskSize += diskConfig.SizeMb
 	}
 
@@ -1823,9 +1862,9 @@ func (guest *SGuest) SetCreateParams(ctx context.Context, userCred mcclient.Toke
 	}
 }
 
-func (guest *SGuest) GetCreateParams(userCred mcclient.TokenCredential) (*api.ServerCreateInput, error) {
+func (guest *SGuest) GetCreateParams(ctx context.Context, userCred mcclient.TokenCredential) (*api.ServerCreateInput, error) {
 	input := new(api.ServerCreateInput)
-	data := guest.GetMetadataJson(api.VM_METADATA_CREATE_PARAMS, userCred)
+	data := guest.GetMetadataJson(ctx, api.VM_METADATA_CREATE_PARAMS, userCred)
 	if data == nil {
 		return nil, fmt.Errorf("Not found %s %s in metadata", guest.Name, api.VM_METADATA_CREATE_PARAMS)
 	}
@@ -2220,7 +2259,7 @@ func (self *SGuest) GetOS() string {
 	if len(self.OsType) > 0 {
 		return self.OsType
 	}
-	return self.GetMetadata("os_name", nil)
+	return self.GetMetadata(context.Background(), "os_name", nil)
 }
 
 func (self *SGuest) IsLinux() bool {
@@ -2413,7 +2452,7 @@ func (self *SGuest) syncRemoveCloudVM(ctx context.Context, userCred mcclient.Tok
 	return nil
 }
 
-func (guest *SGuest) SyncAllWithCloudVM(ctx context.Context, userCred mcclient.TokenCredential, host *SHost, extVM cloudprovider.ICloudVM) error {
+func (guest *SGuest) SyncAllWithCloudVM(ctx context.Context, userCred mcclient.TokenCredential, host *SHost, extVM cloudprovider.ICloudVM, syncStatus bool) error {
 	if host == nil {
 		return errors.Error("guest has no host")
 	}
@@ -2428,7 +2467,7 @@ func (guest *SGuest) SyncAllWithCloudVM(ctx context.Context, userCred mcclient.T
 		return errors.Wrap(err, "provider.GetProvider")
 	}
 
-	err = guest.syncWithCloudVM(ctx, userCred, driver, host, extVM, provider.GetOwnerId())
+	err = guest.syncWithCloudVM(ctx, userCred, driver, host, extVM, provider.GetOwnerId(), syncStatus)
 	if err != nil {
 		return errors.Wrap(err, "guest.syncWithCloudVM")
 	}
@@ -2438,25 +2477,27 @@ func (guest *SGuest) SyncAllWithCloudVM(ctx context.Context, userCred mcclient.T
 	return nil
 }
 
-func (self *SGuest) syncWithCloudVM(ctx context.Context, userCred mcclient.TokenCredential, provider cloudprovider.ICloudProvider, host *SHost, extVM cloudprovider.ICloudVM, syncOwnerId mcclient.IIdentityProvider) error {
+func (self *SGuest) syncWithCloudVM(ctx context.Context, userCred mcclient.TokenCredential, provider cloudprovider.ICloudProvider, host *SHost, extVM cloudprovider.ICloudVM, syncOwnerId mcclient.IIdentityProvider, syncStatus bool) error {
 	recycle := false
 
 	if provider.GetFactory().IsSupportPrepaidResources() && self.IsPrepaidRecycle() {
 		recycle = true
 	}
 
-	// metaData := extVM.GetMetadata()
 	diff, err := db.UpdateWithLock(ctx, self, func() error {
-		extVM.Refresh()
 		if options.NameSyncResources.Contains(self.Keyword()) && !recycle {
 			newName, _ := db.GenerateAlterName(self, extVM.GetName())
-			if len(newName) > 0 && newName != self.Name {
+			if len(newName) > 0 && newName != self.Name && extVM.GetName() != extVM.GetHostname() {
 				self.Name = newName
 			}
 		}
-		if !self.IsFailureStatus() {
+		if extVM.GetName() != extVM.GetHostname() {
+			self.Hostname = extVM.GetHostname()
+		}
+		if !self.IsFailureStatus() && syncStatus {
 			self.Status = extVM.GetStatus()
 		}
+
 		self.VcpuCount = extVM.GetVcpuCount()
 		self.BootOrder = extVM.GetBootOrder()
 		self.Vga = extVM.GetVga()
@@ -2553,6 +2594,7 @@ func (manager *SGuestManager) newCloudVM(ctx context.Context, userCred mcclient.
 	guest.Bios = extVM.GetBios()
 	guest.Machine = extVM.GetMachine()
 	guest.Hypervisor = extVM.GetHypervisor()
+	guest.Hostname = extVM.GetHostname()
 
 	guest.IsEmulated = extVM.IsEmulated()
 
@@ -2700,7 +2742,7 @@ func (self *SGuest) setOSProfile(ctx context.Context, userCred mcclient.TokenCre
 func (self *SGuest) GetOSProfile() osprofile.SOSProfile {
 	osName := self.GetOS()
 	osProf := osprofile.GetOSProfile(osName, self.Hypervisor)
-	val := self.GetMetadata("__os_profile__", nil)
+	val := self.GetMetadata(context.Background(), "__os_profile__", nil)
 	if len(val) > 0 {
 		jsonVal, _ := jsonutils.ParseString(val)
 		if jsonVal != nil {
@@ -2904,8 +2946,8 @@ type sAddGuestnic struct {
 }
 
 func getCloudNicNetwork(ctx context.Context, vnic cloudprovider.ICloudNic, host *SHost, ipList []string, index int) (*SNetwork, error) {
-	vnet := vnic.GetINetwork()
-	if vnet == nil {
+	vnetId := vnic.GetINetworkId()
+	if len(vnetId) == 0 {
 		if vnic.InClassicNetwork() {
 			region, _ := host.GetRegion()
 			cloudprovider := host.GetCloudprovider()
@@ -2932,7 +2974,7 @@ func getCloudNicNetwork(ctx context.Context, vnic cloudprovider.ICloudNic, host 
 		// find network by IP
 		return host.getNetworkOfIPOnHost(ip)
 	}
-	localNetObj, err := db.FetchByExternalIdAndManagerId(NetworkManager, vnet.GetGlobalId(), func(q *sqlchemy.SQuery) *sqlchemy.SQuery {
+	localNetObj, err := db.FetchByExternalIdAndManagerId(NetworkManager, vnetId, func(q *sqlchemy.SQuery) *sqlchemy.SQuery {
 		vpc := VpcManager.Query().SubQuery()
 		wire := WireManager.Query().SubQuery()
 		return q.Join(wire, sqlchemy.Equals(q.Field("wire_id"), wire.Field("id"))).
@@ -2940,7 +2982,7 @@ func getCloudNicNetwork(ctx context.Context, vnic cloudprovider.ICloudNic, host 
 			Filter(sqlchemy.Equals(vpc.Field("manager_id"), host.ManagerId))
 	})
 	if err != nil {
-		return nil, fmt.Errorf("Cannot find network of external_id %s: %v", vnet.GetGlobalId(), err)
+		return nil, fmt.Errorf("Cannot find network of external_id %s: %v", vnetId, err)
 	}
 	localNet := localNetObj.(*SNetwork)
 	return localNet, nil
@@ -2960,9 +3002,9 @@ func (self *SGuest) SyncVMNics(ctx context.Context, userCred mcclient.TokenCrede
 	commonext := make([]cloudprovider.ICloudNic, 0)
 	added := make([]cloudprovider.ICloudNic, 0)
 	set := compare.SCompareSet{
-		DBFunc:  "GetIP",
+		DBFunc:  "GetMAC",
 		DBSet:   nics,
-		ExtFunc: "GetIP",
+		ExtFunc: "GetMAC",
 		ExtSet:  vnics,
 	}
 	err = compare.CompareSetsFunc(set, &removed, &commondb, &commonext, &added)
@@ -2987,7 +3029,9 @@ func (self *SGuest) SyncVMNics(ctx context.Context, userCred mcclient.TokenCrede
 			continue
 		}
 		db.Update(&commondb[i], func() error {
-			commondb[i].MacAddr = commonext[i].GetMAC()
+			if len(commonext[i].GetIP()) > 0 {
+				commondb[i].IpAddr = commonext[i].GetIP()
+			}
 			commondb[i].Driver = commonext[i].GetDriver()
 			return nil
 		})
@@ -3007,10 +3051,16 @@ func (self *SGuest) SyncVMNics(ctx context.Context, userCred mcclient.TokenCrede
 			Ifname: "",
 		}
 
+		ip := added[i].GetIP()
+		// vmware, may be sync fix ip
+		if len(ip) == 0 && len(ipList) > 0 {
+			ip = ipList[0]
+		}
+
 		// always try allocate from reserved pool
 		guestnetworks, err := self.Attach2Network(ctx, userCred, Attach2NetworkArgs{
 			Network:             localNet,
-			IpAddr:              added[i].GetIP(),
+			IpAddr:              ip,
 			NicDriver:           added[i].GetDriver(),
 			TryReserved:         true,
 			AllocDir:            api.IPAllocationDefault,
@@ -3079,15 +3129,21 @@ func (self *SGuest) AttachDisk(ctx context.Context, disk *SDisk, userCred mcclie
 func (self *SGuest) attach2Disk(ctx context.Context, disk *SDisk, userCred mcclient.TokenCredential, driver string, cache string, mountpoint string) error {
 	attached, err := self.isAttach2Disk(disk)
 	if err != nil {
-		return err
+		return errors.Wrap(err, "isAttach2Disk")
 	}
 	if attached {
 		return fmt.Errorf("Guest has been attached to disk")
 	}
 
 	if len(driver) == 0 {
-		osProf := self.GetOSProfile()
-		driver = osProf.DiskDriver
+		// depends the last disk of this guest
+		existingDisks, _ := self.GetGuestDisks()
+		if len(existingDisks) > 0 {
+			driver = existingDisks[len(existingDisks)-1].Driver
+		} else {
+			osProf := self.GetOSProfile()
+			driver = osProf.DiskDriver
+		}
 	}
 	guestdisk := SGuestdisk{}
 	guestdisk.SetModelManager(GuestdiskManager, &guestdisk)
@@ -3337,7 +3393,7 @@ func (self *SGuest) CreateNetworksOnHost(
 		return errors.Wrap(err, "self.attach2RandomNetwork")
 	}
 	for idx := range netArray {
-		netConfig, err := parseNetworkInfo(userCred, netArray[idx])
+		netConfig, err := parseNetworkInfo(ctx, userCred, netArray[idx])
 		if err != nil {
 			return errors.Wrapf(err, "parseNetworkInfo at %d", idx)
 		}
@@ -3445,9 +3501,12 @@ func (self *SGuest) CreateDisksOnHost(
 	autoAttach bool,
 ) error {
 	for idx := 0; idx < len(disks); idx += 1 {
+		if len(disks[idx].DiskId) > 0 && len(disks[idx].Storage) > 0 {
+			continue
+		}
 		diskConfig, err := parseDiskInfo(ctx, userCred, disks[idx])
 		if err != nil {
-			return err
+			return errors.Wrap(err, "parseDiskInfo")
 		}
 		var candidateDisk *schedapi.CandidateDisk
 		var backupCandidateDisk *schedapi.CandidateDisk
@@ -3475,7 +3534,7 @@ func (self *SGuest) createDiskOnStorage(ctx context.Context, userCred mcclient.T
 	lockman.LockClass(ctx, QuotaManager, self.ProjectId)
 	defer lockman.ReleaseClass(ctx, QuotaManager, self.ProjectId)
 
-	diskName := fmt.Sprintf("vdisk-%s-%d", self.Name, time.Now().UnixNano())
+	diskName := fmt.Sprintf("vdisk-%s-%d", pinyinutils.Text2Pinyin(self.Name), time.Now().UnixNano())
 
 	billingType := billing_api.BILLING_TYPE_POSTPAID
 	billingCycle := ""
@@ -3734,10 +3793,10 @@ func (self *SGuest) AllowDeleteItem(ctx context.Context, userCred mcclient.Token
 		overridePendingDelete = jsonutils.QueryBoolean(query, "override_pending_delete", false)
 		purge = jsonutils.QueryBoolean(query, "purge", false)
 	}
-	if (overridePendingDelete || purge) && !db.IsAdminAllowDelete(userCred, self) {
+	if (overridePendingDelete || purge) && !db.IsAdminAllowDelete(ctx, userCred, self) {
 		return false
 	}
-	return self.IsOwner(userCred) || db.IsAdminAllowDelete(userCred, self)
+	return self.IsOwner(userCred) || db.IsAdminAllowDelete(ctx, userCred, self)
 }
 
 // 删除虚拟机
@@ -3906,11 +3965,11 @@ func (self *SGuest) getBios() string {
 }
 
 func (self *SGuest) getKvmOptions() string {
-	return self.GetMetadata("kvm", nil)
+	return self.GetMetadata(context.Background(), "kvm", nil)
 }
 
-func (self *SGuest) getExtraOptions() jsonutils.JSONObject {
-	return self.GetMetadataJson("extra_options", nil)
+func (self *SGuest) getExtraOptions(ctx context.Context) jsonutils.JSONObject {
+	return self.GetMetadataJson(ctx, "extra_options", nil)
 }
 
 func (self *SGuest) GetIsolatedDevices() ([]SIsolatedDevice, error) {
@@ -3926,6 +3985,7 @@ func (self *SGuest) GetIsolatedDevices() ([]SIsolatedDevice, error) {
 func (self *SGuest) GetJsonDescAtHypervisor(ctx context.Context, host *SHost) *api.GuestJsonDesc {
 	desc := &api.GuestJsonDesc{
 		Name:        self.Name,
+		Hostname:    self.Hostname,
 		Description: self.Description,
 		UUID:        self.Id,
 		Mem:         self.VmemSize,
@@ -3970,7 +4030,7 @@ func (self *SGuest) GetJsonDescAtHypervisor(ctx context.Context, host *SHost) *a
 	// disks
 	disks, _ := self.GetGuestDisks()
 	for _, disk := range disks {
-		diskDesc := disk.GetJsonDescAtHost(host)
+		diskDesc := disk.GetJsonDescAtHost(ctx, host)
 		desc.Disks = append(desc.Disks, diskDesc)
 	}
 
@@ -4002,7 +4062,7 @@ func (self *SGuest) GetJsonDescAtHypervisor(ctx context.Context, host *SHost) *a
 	desc.SecurityRules = self.getSecurityGroupsRules()
 	desc.AdminSecurityRules = self.getAdminSecurityRules()
 
-	desc.ExtraOptions = self.getExtraOptions()
+	desc.ExtraOptions = self.getExtraOptions(ctx)
 
 	desc.Kvm = self.getKvmOptions()
 
@@ -4014,7 +4074,7 @@ func (self *SGuest) GetJsonDescAtHypervisor(ctx context.Context, host *SHost) *a
 
 	desc.OsName = self.GetOS()
 
-	desc.Metadata, _ = self.GetAllMetadata(nil)
+	desc.Metadata, _ = self.GetAllMetadata(ctx, nil)
 
 	userData, _ := desc.Metadata["user_data"]
 	if len(userData) > 0 {
@@ -4063,7 +4123,7 @@ func (self *SGuest) GetJsonDescAtBaremetal(ctx context.Context, host *SHost) *ap
 
 	disks, _ := self.GetGuestDisks()
 	for _, disk := range disks {
-		diskDesc := disk.GetJsonDescAtHost(host)
+		diskDesc := disk.GetJsonDescAtHost(ctx, host)
 		desc.Disks = append(desc.Disks, diskDesc)
 	}
 
@@ -4093,7 +4153,7 @@ func (self *SGuest) GetJsonDescAtBaremetal(ctx context.Context, host *SHost) *ap
 	}
 
 	desc.OsName = self.GetOS()
-	desc.Metadata, _ = self.GetAllMetadata(nil)
+	desc.Metadata, _ = self.GetAllMetadata(ctx, nil)
 
 	desc.UserData, _ = desc.Metadata["user_data"]
 	desc.PendingDeleted = self.PendingDeleted
@@ -4103,7 +4163,7 @@ func (self *SGuest) GetJsonDescAtBaremetal(ctx context.Context, host *SHost) *ap
 
 func (self *SGuest) getNetworkRoles() []string {
 	key := db.Metadata.GetSysadminKey("network_role")
-	roleStr := self.GetMetadata(key, auth.AdminCredential())
+	roleStr := self.GetMetadata(context.Background(), key, auth.AdminCredential())
 	if len(roleStr) > 0 {
 		return strings.Split(roleStr, ",")
 	}
@@ -4246,10 +4306,10 @@ func (self *SGuest) GetShortDesc(ctx context.Context) *jsonutils.JSONDict {
 	if len(self.OsType) > 0 {
 		desc.Add(jsonutils.NewString(self.OsType), "os_type")
 	}
-	if osDist := self.GetMetadata("os_distribution", nil); len(osDist) > 0 {
+	if osDist := self.GetMetadata(ctx, "os_distribution", nil); len(osDist) > 0 {
 		desc.Add(jsonutils.NewString(osDist), "os_distribution")
 	}
-	if osVer := self.GetMetadata("os_version", nil); len(osVer) > 0 {
+	if osVer := self.GetMetadata(ctx, "os_version", nil); len(osVer) > 0 {
 		desc.Add(jsonutils.NewString(osVer), "os_version")
 	}
 
@@ -4306,7 +4366,7 @@ func (self *SGuest) GetShortDesc(ctx context.Context) *jsonutils.JSONDict {
 		}
 	}
 
-	if priceKey := self.GetMetadata("ext:price_key", nil); len(priceKey) > 0 {
+	if priceKey := self.GetMetadata(ctx, "ext:price_key", nil); len(priceKey) > 0 {
 		billingInfo.PriceKey = priceKey
 	}
 
@@ -4541,7 +4601,7 @@ func (self *SGuest) doExternalSync(ctx context.Context, userCred mcclient.TokenC
 	if err != nil {
 		return err
 	}
-	return self.syncWithCloudVM(ctx, userCred, iprovider, host, iVM, nil)
+	return self.syncWithCloudVM(ctx, userCred, iprovider, host, iVM, nil, true)
 }
 
 func (manager *SGuestManager) DeleteExpiredPrepaidServers(ctx context.Context, userCred mcclient.TokenCredential, isStart bool) {
@@ -4573,13 +4633,13 @@ func (manager *SGuestManager) AutoRenewPrepaidServer(ctx context.Context, userCr
 		return
 	}
 	for i := 0; i < len(guests); i += 1 {
-		if len(guests[i].ExternalId) > 0 {
+		if len(guests[i].ExternalId) > 0 && !guests[i].GetDriver().IsSupportSetAutoRenew() {
 			err := guests[i].doExternalSync(ctx, userCred)
 			if err == nil && guests[i].IsValidPrePaid() {
 				continue
 			}
 		}
-		guests[i].startGuestRenewTask(ctx, userCred, "1M", "")
+		guests[i].startGuestRenewTask(ctx, userCred, guests[i].BillingCycle, "")
 	}
 }
 
@@ -4624,7 +4684,7 @@ func (self *SGuestManager) switchBackupGuests(ctx context.Context, userCred mccl
 	}
 	log.Debugf("Guests count %d need reconcile with switch backup", len(guests))
 	for i := 0; i < len(guests); i++ {
-		val := guests[i].GetMetadataJson("switch_backup", userCred)
+		val := guests[i].GetMetadataJson(ctx, "switch_backup", userCred)
 		t, err := val.GetTime()
 		if err != nil {
 			log.Errorf("failed get time from metadata switch_backup %s", err)
@@ -4663,7 +4723,7 @@ func (self *SGuestManager) createBackupGuests(ctx context.Context, userCred mccl
 	}
 	log.Infof("Guests count %d need reconcile with create bakcup", len(guests))
 	for i := 0; i < len(guests); i++ {
-		val := guests[i].GetMetadataJson("create_backup", userCred)
+		val := guests[i].GetMetadataJson(ctx, "create_backup", userCred)
 		t, err := val.GetTime()
 		if err != nil {
 			log.Errorf("failed get time from metadata create_backup %s", err)
@@ -4704,8 +4764,8 @@ func (self *SGuestManager) createBackupGuests(ctx context.Context, userCred mccl
 }
 
 func (self *SGuest) isInReconcile(userCred mcclient.TokenCredential) bool {
-	switchBackup := self.GetMetadata("switch_backup", userCred)
-	createBackup := self.GetMetadata("create_backup", userCred)
+	switchBackup := self.GetMetadata(context.Background(), "switch_backup", userCred)
+	createBackup := self.GetMetadata(context.Background(), "create_backup", userCred)
 	if len(switchBackup) > 0 || len(createBackup) > 0 {
 		return true
 	}
@@ -4934,7 +4994,7 @@ func (self *SGuest) getDefaultStorageType() string {
 }
 
 func (self *SGuest) GetApptags() []string {
-	tagsStr := self.GetMetadata(api.VM_METADATA_APP_TAGS, nil)
+	tagsStr := self.GetMetadata(context.Background(), api.VM_METADATA_APP_TAGS, nil)
 	if len(tagsStr) > 0 {
 		return strings.Split(tagsStr, ",")
 	}
@@ -5046,10 +5106,6 @@ func (self *SGuest) OnScheduleToHost(ctx context.Context, userCred mcclient.Toke
 	return host.ClearSchedDescCache()
 }
 
-func (guest *SGuest) AllowGetDetailsTasks(ctx context.Context, userCred mcclient.TokenCredential, query jsonutils.JSONObject) bool {
-	return db.IsAdminAllowGetSpec(userCred, guest, "tasks")
-}
-
 func (guest *SGuest) GetDetailsTasks(ctx context.Context, userCred mcclient.TokenCredential, query jsonutils.JSONObject) (jsonutils.JSONObject, error) {
 	since := time.Time{}
 	if query.Contains("since") {
@@ -5074,9 +5130,9 @@ func (guest *SGuest) GetDynamicConditionInput() *jsonutils.JSONDict {
 	return guest.ToSchedDesc().ToConditionInput()
 }
 
-func (self *SGuest) ToCreateInput(userCred mcclient.TokenCredential) *api.ServerCreateInput {
+func (self *SGuest) ToCreateInput(ctx context.Context, userCred mcclient.TokenCredential) *api.ServerCreateInput {
 	genInput := self.toCreateInput()
-	userInput, err := self.GetCreateParams(userCred)
+	userInput, err := self.GetCreateParams(ctx, userCred)
 	if err != nil {
 		return genInput
 	}
@@ -5292,12 +5348,8 @@ func (self *SGuest) ToIsolatedDevicesConfig() []*api.IsolatedDeviceConfig {
 	return ret
 }
 
-func (self *SGuest) IsImport(userCred mcclient.TokenCredential) bool {
-	return self.GetMetadata("__is_import", userCred) == "true"
-}
-
-func (guest *SGuest) AllowGetDetailsRemoteNics(ctx context.Context, userCred mcclient.TokenCredential, query jsonutils.JSONObject) bool {
-	return db.IsAdminAllowGetSpec(userCred, guest, "remote-nics")
+func (self *SGuest) IsImport(ctx context.Context, userCred mcclient.TokenCredential) bool {
+	return self.GetMetadata(ctx, "__is_import", userCred) == "true"
 }
 
 func (guest *SGuest) GetDetailsRemoteNics(ctx context.Context, userCred mcclient.TokenCredential, query jsonutils.JSONObject) (jsonutils.JSONObject, error) {
@@ -5529,13 +5581,6 @@ var (
 	serverNameREG = regexp.MustCompile(`^[a-zA-Z$][a-zA-Z0-9-${}.]*$`)
 	hostnameREG   = regexp.MustCompile(`^[a-z$][a-z0-9-${}.]*$`)
 )
-
-func (manager *SGuestManager) ValidateName(name string) error {
-	if serverNameREG.MatchString(name) {
-		return nil
-	}
-	return httperrors.NewInputParameterError("name starts with letter, and contains letter, number and - only")
-}
 
 func (manager *SGuestManager) ValidateNameLoginAccount(name string) error {
 	if hostnameREG.MatchString(name) {

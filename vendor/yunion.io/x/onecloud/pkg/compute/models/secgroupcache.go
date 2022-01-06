@@ -18,7 +18,6 @@ import (
 	"context"
 	"database/sql"
 	"fmt"
-	"strings"
 
 	"yunion.io/x/jsonutils"
 	"yunion.io/x/log"
@@ -78,18 +77,6 @@ func init() {
 	SecurityGroupCacheManager.SetVirtualObject(SecurityGroupCacheManager)
 }
 
-func (manager *SSecurityGroupCacheManager) AllowCreateItem(ctx context.Context, userCred mcclient.TokenCredential, query jsonutils.JSONObject, data jsonutils.JSONObject) bool {
-	return false
-}
-
-func (manager *SSecurityGroupCacheManager) AllowListItems(ctx context.Context, userCred mcclient.TokenCredential, query jsonutils.JSONObject) bool {
-	return db.IsProjectAllowList(userCred, manager)
-}
-
-func (self *SSecurityGroupCache) AllowUpdateItem(ctx context.Context, userCred mcclient.TokenCredential) bool {
-	return false
-}
-
 func (self *SSecurityGroupCache) GetOwnerId() mcclient.IIdentityProvider {
 	sec, err := self.GetSecgroup()
 	if err != nil {
@@ -124,10 +111,6 @@ func (manager *SSecurityGroupCacheManager) ListItemFilter(
 	q, err = manager.SCloudregionResourceBaseManager.ListItemFilter(ctx, q, userCred, query.RegionalFilterListInput)
 	if err != nil {
 		return nil, errors.Wrap(err, "SCloudregionResourceBaseManager.ListItemFilter")
-	}
-	q, err = manager.SVpcResourceBaseManager.ListItemFilter(ctx, q, userCred, query.VpcFilterListInput)
-	if err != nil {
-		return nil, errors.Wrap(err, "SVpcResourceBaseManager.ListItemFilter")
 	}
 	q, err = manager.SSecurityGroupResourceBaseManager.ListItemFilter(ctx, q, userCred, query.SecgroupFilterListInput)
 	if err != nil {
@@ -193,10 +176,11 @@ func (self *SSecurityGroupCache) GetIRegion() (cloudprovider.ICloudRegion, error
 	if err != nil {
 		return nil, err
 	}
-	if region := CloudregionManager.FetchRegionById(self.CloudregionId); region != nil {
-		return provider.GetIRegionById(region.ExternalId)
+	region, err := self.GetRegion()
+	if err != nil {
+		return nil, errors.Wrapf(err, "GetRegion")
 	}
-	return nil, fmt.Errorf("failed to find iregion for secgroupcache %s vpc: %s externalId: %s", self.Id, self.VpcId, self.ExternalId)
+	return provider.GetIRegionById(region.ExternalId)
 }
 
 func (manager *SSecurityGroupCacheManager) FilterByOwner(q *sqlchemy.SQuery, userCred mcclient.IIdentityProvider, scope rbacutils.TRbacScope) *sqlchemy.SQuery {
@@ -375,7 +359,7 @@ func (manager *SSecurityGroupCacheManager) getSecgroupcachesByProvider(provider 
 func (self *SSecurityGroupCache) GetSecgroup() (*SSecurityGroup, error) {
 	model, err := SecurityGroupManager.FetchById(self.SecgroupId)
 	if err != nil {
-		return nil, fmt.Errorf("failed to fetch secgroup by %s", self.SecgroupId)
+		return nil, errors.Wrapf(err, "SecurityGroupManager.FetchById(%s)", self.SecgroupId)
 	}
 	return model.(*SSecurityGroup), nil
 }
@@ -553,17 +537,9 @@ func (manager *SSecurityGroupCacheManager) SyncSecurityGroupCaches(ctx context.C
 	return localSecgroups, remoteSecgroups, syncResult
 }
 
-func (self *SSecurityGroupCache) AllowPerformSyncstatus(ctx context.Context, userCred mcclient.TokenCredential, query jsonutils.JSONObject, data jsonutils.JSONObject) bool {
-	return db.IsProjectAllowPerform(userCred, self, "syncstatus")
-}
-
 // 同步安全组缓存状态
 func (self *SSecurityGroupCache) PerformSyncstatus(ctx context.Context, userCred mcclient.TokenCredential, query jsonutils.JSONObject, input api.DiskSyncstatusInput) (jsonutils.JSONObject, error) {
 	return nil, self.StartSyncstatusTask(ctx, userCred, "")
-}
-
-func (self *SSecurityGroupCache) AllowGetDetailsReferences(ctx context.Context, userCred mcclient.TokenCredential, query jsonutils.JSONObject) bool {
-	return db.IsAdminAllowGetSpec(userCred, self, "references")
 }
 
 // 获取引用信息
@@ -594,6 +570,26 @@ func (self *SSecurityGroupCache) Delete(ctx context.Context, userCred mcclient.T
 
 func (self *SSecurityGroupCache) RealDelete(ctx context.Context, userCred mcclient.TokenCredential) error {
 	return self.SStatusStandaloneResourceBase.Delete(ctx, userCred)
+}
+
+func (self *SSecurityGroupCache) purge(ctx context.Context, userCred mcclient.TokenCredential) error {
+	lockman.LockObject(ctx, self)
+	defer lockman.ReleaseObject(ctx, self)
+
+	if secgroup, _ := self.GetSecgroup(); secgroup != nil {
+		caches, err := secgroup.GetSecurityGroupCaches()
+		if err != nil {
+			return errors.Wrapf(err, "secgroup.GetSecurityGroupCaches")
+		}
+		if len(caches) == 1 {
+			err := secgroup.ValidateDeleteCondition(ctx, nil)
+			if err == nil {
+				secgroup.RealDelete(ctx, userCred)
+			}
+		}
+	}
+
+	return self.RealDelete(ctx, userCred)
 }
 
 func (self *SSecurityGroupCache) CustomizeDelete(ctx context.Context, userCred mcclient.TokenCredential, query jsonutils.JSONObject, data jsonutils.JSONObject) error {
@@ -707,32 +703,40 @@ func (self *SSecurityGroupCache) CreateISecurityGroup() (cloudprovider.ICloudSec
 		return nil, errors.Wrapf(err, "self.GetIRegion")
 	}
 
-	if strings.ToLower(self.Name) == "default" { //避免有些云不支持default关键字
-		self.Name = "DefaultGroup"
+	regionDriver, err := self.GetRegionDriver()
+	if err != nil {
+		return nil, errors.Wrapf(err, "GetRegionDriver")
 	}
+
+	self.Name = regionDriver.GenerateSecurityGroupName(self.Name)
+
 	// 避免有的云不支持重名安全组
-	randomString := func(prefix string, length int) string {
-		return fmt.Sprintf("%s-%s", prefix, rand.String(length))
-	}
-	opts := &cloudprovider.SecurityGroupFilterOptions{
-		Name:      randomString(self.Name, 1),
-		VpcId:     self.VpcId,
-		ProjectId: self.ExternalProjectId,
-	}
-	for i := 2; i < 30; i++ {
-		_, err := iRegion.GetISecurityGroupByName(opts)
-		if err != nil {
-			if errors.Cause(err) == cloudprovider.ErrNotFound {
-				break
-			}
-			if errors.Cause(err) != cloudprovider.ErrDuplicateId {
-				return nil, errors.Wrapf(err, "GetISecurityGroupByName")
-			}
+	if !regionDriver.IsAllowSecurityGroupNameRepeat() {
+		randomString := func(prefix string, length int) string {
+			return fmt.Sprintf("%s-%s", prefix, rand.String(length))
 		}
-		opts.Name = randomString(self.Name, i)
+		opts := &cloudprovider.SecurityGroupFilterOptions{
+			Name:      randomString(self.Name, 1),
+			VpcId:     self.VpcId,
+			ProjectId: self.ExternalProjectId,
+		}
+		for i := 2; i < 30; i++ {
+			_, err := iRegion.GetISecurityGroupByName(opts)
+			if err != nil {
+				if errors.Cause(err) == cloudprovider.ErrNotFound {
+					break
+				}
+				if errors.Cause(err) != cloudprovider.ErrDuplicateId {
+					return nil, errors.Wrapf(err, "GetISecurityGroupByName")
+				}
+			}
+			opts.Name = randomString(self.Name, i)
+		}
+		self.Name = opts.Name
 	}
+
 	conf := &cloudprovider.SecurityGroupCreateInput{
-		Name:      opts.Name,
+		Name:      self.Name,
 		Desc:      self.Description,
 		VpcId:     self.VpcId,
 		ProjectId: self.ExternalProjectId,
