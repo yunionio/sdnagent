@@ -124,6 +124,12 @@ type SGuest struct {
 	// 备份机所在宿主机Id
 	BackupHostId string `width:"36" charset:"ascii" nullable:"true" list:"user" get:"user"`
 
+	// 操作进度0-100
+	Progress float32 `list:"user" update:"user" default:"100" json:"progress"`
+
+	// 迁移或克隆的速度
+	ProgressMbps float64 `nullable:"false" default:"0" list:"user" create:"optional" update:"user"`
+
 	Vga     string `width:"36" charset:"ascii" nullable:"true" list:"user" update:"user" create:"optional"`
 	Vdi     string `width:"36" charset:"ascii" nullable:"true" list:"user" update:"user" create:"optional"`
 	Machine string `width:"36" charset:"ascii" nullable:"true" list:"user" update:"user" create:"optional"`
@@ -980,6 +986,28 @@ func ValidateMemCpuData(vmemSize, vcpuCount int, hypervisor string) (int, int, e
 	return vmemSize, vcpuCount, nil
 }
 
+func (self *SGuest) SetStatus(userCred mcclient.TokenCredential, status string, reason string) error {
+	db.Update(self, func() error {
+		self.Progress = 0
+		self.ProgressMbps = 0
+		return nil
+	})
+	return self.SVirtualResourceBase.SetStatus(userCred, status, reason)
+}
+
+func (self *SGuest) PreUpdate(ctx context.Context, userCred mcclient.TokenCredential, query jsonutils.JSONObject, data jsonutils.JSONObject) {
+	// 减少更新日志
+	if data.Contains("progress_mbps") || data.Contains("progress") {
+		db.Update(self, func() error {
+			self.ProgressMbps, _ = data.Float("progress_mbps")
+			progress, _ := data.Float("progress")
+			self.Progress = float32(progress)
+			return nil
+		})
+	}
+	self.SVirtualResourceBase.PreUpdate(ctx, userCred, query, data)
+}
+
 func (self *SGuest) ValidateUpdateData(ctx context.Context, userCred mcclient.TokenCredential, query jsonutils.JSONObject, input api.ServerUpdateInput) (api.ServerUpdateInput, error) {
 	if len(input.Name) > 0 && len(input.Name) < 2 {
 		return input, httperrors.NewInputParameterError("name is too short")
@@ -1713,6 +1741,10 @@ func getGuestResourceRequirements(
 	diskSize := 0
 
 	for _, diskConfig := range input.Disks {
+		if diskConfig.DiskId != "" {
+			// disk has been created, ignore resource requirement
+			continue
+		}
 		diskSize += diskConfig.SizeMb
 	}
 
@@ -2413,7 +2445,7 @@ func (self *SGuest) syncRemoveCloudVM(ctx context.Context, userCred mcclient.Tok
 	return nil
 }
 
-func (guest *SGuest) SyncAllWithCloudVM(ctx context.Context, userCred mcclient.TokenCredential, host *SHost, extVM cloudprovider.ICloudVM) error {
+func (guest *SGuest) SyncAllWithCloudVM(ctx context.Context, userCred mcclient.TokenCredential, host *SHost, extVM cloudprovider.ICloudVM, syncStatus bool) error {
 	if host == nil {
 		return errors.Error("guest has no host")
 	}
@@ -2428,7 +2460,7 @@ func (guest *SGuest) SyncAllWithCloudVM(ctx context.Context, userCred mcclient.T
 		return errors.Wrap(err, "provider.GetProvider")
 	}
 
-	err = guest.syncWithCloudVM(ctx, userCred, driver, host, extVM, provider.GetOwnerId())
+	err = guest.syncWithCloudVM(ctx, userCred, driver, host, extVM, provider.GetOwnerId(), syncStatus)
 	if err != nil {
 		return errors.Wrap(err, "guest.syncWithCloudVM")
 	}
@@ -2438,7 +2470,7 @@ func (guest *SGuest) SyncAllWithCloudVM(ctx context.Context, userCred mcclient.T
 	return nil
 }
 
-func (self *SGuest) syncWithCloudVM(ctx context.Context, userCred mcclient.TokenCredential, provider cloudprovider.ICloudProvider, host *SHost, extVM cloudprovider.ICloudVM, syncOwnerId mcclient.IIdentityProvider) error {
+func (self *SGuest) syncWithCloudVM(ctx context.Context, userCred mcclient.TokenCredential, provider cloudprovider.ICloudProvider, host *SHost, extVM cloudprovider.ICloudVM, syncOwnerId mcclient.IIdentityProvider, syncStatus bool) error {
 	recycle := false
 
 	if provider.GetFactory().IsSupportPrepaidResources() && self.IsPrepaidRecycle() {
@@ -2454,7 +2486,7 @@ func (self *SGuest) syncWithCloudVM(ctx context.Context, userCred mcclient.Token
 				self.Name = newName
 			}
 		}
-		if !self.IsFailureStatus() {
+		if !self.IsFailureStatus() && syncStatus {
 			self.Status = extVM.GetStatus()
 		}
 		self.VcpuCount = extVM.GetVcpuCount()
@@ -2960,9 +2992,9 @@ func (self *SGuest) SyncVMNics(ctx context.Context, userCred mcclient.TokenCrede
 	commonext := make([]cloudprovider.ICloudNic, 0)
 	added := make([]cloudprovider.ICloudNic, 0)
 	set := compare.SCompareSet{
-		DBFunc:  "GetIP",
+		DBFunc:  "GetMAC",
 		DBSet:   nics,
-		ExtFunc: "GetIP",
+		ExtFunc: "GetMAC",
 		ExtSet:  vnics,
 	}
 	err = compare.CompareSetsFunc(set, &removed, &commondb, &commonext, &added)
@@ -2987,7 +3019,9 @@ func (self *SGuest) SyncVMNics(ctx context.Context, userCred mcclient.TokenCrede
 			continue
 		}
 		db.Update(&commondb[i], func() error {
-			commondb[i].MacAddr = commonext[i].GetMAC()
+			if len(commonext[i].GetIP()) > 0 {
+				commondb[i].IpAddr = commonext[i].GetIP()
+			}
 			commondb[i].Driver = commonext[i].GetDriver()
 			return nil
 		})
@@ -3007,10 +3041,16 @@ func (self *SGuest) SyncVMNics(ctx context.Context, userCred mcclient.TokenCrede
 			Ifname: "",
 		}
 
+		ip := added[i].GetIP()
+		// vmware, may be sync fix ip
+		if len(ip) == 0 && len(ipList) > 0 {
+			ip = ipList[0]
+		}
+
 		// always try allocate from reserved pool
 		guestnetworks, err := self.Attach2Network(ctx, userCred, Attach2NetworkArgs{
 			Network:             localNet,
-			IpAddr:              added[i].GetIP(),
+			IpAddr:              ip,
 			NicDriver:           added[i].GetDriver(),
 			TryReserved:         true,
 			AllocDir:            api.IPAllocationDefault,
@@ -3079,15 +3119,21 @@ func (self *SGuest) AttachDisk(ctx context.Context, disk *SDisk, userCred mcclie
 func (self *SGuest) attach2Disk(ctx context.Context, disk *SDisk, userCred mcclient.TokenCredential, driver string, cache string, mountpoint string) error {
 	attached, err := self.isAttach2Disk(disk)
 	if err != nil {
-		return err
+		return errors.Wrap(err, "isAttach2Disk")
 	}
 	if attached {
 		return fmt.Errorf("Guest has been attached to disk")
 	}
 
 	if len(driver) == 0 {
-		osProf := self.GetOSProfile()
-		driver = osProf.DiskDriver
+		// depends the last disk of this guest
+		existingDisks, _ := self.GetGuestDisks()
+		if len(existingDisks) > 0 {
+			driver = existingDisks[len(existingDisks)-1].Driver
+		} else {
+			osProf := self.GetOSProfile()
+			driver = osProf.DiskDriver
+		}
 	}
 	guestdisk := SGuestdisk{}
 	guestdisk.SetModelManager(GuestdiskManager, &guestdisk)
@@ -3445,9 +3491,12 @@ func (self *SGuest) CreateDisksOnHost(
 	autoAttach bool,
 ) error {
 	for idx := 0; idx < len(disks); idx += 1 {
+		if len(disks[idx].DiskId) > 0 && len(disks[idx].Storage) > 0 {
+			continue
+		}
 		diskConfig, err := parseDiskInfo(ctx, userCred, disks[idx])
 		if err != nil {
-			return err
+			return errors.Wrap(err, "parseDiskInfo")
 		}
 		var candidateDisk *schedapi.CandidateDisk
 		var backupCandidateDisk *schedapi.CandidateDisk
@@ -4541,7 +4590,7 @@ func (self *SGuest) doExternalSync(ctx context.Context, userCred mcclient.TokenC
 	if err != nil {
 		return err
 	}
-	return self.syncWithCloudVM(ctx, userCred, iprovider, host, iVM, nil)
+	return self.syncWithCloudVM(ctx, userCred, iprovider, host, iVM, nil, true)
 }
 
 func (manager *SGuestManager) DeleteExpiredPrepaidServers(ctx context.Context, userCred mcclient.TokenCredential, isStart bool) {
@@ -4573,13 +4622,13 @@ func (manager *SGuestManager) AutoRenewPrepaidServer(ctx context.Context, userCr
 		return
 	}
 	for i := 0; i < len(guests); i += 1 {
-		if len(guests[i].ExternalId) > 0 {
+		if len(guests[i].ExternalId) > 0 && !guests[i].GetDriver().IsSupportSetAutoRenew() {
 			err := guests[i].doExternalSync(ctx, userCred)
 			if err == nil && guests[i].IsValidPrePaid() {
 				continue
 			}
 		}
-		guests[i].startGuestRenewTask(ctx, userCred, "1M", "")
+		guests[i].startGuestRenewTask(ctx, userCred, guests[i].BillingCycle, "")
 	}
 }
 

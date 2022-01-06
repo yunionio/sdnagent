@@ -211,72 +211,93 @@ func (man *eipMan) run(ctx context.Context, mss *agentmodels.ModelSets) {
 		route  = iproute2.NewRoute(man.eipBridge())
 	)
 	for _, gn := range mss.Guestnetworks {
-		eip := gn.Elasticip
-		if eip == nil {
-			continue
+		var err error
+		flows, vpcIds, err = man.addEipFlows(ctx, flows, vpcIds, route, gn.Elasticip, gn.Network, gn.IpAddr)
+		if err != nil {
+			log.Errorf("addEipFlows for Guestnetworks error: %s", err)
 		}
-		var (
-			network = gn.Network
-			vpc     = network.Vpc
-			vpcId   = vpc.Id
-		)
-
-		if _, ok := vpcIds[vpcId]; !ok {
-			vpcIds[vpcId] = utils.Empty{}
-			if err := man.ensureEipBridgeVpcPort(ctx, vpcId); err != nil {
-				log.Errorln(err)
-				continue
-			}
+	}
+	for _, gn := range mss.Groupnetworks {
+		var err error
+		flows, vpcIds, err = man.addEipFlows(ctx, flows, vpcIds, route, gn.Elasticip, gn.Network, gn.IpAddr)
+		if err != nil {
+			log.Errorf("addEipFlows for Groupnetworks error: %s", err)
 		}
-
-		var (
-			mine, _ = man.pnamePair(vpcId)
-			pnoMine int
-		)
-		if psMine, err := utils.DumpPort(man.eipBridge(), mine); err != nil {
-			log.Errorf("eip: dump port %s %s: %v", man.eipBridge(), mine, err)
-			continue
-		} else {
-			pnoMine = psMine.PortID
-		}
-
-		var (
-			vpcIp      = gn.IpAddr
-			eipIp      = eip.IpAddr
-			hexMac     = "0x" + strings.TrimLeft(strings.ReplaceAll(apis.VpcEipGatewayMac, ":", ""), "0")
-			hexMac3    = "0x" + strings.TrimLeft(strings.ReplaceAll(man.mac, ":", ""), "0")
-			arpactions = []string{
-				"move:NXM_OF_ETH_SRC[]->NXM_OF_ETH_DST[]",
-				fmt.Sprintf("load:%s->NXM_OF_ETH_SRC[]", hexMac3),
-				"load:0x2->NXM_OF_ARP_OP[]",
-				fmt.Sprintf("load:%s->NXM_NX_ARP_SHA[]", hexMac),
-				"move:NXM_OF_ARP_TPA[]->NXM_OF_ARP_SPA[]",
-				"move:NXM_NX_ARP_SHA[]->NXM_NX_ARP_THA[]",
-				"move:NXM_OF_ARP_SPA[]->NXM_OF_ARP_TPA[]",
-				"in_port",
-			}
-		)
-		flows = append(flows,
-			utils.F(0, 33000,
-				fmt.Sprintf("in_port=%d,dl_src=%s,ip,nw_src=%s", pnoMine, apis.VpcEipGatewayMac, vpcIp),
-				fmt.Sprintf("mod_dl_dst:%s,mod_nw_src:%s,LOCAL", man.mac, eipIp),
-			),
-			utils.F(0, 32000,
-				fmt.Sprintf("in_port=LOCAL,ip,nw_dst=%s", eipIp),
-				fmt.Sprintf("mod_dl_dst:%s,mod_nw_dst:%s,output:%d", apis.VpcEipGatewayMac, vpcIp, pnoMine),
-			),
-			utils.F(0, 31000,
-				fmt.Sprintf("in_port=LOCAL,arp,arp_op=1,arp_tpa=%s", eipIp),
-				strings.Join(arpactions, ","),
-			),
-		)
-		route.Add(eipIp, "255.255.255.255", "")
 	}
 	if err := route.Err(); err != nil {
 		log.Errorf("eip: route error: %v", err)
 	}
 	flowman := man.agent.GetFlowMan(man.eipBridge())
 	flowman.updateFlows(ctx, "eipman", flows)
+}
+
+func (man *eipMan) addEipFlows(
+	ctx context.Context,
+	flows []*ovs.Flow,
+	vpcIds map[string]utils.Empty,
+	route *iproute2.Route,
+	eip *agentmodels.Elasticip,
+	network *agentmodels.Network,
+	vpcIp string,
+) ([]*ovs.Flow, map[string]utils.Empty, error) {
+	if eip == nil {
+		return flows, vpcIds, nil
+	}
+	var (
+		vpc   = network.Vpc
+		vpcId = vpc.Id
+	)
+
+	if _, ok := vpcIds[vpcId]; !ok {
+		vpcIds[vpcId] = utils.Empty{}
+		if err := man.ensureEipBridgeVpcPort(ctx, vpcId); err != nil {
+			log.Errorln(err)
+			return flows, vpcIds, errors.Wrap(err, "ensureEipBridgeVpcPort")
+		}
+	}
+
+	var (
+		mine, _ = man.pnamePair(vpcId)
+		pnoMine int
+	)
+	if psMine, err := utils.DumpPort(man.eipBridge(), mine); err != nil {
+		log.Errorf("eip: dump port %s %s: %v", man.eipBridge(), mine, err)
+		return flows, vpcIds, errors.Wrap(err, "DumpPort")
+	} else {
+		pnoMine = psMine.PortID
+	}
+
+	var (
+		eipIp      = eip.IpAddr
+		hexMac     = "0x" + strings.TrimLeft(strings.ReplaceAll(apis.VpcEipGatewayMac, ":", ""), "0")
+		hexMac3    = "0x" + strings.TrimLeft(strings.ReplaceAll(man.mac, ":", ""), "0")
+		arpactions = []string{
+			"move:NXM_OF_ETH_SRC[]->NXM_OF_ETH_DST[]",
+			fmt.Sprintf("load:%s->NXM_OF_ETH_SRC[]", hexMac3),
+			"load:0x2->NXM_OF_ARP_OP[]",
+			fmt.Sprintf("load:%s->NXM_NX_ARP_SHA[]", hexMac),
+			"move:NXM_OF_ARP_TPA[]->NXM_OF_ARP_SPA[]",
+			"move:NXM_NX_ARP_SHA[]->NXM_NX_ARP_THA[]",
+			"move:NXM_OF_ARP_SPA[]->NXM_OF_ARP_TPA[]",
+			"in_port",
+		}
+	)
+	flows = append(flows,
+		utils.F(0, 33000,
+			fmt.Sprintf("in_port=%d,dl_src=%s,ip,nw_src=%s", pnoMine, apis.VpcEipGatewayMac, vpcIp),
+			fmt.Sprintf("mod_dl_dst:%s,mod_nw_src:%s,LOCAL", man.mac, eipIp),
+		),
+		utils.F(0, 32000,
+			fmt.Sprintf("in_port=LOCAL,ip,nw_dst=%s", eipIp),
+			fmt.Sprintf("mod_dl_dst:%s,mod_nw_dst:%s,output:%d", apis.VpcEipGatewayMac, vpcIp, pnoMine),
+		),
+		utils.F(0, 31000,
+			fmt.Sprintf("in_port=LOCAL,arp,arp_op=1,arp_tpa=%s", eipIp),
+			strings.Join(arpactions, ","),
+		),
+	)
+	route.Add(eipIp, "255.255.255.255", "")
+	return flows, vpcIds, nil
 }
 
 func (man *eipMan) cleanup(ctx context.Context, mss *agentmodels.ModelSets) {

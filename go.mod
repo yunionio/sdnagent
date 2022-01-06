@@ -3,11 +3,16 @@ module yunion.io/x/sdnagent
 go 1.12
 
 require (
+	github.com/ClickHouse/clickhouse-go v1.4.7 // indirect
+	github.com/cheggaaa/pb/v3 v3.0.8 // indirect
 	github.com/coreos/go-iptables v0.4.5
 	github.com/digitalocean/go-openvswitch v0.0.0-20190515160856-1141932ed5cf
 	github.com/fsnotify/fsnotify v1.4.9
 	github.com/golang/protobuf v1.4.2
 	github.com/kr/pty v1.1.5 // indirect
+	github.com/mattn/go-isatty v0.0.14 // indirect
+	github.com/mattn/go-runewidth v0.0.13 // indirect
+	github.com/mattn/go-sqlite3 v1.14.9 // indirect
 	github.com/mitchellh/go-homedir v1.1.0
 	github.com/pkg/errors v0.9.1
 	github.com/spf13/cobra v0.0.5
@@ -15,14 +20,17 @@ require (
 	github.com/spf13/viper v1.3.2
 	github.com/vishvananda/netlink v1.0.0
 	github.com/vishvananda/netns v0.0.0-20191106174202-0a2b9b5464df
-	golang.org/x/net v0.0.0-20201110031124-69a78807bb2b
+	golang.org/x/crypto v0.0.0-20210817164053-32db794688a5 // indirect
+	golang.org/x/net v0.0.0-20210226172049-e18ecbb05110
+	golang.org/x/sys v0.0.0-20210910150752-751e447fb3d0 // indirect
+	golang.org/x/term v0.0.0-20210615171337-6886f2dfbf5b // indirect
 	google.golang.org/grpc v1.29.0
 	google.golang.org/protobuf v1.24.0
 	gopkg.in/go-playground/assert.v1 v1.2.1 // indirect
 	gopkg.in/go-playground/validator.v9 v9.29.1 // indirect
-	yunion.io/x/jsonutils v0.0.0-20211105163012-d846c05a3c9a
+	yunion.io/x/jsonutils v0.0.0-20211213041607-f6733e38783e
 	yunion.io/x/log v0.0.0-20201210064738-43181789dc74
-	yunion.io/x/onecloud v0.0.0-20211117211655-270a4d01e8ce
+	yunion.io/x/onecloud v0.0.0-20220102004918-fad8ef451d63
 	yunion.io/x/pkg v0.0.0-20211116020154-6a76ba2f7e97
 )
 

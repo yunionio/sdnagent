@@ -109,7 +109,7 @@ type IGuestDriver interface {
 
 	RequestStartOnHost(ctx context.Context, guest *SGuest, host *SHost, userCred mcclient.TokenCredential, task taskman.ITask) error
 
-	RequestStopOnHost(ctx context.Context, guest *SGuest, host *SHost, task taskman.ITask) error
+	RequestStopOnHost(ctx context.Context, guest *SGuest, host *SHost, task taskman.ITask, syncStatus bool) error
 
 	StartDeleteGuestTask(ctx context.Context, userCred mcclient.TokenCredential, guest *SGuest, params *jsonutils.JSONDict, parentTaskId string) error
 
@@ -176,7 +176,7 @@ type IGuestDriver interface {
 
 	IsSupportEip() bool
 	IsSupportPublicIp() bool
-	ValidateCreateEip(ctx context.Context, userCred mcclient.TokenCredential, data jsonutils.JSONObject) error
+	ValidateCreateEip(ctx context.Context, userCred mcclient.TokenCredential, input api.ServerCreateEipInput) error
 
 	NeedStopForChangeSpec(guest *SGuest, cpuChanged, memChanged bool) bool
 
@@ -197,7 +197,7 @@ type IGuestDriver interface {
 	RequestConvertPublicipToEip(ctx context.Context, userCred mcclient.TokenCredential, guest *SGuest, task taskman.ITask) error
 
 	IsSupportSetAutoRenew() bool
-	RequestSetAutoRenewInstance(ctx context.Context, userCred mcclient.TokenCredential, guest *SGuest, autoRenew bool, task taskman.ITask) error
+	RequestSetAutoRenewInstance(ctx context.Context, userCred mcclient.TokenCredential, guest *SGuest, input api.GuestAutoRenewInput, task taskman.ITask) error
 	IsSupportMigrate() bool
 	IsSupportLiveMigrate() bool
 	CheckMigrate(guest *SGuest, userCred mcclient.TokenCredential, input api.GuestMigrateInput) error
@@ -215,6 +215,8 @@ type IGuestDriver interface {
 	ValidateChangeDiskStorage(ctx context.Context, userCred mcclient.TokenCredential, guest *SGuest, input *api.ServerChangeDiskStorageInput) error
 	StartChangeDiskStorageTask(guest *SGuest, ctx context.Context, userCred mcclient.TokenCredential, params *api.ServerChangeDiskStorageInternalInput, parentTaskId string) error
 	RequestChangeDiskStorage(ctx context.Context, userCred mcclient.TokenCredential, guest *SGuest, input *api.ServerChangeDiskStorageInternalInput, task taskman.ITask) error
+
+	RequestSyncIsolatedDevice(ctx context.Context, guest *SGuest, task taskman.ITask) error
 }
 
 var guestDrivers map[string]IGuestDriver

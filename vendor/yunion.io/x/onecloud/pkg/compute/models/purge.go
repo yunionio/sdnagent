@@ -844,6 +844,21 @@ func (manager *SVpcManager) purgeAll(ctx context.Context, userCred mcclient.Toke
 	return nil
 }
 
+func (manager *SGlobalVpcManager) purgeAll(ctx context.Context, userCred mcclient.TokenCredential, providerId string) error {
+	gvpcs := make([]SGlobalVpc, 0)
+	err := fetchByManagerId(manager, providerId, &gvpcs)
+	if err != nil {
+		return err
+	}
+	for i := range gvpcs {
+		err := gvpcs[i].RealDelete(ctx, userCred)
+		if err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
 func (net *SNetwork) purgeGuestnetworks(ctx context.Context, userCred mcclient.TokenCredential) error {
 	q := GuestnetworkManager.Query().Equals("network_id", net.Id)
 	gns := make([]SGuestnetwork, 0)
@@ -1093,7 +1108,10 @@ func (wire *SWire) purge(ctx context.Context, userCred mcclient.TokenCredential)
 }
 
 func (vpc *SVpc) purgeWires(ctx context.Context, userCred mcclient.TokenCredential) error {
-	wires := vpc.GetWires()
+	wires, err := vpc.GetWires()
+	if err != nil {
+		return errors.Wrapf(err, "GetWres for vpc %s", vpc.Id)
+	}
 	for i := range wires {
 		err := wires[i].purge(ctx, userCred)
 		if err != nil {
@@ -1780,13 +1798,6 @@ func (manager *SElasticcacheManager) purgeAll(ctx context.Context, userCred mccl
 		}
 	}
 	return nil
-}
-
-func (cache *SSecurityGroupCache) purge(ctx context.Context, userCred mcclient.TokenCredential) error {
-	lockman.LockObject(ctx, cache)
-	defer lockman.ReleaseObject(ctx, cache)
-
-	return cache.RealDelete(ctx, userCred)
 }
 
 func (manager *SSecurityGroupCacheManager) purgeAll(ctx context.Context, userCred mcclient.TokenCredential, providerId string) error {

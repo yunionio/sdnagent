@@ -31,10 +31,12 @@ import (
 	"yunion.io/x/onecloud/pkg/cloudcommon/db"
 	"yunion.io/x/onecloud/pkg/cloudcommon/db/lockman"
 	"yunion.io/x/onecloud/pkg/cloudcommon/db/taskman"
+	"yunion.io/x/onecloud/pkg/cloudcommon/notifyclient"
 	"yunion.io/x/onecloud/pkg/cloudcommon/validators"
 	"yunion.io/x/onecloud/pkg/cloudprovider"
 	"yunion.io/x/onecloud/pkg/httperrors"
 	"yunion.io/x/onecloud/pkg/mcclient"
+	"yunion.io/x/onecloud/pkg/util/rbacutils"
 	"yunion.io/x/onecloud/pkg/util/stringutils2"
 )
 
@@ -208,6 +210,21 @@ func (man *SLoadbalancerListenerManager) pendingDeleteSubs(ctx context.Context, 
 	for _, sub := range subs {
 		sub.LBPendingDelete(ctx, userCred)
 	}
+}
+
+func (man *SLoadbalancerListenerManager) FilterByOwner(q *sqlchemy.SQuery, userCred mcclient.IIdentityProvider, scope rbacutils.TRbacScope) *sqlchemy.SQuery {
+	if userCred != nil {
+		sq := LoadbalancerManager.Query("id")
+		switch scope {
+		case rbacutils.ScopeProject:
+			sq = sq.Equals("tenant_id", userCred.GetProjectId())
+			return q.In("loadbalancer_id", sq.SubQuery())
+		case rbacutils.ScopeDomain:
+			sq = sq.Equals("domain_id", userCred.GetProjectDomainId())
+			return q.In("loadbalancer_id", sq.SubQuery())
+		}
+	}
+	return q
 }
 
 // 负载均衡监听器Listener列表
@@ -1242,6 +1259,10 @@ func (lblis *SLoadbalancerListener) syncRemoveCloudLoadbalancerListener(ctx cont
 	if err != nil { // cannot delete
 		err = lblis.SetStatus(userCred, api.LB_STATUS_UNKNOWN, "sync to delete")
 	} else {
+		notifyclient.EventNotify(ctx, userCred, notifyclient.SEventNotifyParam{
+			Obj:    lblis,
+			Action: notifyclient.ActionSyncDelete,
+		})
 		lblis.LBPendingDelete(ctx, userCred)
 	}
 	return err
@@ -1254,6 +1275,13 @@ func (lblis *SLoadbalancerListener) SyncWithCloudLoadbalancerListener(ctx contex
 	})
 	if err != nil {
 		return err
+	}
+
+	if len(diff) > 0 {
+		notifyclient.EventNotify(ctx, userCred, notifyclient.SEventNotifyParam{
+			Obj:    lblis,
+			Action: notifyclient.ActionSyncUpdate,
+		})
 	}
 
 	err = lblis.updateCachedLoadbalancerBackendGroupAssociate(ctx, extListener, lb.ManagerId)
@@ -1299,6 +1327,11 @@ func (man *SLoadbalancerListenerManager) newFromCloudLoadbalancerListener(ctx co
 	}
 
 	SyncCloudProject(userCred, lblis, syncOwnerId, extListener, provider.Id)
+
+	notifyclient.EventNotify(ctx, userCred, notifyclient.SEventNotifyParam{
+		Obj:    lblis,
+		Action: notifyclient.ActionSyncCreate,
+	})
 
 	db.OpsLog.LogEvent(lblis, db.ACT_CREATE, lblis.GetShortDesc(ctx), userCred)
 
