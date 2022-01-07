@@ -297,6 +297,7 @@ func (man *eipMan) addEipFlows(
 		),
 	)
 	route.Add(eipIp, "255.255.255.255", "")
+	log.Debugf("[%s] add route %s", man.eipBridge(), eipIp)
 	return flows, vpcIds, nil
 }
 
@@ -309,6 +310,19 @@ func (man *eipMan) cleanup(ctx context.Context, mss *agentmodels.ModelSets) {
 	)
 
 	for _, gn := range mss.Guestnetworks {
+		eip := gn.Elasticip
+		if eip == nil {
+			continue
+		}
+		var (
+			network = gn.Network
+			vpc     = network.Vpc
+			vpcId   = vpc.Id
+		)
+		vpcIds[vpcId] = utils.Empty{}
+		routeDsts[eip.IpAddr+"/32"] = utils.Empty{}
+	}
+	for _, gn := range mss.Groupnetworks {
 		eip := gn.Elasticip
 		if eip == nil {
 			continue
@@ -338,6 +352,7 @@ func (man *eipMan) cleanup(ctx context.Context, mss *agentmodels.ModelSets) {
 					dstStr = dst.String()
 				)
 				if _, ok := routeDsts[dstStr]; !ok {
+					log.Debugf("[%s] delete route %s", man.eipBridge(), dstStr)
 					h.DelByIPNet(dst)
 				}
 			}
