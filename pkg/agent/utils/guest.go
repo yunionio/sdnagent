@@ -56,8 +56,9 @@ type GuestNIC struct {
 	Gateway    string
 	IfnameHost string `json:"ifname"`
 	Index      int
-	IfnameVM   string `json:"interface"`
-	IP         string `json:"ip"`
+	IfnameVM   string   `json:"interface"`
+	IP         string   `json:"ip"`
+	VirtualIps []string `json:"virtual_ips"`
 	MAC        string
 	Masklen    int
 	Net        string
@@ -126,6 +127,9 @@ func (n *GuestNIC) SubIPs() []string {
 		if na.Type == "sub_ip" {
 			ipAddrs = append(ipAddrs, na.IpAddr)
 		}
+	}
+	for _, ip := range n.VirtualIps {
+		ipAddrs = append(ipAddrs, ip)
 	}
 	return ipAddrs
 }
