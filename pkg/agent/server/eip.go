@@ -491,6 +491,22 @@ func (man *eipMan) prepEipEntries(ctx context.Context, mss *agentmodels.ModelSet
 			eipIp: eip.IpAddr,
 		}
 	}
+	for _, lbnet := range mss.LoadbalancerNetworks {
+		eip := lbnet.Elasticip
+		if eip == nil {
+			continue
+		}
+		var (
+			network = lbnet.Network
+			vpc     = network.Vpc
+			vpcId   = vpc.Id
+		)
+		r[eip.Id] = &eipEntry{
+			vpcId: vpcId,
+			vpcIp: lbnet.IpAddr,
+			eipIp: eip.IpAddr,
+		}
+	}
 	return r
 }
 
