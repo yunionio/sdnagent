@@ -89,7 +89,7 @@ type SGroup struct {
 	Granularity     int               `nullable:"false" list:"user" get:"user" create:"optional" update:"user" default:"1"`
 	ForceDispersion tristate.TriState `list:"user" get:"user" create:"optional" update:"user" default:"true"`
 	// 是否启用
-	// Enabled tristate.TriState `nullable:"false" default:"true" create:"optional" list:"user" update:"user"`
+	// Enabled tristate.TriState `default:"true" create:"optional" list:"user" update:"user"`
 }
 
 // 主机组列表
@@ -199,7 +199,7 @@ func (sm *SGroupManager) FetchCustomizeColumns(
 		}
 		eip, _ := objs[i].(*SGroup).getElasticIp()
 		if eip != nil {
-			rows[i].Eip = eip.IpAddr
+			rows[i].VipEip = eip.IpAddr
 		}
 	}
 
@@ -676,6 +676,9 @@ func (grp *SGroup) isEipAssociable() (*SNetwork, error) {
 	}
 	if net == nil {
 		return nil, errors.Wrap(httperrors.ErrInvalidStatus, "group no attached network")
+	}
+	if !IsOneCloudVpcResource(net) {
+		return nil, errors.Wrap(httperrors.ErrInvalidStatus, "group network is not a VPC network")
 	}
 
 	gns, err := grp.getGroupnetworks()

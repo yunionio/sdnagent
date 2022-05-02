@@ -51,6 +51,10 @@ func (c *sMockColumn) IsNumeric() bool {
 	return false
 }
 
+func (c *sMockColumn) IsText() bool {
+	return c.sqlType == "string"
+}
+
 func (c *sMockColumn) IsZero(val interface{}) bool {
 	return reflect.ValueOf(val).IsZero()
 }
@@ -117,7 +121,7 @@ func (mock *sMockBackend) DropIndexSQLTemplate() string {
 }
 
 func (mock *sMockBackend) InsertOrUpdateSQLTemplate() string {
-	return ""
+	return "INSERT INTO `{{ .Table }}` ({{ .Columns }}) VALUES ({{ .Values }}) ON DUPLICATE KEY UPDATE {{ .SetValues }}"
 }
 
 func (mock *sMockBackend) GetTableSQL() string {

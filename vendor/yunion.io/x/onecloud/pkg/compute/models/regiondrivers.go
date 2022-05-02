@@ -117,9 +117,19 @@ type IRegionDriver interface {
 	OnDiskReset(ctx context.Context, userCred mcclient.TokenCredential, disk *SDisk, snapshot *SSnapshot, data jsonutils.JSONObject) error
 	OnSnapshotDelete(ctx context.Context, snapshot *SSnapshot, task taskman.ITask, data jsonutils.JSONObject) error
 
+	RequestSyncDiskBackupStatus(ctx context.Context, userCred mcclient.TokenCredential, backup *SDiskBackup, task taskman.ITask) error
+	RequestCreateBackup(ctx context.Context, backup *SDiskBackup, snapshotId string, task taskman.ITask) error
+	RequestDeleteBackup(ctx context.Context, backup *SDiskBackup, task taskman.ITask) error
+	RequestCreateInstanceBackup(ctx context.Context, guest *SGuest, ib *SInstanceBackup, task taskman.ITask, params *jsonutils.JSONDict) error
+	RequestDeleteInstanceBackup(ctx context.Context, ib *SInstanceBackup, task taskman.ITask) error
+	RequestSyncInstanceBackupStatus(ctx context.Context, userCred mcclient.TokenCredential, ib *SInstanceBackup, task taskman.ITask) error
+	RequestSyncBackupStorageStatus(ctx context.Context, userCred mcclient.TokenCredential, bs *SBackupStorage, task taskman.ITask) error
+
 	RequestCreateInstanceSnapshot(ctx context.Context, guest *SGuest, isp *SInstanceSnapshot, task taskman.ITask, params *jsonutils.JSONDict) error
 	RequestDeleteInstanceSnapshot(ctx context.Context, isp *SInstanceSnapshot, task taskman.ITask) error
 	RequestResetToInstanceSnapshot(ctx context.Context, guest *SGuest, isp *SInstanceSnapshot, task taskman.ITask, params *jsonutils.JSONDict) error
+	RequestPackInstanceBackup(ctx context.Context, ib *SInstanceBackup, task taskman.ITask, packageName string) error
+	RequestUnpackInstanceBackup(ctx context.Context, ib *SInstanceBackup, task taskman.ITask, packageName string) error
 
 	RequestCacheSecurityGroup(ctx context.Context, userCred mcclient.TokenCredential, region *SCloudregion, vpc *SVpc, secgroup *SSecurityGroup, classic bool, removeProjectId string, task taskman.ITask) error
 	RequestSyncSecurityGroup(ctx context.Context, userCred mcclient.TokenCredential, vpcId string, vpc *SVpc, secgroup *SSecurityGroup, removeProjectId, service string) (string, error)
@@ -262,7 +272,7 @@ type IElasticcacheBackup interface {
 }
 
 type IElasticIpDriver interface {
-	RequestAssociatEip(ctx context.Context, userCred mcclient.TokenCredential, eip *SElasticip, input api.ElasticipAssociateInput, obj db.IStatusStandaloneModel, task taskman.ITask) error
+	RequestAssociateEip(ctx context.Context, userCred mcclient.TokenCredential, eip *SElasticip, input api.ElasticipAssociateInput, obj db.IStatusStandaloneModel, task taskman.ITask) error
 }
 
 var regionDrivers map[string]IRegionDriver

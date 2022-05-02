@@ -34,7 +34,6 @@ import (
 
 	"yunion.io/x/onecloud/pkg/apis"
 	"yunion.io/x/onecloud/pkg/appsrv"
-	"yunion.io/x/onecloud/pkg/cloudcommon"
 	"yunion.io/x/onecloud/pkg/cloudcommon/consts"
 	"yunion.io/x/onecloud/pkg/httperrors"
 	"yunion.io/x/onecloud/pkg/mcclient"
@@ -66,7 +65,7 @@ type SOpsLog struct {
 	User     string `width:"128" charset:"utf8" list:"user" create:"required"`
 	DomainId string `width:"128" charset:"ascii" list:"user" create:"optional"`
 	Domain   string `width:"128" charset:"utf8" list:"user" create:"optional"`
-	Roles    string `width:"64" charset:"ascii" list:"user" create:"optional"`
+	Roles    string `width:"64" charset:"utf8" list:"user" create:"optional"`
 
 	OpsTime time.Time `nullable:"false" list:"user" clickhouse_ttl:"6m"`
 
@@ -89,7 +88,7 @@ func InitOpsLog() {
 			"opslog_tbl",
 			"event",
 			"events",
-			cloudcommon.ClickhouseDB,
+			ClickhouseDB,
 		)}
 		col := OpsLog.TableSpec().ColumnSpec("ops_time")
 		if clickCol, ok := col.(clickhouse.IClickhouseColumnSpec); ok {
@@ -430,15 +429,30 @@ func (self *SOpsLogManager) FilterByOwner(q *sqlchemy.SQuery, ownerId mcclient.I
 		switch scope {
 		case rbacutils.ScopeUser:
 			if len(ownerId.GetUserId()) > 0 {
+				/*
+				 * 默认只能查看本人发起的操作
+				 */
 				q = q.Filter(sqlchemy.Equals(q.Field("user_id"), ownerId.GetUserId()))
 			}
 		case rbacutils.ScopeProject:
 			if len(ownerId.GetProjectId()) > 0 {
-				q = q.Filter(sqlchemy.Equals(q.Field("tenant_id"), ownerId.GetProjectId()))
+				/*
+				 * 项目视图可以查看本项目人员发起的操作，或者对本项目资源实施的操作, QIU Jian
+				 */
+				q = q.Filter(sqlchemy.OR(
+					sqlchemy.Equals(q.Field("tenant_id"), ownerId.GetProjectId()),
+					sqlchemy.Equals(q.Field("owner_tenant_id"), ownerId.GetProjectId()),
+				))
 			}
 		case rbacutils.ScopeDomain:
 			if len(ownerId.GetProjectDomainId()) > 0 {
-				q = q.Filter(sqlchemy.Equals(q.Field("project_domain_id"), ownerId.GetProjectDomainId()))
+				/*
+				 * 域视图可以查看本域人员发起的操作，或者对本域资源实施的操作, QIU Jian
+				 */
+				q = q.Filter(sqlchemy.OR(
+					sqlchemy.Equals(q.Field("project_domain_id"), ownerId.GetProjectDomainId()),
+					sqlchemy.Equals(q.Field("owner_domain_id"), ownerId.GetProjectDomainId()),
+				))
 			}
 		default:
 			// systemScope, no filter

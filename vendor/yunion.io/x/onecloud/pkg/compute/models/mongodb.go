@@ -292,11 +292,11 @@ func (manager *SMongoDBManager) FetchCustomizeColumns(
 	return rows
 }
 
-func (self *SMongoDB) GetIMongoDB() (cloudprovider.ICloudMongoDB, error) {
+func (self *SMongoDB) GetIMongoDB(ctx context.Context) (cloudprovider.ICloudMongoDB, error) {
 	if len(self.ExternalId) == 0 {
 		return nil, errors.Wrapf(cloudprovider.ErrNotFound, "empty external id")
 	}
-	iregion, err := self.GetIRegion()
+	iregion, err := self.GetIRegion(ctx)
 	if err != nil {
 		return nil, errors.Wrap(err, "self.GetIRegion")
 	}
@@ -651,15 +651,19 @@ func (man *SMongoDBManager) TotalCount(
 	ownerId mcclient.IIdentityProvider,
 	rangeObjs []db.IStandaloneModel,
 	providers []string, brands []string, cloudEnv string,
+	policyResult rbacutils.SPolicyResult,
 ) (SMongoDBCountStat, error) {
-	sq := man.Query().SubQuery()
+	mgq := man.Query()
+
+	mgq = scopeOwnerIdFilter(mgq, scope, ownerId)
+	mgq = CloudProviderFilter(mgq, mgq.Field("manager_id"), providers, brands, cloudEnv)
+	mgq = RangeObjectsFilter(mgq, rangeObjs, mgq.Field("cloudregion_id"), nil, mgq.Field("manager_id"), nil, nil)
+	mgq = db.ObjectIdQueryWithPolicyResult(mgq, man, policyResult)
+
+	sq := mgq.SubQuery()
 	q := sq.Query(sqlchemy.COUNT("total_mongodb_count"),
 		sqlchemy.SUM("total_cpu_count", sq.Field("vcpu_count")),
 		sqlchemy.SUM("total_mem_size_mb", sq.Field("vmem_size_mb")))
-
-	q = scopeOwnerIdFilter(q, scope, ownerId)
-	q = CloudProviderFilter(q, q.Field("manager_id"), providers, brands, cloudEnv)
-	q = RangeObjectsFilter(q, rangeObjs, q.Field("cloudregion_id"), nil, q.Field("manager_id"), nil, nil)
 
 	stat := SMongoDBCountStat{}
 	row := q.Row()
@@ -689,12 +693,12 @@ func (self *SMongoDB) GetUsages() []db.IUsage {
 	}
 }
 
-func (self *SMongoDB) GetIRegion() (cloudprovider.ICloudRegion, error) {
+func (self *SMongoDB) GetIRegion(ctx context.Context) (cloudprovider.ICloudRegion, error) {
 	region, err := self.GetRegion()
 	if err != nil {
 		return nil, err
 	}
-	provider, err := self.GetDriver()
+	provider, err := self.GetDriver(ctx)
 	if err != nil {
 		return nil, errors.Wrap(err, "self.GetDriver")
 	}
@@ -812,7 +816,7 @@ func (self *SMongoDB) GetDetailsBackups(ctx context.Context, userCred mcclient.T
 		return nil, httperrors.NewInvalidStatusError("invalid mongodb status %s for query backups", self.Status)
 	}
 	ret := &cloudprovider.SMongoDBBackups{}
-	iMongoDB, err := self.GetIMongoDB()
+	iMongoDB, err := self.GetIMongoDB(ctx)
 	if err != nil {
 		return nil, httperrors.NewGeneralError(errors.Wrapf(err, "GetIMongoDB"))
 	}

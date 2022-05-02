@@ -104,6 +104,10 @@ func init() {
 		EN("Guest Detach Isolated Device").
 		CN("卸载透传设备"),
 	)
+	t.Set(ACT_VM_SYNC_ISOLATED_DEVICE, i18n.NewTableEntry().
+		EN("Guest Sync Isolated Device").
+		CN("同步透传设备"),
+	)
 	t.Set(ACT_MERGE, i18n.NewTableEntry().
 		EN("Merge").
 		CN("合并"),
@@ -348,6 +352,10 @@ func init() {
 		EN("Attach Network").
 		CN("绑定网卡"),
 	)
+	t.Set(ACT_DETACH_NETWORK, i18n.NewTableEntry().
+		EN("Detach Network").
+		CN("解绑网卡"),
+	)
 	t.Set(ACT_VM_CONVERT, i18n.NewTableEntry().
 		EN("Vm Convert").
 		CN("虚拟机转换Hypervisor"),
@@ -388,6 +396,11 @@ func init() {
 	t.Set(ACT_AUTHENTICATE, i18n.NewTableEntry().
 		EN("Authenticate").
 		CN("认证登录"),
+	)
+
+	t.Set(ACT_LOGOUT, i18n.NewTableEntry().
+		EN("Logout").
+		CN("退出登录"),
 	)
 
 	t.Set(ACT_HEALTH_CHECK, i18n.NewTableEntry().
@@ -642,6 +655,7 @@ func init() {
 		EN("Freeze").
 		CN("解冻资源"),
 	)
+
 	t.Set(ACT_DETACH_ALERTRESOURCE, i18n.NewTableEntry().
 		EN("Detach AlertResource").
 		CN("取消关联报警资源"),
@@ -1302,5 +1316,20 @@ func init() {
 	o.Set(ACT_DETACH_MONITOR_RESOURCE_JOINT, i18n.NewTableEntry().
 		EN("Update Monitor Resource joint").
 		CN("解绑监控资源关联报警策略"),
+	)
+
+	o.Set(ACT_RECOVERY, i18n.NewTableEntry().
+		EN("Recover backup").
+		CN("备份恢复"),
+	)
+
+	o.Set(ACT_PACK, i18n.NewTableEntry().
+		EN("Package VM").
+		CN("导出主机"),
+	)
+
+	o.Set(ACT_UNPACK, i18n.NewTableEntry().
+		EN("Unpackage VM").
+		CN("导入主机"),
 	)
 }

@@ -264,10 +264,6 @@ func listItemQueryFiltersRaw(manager IModelManager,
 		q = manager.FilterBySystemAttributes(q, userCred, query, queryScope)
 		q = manager.FilterByHiddenSystemAttributes(q, userCred, query, queryScope)
 	}
-	q, err = ListItemFilter(manager, ctx, q, userCred, query)
-	if err != nil {
-		return nil, err
-	}
 	if query.Contains("export_keys") {
 		exportKeys, _ := query.GetString("export_keys")
 		keys := stringutils2.NewSortedStrings(strings.Split(exportKeys, ","))
@@ -304,6 +300,10 @@ func listItemQueryFiltersRaw(manager IModelManager,
 		if err != nil {
 			return nil, err
 		}
+	}
+	q, err = ListItemFilter(manager, ctx, q, userCred, query)
+	if err != nil {
+		return nil, err
 	}
 	return q, nil
 }
@@ -959,7 +959,7 @@ func (dispatcher *DBModelDispatcher) Get(ctx context.Context, idStr string, quer
 	if err == sql.ErrNoRows {
 		return nil, httperrors.NewResourceNotFoundError2(dispatcher.modelManager.Keyword(), idStr)
 	} else if err != nil {
-		return nil, err
+		return nil, errors.Wrapf(err, "fetchItem")
 	}
 
 	err = isObjectRbacAllowed(ctx, model, userCred, policy.PolicyActionGet)
@@ -1103,6 +1103,29 @@ func FetchModelObjects(modelManager IModelManager, query *sqlchemy.SQuery, targe
 		targetsValue.Set(newTargets)
 	}
 	return nil
+}
+
+func FetchIModelObjects(modelManager IModelManager, query *sqlchemy.SQuery) ([]IModel, error) {
+	// TODO: refactor below duplicated code from FetchModelObjects
+	rows, err := query.Rows()
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	objs := make([]IModel, 0)
+	for rows.Next() {
+		m, err := NewModelObject(modelManager)
+		if err != nil {
+			return nil, err
+		}
+		err = query.Row2Struct(rows, m)
+		if err != nil {
+			return nil, err
+		}
+		objs = append(objs, m)
+	}
+	return objs, nil
 }
 
 func DoCreate(manager IModelManager, ctx context.Context, userCred mcclient.TokenCredential, query jsonutils.JSONObject, data jsonutils.JSONObject, ownerId mcclient.IIdentityProvider) (IModel, error) {
@@ -1627,6 +1650,9 @@ func updateItem(manager IModelManager, item IModel, ctx context.Context, userCre
 	})
 	if err != nil {
 		return nil, httperrors.NewGeneralError(errors.Wrapf(err, "Update"))
+	}
+	for _, skip := range skipLogFields(manager) {
+		delete(diff, skip)
 	}
 	OpsLog.LogEvent(item, ACT_UPDATE, diff, userCred)
 	logclient.AddActionLogWithContext(ctx, item, logclient.ACT_UPDATE, diff, userCred, true)

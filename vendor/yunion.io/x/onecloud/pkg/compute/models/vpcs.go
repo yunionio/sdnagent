@@ -476,7 +476,6 @@ func (manager *SVpcManager) SyncVPCs(ctx context.Context, userCred mcclient.Toke
 			syncResult.UpdateError(err)
 			continue
 		}
-		syncMetadata(ctx, userCred, &commondb[i], commonext[i])
 		localVPCs = append(localVPCs, commondb[i])
 		remoteVPCs = append(remoteVPCs, commonext[i])
 		syncResult.Update()
@@ -487,7 +486,6 @@ func (manager *SVpcManager) SyncVPCs(ctx context.Context, userCred mcclient.Toke
 			syncResult.AddError(err)
 			continue
 		}
-		syncMetadata(ctx, userCred, newVpc, added[i])
 		localVPCs = append(localVPCs, *newVpc)
 		remoteVPCs = append(remoteVPCs, added[i])
 		syncResult.Add()
@@ -535,6 +533,10 @@ func (self *SVpc) SyncWithCloudVpc(ctx context.Context, userCred mcclient.TokenC
 		self.IsEmulated = extVPC.IsEmulated()
 		self.ExternalAccessMode = extVPC.GetExternalAccessMode()
 
+		if createdAt := extVPC.GetCreatedAt(); !createdAt.IsZero() {
+			self.CreatedAt = createdAt
+		}
+
 		if gId := extVPC.GetGlobalVpcId(); len(gId) > 0 {
 			gVpc, err := db.FetchByExternalIdAndManagerId(GlobalVpcManager, gId, func(q *sqlchemy.SQuery) *sqlchemy.SQuery {
 				return q.Equals("manager_id", self.ManagerId)
@@ -552,7 +554,7 @@ func (self *SVpc) SyncWithCloudVpc(ctx context.Context, userCred mcclient.TokenC
 		return err
 	}
 
-	syncMetadata(ctx, userCred, self, extVPC)
+	//syncMetadata(ctx, userCred, self, extVPC)
 
 	if provider != nil {
 		SyncCloudDomain(userCred, self, provider.GetOwnerId())
@@ -574,6 +576,9 @@ func (manager *SVpcManager) newFromCloudVpc(ctx context.Context, userCred mcclie
 	vpc.ExternalAccessMode = extVPC.GetExternalAccessMode()
 	vpc.CloudregionId = region.Id
 	vpc.ManagerId = provider.Id
+	if createdAt := extVPC.GetCreatedAt(); !createdAt.IsZero() {
+		vpc.CreatedAt = createdAt
+	}
 	if gId := extVPC.GetGlobalVpcId(); len(gId) > 0 {
 		gVpc, err := db.FetchByExternalIdAndManagerId(GlobalVpcManager, gId, func(q *sqlchemy.SQuery) *sqlchemy.SQuery {
 			return q.Equals("manager_id", provider.Id)
@@ -627,7 +632,7 @@ func (self *SVpc) markAllNetworksUnknown(userCred mcclient.TokenCredential) erro
 }
 
 func (self *SVpc) SyncRouteTables(ctx context.Context, userCred mcclient.TokenCredential) error {
-	ivpc, err := self.GetIVpc()
+	ivpc, err := self.GetIVpc(ctx)
 	if err != nil {
 		return errors.Wrap(err, "self.GetIVpc()")
 	}
@@ -841,23 +846,23 @@ func (self *SVpc) PostCreate(ctx context.Context, userCred mcclient.TokenCredent
 	task.ScheduleRun(nil)
 }
 
-func (self *SVpc) GetIRegion() (cloudprovider.ICloudRegion, error) {
+func (self *SVpc) GetIRegion(ctx context.Context) (cloudprovider.ICloudRegion, error) {
 	region, err := self.GetRegion()
 	if err != nil {
 		return nil, errors.Wrap(err, "GetRegion")
 	}
-	provider, err := self.GetDriver()
+	provider, err := self.GetDriver(ctx)
 	if err != nil {
 		return nil, err
 	}
 	return provider.GetIRegionById(region.GetExternalId())
 }
 
-func (self *SVpc) GetIVpc() (cloudprovider.ICloudVpc, error) {
+func (self *SVpc) GetIVpc(ctx context.Context) (cloudprovider.ICloudVpc, error) {
 	if len(self.ExternalId) == 0 {
 		return nil, errors.Wrapf(cloudprovider.ErrNotFound, "empty external id")
 	}
-	provider, err := self.GetDriver()
+	provider, err := self.GetDriver(ctx)
 	if err != nil {
 		return nil, errors.Wrapf(err, "vpc.GetDriver")
 	}
@@ -1246,7 +1251,7 @@ func (manager *SVpcManager) OrderByExtraFields(
 }
 
 func (self *SVpc) SyncRemoteWires(ctx context.Context, userCred mcclient.TokenCredential) error {
-	ivpc, err := self.GetIVpc()
+	ivpc, err := self.GetIVpc(ctx)
 	if err != nil {
 		return err
 	}
@@ -1256,7 +1261,7 @@ func (self *SVpc) SyncRemoteWires(ctx context.Context, userCred mcclient.TokenCr
 
 	hosts := HostManager.GetHostsByManagerAndRegion(provider.Id, self.CloudregionId)
 	for i := 0; i < len(hosts); i += 1 {
-		ihost, err := hosts[i].GetIHost()
+		ihost, err := hosts[i].GetIHost(ctx)
 		if err != nil {
 			return err
 		}
@@ -1280,7 +1285,7 @@ func (vpc *SVpc) PerformSync(ctx context.Context, userCred mcclient.TokenCredent
 func (self *SVpc) initWire(ctx context.Context, zone *SZone, externalId string) (*SWire, error) {
 	wire := &SWire{
 		Bandwidth: 10000,
-		Mtu:       1500,
+		Mtu:       options.Options.OvnUnderlayMtu,
 	}
 	wire.VpcId = self.Id
 	wire.ZoneId = zone.Id
@@ -1759,6 +1764,7 @@ func (self *SVpc) GetDetailsTopology(ctx context.Context, userCred mcclient.Toke
 				HostStatus: hosts[i].HostStatus,
 				HostType:   hosts[i].HostType,
 				Networks:   []api.HostnetworkTopologyOutput{},
+				Schedtags:  GetSchedtagsDetailsToResourceV2(&hosts[i], ctx),
 			}
 			for j := range hns {
 				host.Networks = append(host.Networks, api.HostnetworkTopologyOutput{

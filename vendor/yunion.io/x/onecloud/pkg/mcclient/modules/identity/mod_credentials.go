@@ -21,9 +21,8 @@ import (
 	"strings"
 	"time"
 
-	"github.com/pkg/errors"
-
 	"yunion.io/x/jsonutils"
+	"yunion.io/x/pkg/errors"
 	"yunion.io/x/pkg/util/seclib"
 
 	api "yunion.io/x/onecloud/pkg/apis/identity"
@@ -31,6 +30,7 @@ import (
 	"yunion.io/x/onecloud/pkg/mcclient"
 	"yunion.io/x/onecloud/pkg/mcclient/modulebase"
 	"yunion.io/x/onecloud/pkg/mcclient/modules"
+	"yunion.io/x/onecloud/pkg/util/seclib2"
 )
 
 type SCredentialManager struct {
@@ -44,6 +44,7 @@ const (
 	TOTP_TYPE             = api.TOTP_TYPE
 	RECOVERY_SECRETS_TYPE = api.RECOVERY_SECRETS_TYPE
 	OIDC_CREDENTIAL_TYPE  = api.OIDC_CREDENTIAL_TYPE
+	ENCRYPT_KEY_TYPE      = api.ENCRYPT_KEY_TYPE
 )
 
 type STotpSecret struct {
@@ -75,14 +76,73 @@ type SOpenIDConnectCredential struct {
 	api.SAccessKeySecretBlob
 }
 
+type SEncryptKeySecret struct {
+	KeyId     string             `json:"-"`
+	KeyName   string             `json:"-"`
+	Alg       seclib2.TSymEncAlg `json:"alg"`
+	Key       string             `json:"key"`
+	TimeStamp time.Time          `json:"-"`
+	UserId    string             `json:"user_id"`
+	User      string             `json:"user"`
+	Domain    string             `json:"domain"`
+	DomainId  string             `json:"domain_id"`
+}
+
+func (key SEncryptKeySecret) Marshal() jsonutils.JSONObject {
+	json := jsonutils.NewDict()
+	json.Add(jsonutils.NewString(string(key.Alg)), "alg")
+	json.Add(jsonutils.NewString(key.KeyId), "key_id")
+	json.Add(jsonutils.NewString(key.KeyName), "key_name")
+	json.Add(jsonutils.NewTimeString(key.TimeStamp), "timestamp")
+	json.Add(jsonutils.NewString(key.UserId), "user_id")
+	json.Add(jsonutils.NewString(key.User), "user")
+	json.Add(jsonutils.NewString(key.DomainId), "domain_id")
+	json.Add(jsonutils.NewString(key.Domain), "domain")
+	return json
+}
+
+func (key SEncryptKeySecret) Encrypt(secret []byte) ([]byte, error) {
+	bKey, err := base64.StdEncoding.DecodeString(key.Key)
+	if err != nil {
+		return nil, errors.Wrap(err, "base64.StdEncoding.DecodeString")
+	}
+	return seclib2.Alg(key.Alg).CbcEncode(secret, bKey)
+}
+
+func (key SEncryptKeySecret) Decrypt(secret []byte) ([]byte, error) {
+	bKey, err := base64.StdEncoding.DecodeString(key.Key)
+	if err != nil {
+		return nil, errors.Wrap(err, "base64.StdEncoding.DecodeString")
+	}
+	return seclib2.Alg(key.Alg).CbcDecode(secret, bKey)
+}
+
+func (key SEncryptKeySecret) EncryptBase64(secret []byte) (string, error) {
+	bKey, err := base64.StdEncoding.DecodeString(key.Key)
+	if err != nil {
+		return "", errors.Wrap(err, "base64.StdEncoding.DecodeString")
+	}
+	return seclib2.Alg(key.Alg).CbcEncodeBase64(secret, bKey)
+}
+
+func (key SEncryptKeySecret) DecryptBase64(secret string) ([]byte, error) {
+	bKey, err := base64.StdEncoding.DecodeString(key.Key)
+	if err != nil {
+		return nil, errors.Wrap(err, "base64.StdEncoding.DecodeString")
+	}
+	return seclib2.Alg(key.Alg).CbcDecodeBase64(secret, bKey)
+}
+
 func (manager *SCredentialManager) fetchCredentials(s *mcclient.ClientSession, secType string, uid string, pid string) ([]jsonutils.JSONObject, error) {
 	query := jsonutils.NewDict()
 	query.Add(jsonutils.NewString(secType), "type")
-	query.Add(jsonutils.NewString("system"), "scope")
-	query.Add(jsonutils.NewString(uid), "user_id")
+	if len(uid) > 0 {
+		query.Add(jsonutils.NewString(uid), "user_id")
+	}
 	if len(pid) > 0 {
 		query.Add(jsonutils.NewString(pid), "project_id")
 	}
+	query.Add(jsonutils.JSONTrue, "details")
 	results, err := manager.List(s, query)
 	if err != nil {
 		return nil, err
@@ -104,6 +164,10 @@ func (manager *SCredentialManager) FetchRecoverySecrets(s *mcclient.ClientSessio
 
 func (manager *SCredentialManager) FetchOIDCSecrets(s *mcclient.ClientSession, uid string, pid string) ([]jsonutils.JSONObject, error) {
 	return manager.fetchCredentials(s, OIDC_CREDENTIAL_TYPE, uid, pid)
+}
+
+func (manager *SCredentialManager) FetchEncryptionKeys(s *mcclient.ClientSession, uid string) ([]jsonutils.JSONObject, error) {
+	return manager.fetchCredentials(s, ENCRYPT_KEY_TYPE, uid, "")
 }
 
 func (manager *SCredentialManager) GetTotpSecret(s *mcclient.ClientSession, uid string) (string, error) {
@@ -236,6 +300,80 @@ func (manager *SCredentialManager) GetOIDCSecret(s *mcclient.ClientSession, uid 
 		oidcCreds = append(oidcCreds, curr)
 	}
 	return oidcCreds, nil
+}
+
+func DecodeEncryptKey(secret jsonutils.JSONObject) (SEncryptKeySecret, error) {
+	curr := SEncryptKeySecret{}
+	blobStr, err := secret.GetString("blob")
+	if err != nil {
+		return curr, errors.Wrap(err, "secret.GetString")
+	}
+	blobJson, err := jsonutils.ParseString(blobStr)
+	if err != nil {
+		return curr, errors.Wrap(err, "jsonutils.ParseString")
+	}
+	err = blobJson.Unmarshal(&curr)
+	if err != nil {
+		return curr, errors.Wrap(err, "blobJson.Unmarshal")
+	}
+	curr.KeyId, err = secret.GetString("id")
+	if err != nil {
+		return curr, errors.Wrap(err, "secret.GetString('id')")
+	}
+	curr.KeyName, err = secret.GetString("name")
+	if err != nil {
+		return curr, errors.Wrap(err, "secret.GetString('name')")
+	}
+	curr.TimeStamp, err = secret.GetTime("created_at")
+	if err != nil {
+		return curr, errors.Wrap(err, "secret.GetTime('created_at')")
+	}
+	curr.User, err = secret.GetString("user")
+	if err != nil {
+		return curr, errors.Wrap(err, "secret.GetString('user')")
+	}
+	curr.UserId, err = secret.GetString("user_id")
+	if err != nil {
+		return curr, errors.Wrap(err, "secret.GetString('user_id')")
+	}
+	curr.Domain, err = secret.GetString("domain")
+	if err != nil {
+		return curr, errors.Wrap(err, "secret.GetString('domain')")
+	}
+	curr.DomainId, err = secret.GetString("domain_id")
+	if err != nil {
+		return curr, errors.Wrap(err, "secret.GetString('domain_id')")
+	}
+	return curr, nil
+}
+
+func (manager *SCredentialManager) GetEncryptKeysRpc(s *mcclient.ClientSession, params jsonutils.JSONObject) (jsonutils.
+	JSONObject, error) {
+	keys, err := manager.GetEncryptKeys(s, "")
+	if err != nil {
+		return nil, errors.Wrap(err, "GetEncryptKeys")
+	}
+	ret := jsonutils.NewArray()
+	for _, key := range keys {
+		ret.Add(key.Marshal())
+	}
+	return ret, nil
+}
+
+func (manager *SCredentialManager) GetEncryptKeys(s *mcclient.ClientSession, uid string) ([]SEncryptKeySecret, error) {
+	secrets, err := manager.FetchEncryptionKeys(s, uid)
+	if err != nil {
+		return nil, errors.Wrap(err, "FetchAesKeys")
+	}
+	aesKeys := make([]SEncryptKeySecret, 0)
+	for i := range secrets {
+		curr, err := DecodeEncryptKey(secrets[i])
+		if err != nil {
+			return nil, errors.Wrap(err, "DecodeAesKey")
+		}
+		aesKeys = append(aesKeys, curr)
+	}
+	return aesKeys, nil
 }
 
 func (manager *SCredentialManager) DoCreateAccessKeySecret(s *mcclient.ClientSession, params jsonutils.JSONObject) (jsonutils.JSONObject, error) {
@@ -374,6 +512,44 @@ func (manager *SCredentialManager) SaveRecoverySecrets(s *mcclient.ClientSession
 	return nil
 }
 
+func (manager *SCredentialManager) DoCreateEncryptKey(s *mcclient.ClientSession, params jsonutils.JSONObject) (jsonutils.JSONObject, error) {
+	name, _ := params.GetString("name")
+	alg, _ := params.GetString("alg")
+	uid, _ := params.GetString("uid")
+	key, err := manager.CreateEncryptKey(s, uid, name, alg)
+	if err != nil {
+		return nil, err
+	}
+	result := jsonutils.Marshal(key)
+	result.(*jsonutils.JSONDict).Add(jsonutils.NewString(key.KeyId), "key_id")
+	return result, nil
+}
+
+func (manager *SCredentialManager) CreateEncryptKey(s *mcclient.ClientSession, uid string, name string, algName string) (SEncryptKeySecret, error) {
+	aesKey := SEncryptKeySecret{}
+	alg := seclib2.Alg(seclib2.TSymEncAlg(algName))
+	rawKey := alg.GenerateKey()
+	aesKey.Key = base64.StdEncoding.EncodeToString([]byte(rawKey))
+	aesKey.Alg = alg.Name()
+	blobJson := jsonutils.Marshal(&aesKey)
+	params := jsonutils.NewDict()
+	params.Add(jsonutils.NewString(ENCRYPT_KEY_TYPE), "type")
+	if len(uid) > 0 {
+		params.Add(jsonutils.NewString(uid), "user_id")
+	}
+	params.Add(jsonutils.NewString(api.DEFAULT_PROJECT), "project_id")
+	params.Add(jsonutils.NewString(blobJson.String()), "blob")
+	params.Add(jsonutils.NewString(name), "generate_name")
+	result, err := manager.Create(s, params)
+	if err != nil {
+		return aesKey, errors.Wrap(err, "Create")
+	}
+	aesKey.KeyId, _ = result.GetString("id")
+	aesKey.KeyName, _ = result.GetString("name")
+	aesKey.TimeStamp, _ = result.GetTime("created_at")
+	return aesKey, nil
+}
+
 func (manager *SCredentialManager) removeCredentials(s *mcclient.ClientSession, secType string, uid string, pid string) error {
 	secrets, err := manager.fetchCredentials(s, secType, uid, pid)
 	if err != nil {
@@ -405,6 +581,55 @@ func (manager *SCredentialManager) RemoveRecoverySecrets(s *mcclient.ClientSessi
 
 func (manager *SCredentialManager) RemoveOIDCSecrets(s *mcclient.ClientSession, uid string, pid string) error {
 	return manager.removeCredentials(s, OIDC_CREDENTIAL_TYPE, uid, pid)
+}
+
+func (manager *SCredentialManager) RemoveEncryptKeys(s *mcclient.ClientSession, uid string) error {
+	return manager.removeCredentials(s, ENCRYPT_KEY_TYPE, uid, "")
+}
+
+func (manager *SCredentialManager) EncryptKeyEncrypt(s *mcclient.ClientSession, keyId string, secret []byte) ([]byte, error) {
+	aesKey, err := manager.GetEncryptKey(s, keyId)
+	if err != nil {
+		return nil, errors.Wrap(err, "GetEncryptKey")
+	}
+	return aesKey.Encrypt(secret)
+}
+
+func (manager *SCredentialManager) EncryptKeyDecrypt(s *mcclient.ClientSession, keyId string, secret []byte) ([]byte, error) {
+	aesKey, err := manager.GetEncryptKey(s, keyId)
+	if err != nil {
+		return nil, errors.Wrap(err, "GetEncryptKey")
+	}
+	return aesKey.Decrypt(secret)
+}
+
+func (manager *SCredentialManager) EncryptKeyEncryptBase64(s *mcclient.ClientSession, keyId string, secret []byte) (string, error) {
+	aesKey, err := manager.GetEncryptKey(s, keyId)
+	if err != nil {
+		return "", errors.Wrap(err, "GetEncryptKey")
+	}
+	return aesKey.EncryptBase64(secret)
+}
+
+func (manager *SCredentialManager) EncryptKeyDecryptBase64(s *mcclient.ClientSession, keyId string, secret string) ([]byte, error) {
+	aesKey, err := manager.GetEncryptKey(s, keyId)
+	if err != nil {
+		return nil, errors.Wrap(err, "GetEncryptKey")
+	}
+	return aesKey.DecryptBase64(secret)
+}
+
+func (manager *SCredentialManager) GetEncryptKey(s *mcclient.ClientSession, kid string) (SEncryptKeySecret, error) {
+	ret := SEncryptKeySecret{}
+	cred, err := manager.Get(s, kid, nil)
+	if err != nil {
+		return ret, errors.Wrap(err, "Get")
+	}
+	ret, err = DecodeEncryptKey(cred)
+	if err != nil {
+		return ret, errors.Wrap(err, "DecodeAesKey")
+	}
+	return ret, nil
 }
 
 var (

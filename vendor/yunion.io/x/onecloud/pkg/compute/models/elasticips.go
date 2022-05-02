@@ -1156,7 +1156,67 @@ func (self *SElasticip) PerformAssociate(ctx context.Context, userCred mcclient.
 			return input, httperrors.NewInputParameterError("server and eip are not managed by the same provider")
 		}
 		input.InstanceExternalId = server.ExternalId
+	case api.EIP_ASSOCIATE_TYPE_INSTANCE_GROUP:
+		grpObj, err := GroupManager.FetchByIdOrName(userCred, input.InstanceId)
+		if err != nil {
+			if errors.Cause(err) == sql.ErrNoRows {
+				return input, httperrors.NewResourceNotFoundError("instance group %s not found", input.InstanceId)
+			}
+			return input, httperrors.NewGeneralError(err)
+		}
+		group := grpObj.(*SGroup)
+
+		lockman.LockObject(ctx, group)
+		defer lockman.ReleaseObject(ctx, group)
+
+		net, err := group.isEipAssociable()
+		if err != nil {
+			return input, errors.Wrap(err, "grp.isEipAssociable")
+		}
+		if net.Id == self.NetworkId {
+			return input, httperrors.NewInputParameterError("cannot associate eip with same network")
+		}
+
+		eipZone, _ := self.GetZone()
+		if eipZone != nil {
+			insZone, _ := net.GetZone()
+			if eipZone.Id != insZone.Id {
+				return input, httperrors.NewInputParameterError("cannot associate eip and instance in different zone")
+			}
+		}
+
 	case api.EIP_ASSOCIATE_TYPE_NAT_GATEWAY:
+		natgwObj, err := NatGatewayManager.FetchByIdOrName(userCred, input.InstanceId)
+		if err != nil {
+			if errors.Cause(err) == sql.ErrNoRows {
+				return input, httperrors.NewResourceNotFoundError("nat gateway %s not found", input.InstanceId)
+			}
+			return input, httperrors.NewGeneralError(err)
+		}
+		natgw := natgwObj.(*SNatGateway)
+
+		lockman.LockObject(ctx, natgw)
+		defer lockman.ReleaseObject(ctx, natgw)
+	case api.EIP_ASSOCIATE_TYPE_LOADBALANCER:
+		obj, err := LoadbalancerManager.FetchByIdOrName(userCred, input.InstanceId)
+		if err != nil {
+			if errors.Cause(err) == sql.ErrNoRows {
+				return input, httperrors.NewResourceNotFoundError("loadbalancer %s not found", input.InstanceId)
+			}
+			return input, httperrors.NewGeneralError(err)
+		}
+		lb := obj.(*SLoadbalancer)
+
+		lockman.LockObject(ctx, lb)
+		defer lockman.ReleaseObject(ctx, lb)
+
+		if lb.PendingDeleted {
+			return input, httperrors.NewInvalidStatusError("cannot associate with pending deleted loadbalancer")
+		}
+		seip, _ := lb.GetEip()
+		if seip != nil {
+			return input, httperrors.NewInvalidStatusError("loadbalancer is already associated with eip")
+		}
 	}
 
 	return input, self.StartEipAssociateInstanceTask(ctx, userCred, input, "")
@@ -1219,8 +1279,8 @@ func (self *SElasticip) StartEipDissociateTask(ctx context.Context, userCred mcc
 	return nil
 }
 
-func (self *SElasticip) GetIRegion() (cloudprovider.ICloudRegion, error) {
-	provider, err := self.GetDriver()
+func (self *SElasticip) GetIRegion(ctx context.Context) (cloudprovider.ICloudRegion, error) {
+	provider, err := self.GetDriver(ctx)
 	if err != nil {
 		return nil, errors.Wrap(err, "GetDriver")
 	}
@@ -1233,8 +1293,11 @@ func (self *SElasticip) GetIRegion() (cloudprovider.ICloudRegion, error) {
 	return provider.GetIRegionById(region.GetExternalId())
 }
 
-func (self *SElasticip) GetIEip() (cloudprovider.ICloudEIP, error) {
-	iregion, err := self.GetIRegion()
+func (self *SElasticip) GetIEip(ctx context.Context) (cloudprovider.ICloudEIP, error) {
+	if len(self.ExternalId) == 0 {
+		return nil, errors.Wrapf(cloudprovider.ErrNotFound, "empty external id")
+	}
+	iregion, err := self.GetIRegion(ctx)
 	if err != nil {
 		return nil, err
 	}
@@ -1643,43 +1706,41 @@ func (manager *SElasticipManager) usageQByRanges(q *sqlchemy.SQuery, rangeObjs [
 	return RangeObjectsFilter(q, rangeObjs, q.Field("cloudregion_id"), nil, q.Field("manager_id"), nil, nil)
 }
 
-func (manager *SElasticipManager) usageQ(q *sqlchemy.SQuery, rangeObjs []db.IStandaloneModel, providers []string, brands []string, cloudEnv string) *sqlchemy.SQuery {
+func (manager *SElasticipManager) usageQ(scope rbacutils.TRbacScope, ownerId mcclient.IIdentityProvider, q *sqlchemy.SQuery, rangeObjs []db.IStandaloneModel, providers []string, brands []string, cloudEnv string, policyResult rbacutils.SPolicyResult) *sqlchemy.SQuery {
 	q = manager.usageQByRanges(q, rangeObjs)
 	q = manager.usageQByCloudEnv(q, providers, brands, cloudEnv)
+	switch scope {
+	case rbacutils.ScopeSystem:
+		// do nothing
+	case rbacutils.ScopeDomain:
+		q = q.Equals("domain_id", ownerId.GetProjectDomainId())
+	case rbacutils.ScopeProject:
+		q = q.Equals("tenant_id", ownerId.GetProjectId())
+	}
+	q = db.ObjectIdQueryWithPolicyResult(q, manager, policyResult)
 	return q
 }
 
-func (manager *SElasticipManager) TotalCount(scope rbacutils.TRbacScope, ownerId mcclient.IIdentityProvider, rangeObjs []db.IStandaloneModel, providers []string, brands []string, cloudEnv string) EipUsage {
+func (manager *SElasticipManager) TotalCount(scope rbacutils.TRbacScope, ownerId mcclient.IIdentityProvider, rangeObjs []db.IStandaloneModel, providers []string, brands []string, cloudEnv string, policyResult rbacutils.SPolicyResult) EipUsage {
 	usage := EipUsage{}
 	q1sq := manager.Query().SubQuery()
 	q1 := q1sq.Query(
 		sqlchemy.COUNT("public_ip_count", q1sq.Field("id")),
 		sqlchemy.SUM("public_ip_bandwidth", q1sq.Field("bandwidth")),
 	).Equals("mode", api.EIP_MODE_INSTANCE_PUBLICIP)
-	q1 = manager.usageQ(q1, rangeObjs, providers, brands, cloudEnv)
+	q1 = manager.usageQ(scope, ownerId, q1, rangeObjs, providers, brands, cloudEnv, policyResult)
 	q2sq := manager.Query().SubQuery()
 	q2 := q2sq.Query(
 		sqlchemy.COUNT("eip_count", q2sq.Field("id")),
 		sqlchemy.SUM("eip_bandwidth", q2sq.Field("bandwidth")),
 	).Equals("mode", api.EIP_MODE_STANDALONE_EIP)
-	q2 = manager.usageQ(q2, rangeObjs, providers, brands, cloudEnv)
+	q2 = manager.usageQ(scope, ownerId, q2, rangeObjs, providers, brands, cloudEnv, policyResult)
 	q3sq := manager.Query().SubQuery()
 	q3 := q3sq.Query(
 		sqlchemy.COUNT("eip_used_count", q3sq.Field("id")),
 	).Equals("mode", api.EIP_MODE_STANDALONE_EIP).IsNotEmpty("associate_id")
-	q3 = manager.usageQ(q3, rangeObjs, providers, brands, cloudEnv)
-	switch scope {
-	case rbacutils.ScopeSystem:
-		// do nothing
-	case rbacutils.ScopeDomain:
-		q1 = q1.Equals("domain_id", ownerId.GetProjectDomainId())
-		q2 = q2.Equals("domain_id", ownerId.GetProjectDomainId())
-		q3 = q3.Equals("domain_id", ownerId.GetProjectDomainId())
-	case rbacutils.ScopeProject:
-		q1 = q1.Equals("tenant_id", ownerId.GetProjectId())
-		q2 = q2.Equals("tenant_id", ownerId.GetProjectId())
-		q3 = q3.Equals("tenant_id", ownerId.GetProjectId())
-	}
+	q3 = manager.usageQ(scope, ownerId, q3, rangeObjs, providers, brands, cloudEnv, policyResult)
+
 	err := q1.First(&usage)
 	if err != nil {
 		log.Errorf("q.First error: %v", err)

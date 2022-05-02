@@ -31,9 +31,17 @@ type UserDetails struct {
 	FailedAuthAt      time.Time `json:"failed_auth_at"`
 	PasswordExpiresAt time.Time `json:"password_expires_at"`
 
+	NeedResetPassword bool `json:"need_reset_password"`
+
 	Idps []IdpResourceInfo `json:"idps"`
 
 	IsLocal bool `json:"is_local"`
 
 	ExternalResourceInfo
+
+	Projects []SFetchDomainObjectWithMetadata `json:"projects"`
+}
+
+type ResetCredentialInput struct {
+	Type string `json:"type"`
 }

@@ -82,7 +82,8 @@ func (self *SManagedResourceBase) GetCloudaccount() *SCloudaccount {
 	if cp == nil {
 		return nil
 	}
-	return cp.GetCloudaccount()
+	account, _ := cp.GetCloudaccount()
+	return account
 }
 
 func (self *SManagedResourceBase) GetRegionDriver() (IRegionDriver, error) {
@@ -109,7 +110,7 @@ func (self *SManagedResourceBase) GetProviderFactory() (cloudprovider.ICloudProv
 	return provider.GetProviderFactory()
 }
 
-func (self *SManagedResourceBase) GetDriver() (cloudprovider.ICloudProvider, error) {
+func (self *SManagedResourceBase) GetDriver(ctx context.Context) (cloudprovider.ICloudProvider, error) {
 	provider := self.GetCloudprovider()
 	if provider == nil {
 		if len(self.ManagerId) > 0 {
@@ -117,7 +118,7 @@ func (self *SManagedResourceBase) GetDriver() (cloudprovider.ICloudProvider, err
 		}
 		return nil, errors.Wrap(httperrors.ErrInvalidStatus, "Resource is self managed")
 	}
-	return provider.GetProvider()
+	return provider.GetProvider(ctx)
 }
 
 func (self *SManagedResourceBase) GetProviderName() string {
@@ -145,7 +146,7 @@ func (self *SManagedResourceBase) CanShareToDomain(domainId string) bool {
 	if provider == nil {
 		return true
 	}
-	account := provider.GetCloudaccount()
+	account, _ := provider.GetCloudaccount()
 	if account == nil {
 		// no cloud account, can share to any domain
 		return true
@@ -765,7 +766,7 @@ func MakeCloudProviderInfo(region *SCloudregion, zone *SZone, provider *SCloudpr
 			}
 		}
 
-		account := provider.GetCloudaccount()
+		account, _ := provider.GetCloudaccount()
 		if account != nil {
 			info.Account = account.GetName()
 			info.AccountId = account.GetId()

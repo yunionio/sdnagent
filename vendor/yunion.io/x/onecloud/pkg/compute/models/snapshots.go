@@ -50,6 +50,7 @@ type SSnapshotManager struct {
 	SDiskResourceBaseManager
 	SStorageResourceBaseManager
 	db.SMultiArchResourceBaseManager
+	db.SEncryptedResourceManager
 }
 
 type SSnapshot struct {
@@ -59,6 +60,8 @@ type SSnapshot struct {
 	SManagedResourceBase
 	SCloudregionResourceBase `width:"36" charset:"ascii" nullable:"true" list:"user" create:"optional"`
 	db.SMultiArchResourceBase
+
+	db.SEncryptedResource
 
 	// 磁盘Id
 	DiskId string `width:"36" charset:"ascii" nullable:"true" create:"required" list:"user" index:"true"`
@@ -279,12 +282,15 @@ func (manager *SSnapshotManager) FetchCustomizeColumns(
 	virtRows := manager.SVirtualResourceBaseManager.FetchCustomizeColumns(ctx, userCred, query, objs, fields, isList)
 	manRows := manager.SManagedResourceBaseManager.FetchCustomizeColumns(ctx, userCred, query, objs, fields, isList)
 	regionRows := manager.SCloudregionResourceBaseManager.FetchCustomizeColumns(ctx, userCred, query, objs, fields, isList)
+	encRows := manager.SEncryptedResourceManager.FetchCustomizeColumns(ctx, userCred, query, objs, fields, isList)
 
 	for i := range rows {
 		rows[i] = api.SnapshotDetails{
 			VirtualResourceDetails:  virtRows[i],
 			ManagedResourceInfo:     manRows[i],
 			CloudregionResourceInfo: regionRows[i],
+
+			EncryptedResourceDetails: encRows[i],
 		}
 		rows[i] = objs[i].(*SSnapshot).getMoreDetails(rows[i])
 	}
@@ -330,6 +336,10 @@ func (manager *SSnapshotManager) ValidateCreateData(
 	query jsonutils.JSONObject,
 	input api.SnapshotCreateInput,
 ) (api.SnapshotCreateInput, error) {
+	if input.NeedEncrypt() {
+		return input, errors.Wrap(httperrors.ErrInputParameter, "encryption should not be set")
+	}
+
 	if len(input.DiskId) == 0 {
 		return input, httperrors.NewMissingParameterError("disk_id")
 	}
@@ -342,6 +352,15 @@ func (manager *SSnapshotManager) ValidateCreateData(
 	if disk.Status != api.DISK_READY {
 		return input, httperrors.NewInvalidStatusError("disk %s status is not %s", disk.Name, api.DISK_READY)
 	}
+
+	if len(disk.EncryptKeyId) > 0 {
+		input.EncryptKeyId = &disk.EncryptKeyId
+		input.EncryptedResourceCreateInput, err = manager.SEncryptedResourceManager.ValidateCreateData(ctx, userCred, ownerId, query, input.EncryptedResourceCreateInput)
+		if err != nil {
+			return input, errors.Wrap(err, "SEncryptedResourceManager.ValidateCreateData")
+		}
+	}
+
 	input.DiskType = disk.DiskType
 	input.Size = disk.DiskSize
 	input.OsArch = disk.OsArch
@@ -387,7 +406,13 @@ func (manager *SSnapshotManager) ValidateCreateData(
 	return input, nil
 }
 
-func (self *SSnapshot) CustomizeCreate(ctx context.Context, userCred mcclient.TokenCredential, ownerId mcclient.IIdentityProvider, query jsonutils.JSONObject, data jsonutils.JSONObject) error {
+func (self *SSnapshot) CustomizeCreate(
+	ctx context.Context,
+	userCred mcclient.TokenCredential,
+	ownerId mcclient.IIdentityProvider,
+	query jsonutils.JSONObject,
+	data jsonutils.JSONObject,
+) error {
 	// use disk's ownerId instead of default ownerId
 	diskObj, err := DiskManager.FetchById(self.DiskId)
 	if err != nil {
@@ -406,6 +431,14 @@ func (snapshot *SSnapshot) PostCreate(ctx context.Context, userCred mcclient.Tok
 	err := quotas.CancelPendingUsage(ctx, userCred, &pendingUsage, &pendingUsage, true)
 	if err != nil {
 		log.Errorf("quotas.CancelPendingUsage fail %s", err)
+	}
+	disk, err := snapshot.GetDisk()
+	if err != nil {
+		log.Errorf("unable to GetDisk: %s", err.Error())
+	}
+	err = disk.InheritTo(ctx, snapshot)
+	if err != nil {
+		log.Errorf("unable to inherit from disk %s to snapshot %s: %s", disk.GetId(), snapshot.GetId(), err.Error())
 	}
 }
 
@@ -448,11 +481,10 @@ func (self *SSnapshot) GetDisk() (*SDisk, error) {
 	return disk, nil
 }
 
-func (self *SSnapshot) GetHost() *SHost {
+func (self *SSnapshot) GetHost() (*SHost, error) {
 	iStorage, err := StorageManager.FetchById(self.StorageId)
 	if err != nil {
-		log.Errorln(err)
-		return nil
+		return nil, errors.Wrapf(err, "StorageManager.FetchById(%s)", self.StorageId)
 	}
 	storage := iStorage.(*SStorage)
 	return storage.GetMasterHost()
@@ -532,7 +564,7 @@ func (self *SSnapshotManager) GetDiskSnapshotCount(diskId string) (int, error) {
 }
 
 func (self *SSnapshotManager) CreateSnapshot(ctx context.Context, owner mcclient.IIdentityProvider,
-	createdBy, diskId, guestId, location, name string, retentionDay int) (*SSnapshot, error) {
+	createdBy, diskId, guestId, location, name string, retentionDay int, isSystem bool) (*SSnapshot, error) {
 	iDisk, err := DiskManager.FetchById(diskId)
 	if err != nil {
 		return nil, err
@@ -547,6 +579,10 @@ func (self *SSnapshotManager) CreateSnapshot(ctx context.Context, owner mcclient
 	if len(disk.ExternalId) == 0 {
 		snapshot.StorageId = disk.StorageId
 	}
+
+	// inherit encrypt_key_id
+	snapshot.EncryptKeyId = disk.EncryptKeyId
+
 	driver, err := storage.GetRegionDriver()
 	if err != nil {
 		return nil, err
@@ -565,6 +601,7 @@ func (self *SSnapshotManager) CreateSnapshot(ctx context.Context, owner mcclient
 	if retentionDay > 0 {
 		snapshot.ExpiredAt = time.Now().AddDate(0, 0, retentionDay)
 	}
+	snapshot.IsSystem = isSystem
 	err = SnapshotManager.TableSpec().Insert(ctx, snapshot)
 	if err != nil {
 		return nil, err
@@ -795,7 +832,7 @@ func (self *SSnapshotManager) DeleteDiskSnapshots(ctx context.Context, userCred 
 	return nil
 }
 
-func TotalSnapshotCount(scope rbacutils.TRbacScope, ownerId mcclient.IIdentityProvider, rangeObjs []db.IStandaloneModel, providers []string, brands []string, cloudEnv string) (int, error) {
+func TotalSnapshotCount(scope rbacutils.TRbacScope, ownerId mcclient.IIdentityProvider, rangeObjs []db.IStandaloneModel, providers []string, brands []string, cloudEnv string, policyResult rbacutils.SPolicyResult) (int, error) {
 	q := SnapshotManager.Query()
 
 	switch scope {
@@ -805,6 +842,8 @@ func TotalSnapshotCount(scope rbacutils.TRbacScope, ownerId mcclient.IIdentityPr
 	case rbacutils.ScopeProject:
 		q = q.Equals("tenant_id", ownerId.GetProjectId())
 	}
+
+	q = db.ObjectIdQueryWithPolicyResult(q, SnapshotManager, policyResult)
 
 	q = RangeObjectsFilter(q, rangeObjs, q.Field("cloudregion_id"), nil, q.Field("manager_id"), nil, nil)
 	q = CloudProviderFilter(q, q.Field("manager_id"), providers, brands, cloudEnv)
@@ -971,8 +1010,8 @@ func (manager *SSnapshotManager) SyncSnapshots(ctx context.Context, userCred mcc
 	return syncResult
 }
 
-func (self *SSnapshot) GetISnapshotRegion() (cloudprovider.ICloudRegion, error) {
-	provider, err := self.GetDriver()
+func (self *SSnapshot) GetISnapshotRegion(ctx context.Context) (cloudprovider.ICloudRegion, error) {
+	provider, err := self.GetDriver(ctx)
 	if err != nil {
 		return nil, err
 	}
