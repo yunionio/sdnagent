@@ -323,15 +323,18 @@ func (man *SElasticSearchManager) TotalCount(
 	ownerId mcclient.IIdentityProvider,
 	rangeObjs []db.IStandaloneModel,
 	providers []string, brands []string, cloudEnv string,
+	policyResult rbacutils.SPolicyResult,
 ) (SEsCountStat, error) {
-	sq := man.Query().SubQuery()
+	esq := man.Query()
+	esq = scopeOwnerIdFilter(esq, scope, ownerId)
+	esq = CloudProviderFilter(esq, esq.Field("manager_id"), providers, brands, cloudEnv)
+	esq = RangeObjectsFilter(esq, rangeObjs, esq.Field("cloudregion_id"), nil, esq.Field("manager_id"), nil, nil)
+	esq = db.ObjectIdQueryWithPolicyResult(esq, man, policyResult)
+
+	sq := esq.SubQuery()
 	q := sq.Query(sqlchemy.COUNT("total_es_count"),
 		sqlchemy.SUM("total_cpu_count", sq.Field("vcpu_count")),
 		sqlchemy.SUM("total_mem_size_gb", sq.Field("vmem_size_gb")))
-
-	q = scopeOwnerIdFilter(q, scope, ownerId)
-	q = CloudProviderFilter(q, q.Field("manager_id"), providers, brands, cloudEnv)
-	q = RangeObjectsFilter(q, rangeObjs, q.Field("cloudregion_id"), nil, q.Field("manager_id"), nil, nil)
 
 	stat := SEsCountStat{}
 	row := q.Row()
@@ -369,23 +372,23 @@ func (self *SElasticSearch) StartDeleteTask(ctx context.Context, userCred mcclie
 	return nil
 }
 
-func (self *SElasticSearch) GetIRegion() (cloudprovider.ICloudRegion, error) {
+func (self *SElasticSearch) GetIRegion(ctx context.Context) (cloudprovider.ICloudRegion, error) {
 	region, err := self.GetRegion()
 	if err != nil {
 		return nil, errors.Wrapf(err, "GetRegion")
 	}
-	provider, err := self.GetDriver()
+	provider, err := self.GetDriver(ctx)
 	if err != nil {
 		return nil, errors.Wrap(err, "self.GetDriver")
 	}
 	return provider.GetIRegionById(region.GetExternalId())
 }
 
-func (self *SElasticSearch) GetIElasticSearch() (cloudprovider.ICloudElasticSearch, error) {
+func (self *SElasticSearch) GetIElasticSearch(ctx context.Context) (cloudprovider.ICloudElasticSearch, error) {
 	if len(self.ExternalId) == 0 {
 		return nil, errors.Wrapf(cloudprovider.ErrNotFound, "empty externalId")
 	}
-	iRegion, err := self.GetIRegion()
+	iRegion, err := self.GetIRegion(ctx)
 	if err != nil {
 		return nil, errors.Wrapf(cloudprovider.ErrNotFound, "GetIRegion")
 	}
@@ -643,7 +646,7 @@ func (self *SElasticSearch) PerformSyncstatus(ctx context.Context, userCred mccl
 }
 
 func (self *SElasticSearch) GetDetailsAccessInfo(ctx context.Context, userCred mcclient.TokenCredential, input api.ElasticSearchAccessInfoInput) (*cloudprovider.ElasticSearchAccessInfo, error) {
-	iEs, err := self.GetIElasticSearch()
+	iEs, err := self.GetIElasticSearch(ctx)
 	if err != nil {
 		return nil, err
 	}

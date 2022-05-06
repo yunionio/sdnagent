@@ -3,10 +3,10 @@ module yunion.io/x/sdnagent
 go 1.12
 
 require (
-	github.com/coreos/go-iptables v0.4.5
+	github.com/coreos/go-iptables v0.6.0
 	github.com/digitalocean/go-openvswitch v0.0.0-20190515160856-1141932ed5cf
 	github.com/fsnotify/fsnotify v1.4.9
-	github.com/golang/protobuf v1.4.2
+	github.com/golang/protobuf v1.5.2
 	github.com/kr/pty v1.1.5 // indirect
 	github.com/mitchellh/go-homedir v1.1.0
 	github.com/pkg/errors v0.9.1
@@ -14,16 +14,16 @@ require (
 	github.com/spf13/pflag v1.0.3
 	github.com/spf13/viper v1.3.2
 	github.com/vishvananda/netlink v1.0.0
-	github.com/vishvananda/netns v0.0.0-20191106174202-0a2b9b5464df
-	golang.org/x/net v0.0.0-20210226172049-e18ecbb05110
-	google.golang.org/grpc v1.29.0
-	google.golang.org/protobuf v1.24.0
+	github.com/vishvananda/netns v0.0.0-20211101163701-50045581ed74
+	golang.org/x/net v0.0.0-20210525063256-abc453219eb5
+	google.golang.org/grpc v1.38.0
+	google.golang.org/protobuf v1.26.0
 	gopkg.in/go-playground/assert.v1 v1.2.1 // indirect
 	gopkg.in/go-playground/validator.v9 v9.29.1 // indirect
-	yunion.io/x/jsonutils v0.0.0-20211213041607-f6733e38783e
-	yunion.io/x/log v0.0.0-20201210064738-43181789dc74
-	yunion.io/x/onecloud v0.0.0-20220102004932-9fa6696e3c97
-	yunion.io/x/pkg v0.0.0-20211116020154-6a76ba2f7e97
+	yunion.io/x/jsonutils v1.0.0
+	yunion.io/x/log v1.0.0
+	yunion.io/x/onecloud v0.0.0-20220506152250-37fc897a11b6
+	yunion.io/x/pkg v1.0.0
 )
 
 replace github.com/digitalocean/go-openvswitch => github.com/yousong/go-openvswitch v0.0.0-20200422025222-6b2d502be872

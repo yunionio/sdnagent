@@ -77,6 +77,7 @@ type NotificationDetails struct {
 	Title          string          `json:"title"`
 	Content        string          `json:"content"`
 	ReceiveDetails []ReceiveDetail `json:"receive_details"`
+	TopicType      string          `json:"topic_type"`
 }
 
 type NotificationListInput struct {
@@ -85,6 +86,7 @@ type NotificationListInput struct {
 	ContactType string
 	ReceiverId  string
 	Tag         string
+	TopicType   string
 }
 
 type SContact struct {

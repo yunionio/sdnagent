@@ -17,7 +17,10 @@ package models
 import (
 	"context"
 
+	"yunion.io/x/pkg/errors"
+
 	"yunion.io/x/onecloud/pkg/cloudcommon/db"
+	"yunion.io/x/onecloud/pkg/mcclient"
 )
 
 func init() {
@@ -76,4 +79,16 @@ func (manager *SInstanceSnapshotJointManager) IsSubSnapshot(snapshotId string) (
 		return false, err
 	}
 	return count > 0, nil
+}
+
+func (self *SInstanceSnapshotJoint) Detach(ctx context.Context, userCred mcclient.TokenCredential) error {
+	return db.DetachJoint(ctx, userCred, self)
+}
+
+func (self *SInstanceSnapshotJoint) GetSnapshotDisk() (*SDisk, error) {
+	sp, err := SnapshotManager.FetchById(self.SnapshotId)
+	if err != nil {
+		return nil, errors.Wrapf(err, "Get snapshot by %q", self.SnapshotId)
+	}
+	return sp.(*SSnapshot).GetDisk()
 }

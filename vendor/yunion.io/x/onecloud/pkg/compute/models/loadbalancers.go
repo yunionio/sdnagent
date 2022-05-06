@@ -127,7 +127,7 @@ type SLoadbalancer struct {
 	BackendGroupId string `width:"36" charset:"ascii" nullable:"true" list:"user" update:"user" json:"backend_group_id"`
 
 	// LB的其他配置信息
-	LBInfo jsonutils.JSONObject `charset:"utf8" nullable:"true" list:"user" update:"admin" create:"admin_optional" json:"lb_info"`
+	LBInfo jsonutils.JSONObject `charset:"utf8" length:"medium" nullable:"true" list:"user" update:"admin" create:"admin_optional" json:"lb_info"`
 }
 
 // 负载均衡实例列表
@@ -397,6 +397,10 @@ func (lb *SLoadbalancer) PerformSyncstatus(ctx context.Context, userCred mcclien
 	return nil, StartResourceSyncStatusTask(ctx, userCred, lb, "LoadbalancerSyncstatusTask", "")
 }
 
+func (lb *SLoadbalancer) StartSyncstatus(ctx context.Context, userCred mcclient.TokenCredential, parentTaskId string) error {
+	return StartResourceSyncStatusTask(ctx, userCred, lb, "LoadbalancerSyncstatusTask", parentTaskId)
+}
+
 func (lb *SLoadbalancer) PostCreate(ctx context.Context, userCred mcclient.TokenCredential, ownerId mcclient.IIdentityProvider, query jsonutils.JSONObject, data jsonutils.JSONObject) {
 	lb.SVirtualResourceBase.PostCreate(ctx, userCred, ownerId, query, data)
 	// NOTE lb.Id will only be available after BeforeInsert happens
@@ -455,8 +459,8 @@ func (lb *SLoadbalancer) GetNetworks() ([]SNetwork, error) {
 	return networks, nil
 }
 
-func (lb *SLoadbalancer) GetIRegion() (cloudprovider.ICloudRegion, error) {
-	provider, err := lb.GetDriver()
+func (lb *SLoadbalancer) GetIRegion(ctx context.Context) (cloudprovider.ICloudRegion, error) {
+	provider, err := lb.GetDriver(ctx)
 	if err != nil {
 		return nil, errors.Wrap(err, "lb.GetDriver")
 	}
@@ -467,15 +471,15 @@ func (lb *SLoadbalancer) GetIRegion() (cloudprovider.ICloudRegion, error) {
 	return provider.GetIRegionById(region.ExternalId)
 }
 
-func (lb *SLoadbalancer) GetILoadbalancer() (cloudprovider.ICloudLoadbalancer, error) {
-	iRegion, err := lb.GetIRegion()
+func (lb *SLoadbalancer) GetILoadbalancer(ctx context.Context) (cloudprovider.ICloudLoadbalancer, error) {
+	iRegion, err := lb.GetIRegion(ctx)
 	if err != nil {
 		return nil, errors.Wrapf(err, "GetIRegion")
 	}
 	return iRegion.GetILoadBalancerById(lb.ExternalId)
 }
 
-func (lb *SLoadbalancer) GetCreateLoadbalancerParams(iRegion cloudprovider.ICloudRegion) (*cloudprovider.SLoadbalancer, error) {
+func (lb *SLoadbalancer) GetCreateLoadbalancerParams(ctx context.Context, iRegion cloudprovider.ICloudRegion) (*cloudprovider.SLoadbalancer, error) {
 	params := &cloudprovider.SLoadbalancer{
 		Name:             lb.Name,
 		Address:          lb.Address,
@@ -532,7 +536,7 @@ func (lb *SLoadbalancer) GetCreateLoadbalancerParams(iRegion cloudprovider.IClou
 		}
 
 		for i := range networks {
-			iNetwork, err := networks[i].GetINetwork()
+			iNetwork, err := networks[i].GetINetwork(ctx)
 			if err != nil {
 				return nil, errors.Wrap(err, "GetINetwork")
 			}
@@ -960,6 +964,10 @@ func (man *SLoadbalancerManager) newFromCloudLoadbalancer(ctx context.Context, u
 	lbNetworkIds := getExtLbNetworkIds(extLb, lb.ManagerId)
 	lb.NetworkId = strings.Join(lbNetworkIds, ",")
 
+	if createdAt := extLb.GetCreatedAt(); !createdAt.IsZero() {
+		lb.CreatedAt = createdAt
+	}
+
 	// classic vpc
 	if extLb.GetNetworkType() == api.LB_NETWORK_TYPE_CLASSIC {
 		if vpc, err := VpcManager.GetOrCreateVpcForClassicNetwork(ctx, provider, region); err == nil && vpc != nil {
@@ -1183,6 +1191,10 @@ func (lb *SLoadbalancer) SyncWithCloudLoadbalancer(ctx context.Context, userCred
 			lb.CloudregionId = region.GetId()
 		}
 
+		if createdAt := extLb.GetCreatedAt(); !createdAt.IsZero() {
+			lb.CreatedAt = createdAt
+		}
+
 		// classic vpc
 		if extLb.GetNetworkType() == api.LB_NETWORK_TYPE_CLASSIC {
 			if vpc, err := VpcManager.GetOrCreateVpcForClassicNetwork(ctx, provider, region); err == nil && vpc != nil {
@@ -1324,8 +1336,10 @@ func (man *SLoadbalancerManager) TotalCount(
 	ownerId mcclient.IIdentityProvider,
 	rangeObjs []db.IStandaloneModel,
 	providers []string, brands []string, cloudEnv string,
+	policyResult rbacutils.SPolicyResult,
 ) (int, error) {
 	q := man.Query()
+	q = db.ObjectIdQueryWithPolicyResult(q, man, policyResult)
 	q = scopeOwnerIdFilter(q, scope, ownerId)
 	q = CloudProviderFilter(q, q.Field("manager_id"), providers, brands, cloudEnv)
 	q = RangeObjectsFilter(q, rangeObjs, nil, q.Field("zone_id"), q.Field("manager_id"), nil, nil)

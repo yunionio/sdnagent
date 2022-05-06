@@ -16,6 +16,9 @@ package models
 
 import (
 	"fmt"
+	"sort"
+
+	"yunion.io/x/log"
 
 	compute_models "yunion.io/x/onecloud/pkg/compute/models"
 )
@@ -62,11 +65,12 @@ func (el *Wire) Copy() *Wire {
 type Network struct {
 	compute_models.SNetwork
 
-	Vpc           *Vpc          `json:"-"`
-	Wire          *Wire         `json:"-"`
-	Guestnetworks Guestnetworks `json:"-"`
-	Groupnetworks Groupnetworks `json:"-"`
-	Elasticips    Elasticips    `json:"-"`
+	Vpc                  *Vpc                 `json:"-"`
+	Wire                 *Wire                `json:"-"`
+	Guestnetworks        Guestnetworks        `json:"-"`
+	Groupnetworks        Groupnetworks        `json:"-"`
+	LoadbalancerNetworks LoadbalancerNetworks `json:"-"`
+	Elasticips           Elasticips           `json:"-"`
 }
 
 func (el *Network) Copy() *Network {
@@ -185,9 +189,10 @@ func (el *SecurityGroupRule) Copy() *SecurityGroupRule {
 type Elasticip struct {
 	compute_models.SElasticip
 
-	Network      *Network      `json:"-"`
-	Guestnetwork *Guestnetwork `json:"-"`
-	Groupnetwork *Groupnetwork `json:"-"`
+	Network             *Network             `json:"-"`
+	Guestnetwork        *Guestnetwork        `json:"-"`
+	Groupnetwork        *Groupnetwork        `json:"-"`
+	LoadbalancerNetwork *LoadbalancerNetwork `json:"-"`
 }
 
 func (el *Elasticip) Copy() *Elasticip {
@@ -236,9 +241,21 @@ func (el *Groupnetwork) Copy() *Groupnetwork {
 
 func (el *Groupnetwork) GetGuestNetworks() []*Guestnetwork {
 	ret := make([]*Guestnetwork, 0)
-	for _, gg := range el.Group.Groupguests {
-		for _, gn := range gg.Guest.Guestnetworks {
-			ret = append(ret, gn)
+	if el.Group == nil {
+		log.Errorf("Nil group for groupnetwork %s %s", el.GroupId, el.NetworkId)
+	} else if el.Group.Groupguests == nil {
+		log.Errorf("Nil groupguests for group %s", el.GroupId)
+	} else {
+		for _, gg := range el.Group.Groupguests {
+			if gg.Guest == nil {
+				log.Errorf("Nil guest for groupguest %s %s", gg.GroupId, gg.GuestId)
+			} else if gg.Guest.Guestnetworks == nil {
+				log.Errorf("Nil guestnetworks for guest %s", gg.GuestId)
+			} else {
+				for _, gn := range gg.Guest.Guestnetworks {
+					ret = append(ret, gn)
+				}
+			}
 		}
 	}
 	return ret
@@ -254,5 +271,52 @@ type Group struct {
 func (el *Group) Copy() *Group {
 	return &Group{
 		SGroup: el.SGroup,
+	}
+}
+
+type LoadbalancerNetwork struct {
+	compute_models.SLoadbalancerNetwork
+
+	Network               *Network              `json:"-"`
+	Elasticip             *Elasticip            `json:"-"`
+	LoadbalancerListeners LoadbalancerListeners `json:"-"`
+}
+
+func (el *LoadbalancerNetwork) Copy() *LoadbalancerNetwork {
+	return &LoadbalancerNetwork{
+		SLoadbalancerNetwork: el.SLoadbalancerNetwork,
+	}
+}
+
+func (el *LoadbalancerNetwork) OrderedLoadbalancerListeners() []*LoadbalancerListener {
+	lblisteners := make([]*LoadbalancerListener, 0, len(el.LoadbalancerListeners))
+	for _, lblistener := range el.LoadbalancerListeners {
+		lblisteners = append(lblisteners, lblistener)
+	}
+	sort.Slice(lblisteners, func(i, j int) bool {
+		return lblisteners[i].Id < lblisteners[j].Id
+	})
+	return lblisteners
+}
+
+type LoadbalancerListener struct {
+	compute_models.SLoadbalancerListener
+
+	LoadbalancerAcl *LoadbalancerAcl `json:"-"`
+}
+
+func (el *LoadbalancerListener) Copy() *LoadbalancerListener {
+	return &LoadbalancerListener{
+		SLoadbalancerListener: el.SLoadbalancerListener,
+	}
+}
+
+type LoadbalancerAcl struct {
+	compute_models.SLoadbalancerAcl
+}
+
+func (el *LoadbalancerAcl) Copy() *LoadbalancerAcl {
+	return &LoadbalancerAcl{
+		SLoadbalancerAcl: el.SLoadbalancerAcl,
 	}
 }

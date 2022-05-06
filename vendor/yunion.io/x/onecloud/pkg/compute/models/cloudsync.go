@@ -29,7 +29,6 @@ import (
 	"yunion.io/x/onecloud/pkg/cloudcommon/db"
 	"yunion.io/x/onecloud/pkg/cloudcommon/db/lockman"
 	"yunion.io/x/onecloud/pkg/cloudprovider"
-	"yunion.io/x/onecloud/pkg/compute/options"
 	"yunion.io/x/onecloud/pkg/mcclient"
 	"yunion.io/x/onecloud/pkg/mcclient/auth"
 	"yunion.io/x/onecloud/pkg/mcclient/modules/scheduler"
@@ -45,14 +44,12 @@ type SSyncableBaseResourceManager struct{}
 
 func (self *SSyncableBaseResource) CanSync() bool {
 	if self.SyncStatus == api.CLOUD_PROVIDER_SYNC_STATUS_QUEUED || self.SyncStatus == api.CLOUD_PROVIDER_SYNC_STATUS_SYNCING {
-		if self.LastSync.IsZero() || time.Now().Sub(self.LastSync) > time.Duration(options.Options.MinimalSyncIntervalSeconds)*time.Second {
+		if self.LastSync.IsZero() || time.Now().Sub(self.LastSync) > time.Minute*30 {
 			return true
-		} else {
-			return false
 		}
-	} else {
-		return true
+		return false
 	}
+	return true
 }
 
 func (manager *SSyncableBaseResourceManager) ListItemFilter(
@@ -283,6 +280,7 @@ func syncRegionVPCs(ctx context.Context, userCred mcclient.TokenCredential, sync
 			syncVpcNatgateways(ctx, userCred, syncResults, provider, &localVpcs[j], remoteVpcs[j], syncRange)
 			syncVpcPeerConnections(ctx, userCred, syncResults, provider, &localVpcs[j], remoteVpcs[j], syncRange)
 			syncVpcRouteTables(ctx, userCred, syncResults, provider, &localVpcs[j], remoteVpcs[j], syncRange)
+			syncIPv6Gateways(ctx, userCred, syncResults, provider, &localVpcs[j], remoteVpcs[j], syncRange)
 		}()
 	}
 }
@@ -460,12 +458,40 @@ func syncVpcRouteTables(ctx context.Context, userCred mcclient.TokenCredential, 
 	}
 }
 
+func syncIPv6Gateways(ctx context.Context, userCred mcclient.TokenCredential, syncResults SSyncResultSet, provider *SCloudprovider, localVpc *SVpc, remoteVpc cloudprovider.ICloudVpc, syncRange *SSyncRange) {
+	exts, err := func() ([]cloudprovider.ICloudIPv6Gateway, error) {
+		defer syncResults.AddRequestCost(IPv6GatewayManager)()
+		return remoteVpc.GetICloudIPv6Gateways()
+	}()
+	if err != nil {
+		msg := fmt.Sprintf("GetICloudIPv6Gateways for vpc %s failed %s", remoteVpc.GetId(), err)
+		log.Errorf(msg)
+		return
+	}
+	result := func() compare.SyncResult {
+		defer syncResults.AddSqlCost(IPv6GatewayManager)()
+		return localVpc.SyncIPv6Gateways(ctx, userCred, exts, provider)
+	}()
+
+	syncResults.Add(IPv6GatewayManager, result)
+
+	msg := result.Result()
+	notes := fmt.Sprintf("SyncIPv6Gateways for VPC %s result: %s", localVpc.Name, msg)
+	log.Infof(notes)
+	if result.IsError() {
+		return
+	}
+}
+
 func syncVpcNatgateways(ctx context.Context, userCred mcclient.TokenCredential, syncResults SSyncResultSet, provider *SCloudprovider, localVpc *SVpc, remoteVpc cloudprovider.ICloudVpc, syncRange *SSyncRange) {
 	natGateways, err := func() ([]cloudprovider.ICloudNatGateway, error) {
 		defer syncResults.AddRequestCost(NatGatewayManager)()
 		return remoteVpc.GetINatGateways()
 	}()
 	if err != nil {
+		if errors.Cause(err) == cloudprovider.ErrNotImplemented {
+			return
+		}
 		msg := fmt.Sprintf("GetINatGateways for vpc %s failed %s", remoteVpc.GetId(), err)
 		log.Errorf(msg)
 		return
@@ -984,8 +1010,6 @@ func syncVMEip(ctx context.Context, userCred mcclient.TokenCredential, provider 
 func syncVMSecgroups(ctx context.Context, userCred mcclient.TokenCredential, provider *SCloudprovider, localVM *SGuest, remoteVM cloudprovider.ICloudVM) error {
 	secgroupIds, err := remoteVM.GetSecurityGroupIds()
 	if err != nil {
-		// msg := fmt.Sprintf("GetSecurityGroupIds for VM %s failed %s", remoteVM.GetName(), err)
-		// log.Errorf(msg)
 		return errors.Wrap(err, "remoteVM.GetSecurityGroupIds")
 	}
 	return localVM.SyncVMSecgroups(ctx, userCred, secgroupIds)
@@ -1073,7 +1097,7 @@ func syncDBInstanceSkus(ctx context.Context, userCred mcclient.TokenCredential, 
 	syncResults.Add(DBInstanceSkuManager, result)
 
 	msg := result.Result()
-	log.Infof("SyncDBInstanceSkus for region %s result: %s", localRegion.Name, msg)
+	log.Infof("sync rds sku for region %s result: %s", localRegion.Name, msg)
 	if result.IsError() {
 		return
 	}
@@ -2081,9 +2105,9 @@ func SyncCloudProject(userCred mcclient.TokenCredential, model db.IVirtualModel,
 			}
 			return nil, errors.Wrapf(err, "GetProjectMapping")
 		}
-		account := manager.GetCloudaccount()
-		if account == nil {
-			return nil, fmt.Errorf("can not find manager %s account", manager.Name)
+		account, err := manager.GetCloudaccount()
+		if err != nil {
+			return nil, errors.Wrapf(err, "GetCloudaccount")
 		}
 		if rm != nil && rm.Enabled.Bool() {
 			extTags, err := extModel.GetTags()
@@ -2141,17 +2165,23 @@ func SyncCloudDomain(userCred mcclient.TokenCredential, model db.IDomainLevelMod
 }
 
 func SyncCloudaccountResources(ctx context.Context, userCred mcclient.TokenCredential, account *SCloudaccount, syncRange *SSyncRange) error {
-	provider, err := account.GetProvider()
+	provider, err := account.GetProvider(ctx)
 	if err != nil {
 		return errors.Wrapf(err, "GetProvider")
 	}
 
 	if cloudprovider.IsSupportProject(provider) && syncRange.NeedSyncResource(cloudprovider.CLOUD_CAPABILITY_PROJECT) {
-		syncProjects(ctx, userCred, SSyncResultSet{}, account, provider)
+		err = syncProjects(ctx, userCred, SSyncResultSet{}, account, provider)
+		if err != nil {
+			log.Errorf("Sync project for account %s error: %v", account.Name, err)
+		}
 	}
 
 	if cloudprovider.IsSupportDnsZone(provider) && syncRange.NeedSyncResource(cloudprovider.CLOUD_CAPABILITY_DNSZONE) {
-		syncDns(ctx, userCred, SSyncResultSet{}, account, provider)
+		err = syncDns(ctx, userCred, SSyncResultSet{}, account, provider)
+		if err != nil {
+			log.Errorf("Sync dns zone for account %s error: %v", account.Name, err)
+		}
 	}
 
 	return nil
@@ -2211,7 +2241,7 @@ func syncDns(ctx context.Context, userCred mcclient.TokenCredential, syncResults
 }
 
 func SyncCloudproviderResources(ctx context.Context, userCred mcclient.TokenCredential, provider *SCloudprovider, syncRange *SSyncRange) error {
-	driver, err := provider.GetProvider()
+	driver, err := provider.GetProvider(ctx)
 	if err != nil {
 		return errors.Wrapf(err, "GetProvider")
 	}

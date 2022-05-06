@@ -94,9 +94,6 @@ type SCloudaccountCredential struct {
 	// Google服务账号秘钥 (gcp)
 	GCPPrivateKey string `json:"gcp_private_key"`
 
-	// 阿里云专有云Endpoints
-	*SApsaraEndpoints
-
 	// 默认区域Id, Apara及HCSO需要此参数
 	// example: cn-north-2
 	// required: true
@@ -166,12 +163,16 @@ type ProviderConfig struct {
 	Account string
 	Secret  string
 
+	ReadOnly bool
+
 	AccountId string
 
 	Options *jsonutils.JSONDict
 
 	DefaultRegion string
 	ProxyFunc     httputils.TransportProxyFunc
+
+	UpdatePermission func(service, permission string)
 }
 
 func (cp *ProviderConfig) AdaptiveTimeoutHttpClient() *http.Client {

@@ -60,7 +60,7 @@ type SWafRule struct {
 	// 规则优先级
 	Priority int `nullable:"false" list:"domain" create:"required"`
 	// 规则默认行为
-	Action *cloudprovider.DefaultAction `charset:"utf8" nullable:"false" list:"user" update:"domain" create:"required"`
+	Action *cloudprovider.DefaultAction `charset:"utf8" nullable:"true" list:"user" update:"domain" create:"required"`
 	// 条件
 	StatementConditon cloudprovider.TWafStatementCondition `width:"20" charset:"ascii" nullable:"false" list:"domain" create:"optional"`
 	// 规则组的id
@@ -533,12 +533,12 @@ func (self *SWafRuleGroup) SyncManagedWafRules(ctx context.Context, userCred mcc
 	return result, nil
 }
 
-func (self *SWafRule) GetICloudWafInstance() (cloudprovider.ICloudWafInstance, error) {
+func (self *SWafRule) GetICloudWafInstance(ctx context.Context) (cloudprovider.ICloudWafInstance, error) {
 	ins, err := self.GetWafInstance()
 	if err != nil {
 		return nil, errors.Wrapf(err, "GetWafInstance")
 	}
-	iWaf, err := ins.GetICloudWafInstance()
+	iWaf, err := ins.GetICloudWafInstance(ctx)
 	if err != nil {
 		return nil, errors.Wrapf(err, "GetICloudWafInstance")
 	}
@@ -546,12 +546,12 @@ func (self *SWafRule) GetICloudWafInstance() (cloudprovider.ICloudWafInstance, e
 
 }
 
-func (self *SWafRule) GetICloudWafRule() (cloudprovider.ICloudWafRule, error) {
+func (self *SWafRule) GetICloudWafRule(ctx context.Context) (cloudprovider.ICloudWafRule, error) {
 	if len(self.ExternalId) == 0 {
 		return nil, errors.Wrapf(cloudprovider.ErrNotFound, "empty external id")
 	}
 	if len(self.WafInstanceId) > 0 {
-		iWaf, err := self.GetICloudWafInstance()
+		iWaf, err := self.GetICloudWafInstance(ctx)
 		if err != nil {
 			return nil, errors.Wrapf(err, "GetICloudWafInstance")
 		}
