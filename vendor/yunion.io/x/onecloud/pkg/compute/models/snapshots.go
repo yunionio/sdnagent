@@ -460,11 +460,10 @@ func (self *SSnapshot) GetDisk() (*SDisk, error) {
 	return disk, nil
 }
 
-func (self *SSnapshot) GetHost() *SHost {
+func (self *SSnapshot) GetHost() (*SHost, error) {
 	iStorage, err := StorageManager.FetchById(self.StorageId)
 	if err != nil {
-		log.Errorln(err)
-		return nil
+		return nil, errors.Wrapf(err, "StorageManager.FetchById(%s)", self.StorageId)
 	}
 	storage := iStorage.(*SStorage)
 	return storage.GetMasterHost()
@@ -544,7 +543,7 @@ func (self *SSnapshotManager) GetDiskSnapshotCount(diskId string) (int, error) {
 }
 
 func (self *SSnapshotManager) CreateSnapshot(ctx context.Context, owner mcclient.IIdentityProvider,
-	createdBy, diskId, guestId, location, name string, retentionDay int) (*SSnapshot, error) {
+	createdBy, diskId, guestId, location, name string, retentionDay int, isSystem bool) (*SSnapshot, error) {
 	iDisk, err := DiskManager.FetchById(diskId)
 	if err != nil {
 		return nil, err
@@ -577,6 +576,7 @@ func (self *SSnapshotManager) CreateSnapshot(ctx context.Context, owner mcclient
 	if retentionDay > 0 {
 		snapshot.ExpiredAt = time.Now().AddDate(0, 0, retentionDay)
 	}
+	snapshot.IsSystem = isSystem
 	err = SnapshotManager.TableSpec().Insert(ctx, snapshot)
 	if err != nil {
 		return nil, err

@@ -6,32 +6,37 @@ require (
 	github.com/ClickHouse/clickhouse-go v1.4.7 // indirect
 	github.com/cheggaaa/pb/v3 v3.0.8 // indirect
 	github.com/coreos/go-iptables v0.4.5
+	github.com/coreos/go-systemd v0.0.0-20190620071333-e64a0ec8b42a // indirect
+	github.com/coreos/pkg v0.0.0-20180928190104-399ea9e2e55f // indirect
 	github.com/digitalocean/go-openvswitch v0.0.0-20190515160856-1141932ed5cf
 	github.com/fsnotify/fsnotify v1.4.9
-	github.com/golang/protobuf v1.4.2
+	github.com/golang/protobuf v1.5.2
 	github.com/kr/pty v1.1.5 // indirect
 	github.com/mattn/go-isatty v0.0.14 // indirect
 	github.com/mattn/go-runewidth v0.0.13 // indirect
 	github.com/mattn/go-sqlite3 v1.14.9 // indirect
 	github.com/mitchellh/go-homedir v1.1.0
+	github.com/moul/http2curl v1.0.0 // indirect
 	github.com/pkg/errors v0.9.1
 	github.com/spf13/cobra v0.0.5
 	github.com/spf13/pflag v1.0.3
 	github.com/spf13/viper v1.3.2
+	github.com/tmc/grpc-websocket-proxy v0.0.0-20190109142713-0ad062ec5ee5 // indirect
 	github.com/vishvananda/netlink v1.0.0
 	github.com/vishvananda/netns v0.0.0-20191106174202-0a2b9b5464df
+	go.etcd.io/etcd v0.5.0-alpha.5.0.20200819165624-17cef6e3e9d5 // indirect
 	golang.org/x/crypto v0.0.0-20210817164053-32db794688a5 // indirect
-	golang.org/x/net v0.0.0-20210226172049-e18ecbb05110
+	golang.org/x/net v0.0.0-20210405180319-a5a99cb37ef4
 	golang.org/x/sys v0.0.0-20210910150752-751e447fb3d0 // indirect
 	golang.org/x/term v0.0.0-20210615171337-6886f2dfbf5b // indirect
-	google.golang.org/grpc v1.29.0
-	google.golang.org/protobuf v1.24.0
+	google.golang.org/grpc v1.38.0
+	google.golang.org/protobuf v1.26.0
 	gopkg.in/go-playground/assert.v1 v1.2.1 // indirect
 	gopkg.in/go-playground/validator.v9 v9.29.1 // indirect
-	yunion.io/x/jsonutils v0.0.0-20211213041607-f6733e38783e
+	yunion.io/x/jsonutils v0.0.0-20220106020632-953b71a4c3a8
 	yunion.io/x/log v0.0.0-20201210064738-43181789dc74
-	yunion.io/x/onecloud v0.0.0-20220102004918-fad8ef451d63
-	yunion.io/x/pkg v0.0.0-20211116020154-6a76ba2f7e97
+	yunion.io/x/onecloud v0.0.0-20220604023309-0dbbd1c4fc3f
+	yunion.io/x/pkg v0.0.0-20220406030238-39fbc60d5d4e
 )
 
 replace github.com/digitalocean/go-openvswitch => github.com/yousong/go-openvswitch v0.0.0-20200422025222-6b2d502be872

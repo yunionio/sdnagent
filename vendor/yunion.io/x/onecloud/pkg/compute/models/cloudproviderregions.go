@@ -18,7 +18,6 @@ import (
 	"context"
 	"database/sql"
 	"fmt"
-	"math/rand"
 	"time"
 
 	"yunion.io/x/jsonutils"
@@ -31,9 +30,10 @@ import (
 
 	api "yunion.io/x/onecloud/pkg/apis/compute"
 	"yunion.io/x/onecloud/pkg/cloudcommon/db"
+	"yunion.io/x/onecloud/pkg/compute/options"
 	"yunion.io/x/onecloud/pkg/httperrors"
 	"yunion.io/x/onecloud/pkg/mcclient"
-	"yunion.io/x/onecloud/pkg/util/nopanic"
+	"yunion.io/x/onecloud/pkg/util/logclient"
 	"yunion.io/x/onecloud/pkg/util/stringutils2"
 )
 
@@ -94,21 +94,20 @@ func (manager *SCloudproviderregionManager) GetSlaveFieldName() string {
 	return "cloudregion_id"
 }
 
-func (self *SCloudproviderregion) GetProvider() *SCloudprovider {
+func (self *SCloudproviderregion) GetProvider() (*SCloudprovider, error) {
 	providerObj, err := CloudproviderManager.FetchById(self.CloudproviderId)
 	if err != nil {
-		log.Errorf("CloudproviderManager.FetchById fail %s", err)
-		return nil
+		return nil, errors.Wrapf(err, "CloudproviderManager.FetchById(%s)", self.CloudproviderId)
 	}
-	return providerObj.(*SCloudprovider)
+	return providerObj.(*SCloudprovider), nil
 }
 
-func (self *SCloudproviderregion) GetAccount() *SCloudaccount {
-	provider := self.GetProvider()
-	if provider != nil {
-		return provider.GetCloudaccount()
+func (self *SCloudproviderregion) GetAccount() (*SCloudaccount, error) {
+	provider, err := self.GetProvider()
+	if err != nil {
+		return nil, err
 	}
-	return nil
+	return provider.GetCloudaccount()
 }
 
 func (manager *SCloudproviderregionManager) FetchCustomizeColumns(
@@ -143,9 +142,9 @@ func (manager *SCloudproviderregionManager) FetchCustomizeColumns(
 	for i := range rows {
 		if manager, ok := managers[managerIds[i]]; ok {
 			rows[i].Cloudprovider = manager.Name
-			account := manager.GetCloudaccount()
 			rows[i].EnableAutoSync = false
 			rows[i].CloudproviderSyncStatus = manager.SyncStatus
+			account, _ := manager.GetCloudaccount()
 			if account != nil {
 				rows[i].CloudaccountId = account.Id
 				rows[i].Cloudaccount = account.Name
@@ -161,9 +160,35 @@ func (manager *SCloudproviderregionManager) FetchCustomizeColumns(
 	return rows
 }
 
+func (self *SCloudproviderregion) PostUpdate(ctx context.Context, userCred mcclient.TokenCredential, query jsonutils.JSONObject, data jsonutils.JSONObject) {
+	self.SJointResourceBase.PostUpdate(ctx, userCred, query, data)
+	if data.Contains("enabled") {
+		enabled, _ := data.Bool("enabled")
+		provider, _ := self.GetProvider()
+		if provider != nil {
+			action := logclient.ACT_DISABLE
+			if enabled {
+				action = logclient.ACT_ENABLE
+			}
+			region, err := self.GetRegion()
+			if err == nil {
+				notes := map[string]string{
+					"region_name": region.Name,
+					"region_id":   region.Id,
+				}
+				logclient.AddSimpleActionLog(provider, action, notes, userCred, true)
+			}
+		}
+	}
+}
+
 func (self *SCloudproviderregion) getSyncIntervalSeconds(account *SCloudaccount) int {
-	if account == nil {
-		account = self.GetAccount()
+	if account != nil {
+		return account.getSyncIntervalSeconds()
+	}
+	account, err := self.GetAccount()
+	if err != nil {
+		return options.Options.MinimalSyncIntervalSeconds
 	}
 	return account.getSyncIntervalSeconds()
 }
@@ -305,7 +330,11 @@ func (self *SCloudproviderregion) markEndSync(ctx context.Context, userCred mccl
 	if err != nil {
 		return errors.Wrapf(err, "markEndSyncInternal")
 	}
-	err = self.GetProvider().markEndSyncWithLock(ctx, userCred)
+	provider, err := self.GetProvider()
+	if err != nil {
+		return errors.Wrapf(err, "GetProvider")
+	}
+	err = provider.markEndSyncWithLock(ctx, userCred)
 	if err != nil {
 		return errors.Wrapf(err, "markEndSyncWithLock")
 	}
@@ -398,7 +427,10 @@ func (self *SCloudproviderregion) DoSync(ctx context.Context, userCred mcclient.
 	if err != nil {
 		return errors.Wrapf(err, "GetRegion")
 	}
-	provider := self.GetProvider()
+	provider, err := self.GetProvider()
+	if err != nil {
+		return errors.Wrapf(err, "GetProvider")
+	}
 
 	self.markSyncing(userCred)
 
@@ -418,7 +450,7 @@ func (self *SCloudproviderregion) DoSync(ctx context.Context, userCred mcclient.
 	if !syncRange.DeepSync {
 		log.Debugf("no need to do deep sync, check...")
 		intval := self.getSyncIntervalSeconds(nil)
-		if self.LastDeepSyncAt.IsZero() || time.Now().Sub(self.LastDeepSyncAt) > time.Hour*24 || (time.Now().Sub(self.LastDeepSyncAt) > time.Duration(intval)*time.Second*8 && rand.Float32() < 0.5) {
+		if self.LastDeepSyncAt.IsZero() || time.Now().Sub(self.LastDeepSyncAt) > time.Hour*24 || (time.Now().Sub(self.LastDeepSyncAt) > time.Duration(intval)*time.Second*8) {
 			syncRange.DeepSync = true
 		}
 	}
@@ -450,13 +482,11 @@ func (self *SCloudproviderregion) getSyncTaskKey() string {
 func (self *SCloudproviderregion) submitSyncTask(ctx context.Context, userCred mcclient.TokenCredential, syncRange SSyncRange) {
 	self.markStartSync(userCred)
 	RunSyncCloudproviderRegionTask(ctx, self.getSyncTaskKey(), func() {
-		nopanic.Run(func() {
-			ctx = context.WithValue(ctx, "provider-region", fmt.Sprintf("%d", self.RowId))
-			err := self.DoSync(ctx, userCred, syncRange)
-			if err != nil {
-				log.Errorf("DoSync faild %v", err)
-			}
-		})
+		ctx = context.WithValue(ctx, "provider-region", fmt.Sprintf("%d", self.RowId))
+		err := self.DoSync(ctx, userCred, syncRange)
+		if err != nil {
+			log.Errorf("DoSync faild %v", err)
+		}
 	})
 }
 
@@ -488,50 +518,12 @@ func (cpr *SCloudproviderregion) needAutoSyncInternal() bool {
 	if cpr.LastAutoSyncAt.IsZero() {
 		return true
 	}
-	account := cpr.GetAccount()
+	account, _ := cpr.GetAccount()
 	intval := cpr.getSyncIntervalSeconds(account)
-	isEmpty := false
-	if account.IsOnPremise {
-		isEmpty = cpr.isEmptyOnPremise()
-	} else {
-		isEmpty = cpr.isEmptyPublicCloud()
-	}
-	if isEmpty {
-		intval = intval * 16  // no need to check empty region
-		if intval > 24*3600 { // at least once everyday
-			intval = 24 * 3600
-		}
-		region, _ := cpr.GetRegion()
-		log.Debugf("empty region %s! no need to check so frequently", region.GetName())
-	}
 	if time.Now().Sub(cpr.LastSync) > time.Duration(intval)*time.Second {
 		return true
 	}
 	return false
-}
-
-func (cpr *SCloudproviderregion) isEmptyOnPremise() bool {
-	return cpr.isEmpty(HostManager.KeywordPlural())
-}
-
-func (cpr *SCloudproviderregion) isEmptyPublicCloud() bool {
-	return cpr.isEmpty(NetworkManager.KeywordPlural())
-}
-
-func (cpr *SCloudproviderregion) isEmpty(resKey string) bool {
-	if cpr.SyncResults == nil {
-		return false
-	}
-	syncResults := SSyncResultSet{}
-	err := cpr.SyncResults.Unmarshal(&syncResults)
-	if err != nil {
-		return false
-	}
-	result := syncResults[resKey]
-	if result != nil && (result.UpdateCnt > 0 || result.AddCnt > 0) {
-		return false
-	}
-	return true
 }
 
 func (cprm *SCloudproviderregionManager) fetchRecordsByCloudproviderId(providerId string) ([]SCloudproviderregion, error) {

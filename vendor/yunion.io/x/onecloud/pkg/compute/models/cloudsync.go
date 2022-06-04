@@ -984,8 +984,6 @@ func syncVMEip(ctx context.Context, userCred mcclient.TokenCredential, provider 
 func syncVMSecgroups(ctx context.Context, userCred mcclient.TokenCredential, provider *SCloudprovider, localVM *SGuest, remoteVM cloudprovider.ICloudVM) error {
 	secgroupIds, err := remoteVM.GetSecurityGroupIds()
 	if err != nil {
-		// msg := fmt.Sprintf("GetSecurityGroupIds for VM %s failed %s", remoteVM.GetName(), err)
-		// log.Errorf(msg)
 		return errors.Wrap(err, "remoteVM.GetSecurityGroupIds")
 	}
 	return localVM.SyncVMSecgroups(ctx, userCred, secgroupIds)
@@ -1971,9 +1969,9 @@ func SyncCloudProject(userCred mcclient.TokenCredential, model db.IVirtualModel,
 			}
 			return nil, errors.Wrapf(err, "GetProjectMapping")
 		}
-		account := manager.GetCloudaccount()
-		if account == nil {
-			return nil, fmt.Errorf("can not find manager %s account", manager.Name)
+		account, err := manager.GetCloudaccount()
+		if err != nil {
+			return nil, errors.Wrapf(err, "GetCloudaccount")
 		}
 		if rm != nil && rm.Enabled.Bool() {
 			extTags, err := extModel.GetTags()
@@ -2036,9 +2034,15 @@ func SyncCloudaccountResources(ctx context.Context, userCred mcclient.TokenCrede
 		return errors.Wrapf(err, "GetProvider")
 	}
 
-	syncProjects(ctx, userCred, SSyncResultSet{}, account, provider)
+	err = syncProjects(ctx, userCred, SSyncResultSet{}, account, provider)
+	if err != nil {
+		log.Errorf("Sync project for account %s error: %v", account.Name, err)
+	}
 
-	syncDns(ctx, userCred, SSyncResultSet{}, account, provider)
+	err = syncDns(ctx, userCred, SSyncResultSet{}, account, provider)
+	if err != nil {
+		log.Errorf("Sync dns zone for account %s error: %v", account.Name, err)
+	}
 
 	return nil
 }

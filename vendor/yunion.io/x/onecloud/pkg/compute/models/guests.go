@@ -125,10 +125,10 @@ type SGuest struct {
 	BackupHostId string `width:"36" charset:"ascii" nullable:"true" list:"user" get:"user"`
 
 	// 操作进度0-100
-	Progress float32 `list:"user" update:"user" default:"100" json:"progress"`
+	Progress float32 `list:"user" update:"user" default:"100" json:"progress" log:"skip"`
 
 	// 迁移或克隆的速度
-	ProgressMbps float64 `nullable:"false" default:"0" list:"user" create:"optional" update:"user"`
+	ProgressMbps float64 `nullable:"false" default:"0" list:"user" create:"optional" update:"user" log:"skip"`
 
 	Vga     string `width:"36" charset:"ascii" nullable:"true" list:"user" update:"user" create:"optional"`
 	Vdi     string `width:"36" charset:"ascii" nullable:"true" list:"user" update:"user" create:"optional"`
@@ -143,7 +143,7 @@ type SGuest struct {
 	// example: default
 	SecgrpId string `width:"36" charset:"ascii" nullable:"true" list:"user" get:"user" create:"optional"`
 	// 管理员可见安全组Id
-	AdminSecgrpId string `width:"36" charset:"ascii" nullable:"true" list:"admin" get:"domain"`
+	AdminSecgrpId string `width:"36" charset:"ascii" nullable:"true" list:"domain" get:"domain"`
 
 	SrcIpCheck  tristate.TriState `nullable:"false" default:"true" create:"optional" list:"user" update:"user"`
 	SrcMacCheck tristate.TriState `nullable:"false" default:"true" create:"optional" list:"user" update:"user"`
@@ -375,11 +375,25 @@ func (manager *SGuestManager) ListItemFilter(
 	}
 
 	if len(query.IpAddr) > 0 {
-		gn := GuestnetworkManager.Query("guest_id").Contains("ip_addr", query.IpAddr).SubQuery()
-		guestEip := ElasticipManager.Query("associate_id").Equals("associate_type", api.EIP_ASSOCIATE_TYPE_SERVER).Contains("ip_addr", query.IpAddr).SubQuery()
+		grpnets := GroupnetworkManager.Query().SubQuery()
+		vipq := GroupguestManager.Query("guest_id")
+		vipq = vipq.Join(grpnets, sqlchemy.Equals(grpnets.Field("group_id"), vipq.Field("group_id")))
+		vipq = vipq.Contains("ip_addr", query.IpAddr)
+
+		grpeips := ElasticipManager.Query().Equals("associate_type", api.EIP_ASSOCIATE_TYPE_INSTANCE_GROUP).SubQuery()
+		vipeipq := GroupguestManager.Query("guest_id")
+		vipeipq = vipeipq.Join(grpeips, sqlchemy.Equals(grpeips.Field("associate_id"), vipeipq.Field("group_id")))
+		vipeipq = vipeipq.Contains("ip_addr", query.IpAddr)
+
+		gn := GuestnetworkManager.Query("guest_id").Contains("ip_addr", query.IpAddr)
+
+		guestEip := ElasticipManager.Query("associate_id").Equals("associate_type", api.EIP_ASSOCIATE_TYPE_SERVER).Contains("ip_addr", query.IpAddr)
+
 		q = q.Filter(sqlchemy.OR(
-			sqlchemy.In(q.Field("id"), gn),
-			sqlchemy.In(q.Field("id"), guestEip),
+			sqlchemy.In(q.Field("id"), gn.SubQuery()),
+			sqlchemy.In(q.Field("id"), guestEip.SubQuery()),
+			sqlchemy.In(q.Field("id"), vipq.SubQuery()),
+			sqlchemy.In(q.Field("id"), vipeipq.SubQuery()),
 		))
 	}
 
@@ -455,6 +469,9 @@ func (manager *SGuestManager) ListItemFilter(
 		case "backup":
 			query.Gpu = &falseVal
 			query.Backup = &trueVal
+		case "usb":
+			query.Usb = &trueVal
+			query.Backup = &falseVal
 		default:
 			return nil, httperrors.NewInputParameterError("unknown server type %s", query.ServerType)
 		}
@@ -468,18 +485,30 @@ func (manager *SGuestManager) ListItemFilter(
 		}
 	}
 
-	if query.Gpu != nil {
-		isodev := IsolatedDeviceManager.Query().SubQuery()
-		sgq := isodev.Query(isodev.Field("guest_id")).
-			Filter(sqlchemy.AND(
-				sqlchemy.IsNotNull(isodev.Field("guest_id")),
-				sqlchemy.Startswith(isodev.Field("dev_type"), "GPU")))
-		cond := sqlchemy.NotIn
-		if *query.Gpu {
-			cond = sqlchemy.In
+	devTypeQ := func(q *sqlchemy.SQuery, checkType *bool, dType string) *sqlchemy.SQuery {
+		if checkType != nil {
+			conditions := []sqlchemy.ICondition{}
+			isodev := IsolatedDeviceManager.Query().SubQuery()
+			sgq := isodev.Query(isodev.Field("guest_id")).
+				Filter(sqlchemy.AND(
+					sqlchemy.IsNotNull(isodev.Field("guest_id")),
+					sqlchemy.Startswith(isodev.Field("dev_type"), dType)))
+			cond := sqlchemy.NotIn
+			if *checkType {
+				cond = sqlchemy.In
+			}
+			if dType == "GPU" {
+				sq := ServerSkuManager.Query("name").GT("gpu_count", 0).Distinct().SubQuery()
+				conditions = append(conditions, cond(q.Field("instance_type"), sq))
+			}
+			conditions = append(conditions, cond(q.Field("id"), sgq))
+			return q.Filter(sqlchemy.OR(conditions...))
 		}
-		q = q.Filter(cond(q.Field("id"), sgq))
+		return q
 	}
+
+	q = devTypeQ(q, query.Gpu, "GPU")
+	q = devTypeQ(q, query.Usb, api.USB_TYPE)
 
 	groupFilter := query.GroupId
 	if len(groupFilter) != 0 {
@@ -644,22 +673,62 @@ func (manager *SGuestManager) QueryDistinctExtraField(q *sqlchemy.SQuery, field 
 	return q, httperrors.ErrNotFound
 }
 
-func (manager *SGuestManager) InitializeData() error {
+func (manager *SGuestManager) clearSecgroups() error {
 	guests := make([]SGuest, 0, 10)
-	q := manager.Query().Equals("hypervisor", "esxi")
+	q := manager.Query()
+	q = q.In("hypervisor", []string{api.HYPERVISOR_ESXI, api.HYPERVISOR_NUTANIX}).Filter(
+		sqlchemy.OR(
+			sqlchemy.IsNotEmpty(q.Field("secgrp_id")),
+			sqlchemy.IsNotEmpty(q.Field("admin_secgrp_id")),
+		),
+	)
 	err := db.FetchModelObjects(manager, q, &guests)
 	if err != nil {
 		return errors.Wrap(err, "db.FetchModelObjects")
 	}
-	// remove secgroup for esxi guest
+	// remove secgroup for esxi nutanix guest
 	for i := range guests {
-		if len(guests[i].SecgrpId) == 0 {
-			continue
-		}
 		db.Update(&guests[i], func() error {
 			guests[i].SecgrpId = ""
+			guests[i].AdminSecgrpId = ""
 			return nil
 		})
+	}
+	return nil
+}
+
+func (manager *SGuestManager) initAdminSecgroupId() error {
+	if len(options.Options.DefaultAdminSecurityGroupId) == 0 {
+		return nil
+	}
+	adminSec, _ := SecurityGroupManager.FetchSecgroupById(options.Options.DefaultAdminSecurityGroupId)
+	if adminSec == nil {
+		return nil
+	}
+	adminSecId := adminSec.Id
+	guests := make([]SGuest, 0, 10)
+	q := manager.Query()
+	q = q.In("hypervisor", []string{api.HYPERVISOR_KVM}).IsNullOrEmpty("admin_secgrp_id")
+	err := db.FetchModelObjects(manager, q, &guests)
+	if err != nil {
+		return errors.Wrap(err, "db.FetchModelObjects")
+	}
+	// remove secgroup for esxi nutanix guest
+	for i := range guests {
+		db.Update(&guests[i], func() error {
+			guests[i].AdminSecgrpId = adminSecId
+			return nil
+		})
+	}
+	return nil
+}
+
+func (manager *SGuestManager) InitializeData() error {
+	if err := manager.clearSecgroups(); err != nil {
+		return errors.Wrap(err, "cleanSecgroups")
+	}
+	if err := manager.initAdminSecgroupId(); err != nil {
+		return errors.Wrap(err, "initAdminSecgroupId")
 	}
 	return nil
 }
@@ -895,6 +964,12 @@ func (guest *SGuest) IsNetworkAllocated() bool {
 }
 
 func (guest *SGuest) CustomizeCreate(ctx context.Context, userCred mcclient.TokenCredential, ownerId mcclient.IIdentityProvider, query jsonutils.JSONObject, data jsonutils.JSONObject) error {
+	if len(guest.SecgrpId) > 0 && len(options.Options.DefaultAdminSecurityGroupId) > 0 {
+		adminSec, _ := SecurityGroupManager.FetchSecgroupById(options.Options.DefaultAdminSecurityGroupId)
+		if adminSec != nil {
+			guest.AdminSecgrpId = adminSec.Id
+		}
+	}
 	guest.HostId = ""
 	return guest.SVirtualResourceBase.CustomizeCreate(ctx, userCred, ownerId, query, data)
 }
@@ -995,19 +1070,6 @@ func (self *SGuest) SetStatus(userCred mcclient.TokenCredential, status string, 
 	return self.SVirtualResourceBase.SetStatus(userCred, status, reason)
 }
 
-func (self *SGuest) PreUpdate(ctx context.Context, userCred mcclient.TokenCredential, query jsonutils.JSONObject, data jsonutils.JSONObject) {
-	// 减少更新日志
-	if data.Contains("progress_mbps") || data.Contains("progress") {
-		db.Update(self, func() error {
-			self.ProgressMbps, _ = data.Float("progress_mbps")
-			progress, _ := data.Float("progress")
-			self.Progress = float32(progress)
-			return nil
-		})
-	}
-	self.SVirtualResourceBase.PreUpdate(ctx, userCred, query, data)
-}
-
 func (self *SGuest) ValidateUpdateData(ctx context.Context, userCred mcclient.TokenCredential, query jsonutils.JSONObject, input api.ServerUpdateInput) (api.ServerUpdateInput, error) {
 	if len(input.Name) > 0 && len(input.Name) < 2 {
 		return input, httperrors.NewInputParameterError("name is too short")
@@ -1094,6 +1156,25 @@ func parseInstanceSnapshot(input *api.ServerCreateInput) (*api.ServerCreateInput
 	return input, nil
 }
 
+func parseInstanceBackup(input *api.ServerCreateInput) (*api.ServerCreateInput, error) {
+	ispi, err := InstanceBackupManager.FetchByIdOrName(nil, input.InstanceBackupId)
+	if err == sql.ErrNoRows {
+		return nil, httperrors.NewBadRequestError("can't find instance backup %s", input.InstanceBackupId)
+	}
+	if err != nil {
+		return nil, httperrors.NewInternalServerError("fetch instance backup error %s", err)
+	}
+	isp := ispi.(*SInstanceBackup)
+	if isp.Status != api.INSTANCE_BACKUP_STATUS_READY && isp.Status != api.INSTANCE_BACKUP_STATUS_RECOVERY {
+		return nil, httperrors.NewBadRequestError("Instance backup not ready")
+	}
+	input, err = isp.ToInstanceCreateInput(input)
+	if len(input.Disks) == 0 {
+		return nil, httperrors.NewInputParameterError("there are no disks in this instance backup, try another one")
+	}
+	return input, nil
+}
+
 func (manager *SGuestManager) validateCreateData(
 	ctx context.Context, userCred mcclient.TokenCredential, ownerId mcclient.IIdentityProvider,
 	query jsonutils.JSONObject, data *jsonutils.JSONDict) (*api.ServerCreateInput, error) {
@@ -1122,7 +1203,27 @@ func (manager *SGuestManager) validateCreateData(
 		if inputMem > 0 {
 			input.VcpuCount = inputCpu
 		}
-		input.InstanceType = inputInstaceType
+		if len(inputInstaceType) > 0 {
+			input.InstanceType = inputInstaceType
+		}
+	} else if len(input.InstanceBackupId) > 0 {
+		inputMem := input.VmemSize
+		inputCpu := input.VcpuCount
+		inputInstaceType := input.InstanceType
+		input, err = parseInstanceBackup(input)
+		if err != nil {
+			return nil, err
+		}
+		// keep input cpu mem flavor
+		if inputMem > 0 {
+			input.VmemSize = inputMem
+		}
+		if inputMem > 0 {
+			input.VcpuCount = inputCpu
+		}
+		if len(inputInstaceType) > 0 {
+			input.InstanceType = inputInstaceType
+		}
 	}
 
 	resetPassword := true
@@ -1174,33 +1275,23 @@ func (manager *SGuestManager) validateCreateData(
 	var osProf osprofile.SOSProfile
 	hypervisor = input.Hypervisor
 	if hypervisor != api.HYPERVISOR_CONTAINER {
-		if len(input.Disks) == 0 {
-			return nil, httperrors.NewInputParameterError("No disk information provided")
+		if len(input.Disks) == 0 && input.Cdrom == "" {
+			return nil, httperrors.NewInputParameterError("No bootable disk information provided")
 		}
-		diskConfig := input.Disks[0]
-		diskConfig, err = parseDiskInfo(ctx, userCred, diskConfig)
-		if err != nil {
-			return nil, httperrors.NewInputParameterError("Invalid root image: %s", err)
+		var imgProperties map[string]string
+
+		if len(input.Disks) > 0 {
+			diskConfig := input.Disks[0]
+			diskConfig, err = parseDiskInfo(ctx, userCred, diskConfig)
+			if err != nil {
+				return nil, httperrors.NewInputParameterError("Invalid root image: %s", err)
+			}
+			input.Disks[0] = diskConfig
+			imgProperties = diskConfig.ImageProperties
+			if imgProperties[imageapi.IMAGE_DISK_FORMAT] == "iso" {
+				return nil, httperrors.NewInputParameterError("System disk does not support iso image, please consider using cdrom parameter")
+			}
 		}
-
-		// if len(diskConfig.Backend) == 0 {
-		// 	diskConfig.Backend = STORAGE_LOCAL
-		// }
-		// rootStorageType = diskConfig.Backend
-
-		input.Disks[0] = diskConfig
-
-		imgProperties := diskConfig.ImageProperties
-		imgSupportUEFI := imgProperties[imageapi.IMAGE_UEFI_SUPPORT] == "true"
-		imgIsWindows := imgProperties[imageapi.IMAGE_OS_TYPE] == "Windows"
-		if imgSupportUEFI && imgIsWindows && len(input.IsolatedDevices) > 0 {
-			input.Bios = "UEFI" // windows gpu passthrough
-		}
-
-		if imgProperties[imageapi.IMAGE_DISK_FORMAT] == "iso" {
-			return nil, httperrors.NewInputParameterError("System disk does not support iso image, please consider using cdrom parameter")
-		}
-
 		if input.Cdrom != "" {
 			cdromStr := input.Cdrom
 			image, err := parseIsoInfo(ctx, userCred, cdromStr)
@@ -1213,8 +1304,31 @@ func (manager *SGuestManager) validateCreateData(
 			}
 		}
 
-		if arch := imgProperties["os_arch"]; strings.Contains(arch, "aarch") {
+		if arch := imgProperties["os_arch"]; strings.Contains(arch, "aarch") || strings.Contains(arch, "arm") {
 			input.OsArch = apis.OS_ARCH_AARCH64
+		}
+
+		imgSupportUEFI := imgProperties[imageapi.IMAGE_UEFI_SUPPORT] == "true"
+		// imgIsWindows := imgProperties[imageapi.IMAGE_OS_TYPE] == "Windows"
+		// if imgSupportUEFI && imgIsWindows && len(input.IsolatedDevices) > 0 {
+		// 	input.Bios = "UEFI" // windows gpu passthrough
+		// }
+		if input.OsArch == apis.OS_ARCH_AARCH64 {
+			// arm image supports UEFI by default
+			imgSupportUEFI = true
+		}
+
+		if imgSupportUEFI {
+			if len(input.Bios) == 0 {
+				input.Bios = "UEFI"
+			} else if input.Bios != "UEFI" {
+				return nil, httperrors.NewInputParameterError("UEFI image requires UEFI boot mode")
+			}
+		} else {
+			// not UEFI or not detectable
+			if input.Bios == "UEFI" {
+				return nil, httperrors.NewInputParameterError("UEFI boot mode requires UEFI image")
+			}
 		}
 
 		if len(imgProperties) == 0 {
@@ -1457,7 +1571,7 @@ func (manager *SGuestManager) validateCreateData(
 		}
 		input.SecgroupId = secGrpObj.GetId()
 	} else {
-		input.SecgroupId = "default"
+		input.SecgroupId = options.Options.DefaultSecurityGroupId
 	}
 
 	maxSecgrpCount := GetDriver(hypervisor).GetMaxSecurityGroupCount()
@@ -1639,10 +1753,12 @@ func (manager *SGuestManager) validateEip(userCred mcclient.TokenCredential, inp
 			input.Eip = eipObj.GetId()
 
 			eipCloudprovider := eip.GetCloudprovider()
-			if len(preferManagerId) > 0 && preferManagerId != eipCloudprovider.Id {
-				return httperrors.NewConflictError("cannot assoicate with eip %s: different cloudprovider", eipStr)
+			if eipCloudprovider != nil {
+				if len(preferManagerId) > 0 && preferManagerId != eipCloudprovider.Id {
+					return httperrors.NewConflictError("cannot assoicate with eip %s: different cloudprovider", eipStr)
+				}
+				input.PreferManager = eipCloudprovider.Id
 			}
-			input.PreferManager = eipCloudprovider.Id
 
 			eipRegion, err := eip.GetRegion()
 			if err != nil {
@@ -1662,7 +1778,7 @@ func (manager *SGuestManager) validateEip(userCred mcclient.TokenCredential, inp
 
 func (self *SGuest) PostUpdate(ctx context.Context, userCred mcclient.TokenCredential, query jsonutils.JSONObject, data jsonutils.JSONObject) {
 	self.SVirtualResourceBase.PostUpdate(ctx, userCred, query, data)
-	if data.Contains("name") || data.Contains("__meta__") {
+	if len(self.ExternalId) > 0 && (data.Contains("name") || data.Contains("__meta__")) {
 		err := self.StartRemoteUpdateTask(ctx, userCred, false, "")
 		if err != nil {
 			log.Errorf("StartRemoteUpdateTask fail: %s", err)
@@ -1828,14 +1944,22 @@ func (guest *SGuest) PostCreate(ctx context.Context, userCred mcclient.TokenCred
 	if len(userData) > 0 {
 		guest.setUserData(ctx, userCred, userData)
 	}
-	secgroups, _ := jsonutils.GetStringArray(data, "secgroups")
-	for _, secgroupId := range secgroups {
-		if secgroupId != guest.SecgrpId {
-			gs := SGuestsecgroup{}
-			gs.SecgroupId = secgroupId
-			gs.GuestId = guest.Id
-			GuestsecgroupManager.TableSpec().Insert(ctx, &gs)
+
+	if guest.GetDriver().GetMaxSecurityGroupCount() > 0 {
+		secgroups, _ := jsonutils.GetStringArray(data, "secgroups")
+		for _, secgroupId := range secgroups {
+			if secgroupId != guest.SecgrpId {
+				gs := SGuestsecgroup{}
+				gs.SecgroupId = secgroupId
+				gs.GuestId = guest.Id
+				GuestsecgroupManager.TableSpec().Insert(ctx, &gs)
+			}
 		}
+	} else {
+		db.Update(guest, func() error {
+			guest.SecgrpId = ""
+			return nil
+		})
 	}
 }
 
@@ -2325,8 +2449,8 @@ func (self *SGuest) getSecurityGroupsRules() string {
 	q.Filter(sqlchemy.In(q.Field("secgroup_id"), secgroupids)).Desc(q.Field("priority"), q.Field("action"))
 	secrules := []SSecurityGroupRule{}
 	if err := db.FetchModelObjects(SecurityGroupRuleManager, q, &secrules); err != nil {
-		log.Errorf("Get rules error: %v", err)
-		return options.Options.DefaultSecurityRules
+		log.Errorf("Get security group rules error: %v", err)
+		return ""
 	}
 	rules := []string{}
 	for _, rule := range secrules {
@@ -2340,9 +2464,8 @@ func (self *SGuest) getAdminSecurityRules() string {
 	if secgrp != nil {
 		ret, _ := secgrp.getSecurityRuleString()
 		return ret
-	} else {
-		return options.Options.DefaultAdminSecurityRules
 	}
+	return ""
 }
 
 func (self *SGuest) isGpu() bool {
@@ -2662,6 +2785,13 @@ func (manager *SGuestManager) newCloudVM(ctx context.Context, userCred mcclient.
 		Obj:    &guest,
 		Action: notifyclient.ActionSyncCreate,
 	})
+
+	if guest.GetDriver().GetMaxSecurityGroupCount() == 0 {
+		db.Update(&guest, func() error {
+			guest.SecgrpId = ""
+			return nil
+		})
+	}
 
 	if guest.Status == api.VM_RUNNING {
 		db.OpsLog.LogEvent(&guest, db.ACT_START, guest.GetShortDesc(ctx), userCred)
@@ -3018,13 +3148,28 @@ func (self *SGuest) SyncVMNics(ctx context.Context, userCred mcclient.TokenCrede
 			result.UpdateError(err)
 			continue
 		}
-		db.Update(&commondb[i], func() error {
-			if len(commonext[i].GetIP()) > 0 {
-				commondb[i].IpAddr = commonext[i].GetIP()
+		_, err = db.Update(&commondb[i], func() error {
+			network := commondb[i].GetNetwork()
+			ip := commonext[i].GetIP()
+			if len(ip) > 0 {
+				if !network.Contains(ip) {
+					localNet, err := getCloudNicNetwork(ctx, commonext[i], host, ipList, i)
+					if err != nil {
+						return errors.Wrapf(err, "getCloudNicNetwork")
+					}
+					commondb[i].NetworkId = localNet.Id
+					commondb[i].IpAddr = ip
+				} else {
+					commondb[i].IpAddr = ip
+				}
 			}
 			commondb[i].Driver = commonext[i].GetDriver()
 			return nil
 		})
+		if err != nil {
+			result.UpdateError(errors.Wrapf(err, "db.Update"))
+			continue
+		}
 		result.Update()
 	}
 
@@ -3205,7 +3350,47 @@ func (self *SGuest) SyncVMDisks(ctx context.Context, userCred mcclient.TokenCred
 		result.Add()
 	}
 
+	err = self.fixSysDiskIndex()
+	if err != nil {
+		result.Error(errors.Wrapf(err, "fixSysDiskIndex"))
+	}
+
 	return result
+}
+
+func (self *SGuest) fixSysDiskIndex() error {
+	disks := DiskManager.Query().SubQuery()
+	sysQ := GuestdiskManager.Query().Equals("guest_id", self.Id)
+	sysQ = sysQ.Join(disks, sqlchemy.Equals(disks.Field("id"), sysQ.Field("disk_id"))).Filter(sqlchemy.Equals(disks.Field("disk_type"), api.DISK_TYPE_SYS))
+	sysDisk := &SGuestdisk{}
+	sysDisk.SetModelManager(GuestdiskManager, sysDisk)
+	err := sysQ.First(sysDisk)
+	if err != nil {
+		return err
+	}
+	if sysDisk.Index == 0 {
+		return nil
+	}
+	q := GuestdiskManager.Query().Equals("guest_id", self.Id).Equals("index", 0)
+
+	firstDisk := &SGuestdisk{}
+	firstDisk.SetModelManager(GuestdiskManager, firstDisk)
+	err = q.First(firstDisk)
+	if err != nil {
+		return err
+	}
+	_, err = db.Update(firstDisk, func() error {
+		firstDisk.Index = sysDisk.Index
+		return nil
+	})
+	if err != nil {
+		return err
+	}
+	_, err = db.Update(sysDisk, func() error {
+		sysDisk.Index = 0
+		return nil
+	})
+	return err
 }
 
 func filterGuestByRange(q *sqlchemy.SQuery, rangeObjs []db.IStandaloneModel, hostTypes []string, resourceTypes []string, providers []string, brands []string, cloudEnv string) *sqlchemy.SQuery {
@@ -3444,7 +3629,11 @@ func (self *SGuest) attach2NamedNetworkDesc(ctx context.Context, userCred mcclie
 	driver := self.GetDriver()
 	net, nicConfs, allocDir, reuseAddr, err := driver.GetNamedNetworkConfiguration(self, ctx, userCred, host, netConfig)
 	if err != nil {
-		return nil, errors.Wrapf(err, "GetNamedNetworkConfiguration on host %q", host.GetName())
+		if errors.Cause(err) == sql.ErrNoRows {
+			return nil, errors.Wrapf(httperrors.ErrResourceNotReady, "Network not avaiable on host %q", host.GetName())
+		} else {
+			return nil, errors.Wrapf(err, "GetNamedNetworkConfiguration on host %q", host.GetName())
+		}
 	}
 	if net != nil {
 		if len(nicConfs) == 0 {
@@ -3986,7 +4175,7 @@ func (self *SGuest) GetJsonDescAtHypervisor(ctx context.Context, host *SHost) *a
 		BootOrder:   self.BootOrder,
 		SrcIpCheck:  self.SrcIpCheck.Bool(),
 		SrcMacCheck: self.SrcMacCheck.Bool(),
-		HostId:      self.HostId,
+		HostId:      host.Id,
 	}
 
 	if len(self.BackupHostId) > 0 {
@@ -4526,6 +4715,9 @@ func (manager *SGuestManager) CleanPendingDeleteServers(ctx context.Context, use
 	for i := 0; i < len(guests); i += 1 {
 		opts := api.ServerDeleteInput{
 			OverridePendingDelete: true,
+			DeleteSnapshots:       options.Options.DeleteSnapshotExpiredRelease,
+			DeleteEip:             options.Options.DeleteEipExpiredRelease,
+			DeleteDisks:           options.Options.DeleteDisksExpiredRelease,
 		}
 		guests[i].StartDeleteGuestTask(ctx, userCred, "", opts)
 	}
@@ -4598,7 +4790,6 @@ func (manager *SGuestManager) DeleteExpiredPrepaidServers(ctx context.Context, u
 	if guests == nil {
 		return
 	}
-	deleteSnapshot := options.Options.DeleteSnapshotExpiredRelease
 	for i := 0; i < len(guests); i += 1 {
 		// fake delete expired prepaid servers
 		if len(guests[i].ExternalId) > 0 {
@@ -4609,7 +4800,9 @@ func (manager *SGuestManager) DeleteExpiredPrepaidServers(ctx context.Context, u
 		}
 		guests[i].SetDisableDelete(userCred, false)
 		opts := api.ServerDeleteInput{
-			DeleteSnapshots: deleteSnapshot,
+			DeleteSnapshots: options.Options.DeleteSnapshotExpiredRelease,
+			DeleteEip:       options.Options.DeleteEipExpiredRelease,
+			DeleteDisks:     options.Options.DeleteDisksExpiredRelease,
 		}
 		guests[i].StartDeleteGuestTask(ctx, userCred, "", opts)
 	}
@@ -4638,7 +4831,6 @@ func (manager *SGuestManager) DeleteExpiredPostpaidServers(ctx context.Context, 
 		log.Infof("No expired postpaid guest")
 		return
 	}
-	deleteSnapshot := options.Options.DeleteSnapshotExpiredRelease
 	for i := 0; i < len(guests); i++ {
 		if len(guests[i].ExternalId) > 0 {
 			err := guests[i].doExternalSync(ctx, userCred)
@@ -4647,7 +4839,11 @@ func (manager *SGuestManager) DeleteExpiredPostpaidServers(ctx context.Context, 
 			}
 		}
 		guests[i].SetDisableDelete(userCred, false)
-		opts := api.ServerDeleteInput{DeleteSnapshots: deleteSnapshot}
+		opts := api.ServerDeleteInput{
+			DeleteSnapshots: options.Options.DeleteSnapshotExpiredRelease,
+			DeleteEip:       options.Options.DeleteEipExpiredRelease,
+			DeleteDisks:     options.Options.DeleteDisksExpiredRelease,
+		}
 		guests[i].StartDeleteGuestTask(ctx, userCred, "", opts)
 	}
 }
@@ -4762,8 +4958,16 @@ func (self *SGuest) isInReconcile(userCred mcclient.TokenCredential) bool {
 }
 
 func (self *SGuest) IsEipAssociable() error {
+	if !utils.IsInStringArray(self.Status, []string{api.VM_READY, api.VM_RUNNING}) {
+		return errors.Wrapf(httperrors.ErrInvalidStatus, "cannot associate eip in status %s", self.Status)
+	}
+
+	err := ValidateAssociateEip(self)
+	if err != nil {
+		return errors.Wrap(err, "ValidateAssociateEip")
+	}
+
 	var eip *SElasticip
-	var err error
 	switch self.Hypervisor {
 	case api.HYPERVISOR_AWS:
 		eip, err = self.GetElasticIp()
@@ -4891,6 +5095,16 @@ func getSecgroupsBySecgroupExternalIds(managerId string, externalIds []string) (
 }
 
 func (self *SGuest) SyncVMSecgroups(ctx context.Context, userCred mcclient.TokenCredential, externalIds []string) error {
+	// clear secgroup if vm not support security group
+	if self.GetDriver().GetMaxSecurityGroupCount() == 0 {
+		_, err := db.Update(self, func() error {
+			self.SecgrpId = ""
+			self.AdminSecgrpId = ""
+			return nil
+		})
+		return err
+	}
+
 	secgroups, err := self.getSecgroupsBySecgroupExternalIds(externalIds)
 	if err != nil {
 		return errors.Wrap(err, "getSecgroupsBySecgroupExternalIds")

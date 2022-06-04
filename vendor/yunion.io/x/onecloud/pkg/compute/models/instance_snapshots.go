@@ -77,6 +77,8 @@ type SInstanceSnapshot struct {
 	InstanceType string `width:"64" charset:"utf8" nullable:"true" list:"user" create:"optional"`
 	// 主机快照磁盘容量和
 	SizeMb int `nullable:"false"`
+	// 镜像ID
+	ImageId string `width:"36" charset:"ascii" nullable:"true" list:"user"`
 }
 
 type SInstanceSnapshotManager struct {
@@ -301,6 +303,9 @@ func (manager *SInstanceSnapshotManager) fillInstanceSnapshot(userCred mcclient.
 	instanceSnapshot.ProjectId = guest.ProjectId
 	instanceSnapshot.DomainId = guest.DomainId
 	instanceSnapshot.GuestId = guest.Id
+	instanceSnapshot.InstanceType = guest.InstanceType
+	instanceSnapshot.ImageId = guest.GetTemplateId()
+
 	guestSchedInput := guest.ToSchedDesc()
 
 	host, _ := guest.GetHost()
@@ -322,7 +327,10 @@ func (manager *SInstanceSnapshotManager) fillInstanceSnapshot(userCred mcclient.
 	}
 	instanceSnapshot.ServerConfig = jsonutils.Marshal(guestSchedInput.ServerConfig)
 	if len(guest.KeypairId) > 0 {
-		instanceSnapshot.KeypairId = guest.KeypairId
+		keypair, _ := KeypairManager.FetchById(guest.KeypairId)
+		if keypair != nil {
+			instanceSnapshot.KeypairId = guest.KeypairId
+		}
 	}
 	serverMetadata := jsonutils.NewDict()
 	if loginAccount := guest.GetMetadata("login_account", nil); len(loginAccount) > 0 {
@@ -361,7 +369,6 @@ func (manager *SInstanceSnapshotManager) fillInstanceSnapshot(userCred mcclient.
 	instanceSnapshot.OsType = guest.OsType
 	instanceSnapshot.OsArch = guest.OsArch
 	instanceSnapshot.ServerMetadata = serverMetadata
-	instanceSnapshot.InstanceType = guest.InstanceType
 }
 
 func (manager *SInstanceSnapshotManager) CreateInstanceSnapshot(ctx context.Context, userCred mcclient.TokenCredential, guest *SGuest, name string, autoDelete bool) (*SInstanceSnapshot, error) {
@@ -369,6 +376,10 @@ func (manager *SInstanceSnapshotManager) CreateInstanceSnapshot(ctx context.Cont
 	instanceSnapshot.SetModelManager(manager, instanceSnapshot)
 	instanceSnapshot.Name = name
 	instanceSnapshot.AutoDelete = autoDelete
+	if autoDelete {
+		// hide auto-delete instance snapshots
+		instanceSnapshot.IsSystem = true
+	}
 	manager.fillInstanceSnapshot(userCred, guest, instanceSnapshot)
 	// compute size of instanceSnapshot
 	instanceSnapshot.SizeMb = guest.getDiskSize()
@@ -407,6 +418,10 @@ func (self *SInstanceSnapshot) ToInstanceCreateInput(
 			index := serverConfig.Disks[i].Index
 			if index < len(isjs) {
 				serverConfig.Disks[i].SnapshotId = isjs[index].SnapshotId
+				if i == 0 && len(self.ImageId) > 0 {
+					// system disk, save ImageId
+					serverConfig.Disks[i].ImageId = self.ImageId
+				}
 			}
 		}
 	}
@@ -650,4 +665,41 @@ func (ism *SInstanceSnapshotManager) InitializeData() error {
 		}
 	}
 	return nil
+}
+
+func (isp *SInstanceSnapshot) GetInstanceSnapshotJointsByOrder(guest *SGuest) ([]*SInstanceSnapshotJoint, error) {
+	disks, err := guest.GetGuestDisks()
+	if err != nil {
+		return nil, errors.Wrap(err, "GetGuestDisks")
+	}
+	ss, err := isp.GetSnapshots()
+	if err != nil {
+		return nil, errors.Wrapf(err, "Get %s subsnapshots", isp.GetName())
+	}
+	jIsps := make([]*SInstanceSnapshotJoint, 0)
+	for idx, gd := range disks {
+		d := gd.GetDisk()
+		if d == nil {
+			return nil, errors.Wrapf(err, "Not get guestdisk %d related disk", idx)
+		}
+		if idx >= len(ss) {
+			break
+		}
+		jIsp, err := isp.GetInstanceSnapshotJointAt(idx)
+		if err != nil {
+			return nil, errors.Wrapf(err, "GetInstanceSnapshotJointAt %d", idx)
+		}
+		sd, err := ss[idx].GetDisk()
+		if err != nil {
+			return nil, errors.Wrapf(err, "Get snapshot %d disk", idx)
+		}
+		if ss[idx].GetId() != jIsp.SnapshotId {
+			return nil, errors.Wrapf(err, "InstanceSnapshotJoint %d snapshot_id %q != %q", idx, jIsp.SnapshotId, ss[idx].GetId())
+		}
+		if sd.GetId() != d.GetId() {
+			return nil, errors.Wrapf(err, "Disk Snapshot %d's disk id %q != current disk %q", idx, sd.GetId(), d.GetId())
+		}
+		jIsps = append(jIsps, jIsp)
+	}
+	return jIsps, nil
 }
