@@ -89,12 +89,12 @@ type SElasticip struct {
 	Mode string `width:"32" charset:"ascii" get:"user" list:"user" create:"optional"`
 
 	// IP地址
-	IpAddr string `width:"17" charset:"ascii" list:"user"`
+	IpAddr string `width:"17" charset:"ascii" list:"user" update:"admin"`
 
 	// 绑定资源类型
-	AssociateType string `width:"32" charset:"ascii" list:"user"`
+	AssociateType string `width:"32" charset:"ascii" list:"user" update:"admin"`
 	// 绑定资源Id
-	AssociateId string `width:"256" charset:"ascii" list:"user"`
+	AssociateId string `width:"256" charset:"ascii" list:"user" update:"admin"`
 
 	// 带宽大小
 	Bandwidth int `list:"user" create:"optional" default:"0"`
@@ -222,6 +222,27 @@ func (manager *SElasticipManager) ListItemFilter(
 					sqlchemy.IsNullOrEmpty(q.Field("associate_id")),
 				),
 			)
+		case api.EIP_ASSOCIATE_TYPE_LOADBALANCER:
+			_lb, err := validators.ValidateModel(userCred, LoadbalancerManager, &query.UsableEipForAssociateId)
+			if err != nil {
+				return nil, err
+			}
+			lb := _lb.(*SLoadbalancer)
+			q = q.Equals("cloudregion_id", lb.CloudregionId)
+			if len(lb.ManagerId) > 0 {
+				q = q.Equals("manager_id", lb.ManagerId)
+			} else {
+				zone, _ := lb.GetZone()
+				networks := NetworkManager.Query().SubQuery()
+				wires := WireManager.Query().SubQuery()
+
+				sq := networks.Query(networks.Field("id")).Join(wires, sqlchemy.Equals(wires.Field("id"), networks.Field("wire_id"))).
+					Filter(sqlchemy.Equals(wires.Field("zone_id"), zone.Id)).SubQuery()
+				q = q.Filter(sqlchemy.In(q.Field("network_id"), sq))
+				gns := LoadbalancernetworkManager.Query("network_id").Equals("loadbalancer_id", lb.Id).SubQuery()
+				q = q.Filter(sqlchemy.NotIn(q.Field("network_id"), gns))
+			}
+			q = q.IsNullOrEmpty("associate_type")
 		default:
 			return nil, httperrors.NewInputParameterError("Not support associate type %s, only support %s", associateType, api.EIP_ASSOCIATE_VALID_TYPES)
 		}
@@ -352,13 +373,9 @@ func (self *SElasticip) GetShortDesc(ctx context.Context) *jsonutils.JSONDict {
 }
 
 func (manager *SElasticipManager) SyncEips(ctx context.Context, userCred mcclient.TokenCredential, provider *SCloudprovider, region *SCloudregion, eips []cloudprovider.ICloudEIP, syncOwnerId mcclient.IIdentityProvider) compare.SyncResult {
-	// ownerProjId := projectId
+	lockman.LockRawObject(ctx, manager.KeywordPlural(), region.Id)
+	defer lockman.ReleaseRawObject(ctx, manager.KeywordPlural(), region.Id)
 
-	lockman.LockRawObject(ctx, "elasticip", region.Id)
-	defer lockman.ReleaseRawObject(ctx, "elasticip", region.Id)
-
-	// localEips := make([]SElasticip, 0)
-	// remoteEips := make([]cloudprovider.ICloudEIP, 0)
 	syncResult := compare.SyncResult{}
 
 	dbEips, err := region.GetElasticIps(provider.Id, api.EIP_MODE_STANDALONE_EIP)
@@ -490,8 +507,6 @@ func (self *SElasticip) SyncInstanceWithCloudEip(ctx context.Context, userCred m
 
 func (self *SElasticip) SyncWithCloudEip(ctx context.Context, userCred mcclient.TokenCredential, provider *SCloudprovider, ext cloudprovider.ICloudEIP, syncOwnerId mcclient.IIdentityProvider) error {
 	diff, err := db.UpdateWithLock(ctx, self, func() error {
-
-		// self.Name = ext.GetName()
 		if bandwidth := ext.GetBandwidth(); bandwidth != 0 {
 			self.Bandwidth = bandwidth
 		}
@@ -500,6 +515,7 @@ func (self *SElasticip) SyncWithCloudEip(ctx context.Context, userCred mcclient.
 		self.Status = ext.GetStatus()
 		self.ExternalId = ext.GetGlobalId()
 		self.IsEmulated = ext.IsEmulated()
+		self.AssociateType = ext.GetAssociationType()
 
 		if chargeType := ext.GetInternetChargeType(); len(chargeType) > 0 {
 			self.ChargeType = chargeType
@@ -532,10 +548,10 @@ func (self *SElasticip) SyncWithCloudEip(ctx context.Context, userCred mcclient.
 		})
 	}
 
-	err = self.SyncInstanceWithCloudEip(ctx, userCred, ext)
-	if err != nil {
-		return errors.Wrap(err, "fail to sync associated instance of EIP")
-	}
+	//err = self.SyncInstanceWithCloudEip(ctx, userCred, ext)
+	//if err != nil {
+	//	return errors.Wrap(err, "fail to sync associated instance of EIP")
+	//}
 	syncVirtualResourceMetadata(ctx, userCred, self, ext)
 
 	// eip有绑定资源，并且绑定资源是项目资源,eip项目信息跟随绑定资源
@@ -560,6 +576,7 @@ func (manager *SElasticipManager) newFromCloudEip(ctx context.Context, userCred 
 	eip.ManagerId = provider.Id
 	eip.CloudregionId = region.Id
 	eip.ChargeType = extEip.GetInternetChargeType()
+	eip.AssociateType = extEip.GetAssociationType()
 	if len(eip.ChargeType) == 0 {
 		eip.ChargeType = api.EIP_CHARGE_TYPE_BY_TRAFFIC
 	}
@@ -596,10 +613,10 @@ func (manager *SElasticipManager) newFromCloudEip(ctx context.Context, userCred 
 		return nil, errors.Wrapf(err, "newFromCloudEip")
 	}
 
-	err = eip.SyncInstanceWithCloudEip(ctx, userCred, extEip)
-	if err != nil {
-		return nil, errors.Wrap(err, "fail to sync associated instance of EIP")
-	}
+	//err = eip.SyncInstanceWithCloudEip(ctx, userCred, extEip)
+	//if err != nil {
+	//	return nil, errors.Wrap(err, "fail to sync associated instance of EIP")
+	//}
 
 	syncVirtualResourceMetadata(ctx, userCred, &eip, extEip)
 
@@ -1207,6 +1224,18 @@ func (self *SElasticip) PerformAssociate(ctx context.Context, userCred mcclient.
 		}
 		lb := obj.(*SLoadbalancer)
 
+		if len(self.NetworkId) > 0 {
+			nets, err := lb.GetNetworks()
+			if err != nil {
+				return input, httperrors.NewGeneralError(errors.Wrap(err, "GetNetworks"))
+			}
+			for _, net := range nets {
+				if net.Id == self.NetworkId {
+					return input, httperrors.NewInputParameterError("cannot associate eip with same network")
+				}
+			}
+		}
+
 		lockman.LockObject(ctx, lb)
 		defer lockman.ReleaseObject(ctx, lb)
 
@@ -1445,6 +1474,8 @@ type NewEipForVMOnHostArgs struct {
 	Guest        *SGuest
 	Host         *SHost
 	Natgateway   *SNatGateway
+	Loadbalancer *SLoadbalancer
+
 	PendingUsage quotas.IQuota
 }
 
@@ -1458,6 +1489,7 @@ func (manager *SElasticipManager) NewEipForVMOnHost(ctx context.Context, userCre
 		vm            = args.Guest
 		host          = args.Host
 		nat           = args.Natgateway
+		lb            = args.Loadbalancer
 		pendingUsage  = args.PendingUsage
 
 		region *SCloudregion = nil
@@ -1465,6 +1497,8 @@ func (manager *SElasticipManager) NewEipForVMOnHost(ctx context.Context, userCre
 
 	if host != nil {
 		region, _ = host.GetRegion()
+	} else if lb != nil {
+		region, _ = lb.GetRegion()
 	} else if nat != nil {
 		region, _ = nat.GetRegion()
 	} else if grp != nil {
@@ -1497,6 +1531,12 @@ func (manager *SElasticipManager) NewEipForVMOnHost(ctx context.Context, userCre
 		ownerCred = vm.GetOwnerId()
 	} else if nat != nil {
 		ownerCred = nat.GetOwnerId()
+	} else if lb != nil {
+		ownerCred = lb.GetOwnerId()
+	} else if grp != nil {
+		ownerCred = grp.GetOwnerId()
+	} else {
+		panic("unsupported associate type")
 	}
 	eip.DomainId = ownerCred.GetProjectDomainId()
 	eip.ProjectId = ownerCred.GetProjectId()
@@ -1509,17 +1549,30 @@ func (manager *SElasticipManager) NewEipForVMOnHost(ctx context.Context, userCre
 			return nil, errors.Wrapf(err, "nat.GetVpc")
 		}
 		eip.ManagerId = vpc.ManagerId
+	} else if lb != nil {
+		vpc, err := lb.GetVpc()
+		if err != nil {
+			return nil, errors.Wrapf(err, "nat.GetVpc")
+		}
+		eip.ManagerId = vpc.ManagerId
+	} else if grp != nil {
+	} else {
+		panic("unsupported associate type")
 	}
 	eip.CloudregionId = region.Id
 	if vm != nil {
-		eip.Name = fmt.Sprintf("eip-for-%s", pinyinutils.Text2Pinyin(vm.GetName()))
+		eip.Name = fmt.Sprintf("eip-for-srv-%s", pinyinutils.Text2Pinyin(vm.GetName()))
 	} else if nat != nil {
-		eip.Name = fmt.Sprintf("eip-for-%s", pinyinutils.Text2Pinyin(nat.GetName()))
+		eip.Name = fmt.Sprintf("eip-for-nat-%s", pinyinutils.Text2Pinyin(nat.GetName()))
 	} else if grp != nil {
-		eip.Name = fmt.Sprintf("eip-for-%s", pinyinutils.Text2Pinyin(grp.GetName()))
+		eip.Name = fmt.Sprintf("eip-for-grp-%s", pinyinutils.Text2Pinyin(grp.GetName()))
+	} else if lb != nil {
+		eip.Name = fmt.Sprintf("eip-for-lb-%s", pinyinutils.Text2Pinyin(lb.GetName()))
+	} else {
+		panic("unsupported associate type")
 	}
 
-	if (host != nil && host.ManagerId == "") || grp != nil { // kvm
+	if (host != nil && host.ManagerId == "") || grp != nil || lb != nil { // kvm
 		q := NetworkManager.Query()
 
 		var zoneId string
@@ -1528,6 +1581,9 @@ func (manager *SElasticipManager) NewEipForVMOnHost(ctx context.Context, userCre
 		} else if grp != nil {
 			net, _ := grp.getAttachedNetwork()
 			zone, _ := net.GetZone()
+			zoneId = zone.Id
+		} else if lb != nil {
+			zone, _ := lb.GetZone()
 			zoneId = zone.Id
 		}
 
@@ -1586,6 +1642,10 @@ func (manager *SElasticipManager) NewEipForVMOnHost(ctx context.Context, userCre
 		ownerId = nat.GetOwnerId()
 	} else if grp != nil {
 		ownerId = grp.GetOwnerId()
+	} else if lb != nil {
+		ownerId = lb.GetOwnerId()
+	} else {
+		panic("unsupported associate type")
 	}
 
 	var provider *SCloudprovider = nil
@@ -1593,6 +1653,11 @@ func (manager *SElasticipManager) NewEipForVMOnHost(ctx context.Context, userCre
 		provider = host.GetCloudprovider()
 	} else if nat != nil {
 		provider = nat.GetCloudprovider()
+	} else if lb != nil {
+		provider = lb.GetCloudprovider()
+	} else if grp != nil {
+	} else {
+		panic("unsupported associate type")
 	}
 
 	eipPendingUsage := &SRegionQuota{Eip: 1}
@@ -1738,7 +1803,7 @@ func (manager *SElasticipManager) TotalCount(scope rbacutils.TRbacScope, ownerId
 	q3sq := manager.Query().SubQuery()
 	q3 := q3sq.Query(
 		sqlchemy.COUNT("eip_used_count", q3sq.Field("id")),
-	).Equals("mode", api.EIP_MODE_STANDALONE_EIP).IsNotEmpty("associate_id")
+	).Equals("mode", api.EIP_MODE_STANDALONE_EIP).IsNotEmpty("associate_type")
 	q3 = manager.usageQ(scope, ownerId, q3, rangeObjs, providers, brands, cloudEnv, policyResult)
 
 	err := q1.First(&usage)

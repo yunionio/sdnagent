@@ -16,6 +16,7 @@ package models
 
 import (
 	"context"
+	"database/sql"
 	"fmt"
 	"net"
 	"strings"
@@ -34,6 +35,7 @@ import (
 	"yunion.io/x/onecloud/pkg/cloudcommon/db/quotas"
 	"yunion.io/x/onecloud/pkg/cloudcommon/db/taskman"
 	"yunion.io/x/onecloud/pkg/cloudcommon/notifyclient"
+	"yunion.io/x/onecloud/pkg/cloudcommon/policy"
 	"yunion.io/x/onecloud/pkg/cloudcommon/validators"
 	"yunion.io/x/onecloud/pkg/cloudprovider"
 	"yunion.io/x/onecloud/pkg/httperrors"
@@ -201,6 +203,78 @@ func (man *SLoadbalancerManager) ListItemFilter(
 		q = q.Filter(sqlchemy.OR(c1, c2))
 	}
 
+	// eip filters
+	usableLbForEipFilter := query.UsableLoadbalancerForEip
+	if len(usableLbForEipFilter) > 0 {
+		eipObj, err := ElasticipManager.FetchByIdOrName(userCred, usableLbForEipFilter)
+		if err != nil {
+			if errors.Cause(err) == sql.ErrNoRows {
+				return nil, httperrors.NewResourceNotFoundError("eip %s not found", usableLbForEipFilter)
+			}
+			return nil, httperrors.NewGeneralError(err)
+		}
+		eip := eipObj.(*SElasticip)
+
+		if len(eip.NetworkId) > 0 {
+			// kvm
+			sq := LoadbalancernetworkManager.Query("loadbalancer_id").Equals("network_id", eip.NetworkId).SubQuery()
+			q = q.NotIn("id", sq)
+			if cp := eip.GetCloudprovider(); cp == nil || cp.Provider == api.CLOUD_PROVIDER_ONECLOUD {
+				gnq := LoadbalancernetworkManager.Query().SubQuery()
+				nq := NetworkManager.Query().SubQuery()
+				wq := WireManager.Query().SubQuery()
+				vq := VpcManager.Query().SubQuery()
+				q.Join(gnq, sqlchemy.Equals(gnq.Field("loadbalancer_id"), q.Field("id")))
+				q.Join(nq, sqlchemy.Equals(nq.Field("id"), gnq.Field("network_id")))
+				q.Join(wq, sqlchemy.Equals(wq.Field("id"), nq.Field("wire_id")))
+				q.Join(vq, sqlchemy.Equals(vq.Field("id"), wq.Field("vpc_id")))
+				q.Filter(sqlchemy.NotEquals(vq.Field("id"), api.DEFAULT_VPC_ID))
+				// vpc provider thing will be handled ok below
+			}
+		}
+
+		if eip.ManagerId != "" {
+			q = q.Equals("manager_id", eip.ManagerId)
+		} else {
+			q = q.IsNullOrEmpty("manager_id")
+		}
+		region, err := eip.GetRegion()
+		if err != nil {
+			return nil, httperrors.NewGeneralError(errors.Wrapf(err, "eip.GetRegion"))
+		}
+		q = q.Equals("cloudregion_id", region.Id)
+	}
+
+	withEip := (query.WithEip != nil && *query.WithEip)
+	withoutEip := (query.WithoutEip != nil && *query.WithoutEip) || (query.EipAssociable != nil && *query.EipAssociable)
+	if withEip || withoutEip {
+		eips := ElasticipManager.Query().SubQuery()
+		sq := eips.Query(eips.Field("associate_id")).Equals("associate_type", api.EIP_ASSOCIATE_TYPE_LOADBALANCER)
+		sq = sq.IsNotNull("associate_id").IsNotEmpty("associate_id")
+
+		if withEip {
+			q = q.In("id", sq)
+		} else if withoutEip {
+			q = q.NotIn("id", sq)
+		}
+	}
+
+	if query.EipAssociable != nil {
+		sq1 := NetworkManager.Query("id")
+		sq2 := WireManager.Query().SubQuery()
+		sq3 := VpcManager.Query().SubQuery()
+		sq1 = sq1.Join(sq2, sqlchemy.Equals(sq1.Field("wire_id"), sq2.Field("id")))
+		sq1 = sq1.Join(sq3, sqlchemy.Equals(sq2.Field("vpc_id"), sq3.Field("id")))
+		cond1 := []string{api.VPC_EXTERNAL_ACCESS_MODE_EIP, api.VPC_EXTERNAL_ACCESS_MODE_EIP_DISTGW}
+		if *query.EipAssociable {
+			sq1 = sq1.Filter(sqlchemy.In(sq3.Field("external_access_mode"), cond1))
+		} else {
+			sq1 = sq1.Filter(sqlchemy.NotIn(sq3.Field("external_access_mode"), cond1))
+		}
+		sq := LoadbalancernetworkManager.Query("loadbalancer_id").In("network_id", sq1)
+		q = q.In("id", sq)
+	}
+
 	if len(query.AddressType) > 0 {
 		q = q.In("address_type", query.AddressType)
 	}
@@ -357,6 +431,9 @@ func (man *SLoadbalancerManager) ValidateCreateData(
 
 	quotaKeys := fetchRegionalQuotaKeys(rbacutils.ScopeProject, ownerId, region, cloudprovider)
 	pendingUsage := SRegionQuota{Loadbalancer: 1}
+	if input.EipBw > 0 && len(input.Eip) == 0 {
+		pendingUsage.Eip = 1
+	}
 	pendingUsage.SetKeys(quotaKeys)
 	if err := quotas.CheckSetPendingQuota(ctx, userCred, &pendingUsage); err != nil {
 		return nil, httperrors.NewOutOfQuotaError("%s", err)
@@ -563,11 +640,13 @@ func (lb *SLoadbalancer) StartLoadBalancerDeleteTask(ctx context.Context, userCr
 }
 
 func (lb *SLoadbalancer) StartLoadBalancerCreateTask(ctx context.Context, userCred mcclient.TokenCredential, data *jsonutils.JSONDict, parentTaskId string) error {
-	taskData := jsonutils.NewDict()
-	eipId, _ := data.GetString("eip_id")
-	if len(eipId) > 0 {
-		taskData.Set("eip_id", jsonutils.NewString(eipId)) // for huawei internet elb
-	}
+	taskData := data.CopyIncludes(
+		"eip_id", // for huawei internet elb
+		"eip_bw",
+		"eip_bgp_type",
+		"eip_charge_type",
+		"eip_auto_dellocate",
+	)
 	task, err := taskman.TaskManager.NewTask(ctx, "LoadbalancerCreateTask", lb, userCred, taskData, parentTaskId, "", nil)
 	if err != nil {
 		return err
@@ -699,6 +778,7 @@ func (lb *SLoadbalancer) getMoreDetails(out api.LoadbalancerDetails) (api.Loadba
 	if eip != nil {
 		out.Eip = eip.IpAddr
 		out.EipMode = eip.Mode
+		out.EipId = eip.Id
 	}
 
 	if lb.BackendGroupId != "" {
@@ -740,7 +820,12 @@ func (lb *SLoadbalancer) validatePurgeCondition(ctx context.Context) error {
 
 func (lb *SLoadbalancer) CustomizeDelete(ctx context.Context, userCred mcclient.TokenCredential, query jsonutils.JSONObject, data jsonutils.JSONObject) error {
 	lb.SetStatus(userCred, api.LB_STATUS_DELETING, "")
-	return lb.StartLoadBalancerDeleteTask(ctx, userCred, jsonutils.NewDict(), "")
+	params := jsonutils.NewDict()
+	deleteEip := jsonutils.QueryBoolean(data, "delete_eip", false)
+	if deleteEip {
+		params.Set("delete_eip", jsonutils.JSONTrue)
+	}
+	return lb.StartLoadBalancerDeleteTask(ctx, userCred, params, "")
 }
 
 func (lb *SLoadbalancer) GetLoadbalancerListeners() ([]SLoadbalancerListener, error) {
@@ -1066,7 +1151,7 @@ func (lb *SLoadbalancer) syncLoadbalancerNetwork(ctx context.Context, userCred m
 	}
 }
 
-func (self *SLoadbalancer) DeleteEip(ctx context.Context, userCred mcclient.TokenCredential) error {
+func (self *SLoadbalancer) DeleteEip(ctx context.Context, userCred mcclient.TokenCredential, autoDelete bool) error {
 	eip, err := self.GetEip()
 	if err != nil {
 		log.Errorf("Delete eip fail for get Eip %s", err)
@@ -1079,13 +1164,20 @@ func (self *SLoadbalancer) DeleteEip(ctx context.Context, userCred mcclient.Toke
 		err = eip.RealDelete(ctx, userCred)
 		if err != nil {
 			log.Errorf("Delete eip on delete server fail %s", err)
-			return err
+			return errors.Wrap(err, "RealDelete")
 		}
 	} else {
 		err = eip.Dissociate(ctx, userCred)
 		if err != nil {
 			log.Errorf("Dissociate eip on delete server fail %s", err)
-			return err
+			return errors.Wrap(err, "Dissociate")
+		}
+		if autoDelete {
+			err = eip.RealDelete(ctx, userCred)
+			if err != nil {
+				log.Errorf("Delete eip on delete server fail %s", err)
+				return errors.Wrap(err, "RealDelete")
+			}
 		}
 	}
 	return nil
@@ -1448,4 +1540,210 @@ func (self *SLoadbalancer) OnMetadataUpdated(ctx context.Context, userCred mccli
 	if err != nil {
 		log.Errorf("StartRemoteUpdateTask fail: %s", err)
 	}
+}
+
+func (lb *SLoadbalancer) IsEipAssociable() error {
+	if !utils.IsInStringArray(lb.Status, []string{api.LB_STATUS_ENABLED, api.LB_STATUS_DISABLED}) {
+		return errors.Wrapf(httperrors.ErrInvalidStatus, "cannot associate eip in status %s", lb.Status)
+	}
+
+	err := ValidateAssociateEip(lb)
+	if err != nil {
+		return errors.Wrap(err, "ValidateAssociateEip")
+	}
+
+	eip, err := lb.GetEip()
+	if err != nil {
+		return errors.Wrap(err, "GetElasticIp")
+	}
+	if eip != nil {
+		return httperrors.NewInvalidStatusError("already associate with eip")
+	}
+	return nil
+}
+
+// 绑定弹性公网IP, 仅支持kvm
+func (lb *SLoadbalancer) PerformAssociateEip(ctx context.Context, userCred mcclient.TokenCredential, query jsonutils.JSONObject, input api.LoadbalancerAssociateEipInput) (jsonutils.JSONObject, error) {
+	if lb.IsManaged() {
+		return nil, httperrors.NewUnsupportOperationError("not support managed lb")
+	}
+	err := lb.IsEipAssociable()
+	if err != nil {
+		return nil, httperrors.NewGeneralError(err)
+	}
+
+	eipStr := input.EipId
+	if len(eipStr) == 0 {
+		return nil, httperrors.NewMissingParameterError("eip_id")
+	}
+	eipObj, err := ElasticipManager.FetchByIdOrName(userCred, eipStr)
+	if err != nil {
+		if err == sql.ErrNoRows {
+			return nil, httperrors.NewResourceNotFoundError("eip %s not found", eipStr)
+		} else {
+			return nil, httperrors.NewGeneralError(err)
+		}
+	}
+
+	eip := eipObj.(*SElasticip)
+	eipRegion, err := eip.GetRegion()
+	if err != nil {
+		return nil, httperrors.NewGeneralError(errors.Wrapf(err, "eip.GetRegion"))
+	}
+	instRegion, _ := lb.GetRegion()
+
+	if eip.Mode == api.EIP_MODE_INSTANCE_PUBLICIP {
+		return nil, httperrors.NewUnsupportOperationError("fixed eip cannot be associated")
+	}
+
+	if eip.IsAssociated() {
+		return nil, httperrors.NewConflictError("eip has been associated")
+	}
+
+	if eipRegion.Id != instRegion.Id {
+		return nil, httperrors.NewInputParameterError("cannot associate eip and instance in different region")
+	}
+
+	if len(eip.NetworkId) > 0 {
+		nets, err := lb.GetNetworks()
+		if err != nil {
+			return nil, httperrors.NewGeneralError(errors.Wrap(err, "GetNetworks"))
+		}
+		for _, net := range nets {
+			if net.Id == eip.NetworkId {
+				return nil, httperrors.NewInputParameterError("cannot associate eip with same network")
+			}
+		}
+	}
+
+	eipZone, _ := eip.GetZone()
+	if eipZone != nil {
+		insZone, _ := lb.GetZone()
+		if eipZone.Id != insZone.Id {
+			return nil, httperrors.NewInputParameterError("cannot associate eip and instance in different zone")
+		}
+	}
+
+	if lb.ManagerId != eip.ManagerId {
+		return nil, httperrors.NewInputParameterError("cannot associate eip and instance in different provider")
+	}
+
+	err = eip.AssociateLoadbalancer(ctx, userCred, lb)
+	if err != nil {
+		return nil, errors.Wrap(err, "AssociateLoadbalancer")
+	}
+
+	_, err = db.Update(lb, func() error {
+		lb.Address = eip.IpAddr
+		lb.AddressType = api.LB_ADDR_TYPE_INTERNET
+		return nil
+	})
+	if err != nil {
+		return nil, errors.Wrap(err, "set loadbalancer address")
+	}
+
+	return nil, nil
+}
+
+// 解绑弹性公网IP，仅支持kvm
+func (lb *SLoadbalancer) PerformDissociateEip(ctx context.Context, userCred mcclient.TokenCredential, query jsonutils.JSONObject, input api.LoadbalancerDissociateEipInput) (jsonutils.JSONObject, error) {
+	if lb.IsManaged() {
+		return nil, httperrors.NewUnsupportOperationError("not support managed lb")
+	}
+
+	eip, err := lb.GetEip()
+	if err != nil {
+		log.Errorf("Fail to get Eip %s", err)
+		return nil, httperrors.NewGeneralError(err)
+	}
+	if eip == nil {
+		return nil, httperrors.NewInvalidStatusError("No eip to dissociate")
+	}
+
+	err = db.IsObjectRbacAllowed(ctx, eip, userCred, policy.PolicyActionGet)
+	if err != nil {
+		return nil, errors.Wrap(err, "eip is not accessible")
+	}
+
+	lbnet, err := LoadbalancernetworkManager.FetchFirstByLbId(ctx, lb.Id)
+	if err != nil {
+		return nil, errors.Wrapf(err, "LoadbalancernetworkManager.FetchFirstByLbId(%s)", lb.Id)
+	}
+	if _, err := db.Update(lb, func() error {
+		lb.Address = lbnet.IpAddr
+		lb.AddressType = api.LB_ADDR_TYPE_INTRANET
+		return nil
+	}); err != nil {
+		return nil, errors.Wrapf(err, "db.Update")
+	}
+
+	autoDelete := (input.AudoDelete != nil && *input.AudoDelete)
+	err = lb.DeleteEip(ctx, userCred, autoDelete)
+	if err != nil {
+		return nil, errors.Wrap(err, "DeleteEip")
+	}
+
+	return nil, nil
+}
+
+func (lb *SLoadbalancer) PerformCreateEip(ctx context.Context, userCred mcclient.TokenCredential, query jsonutils.JSONObject, input api.LoadbalancerCreateEipInput) (jsonutils.JSONObject, error) {
+	var (
+		region, _    = lb.GetRegion()
+		regionDriver = region.GetDriver()
+
+		bw            = input.Bandwidth
+		chargeType    = input.ChargeType
+		bgpType       = input.BgpType
+		autoDellocate = (input.AutoDellocate != nil && *input.AutoDellocate)
+	)
+
+	err := lb.IsEipAssociable()
+	if err != nil {
+		return nil, httperrors.NewGeneralError(err)
+	}
+
+	if chargeType == "" {
+		chargeType = regionDriver.GetEipDefaultChargeType()
+	}
+
+	if chargeType == api.EIP_CHARGE_TYPE_BY_BANDWIDTH {
+		if bw == 0 {
+			return nil, httperrors.NewMissingParameterError("bandwidth")
+		}
+	}
+
+	eipPendingUsage := &SRegionQuota{Eip: 1}
+	keys := lb.GetQuotaKeys()
+	eipPendingUsage.SetKeys(keys)
+	err = quotas.CheckSetPendingQuota(ctx, userCred, eipPendingUsage)
+	if err != nil {
+		return nil, httperrors.NewOutOfQuotaError("Out of eip quota: %s", err)
+	}
+
+	eip, err := ElasticipManager.NewEipForVMOnHost(ctx, userCred, &NewEipForVMOnHostArgs{
+		Bandwidth:     int(bw),
+		BgpType:       bgpType,
+		ChargeType:    chargeType,
+		AutoDellocate: autoDellocate,
+
+		Loadbalancer: lb,
+		PendingUsage: eipPendingUsage,
+	})
+	if err != nil {
+		quotas.CancelPendingUsage(ctx, userCred, eipPendingUsage, eipPendingUsage, false)
+		return nil, httperrors.NewGeneralError(err)
+	}
+
+	opts := api.ElasticipAssociateInput{
+		InstanceId:         lb.Id,
+		InstanceExternalId: lb.ExternalId,
+		InstanceType:       api.EIP_ASSOCIATE_TYPE_LOADBALANCER,
+	}
+
+	err = eip.AllocateAndAssociateInstance(ctx, userCred, lb, opts, "")
+	if err != nil {
+		return nil, errors.Wrap(err, "AllocateAndAssociateInstance")
+	}
+
+	return nil, nil
 }

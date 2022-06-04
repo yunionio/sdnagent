@@ -12,16 +12,15 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-package compute
+package clickhouse
 
-const (
-	MIRROR_JOB        = "__mirror_job_status"
-	MIRROR_JOB_READY  = "ready"
-	MIRROR_JOB_FAILED = "failed"
+import (
+	"fmt"
 
-	DISK_CLONE_TASK_ID = "__disk_clone_task_id"
-
-	SSH_PORT = "__ssh_port"
+	"yunion.io/x/sqlchemy"
 )
 
-const BASE_INSTANCE_SNAPSHOT_ID = "__base_instance_snapshot_id"
+// GROUP_CONCAT1 represents the SQL function GROUP_CONCAT
+func (click *SClickhouseBackend) GROUP_CONCAT1(name string, sep string, field sqlchemy.IQueryField) sqlchemy.IQueryField {
+	return sqlchemy.NewFunctionField(name, fmt.Sprintf("arrayStringConcat(groupUniqArray(%%s), '%s')", sep), field)
+}
