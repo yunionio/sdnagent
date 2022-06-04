@@ -217,7 +217,13 @@ func fetchItem(manager IModelManager, ctx context.Context, userCred mcclient.Tok
 	if err != nil {
 		item, err = fetchItemByName(manager, ctx, userCred, idStr, query)
 	}
-	return item, err
+	if err != nil {
+		return nil, err
+	}
+	if err := CheckRecordChecksumConsistent(item); err != nil {
+		return nil, err
+	}
+	return item, nil
 }
 
 func FetchUserInfo(ctx context.Context, data jsonutils.JSONObject) (mcclient.IIdentityProvider, error) {
@@ -309,7 +315,14 @@ type IScopedResourceManager interface {
 	FetchOwnerId(ctx context.Context, data jsonutils.JSONObject) (mcclient.IIdentityProvider, error)
 }
 
-func FetchCheckQueryOwnerScope(ctx context.Context, userCred mcclient.TokenCredential, data jsonutils.JSONObject, manager IScopedResourceManager, action string, doCheckRbac bool) (mcclient.IIdentityProvider, rbacutils.TRbacScope, error, rbacutils.SPolicyResult) {
+func FetchCheckQueryOwnerScope(
+	ctx context.Context,
+	userCred mcclient.TokenCredential,
+	data jsonutils.JSONObject,
+	manager IScopedResourceManager,
+	action string,
+	doCheckRbac bool,
+) (mcclient.IIdentityProvider, rbacutils.TRbacScope, error, rbacutils.SPolicyResult) {
 	var scope rbacutils.TRbacScope
 
 	var allowScope rbacutils.TRbacScope
@@ -374,8 +387,9 @@ func FetchCheckQueryOwnerScope(ctx context.Context, userCred mcclient.TokenCrede
 		requireScope = queryScope
 	}
 	if doCheckRbac && (requireScope.HigherThan(allowScope) || policyTagFilters.Result.IsDeny()) {
-		return nil, scope, httperrors.NewForbiddenError("not enough privilege to dp %s (require:%s,allow:%s,query:%s)",
-			action, requireScope, allowScope, queryScope), policyTagFilters
+		return nil, scope, httperrors.NewForbiddenError("not enough privilege to do %s:%s:%s (require:%s,allow:%s,query:%s)",
+			consts.GetServiceType(), manager.KeywordPlural(), action,
+			requireScope, allowScope, queryScope), policyTagFilters
 	}
 	return ownerId, queryScope, nil, policyTagFilters
 }

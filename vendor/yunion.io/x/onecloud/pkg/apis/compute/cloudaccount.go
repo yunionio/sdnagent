@@ -15,7 +15,10 @@
 package compute
 
 import (
+	"reflect"
+
 	"yunion.io/x/jsonutils"
+	"yunion.io/x/pkg/gotypes"
 	"yunion.io/x/pkg/utils"
 
 	"yunion.io/x/onecloud/pkg/apis"
@@ -173,13 +176,6 @@ type CloudaccountCreateInput struct {
 
 	apis.ProjectizedResourceInput
 
-	// 启用自动同步
-	// default: false
-	EnableAutoSync bool `json:"enable_auto_sync"`
-
-	// 自动同步间隔时间
-	SyncIntervalSeconds int `json:"sync_interval_seconds"`
-
 	// 自动根据云上项目或订阅创建本地项目, OpenStack此参数为true
 	// default: false
 	AutoCreateProject *bool `json:"auto_create_project"`
@@ -204,6 +200,8 @@ type CloudaccountCreateInput struct {
 
 	// swagger:ignore
 	SubAccounts *cloudprovider.SubAccounts
+
+	ReadOnly bool `json:"read_only"`
 }
 
 type CloudaccountShareModeInput struct {
@@ -322,9 +320,6 @@ type CloudaccountDetail struct {
 type CloudaccountUpdateInput struct {
 	apis.EnabledStatusInfrasResourceBaseUpdateInput
 
-	// 同步周期，单位为秒
-	SyncIntervalSeconds *int64 `json:"sync_interval_seconds"`
-
 	// 待更新的options key/value
 	Options *jsonutils.JSONDict `json:"options"`
 	// 带删除的options key
@@ -333,6 +328,11 @@ type CloudaccountUpdateInput struct {
 	SAMLAuth *bool `json:"saml_auth"`
 
 	proxyapi.ProxySettingResourceInput
+
+	// 临时清除缺失的权限提示，云账号权限缺失依然会自动刷新
+	CleanLakeOfPermissions bool `json:"clean_lake_of_permissions"`
+
+	ReadOnly bool `json:"read_only"`
 }
 
 type CloudaccountPerformPublicInput struct {
@@ -478,12 +478,6 @@ type CloudaccountSyncSkusInput struct {
 	CloudproviderResourceInput
 }
 
-type CloudaccountEnableAutoSyncInput struct {
-	// 云账号状态必须是connected
-	// 最小值为region服务的minimal_sync_interval_seconds
-	SyncIntervalSeconds int `json:"sync_interval_seconds"`
-}
-
 type CloudaccountProjectMappingInput struct {
 	// 同步策略Id, 若不传此参数则解绑
 	// 绑定同步策略要求当前云账号此刻未绑定其他同步策略
@@ -502,4 +496,24 @@ type SyncRangeInput struct {
 	// 按资源类型同步，可输入多个
 	// enmu: compute, network, loadbalancer, objectstore, rds, cache, nat, nas, waf, mongodb, es, kafka, app, container
 	Resources []string `json:"resources" choices:"compute|network|loadbalancer|objectstore|rds|cache|nat|nas|waf|mongodb|es|kafka|app|container"`
+}
+
+type SAccountPermission struct {
+	Permissions []string
+}
+
+type SAccountPermissions map[string]SAccountPermission
+
+func (s SAccountPermissions) String() string {
+	return jsonutils.Marshal(s).String()
+}
+
+func (s SAccountPermissions) IsZero() bool {
+	return len(s) == 0
+}
+
+func init() {
+	gotypes.RegisterSerializable(reflect.TypeOf(&SAccountPermissions{}), func() gotypes.ISerializable {
+		return &SAccountPermissions{}
+	})
 }

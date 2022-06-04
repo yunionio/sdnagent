@@ -24,6 +24,8 @@ import (
 
 type GuestImageDetails struct {
 	apis.SharableVirtualResourceDetails
+	apis.EncryptedResourceDetails
+
 	SGuestImage
 
 	//Status     string               `json:"status"`
@@ -46,4 +48,41 @@ type SubImageInfo struct {
 	Size       int64     `json:"size"`
 	Status     string    `json:"status"`
 	CreatedAt  time.Time `json:"created_at"`
+
+	EncryptKeyId  string `json:"encrypt_key_id"`
+	DisableDelete bool   `json:"disable_delete"`
+}
+
+type GuestImageCreateInputBase struct {
+	apis.SharableVirtualResourceCreateInput
+	apis.EncryptedResourceCreateInput
+
+	// 备注
+	Notes string `json:"notes"`
+	// 镜像格式
+	DiskFormat string `json:"disk_format"`
+	// 是否有删除保护
+	Protected *bool `json:"protected"`
+}
+
+type GuestImageCreateInputSubimage struct {
+	// 磁盘格式
+	DiskFormat string `json:"disk_format"`
+	// 磁盘大小
+	VirtualSize int `json:"virtual_size"`
+}
+
+type GuestImageCreateInput struct {
+	GuestImageCreateInputBase
+
+	// 镜像列表
+	Images []GuestImageCreateInputSubimage `json:"images"`
+
+	// 镜像大小, 单位Byte
+	Size *int64 `json:"size"`
+	// CPU架构 x86_64 or aarch64
+	OsArch string `json:"os_arch"`
+
+	// 镜像属性
+	Properties map[string]string `json:"properties"`
 }

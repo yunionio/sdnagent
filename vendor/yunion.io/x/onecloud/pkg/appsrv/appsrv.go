@@ -40,6 +40,7 @@ import (
 	"yunion.io/x/onecloud/pkg/httperrors"
 	"yunion.io/x/onecloud/pkg/i18n"
 	"yunion.io/x/onecloud/pkg/proxy"
+	"yunion.io/x/onecloud/pkg/util/ctx"
 	"yunion.io/x/onecloud/pkg/util/httputils"
 )
 
@@ -82,7 +83,7 @@ var quitHandlerRegisted bool
 
 func NewApplication(name string, connMax int, db bool) *Application {
 	app := Application{name: name,
-		context:           context.Background(),
+		context:           ctx.CtxWithTime(),
 		connMax:           connMax,
 		session:           NewWorkerManager("HttpRequestWorkerManager", connMax, DEFAULT_BACKLOG, db),
 		readSession:       NewWorkerManager("HttpGetRequestWorkerManager", connMax, DEFAULT_BACKLOG, db),
@@ -313,6 +314,7 @@ func (app *Application) defaultHandle(w http.ResponseWriter, r *http.Request, ri
 	params := make(map[string]string)
 	w.Header().Set("Server", "Yunion AppServer/Go/2018.4")
 	w.Header().Set("X-Frame-Options", "SAMEORIGIN")
+	w.Header().Set("X-XSS-Protection", "1; mode=block")
 	isCors := app.handleCORS(w, r)
 	handler := app.getRoot(r.Method).Match(segs, params)
 	if handler != nil {

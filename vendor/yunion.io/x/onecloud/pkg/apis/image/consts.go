@@ -27,13 +27,21 @@ const (
 	IMAGE_STATUS_QUEUED     = "queued"
 	IMAGE_STATUS_SAVING     = "saving"
 	IMAGE_STATUS_SAVE_FAIL  = "save_fail"
+	IMAGE_STATUS_SAVED      = "saved"
 	IMAGE_STATUS_ACTIVE     = "active"
 	IMAGE_STATUS_CONVERTING = "converting"
+	IMAGE_STATUS_PROBING    = "probing"
+
+	IMAGE_ENCRYPT_STATUS_UNENCRYPTED = ""
+	IMAGE_ENCRYPT_STATUS_ENCRYPTED   = "encrypted"
+	IMAGE_ENCRYPT_STATUS_ENCRYPTING  = "encrypting"
 
 	IMAGE_STATUS_DEACTIVATED    = "deactivated"
 	IMAGE_STATUS_KILLED         = "killed"
 	IMAGE_STATUS_DELETED        = "deleted"
 	IMAGE_STATUS_PENDING_DELETE = "pending_delete"
+
+	IMAGE_STATUS_SYNC_CLASS_METADATA_FAILEd = "sync_class_metadata_failed"
 
 	ImageTypeTemplate = TImageType("image")
 	ImageTypeISO      = TImageType("iso")
@@ -56,6 +64,7 @@ const (
 	IMAGE_PARTITION_TYPE      = "partition_type"
 	IMAGE_INSTALLED_CLOUDINIT = "installed_cloud_init"
 	IMAGE_DISABLE_USB_KBD     = "disable_usb_kbd"
+	IMAGE_VDI_PROTOCOL        = "vdi_protocol"
 
 	IMAGE_STATUS_UPDATING = "updating"
 )

@@ -19,6 +19,7 @@ import (
 	"database/sql"
 	"fmt"
 	"math/rand"
+	"strings"
 	"time"
 
 	"yunion.io/x/jsonutils"
@@ -37,6 +38,7 @@ import (
 	"yunion.io/x/onecloud/pkg/mcclient"
 	"yunion.io/x/onecloud/pkg/mcclient/auth"
 	"yunion.io/x/onecloud/pkg/mcclient/modules/image"
+	"yunion.io/x/onecloud/pkg/util/httputils"
 	"yunion.io/x/onecloud/pkg/util/rbacutils"
 	"yunion.io/x/onecloud/pkg/util/stringutils2"
 )
@@ -204,6 +206,21 @@ func (self *SCachedimage) GetImage() (*cloudprovider.SImage, error) {
 	}
 }
 
+func (self *SCachedimage) syncClassMetadata(ctx context.Context, userCred mcclient.TokenCredential) error {
+	session := auth.GetSessionWithInternal(ctx, userCred, "", "")
+	ret, err := image.Images.GetSpecific(session, self.Id, "class-metadata", nil)
+	if err != nil {
+		return errors.Wrap(err, "unable to get class_metadata")
+	}
+	classMetadata := make(map[string]string, 0)
+	err = ret.Unmarshal(&classMetadata)
+	if err != nil {
+		return err
+	}
+
+	return self.SetClassMetadataAll(ctx, classMetadata, userCred)
+}
+
 func (manager *SCachedimageManager) cacheGlanceImageInfo(ctx context.Context, userCred mcclient.TokenCredential, info jsonutils.JSONObject) (*SCachedimage, error) {
 	lockman.LockRawObject(ctx, manager.Keyword(), "name")
 	defer lockman.ReleaseRawObject(ctx, manager.Keyword(), "name")
@@ -230,11 +247,6 @@ func (manager *SCachedimageManager) cacheGlanceImageInfo(ctx context.Context, us
 
 	imageCache := SCachedimage{}
 	imageCache.SetModelManager(manager, &imageCache)
-
-	img.Name, err = db.GenerateName(ctx, manager, nil, img.Name)
-	if err != nil {
-		return nil, errors.Wrapf(err, "db.GenerateName(%s)", img.Name)
-	}
 
 	err = manager.RawQuery().Equals("id", img.Id).First(&imageCache)
 	if err != nil {
@@ -297,6 +309,31 @@ func (image *SCachedimage) GetStorages() ([]SStorage, error) {
 	return storages, nil
 }
 
+func (manager *SCachedimageManager) GetCachedimageById(ctx context.Context, userCred mcclient.TokenCredential, imageId string, refresh bool) (*SCachedimage, error) {
+	img, err := manager.FetchById(imageId)
+	if err == nil {
+		cachedImage := img.(*SCachedimage)
+		oSTypeOk := options.Options.NoCheckOsTypeForCachedImage || len(cachedImage.GetOSType()) > 0
+		if (!refresh && cachedImage.GetStatus() == cloudprovider.IMAGE_STATUS_ACTIVE && oSTypeOk && !cachedImage.isRefreshSessionExpire()) || options.Options.ProhibitRefreshingCloudImage || len(cachedImage.ExternalId) > 0 {
+			return cachedImage, nil
+		}
+	}
+	if err != nil && errors.Cause(err) != sql.ErrNoRows {
+		return nil, err
+	}
+	s := auth.GetAdminSession(ctx, options.Options.Region, "")
+	obj, err := image.Images.Get(s, imageId, nil)
+	if err != nil {
+		log.Errorf("GetImageById %s error %s", imageId, err)
+		return nil, errors.Wrap(err, "modules.Images.Get")
+	}
+	cachedImage, err := manager.cacheGlanceImageInfo(ctx, userCred, obj)
+	if err != nil {
+		return nil, errors.Wrap(err, "manager.cacheGlanceImageInfo")
+	}
+	return cachedImage, nil
+}
+
 func (manager *SCachedimageManager) GetImageById(ctx context.Context, userCred mcclient.TokenCredential, imageId string, refresh bool) (*cloudprovider.SImage, error) {
 	imgObj, _ := manager.FetchById(imageId)
 	if imgObj != nil {
@@ -313,7 +350,6 @@ func (manager *SCachedimageManager) GetImageById(ctx context.Context, userCred m
 	s := auth.GetAdminSession(ctx, options.Options.Region, "")
 	obj, err := image.Images.Get(s, imageId, nil)
 	if err != nil {
-		log.Errorf("GetImageById %s error %s", imageId, err)
 		return nil, errors.Wrap(err, "modules.Images.Get")
 	}
 	cachedImage, err := manager.cacheGlanceImageInfo(ctx, userCred, obj)
@@ -406,6 +442,22 @@ func (self *SCachedimage) PerformUncacheImage(ctx context.Context, userCred mccl
 	}
 	storagecache := _storagecache.(*SStoragecache)
 	return storagecache.PerformUncacheImage(ctx, userCred, query, jsonutils.Marshal(map[string]interface{}{"image": self.Id, "is_force": input.IsForce}))
+}
+
+func (self *SCachedimageManager) PerformCacheImage(ctx context.Context, userCred mcclient.TokenCredential, query jsonutils.JSONObject, input api.CachedImageManagerCacheImageInput) (jsonutils.JSONObject, error) {
+	if len(input.ImageId) == 0 {
+		return nil, httperrors.NewMissingParameterError("image_id")
+	}
+	s := auth.GetAdminSession(ctx, options.Options.Region, "")
+	obj, err := image.Images.Get(s, input.ImageId, nil)
+	if err != nil {
+		return nil, errors.Wrap(err, "modules.Images.Get")
+	}
+	_, err = self.cacheGlanceImageInfo(ctx, userCred, obj)
+	if err != nil {
+		return nil, errors.Wrap(err, "manager.cacheGlanceImageInfo")
+	}
+	return nil, nil
 }
 
 func (self *SCachedimage) addRefCount() {
@@ -579,7 +631,7 @@ func (image *SCachedimage) requestRefreshExternalImage(ctx context.Context, user
 	if cache == nil {
 		return nil, fmt.Errorf("no cached image found")
 	}
-	iCache, err := cache.GetIStorageCache()
+	iCache, err := cache.GetIStorageCache(ctx)
 	if err != nil {
 		log.Errorf("GetIStorageCache fail %s", err)
 		return nil, err
@@ -809,6 +861,40 @@ func (manager *SCachedimageManager) ListItemExportKeys(ctx context.Context, q *s
 	return q, nil
 }
 
+// 清理已经删除的镜像缓存
+func (manager *SCachedimageManager) AutoCleanImageCaches(ctx context.Context, userCred mcclient.TokenCredential, isStart bool) {
+	lastSync := time.Now().Add(time.Duration(-1*api.CACHED_IMAGE_REFERENCE_SESSION_EXPIRE_SECONDS) * time.Second)
+	q := manager.Query()
+	q = q.LT("last_sync", lastSync).Equals("status", api.CACHED_IMAGE_STATUS_ACTIVE).IsNullOrEmpty("external_id").Limit(50)
+	caches := []SCachedimage{}
+	err := db.FetchModelObjects(manager, q, &caches)
+	if err != nil {
+		return
+	}
+	s := auth.GetAdminSession(ctx, options.Options.Region, "")
+	for i := range caches {
+		_, err := image.Images.Get(s, caches[i].Id, nil)
+		if err != nil {
+			if e, ok := err.(*httputils.JSONClientError); ok && e.Code == 404 {
+				e := caches[i].ValidateDeleteCondition(ctx, nil)
+				if e == nil {
+					caches[i].Delete(ctx, userCred)
+					continue
+				}
+				db.Update(&caches[i], func() error {
+					caches[i].Name = fmt.Sprintf("%s-deleted@%s", caches[i].Name, timeutils.ShortDate(time.Now()))
+					return nil
+				})
+			}
+			continue
+		}
+		db.Update(&caches[i], func() error {
+			caches[i].LastSync = time.Now()
+			return nil
+		})
+	}
+}
+
 func (manager *SCachedimageManager) InitializeData() error {
 	images := []SCachedimage{}
 	q := manager.Query().IsNullOrEmpty("tenant_id")
@@ -833,4 +919,19 @@ func (manager *SCachedimageManager) InitializeData() error {
 		}
 	}
 	return nil
+}
+
+func (image *SCachedimage) GetAllClassMetadata() (map[string]string, error) {
+	meta, err := image.SSharableVirtualResourceBase.GetAllClassMetadata()
+	if err != nil {
+		return nil, errors.Wrap(err, "SSharableVirtualResourceBase.GetAllClassMetadata")
+	}
+	metaDict, _ := image.Info.GetMap("metadata")
+	for k, v := range metaDict {
+		if !strings.HasPrefix(k, db.CLASS_TAG_PREFIX) {
+			continue
+		}
+		meta[k[len(db.CLASS_TAG_PREFIX):]], _ = v.GetString()
+	}
+	return meta, nil
 }

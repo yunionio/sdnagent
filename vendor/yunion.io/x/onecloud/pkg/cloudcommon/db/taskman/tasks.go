@@ -19,7 +19,6 @@ import (
 	"database/sql"
 	"fmt"
 	"net/http"
-	"path/filepath"
 	"reflect"
 	"runtime/debug"
 	"strconv"
@@ -159,6 +158,10 @@ func (manager *STaskManager) FilterByOwner(q *sqlchemy.SQuery, owner mcclient.II
 		}
 	}
 	return q
+}
+
+func (manager *STaskManager) FetchTaskById(taskId string) *STask {
+	return manager.fetchTask(taskId)
 }
 
 func (self *STask) AllowGetDetails(ctx context.Context, userCred mcclient.TokenCredential, query jsonutils.JSONObject) bool {
@@ -831,7 +834,7 @@ func (task *STask) GetTaskRequestHeader() http.Header {
 	header := mcclient.GetTokenHeaders(userCred)
 	header.Set(mcclient.TASK_ID, task.GetTaskId())
 	if len(serviceUrl) > 0 {
-		notifyUrl := filepath.Join(serviceUrl, "tasks", task.GetTaskId())
+		notifyUrl := fmt.Sprintf("%s/tasks/%s", serviceUrl, task.GetTaskId())
 		header.Set(mcclient.TASK_NOTIFY_URL, notifyUrl)
 	}
 	return header

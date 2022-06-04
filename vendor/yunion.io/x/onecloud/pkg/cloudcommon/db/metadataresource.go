@@ -24,14 +24,38 @@ import (
 	"yunion.io/x/onecloud/pkg/apis"
 	"yunion.io/x/onecloud/pkg/httperrors"
 	"yunion.io/x/onecloud/pkg/mcclient"
+	"yunion.io/x/onecloud/pkg/util/rbacutils"
 	"yunion.io/x/onecloud/pkg/util/stringutils2"
 	"yunion.io/x/onecloud/pkg/util/tagutils"
 )
 
 type SMetadataResourceBaseModelManager struct{}
 
+func ObjectIdQueryWithPolicyResult(q *sqlchemy.SQuery, manager IModelManager, result rbacutils.SPolicyResult) *sqlchemy.SQuery {
+	scope := manager.ResourceScope()
+	if scope == rbacutils.ScopeDomain || scope == rbacutils.ScopeProject {
+		if !result.DomainTags.IsEmpty() {
+			tagFilters := tagutils.STagFilters{}
+			tagFilters.AddFilters(result.DomainTags)
+			q = ObjectIdQueryWithTagFilters(q, "domain_id", "domain", tagFilters)
+		}
+	}
+	if scope == rbacutils.ScopeProject {
+		if !result.ProjectTags.IsEmpty() {
+			tagFilters := tagutils.STagFilters{}
+			tagFilters.AddFilters(result.ProjectTags)
+			q = ObjectIdQueryWithTagFilters(q, "tenant_id", "project", tagFilters)
+		}
+	}
+	if !result.ProjectTags.IsEmpty() {
+		tagFilters := tagutils.STagFilters{}
+		tagFilters.AddFilters(result.ObjectTags)
+		q = ObjectIdQueryWithTagFilters(q, "id", manager.Keyword(), tagFilters)
+	}
+	return q
+}
+
 func ObjectIdQueryWithTagFilters(q *sqlchemy.SQuery, idField string, modelName string, filters tagutils.STagFilters) *sqlchemy.SQuery {
-	log.Debugf("Filters: %s", jsonutils.Marshal(filters))
 	if len(filters.Filters) > 0 {
 		sq := objIdQueryWithTags(modelName, filters.Filters)
 		if sq != nil {
@@ -223,12 +247,16 @@ func (meta *SMetadataResourceBaseModelManager) GetExportExtraKeys(keys stringuti
 }
 
 func (meta *SMetadataResourceBaseModelManager) ListItemExportKeys(manager IModelManager, q *sqlchemy.SQuery, keys stringutils2.SSortedStrings) *sqlchemy.SQuery {
+	keyMaps := map[string]bool{}
 	for _, key := range keys {
 		if strings.HasPrefix(key, TAG_EXPORT_KEY_PREFIX) {
 			tagKey := key[len(TAG_EXPORT_KEY_PREFIX):]
-			metaQ := Metadata.Query("obj_id", "value").Equals("obj_type", manager.Keyword()).Equals("key", tagKey).SubQuery()
-			q = q.LeftJoin(metaQ, sqlchemy.Equals(q.Field("id"), metaQ.Field("obj_id")))
-			q = q.AppendField(metaQ.Field("value", key))
+			if _, ok := keyMaps[strings.ToLower(tagKey)]; !ok {
+				metaQ := Metadata.Query("obj_id", "value").Equals("obj_type", manager.Keyword()).Equals("key", tagKey).SubQuery()
+				q = q.LeftJoin(metaQ, sqlchemy.Equals(q.Field("id"), metaQ.Field("obj_id")))
+				q = q.AppendField(metaQ.Field("value", key))
+				keyMaps[strings.ToLower(tagKey)] = true
+			}
 		}
 	}
 	return q

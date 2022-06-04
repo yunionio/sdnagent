@@ -540,7 +540,6 @@ func (manager *SElasticcacheManager) SyncElasticcaches(ctx context.Context, user
 			syncResult.UpdateError(err)
 			continue
 		}
-		syncVirtualResourceMetadata(ctx, userCred, &commondb[i], commonext[i])
 		localElasticcaches = append(localElasticcaches, commondb[i])
 		remoteElasticcaches = append(remoteElasticcaches, commonext[i])
 		syncResult.Update()
@@ -552,7 +551,6 @@ func (manager *SElasticcacheManager) SyncElasticcaches(ctx context.Context, user
 			syncResult.AddError(err)
 			continue
 		}
-		syncVirtualResourceMetadata(ctx, userCred, instance, added[i])
 		localElasticcaches = append(localElasticcaches, *instance)
 		remoteElasticcaches = append(remoteElasticcaches, added[i])
 		syncResult.Add()
@@ -623,6 +621,7 @@ func (self *SElasticcache) SyncWithCloudElasticcache(ctx context.Context, userCr
 	if err != nil {
 		return errors.Wrapf(err, "syncWithCloudElasticcache.Update")
 	}
+	SyncCloudProject(userCred, self, provider.GetOwnerId(), extInstance, provider.Id)
 	syncVirtualResourceMetadata(ctx, userCred, self, extInstance)
 	db.OpsLog.LogSyncUpdate(self, diff, userCred)
 	if len(diff) > 0 {
@@ -747,7 +746,8 @@ func (manager *SElasticcacheManager) newFromCloudElasticcache(ctx context.Contex
 		return nil, errors.Wrapf(err, "newFromCloudElasticcache.Insert")
 	}
 
-	SyncCloudProject(userCred, &instance, ownerId, extInstance, provider.Id)
+	SyncCloudProject(userCred, &instance, provider.GetOwnerId(), extInstance, provider.Id)
+	syncVirtualResourceMetadata(ctx, userCred, &instance, extInstance)
 	db.OpsLog.LogEvent(&instance, db.ACT_CREATE, instance.GetShortDesc(ctx), userCred)
 
 	notifyclient.EventNotify(ctx, userCred, notifyclient.SEventNotifyParam{
@@ -917,9 +917,9 @@ func (self *SElasticcache) GetSlaveZones() ([]SZone, error) {
 	return provider.GetIRegionById(region.ExternalId)
 }*/
 
-func (self *SElasticcache) GetCreateAliyunElasticcacheParams(data *jsonutils.JSONDict) (*cloudprovider.SCloudElasticCacheInput, error) {
+func (self *SElasticcache) GetCreateAliyunElasticcacheParams(ctx context.Context, data *jsonutils.JSONDict) (*cloudprovider.SCloudElasticCacheInput, error) {
 	input := &cloudprovider.SCloudElasticCacheInput{}
-	iregion, err := self.GetIRegion()
+	iregion, err := self.GetIRegion(ctx)
 	if err != nil {
 		return nil, fmt.Errorf("elastic cache %s(%s) region not found", self.Name, self.Id)
 	} else {
@@ -1000,9 +1000,9 @@ func (self *SElasticcache) GetCreateAliyunElasticcacheParams(data *jsonutils.JSO
 	return input, nil
 }
 
-func (self *SElasticcache) GetCreateHuaweiElasticcacheParams(data *jsonutils.JSONDict) (*cloudprovider.SCloudElasticCacheInput, error) {
+func (self *SElasticcache) GetCreateHuaweiElasticcacheParams(ctx context.Context, data *jsonutils.JSONDict) (*cloudprovider.SCloudElasticCacheInput, error) {
 	input := &cloudprovider.SCloudElasticCacheInput{}
-	iregion, err := self.GetIRegion()
+	iregion, err := self.GetIRegion(ctx)
 	if err != nil {
 		return nil, fmt.Errorf("elastic cache %s(%s) region not found", self.Name, self.Id)
 	} else {
@@ -1102,9 +1102,9 @@ func (self *SElasticcache) GetCreateHuaweiElasticcacheParams(data *jsonutils.JSO
 	return input, nil
 }
 
-func (self *SElasticcache) GetCreateQCloudElasticcacheParams(data *jsonutils.JSONDict) (*cloudprovider.SCloudElasticCacheInput, error) {
+func (self *SElasticcache) GetCreateQCloudElasticcacheParams(ctx context.Context, data *jsonutils.JSONDict) (*cloudprovider.SCloudElasticCacheInput, error) {
 	input := &cloudprovider.SCloudElasticCacheInput{}
-	iregion, err := self.GetIRegion()
+	iregion, err := self.GetIRegion(ctx)
 	if err != nil {
 		return nil, fmt.Errorf("elastic cache %s(%s) region not found", self.Name, self.Id)
 	} else {
@@ -1688,8 +1688,10 @@ func (man *SElasticcacheManager) TotalCount(
 	ownerId mcclient.IIdentityProvider,
 	rangeObjs []db.IStandaloneModel,
 	providers []string, brands []string, cloudEnv string,
+	policyResult rbacutils.SPolicyResult,
 ) (int, error) {
 	q := man.Query()
+	q = db.ObjectIdQueryWithPolicyResult(q, man, policyResult)
 	vpcs := VpcManager.Query().SubQuery()
 	q = q.Join(vpcs, sqlchemy.Equals(q.Field("vpc_id"), vpcs.Field("id")))
 	q = scopeOwnerIdFilter(q, scope, ownerId)
@@ -1816,7 +1818,7 @@ func (self *SElasticcache) doExternalSync(ctx context.Context, userCred mcclient
 		return fmt.Errorf("no cloud provider???")
 	}
 
-	iregion, err := self.GetIRegion()
+	iregion, err := self.GetIRegion(ctx)
 	if err != nil || iregion == nil {
 		return fmt.Errorf("no cloud region??? %s", err)
 	}
@@ -2311,4 +2313,12 @@ func (self *SElasticcache) startRenewTask(ctx context.Context, userCred mcclient
 	}
 	task.ScheduleRun(nil)
 	return nil
+}
+
+func (manager *SElasticcacheManager) GetExpiredModels(advanceDay int) ([]IBillingModel, error) {
+	return fetchExpiredModels(manager, advanceDay)
+}
+
+func (self *SElasticcache) GetExpiredAt() time.Time {
+	return self.ExpiredAt
 }

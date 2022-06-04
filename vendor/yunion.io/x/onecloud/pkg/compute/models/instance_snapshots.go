@@ -57,6 +57,8 @@ type SInstanceSnapshot struct {
 	SCloudregionResourceBase
 	db.SMultiArchResourceBase
 
+	db.SEncryptedResource
+
 	// 云主机Id
 	GuestId string `width:"36" charset:"ascii" nullable:"false" list:"user" create:"required" index:"true"`
 	// 云主机配置
@@ -77,6 +79,18 @@ type SInstanceSnapshot struct {
 	InstanceType string `width:"64" charset:"utf8" nullable:"true" list:"user" create:"optional"`
 	// 主机快照磁盘容量和
 	SizeMb int `nullable:"false"`
+	// 镜像ID
+	ImageId string `width:"36" charset:"ascii" nullable:"true" list:"user"`
+	// 是否保存内存
+	WithMemory bool `default:"false" get:"user" list:"user"`
+	// 内存文件大小
+	MemorySizeMB int `nullable:"true" get:"user" list:"user"`
+	// 内存文件所在宿主机
+	MemoryFileHostId string `width:"36" charset:"ascii" nullable:"true" get:"user" list:"user"`
+	// 内存文件路径
+	MemoryFilePath string `width:"512" charset:"utf8" nullable:"true" get:"user" list:"user"`
+	// 内存文件校验和
+	MemoryFileChecksum string `width:"32" charset:"ascii" nullable:"true" get:"user" list:"user"`
 }
 
 type SInstanceSnapshotManager struct {
@@ -85,6 +99,7 @@ type SInstanceSnapshotManager struct {
 	SManagedResourceBaseManager
 	SCloudregionResourceBaseManager
 	db.SMultiArchResourceBaseManager
+	db.SEncryptedResourceManager
 }
 
 var InstanceSnapshotManager *SInstanceSnapshotManager
@@ -131,6 +146,14 @@ func (manager *SInstanceSnapshotManager) ListItemFilter(
 
 	if len(query.OsType) > 0 {
 		q = q.In("os_type", query.OsType)
+	}
+
+	if query.WithMemory != nil {
+		if *query.WithMemory {
+			q = q.IsTrue("with_memory")
+		} else {
+			q = q.IsFalse("with_memory")
+		}
 	}
 
 	return q, nil
@@ -222,6 +245,8 @@ func (self *SInstanceSnapshot) getMoreDetails(userCred mcclient.TokenCredential,
 				Size:          snapshots[i].Size,
 				Status:        snapshots[i].Status,
 				StorageType:   snapshots[i].GetStorageType(),
+				EncryptKeyId:  snapshots[i].EncryptKeyId,
+				CreatedAt:     snapshots[i].CreatedAt,
 			})
 			out.Size += snapshots[i].Size
 
@@ -259,11 +284,14 @@ func (manager *SInstanceSnapshotManager) FetchCustomizeColumns(
 
 	virtRows := manager.SVirtualResourceBaseManager.FetchCustomizeColumns(ctx, userCred, query, objs, fields, isList)
 	manRows := manager.SManagedResourceBaseManager.FetchCustomizeColumns(ctx, userCred, query, objs, fields, isList)
+	encRows := manager.SEncryptedResourceManager.FetchCustomizeColumns(ctx, userCred, query, objs, fields, isList)
 
 	for i := range rows {
 		rows[i] = api.InstanceSnapshotDetails{
 			VirtualResourceDetails: virtRows[i],
 			ManagedResourceInfo:    manRows[i],
+
+			EncryptedResourceDetails: encRows[i],
 		}
 		rows[i] = objs[i].(*SInstanceSnapshot).getMoreDetails(userCred, rows[i])
 	}
@@ -291,6 +319,12 @@ func (manager *SInstanceSnapshotManager) fillInstanceSnapshot(ctx context.Contex
 	instanceSnapshot.ProjectId = guest.ProjectId
 	instanceSnapshot.DomainId = guest.DomainId
 	instanceSnapshot.GuestId = guest.Id
+	instanceSnapshot.InstanceType = guest.InstanceType
+	instanceSnapshot.ImageId = guest.GetTemplateId()
+
+	// inherit encrypt_key_id from guest
+	instanceSnapshot.EncryptKeyId = guest.EncryptKeyId
+
 	guestSchedInput := guest.ToSchedDesc()
 
 	host, _ := guest.GetHost()
@@ -312,7 +346,10 @@ func (manager *SInstanceSnapshotManager) fillInstanceSnapshot(ctx context.Contex
 	}
 	instanceSnapshot.ServerConfig = jsonutils.Marshal(guestSchedInput.ServerConfig)
 	if len(guest.KeypairId) > 0 {
-		instanceSnapshot.KeypairId = guest.KeypairId
+		keypair, _ := KeypairManager.FetchById(guest.KeypairId)
+		if keypair != nil {
+			instanceSnapshot.KeypairId = guest.KeypairId
+		}
 	}
 	serverMetadata := jsonutils.NewDict()
 	if loginAccount := guest.GetMetadata(ctx, "login_account", nil); len(loginAccount) > 0 {
@@ -351,20 +388,29 @@ func (manager *SInstanceSnapshotManager) fillInstanceSnapshot(ctx context.Contex
 	instanceSnapshot.OsType = guest.OsType
 	instanceSnapshot.OsArch = guest.OsArch
 	instanceSnapshot.ServerMetadata = serverMetadata
-	instanceSnapshot.InstanceType = guest.InstanceType
 }
 
-func (manager *SInstanceSnapshotManager) CreateInstanceSnapshot(ctx context.Context, userCred mcclient.TokenCredential, guest *SGuest, name string, autoDelete bool) (*SInstanceSnapshot, error) {
+func (manager *SInstanceSnapshotManager) CreateInstanceSnapshot(ctx context.Context, userCred mcclient.TokenCredential, guest *SGuest, name string, autoDelete bool, withMemory bool) (*SInstanceSnapshot, error) {
 	instanceSnapshot := &SInstanceSnapshot{}
 	instanceSnapshot.SetModelManager(manager, instanceSnapshot)
 	instanceSnapshot.Name = name
 	instanceSnapshot.AutoDelete = autoDelete
+	if autoDelete {
+		// hide auto-delete instance snapshots
+		instanceSnapshot.IsSystem = true
+	}
 	manager.fillInstanceSnapshot(ctx, userCred, guest, instanceSnapshot)
 	// compute size of instanceSnapshot
 	instanceSnapshot.SizeMb = guest.getDiskSize()
+	instanceSnapshot.WithMemory = withMemory
+	instanceSnapshot.MemoryFileHostId = guest.HostId
 	err := manager.TableSpec().Insert(ctx, instanceSnapshot)
 	if err != nil {
-		return nil, err
+		return nil, errors.Wrap(err, "Insert")
+	}
+	err = db.InheritFromTo(ctx, guest, instanceSnapshot)
+	if err != nil {
+		return nil, errors.Wrap(err, "Inherit ClassMetadata")
 	}
 	return instanceSnapshot, nil
 }
@@ -397,6 +443,10 @@ func (self *SInstanceSnapshot) ToInstanceCreateInput(
 			index := serverConfig.Disks[i].Index
 			if index < len(isjs) {
 				serverConfig.Disks[i].SnapshotId = isjs[index].SnapshotId
+				if i == 0 && len(self.ImageId) > 0 {
+					// system disk, save ImageId
+					serverConfig.Disks[i].ImageId = self.ImageId
+				}
 			}
 		}
 	}
@@ -428,6 +478,14 @@ func (self *SInstanceSnapshot) ToInstanceCreateInput(
 	if len(sourceInput.Networks) == 0 {
 		sourceInput.Networks = serverConfig.Networks
 	}
+
+	if self.IsEncrypted() {
+		if sourceInput.EncryptKeyId != nil && *sourceInput.EncryptKeyId != self.EncryptKeyId {
+			return nil, errors.Wrap(httperrors.ErrConflict, "encrypt_key_id conflict with instance_snapshot's encrypt_key_id")
+		}
+		sourceInput.EncryptKeyId = &self.EncryptKeyId
+	}
+
 	return sourceInput, nil
 }
 
@@ -469,7 +527,7 @@ func (self *SInstanceSnapshot) GetUsages() []db.IUsage {
 	}
 }
 
-func TotalInstanceSnapshotCount(scope rbacutils.TRbacScope, ownerId mcclient.IIdentityProvider, rangeObjs []db.IStandaloneModel, providers []string, brands []string, cloudEnv string) (int, error) {
+func TotalInstanceSnapshotCount(scope rbacutils.TRbacScope, ownerId mcclient.IIdentityProvider, rangeObjs []db.IStandaloneModel, providers []string, brands []string, cloudEnv string, policyResult rbacutils.SPolicyResult) (int, error) {
 	q := InstanceSnapshotManager.Query()
 
 	switch scope {
@@ -479,6 +537,8 @@ func TotalInstanceSnapshotCount(scope rbacutils.TRbacScope, ownerId mcclient.IId
 	case rbacutils.ScopeProject:
 		q = q.Equals("tenant_id", ownerId.GetProjectId())
 	}
+
+	q = db.ObjectIdQueryWithPolicyResult(q, InstanceSnapshotManager, policyResult)
 
 	q = RangeObjectsFilter(q, rangeObjs, q.Field("cloudregion_id"), nil, q.Field("manager_id"), nil, nil)
 	q = CloudProviderFilter(q, q.Field("manager_id"), providers, brands, cloudEnv)
@@ -640,4 +700,57 @@ func (ism *SInstanceSnapshotManager) InitializeData() error {
 		}
 	}
 	return nil
+}
+
+func (isp *SInstanceSnapshot) GetInstanceSnapshotJointsByOrder(guest *SGuest) ([]*SInstanceSnapshotJoint, error) {
+	disks, err := guest.GetGuestDisks()
+	if err != nil {
+		return nil, errors.Wrap(err, "GetGuestDisks")
+	}
+	ss, err := isp.GetSnapshots()
+	if err != nil {
+		return nil, errors.Wrapf(err, "Get %s subsnapshots", isp.GetName())
+	}
+	jIsps := make([]*SInstanceSnapshotJoint, 0)
+	for idx, gd := range disks {
+		d := gd.GetDisk()
+		if d == nil {
+			return nil, errors.Wrapf(err, "Not get guestdisk %d related disk", idx)
+		}
+		if idx >= len(ss) {
+			break
+		}
+		jIsp, err := isp.GetInstanceSnapshotJointAt(idx)
+		if err != nil {
+			return nil, errors.Wrapf(err, "GetInstanceSnapshotJointAt %d", idx)
+		}
+		sd, err := ss[idx].GetDisk()
+		if err != nil {
+			return nil, errors.Wrapf(err, "Get snapshot %d disk", idx)
+		}
+		if ss[idx].GetId() != jIsp.SnapshotId {
+			return nil, errors.Wrapf(err, "InstanceSnapshotJoint %d snapshot_id %q != %q", idx, jIsp.SnapshotId, ss[idx].GetId())
+		}
+		if sd.GetId() != d.GetId() {
+			return nil, errors.Wrapf(err, "Disk Snapshot %d's disk id %q != current disk %q", idx, sd.GetId(), d.GetId())
+		}
+		jIsps = append(jIsps, jIsp)
+	}
+	return jIsps, nil
+}
+
+func (self *SInstanceSnapshot) CustomizeCreate(
+	ctx context.Context,
+	userCred mcclient.TokenCredential,
+	ownerId mcclient.IIdentityProvider,
+	query jsonutils.JSONObject,
+	data jsonutils.JSONObject,
+) error {
+	// use disk's ownerId instead of default ownerId
+	guestObj, err := GuestManager.FetchById(self.GuestId)
+	if err != nil {
+		return errors.Wrap(err, "GuestManager.FetchById")
+	}
+	ownerId = guestObj.(*SGuest).GetOwnerId()
+	return self.SVirtualResourceBase.CustomizeCreate(ctx, userCred, ownerId, query, data)
 }

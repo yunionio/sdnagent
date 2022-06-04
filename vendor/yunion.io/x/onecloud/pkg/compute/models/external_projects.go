@@ -31,6 +31,7 @@ import (
 	"yunion.io/x/onecloud/pkg/cloudcommon/consts"
 	"yunion.io/x/onecloud/pkg/cloudcommon/db"
 	"yunion.io/x/onecloud/pkg/cloudcommon/db/lockman"
+	"yunion.io/x/onecloud/pkg/cloudcommon/validators"
 	"yunion.io/x/onecloud/pkg/cloudprovider"
 	"yunion.io/x/onecloud/pkg/compute/options"
 	"yunion.io/x/onecloud/pkg/httperrors"
@@ -69,7 +70,56 @@ type SExternalProject struct {
 
 	ExternalDomainId string `width:"36" charset:"ascii" nullable:"true" list:"user"`
 	// 归属云账号ID
-	CloudaccountId string `width:"36" charset:"ascii" nullable:"false" list:"user"`
+	CloudaccountId string `width:"36" charset:"ascii" nullable:"false" list:"user" create:"required"`
+}
+
+func (manager *SExternalProjectManager) ValidateCreateData(
+	ctx context.Context,
+	userCred mcclient.TokenCredential,
+	ownerId mcclient.IIdentityProvider,
+	query jsonutils.JSONObject,
+	input api.ExternalProjectCreateInput,
+) (api.ExternalProjectCreateInput, error) {
+	var err error
+	if len(input.CloudaccountId) == 0 {
+		return input, httperrors.NewMissingParameterError("cloudaccount_id")
+	}
+	_account, err := validators.ValidateModel(userCred, CloudaccountManager, &input.CloudaccountId)
+	if err != nil {
+		return input, err
+	}
+	account := _account.(*SCloudaccount)
+	driver, err := account.GetProvider(ctx)
+	if err != nil {
+		return input, err
+	}
+	if utils.IsInStringArray(account.Provider, api.MANGER_EXTERNAL_PROJECT_PROVIDERS) {
+		if len(input.ManagerId) == 0 {
+			return input, httperrors.NewMissingParameterError("manager_id")
+		}
+		_provider, err := validators.ValidateModel(userCred, CloudproviderManager, &input.ManagerId)
+		if err != nil {
+			return input, err
+		}
+		provider := _provider.(*SCloudprovider)
+		driver, err = provider.GetProvider(ctx)
+		if err != nil {
+			return input, err
+		}
+	}
+
+	input.VirtualResourceCreateInput, err = manager.SVirtualResourceBaseManager.ValidateCreateData(ctx, userCred, ownerId, query, input.VirtualResourceCreateInput)
+	if err != nil {
+		return input, errors.Wrap(err, "SVirtualResourceBaseManager.ValidateCreateData")
+	}
+
+	iProj, err := driver.CreateIProject(input.Name)
+	if err != nil {
+		return input, errors.Wrapf(err, "CreateIProject")
+	}
+	input.ExternalId = iProj.GetGlobalId()
+	input.Status = api.EXTERNAL_PROJECT_STATUS_AVAILABLE
+	return input, nil
 }
 
 func (manager *SExternalProjectManager) FetchCustomizeColumns(
@@ -82,10 +132,12 @@ func (manager *SExternalProjectManager) FetchCustomizeColumns(
 ) []api.ExternalProjectDetails {
 	rows := make([]api.ExternalProjectDetails, len(objs))
 	virRows := manager.SVirtualResourceBaseManager.FetchCustomizeColumns(ctx, userCred, query, objs, fields, isList)
+	managerRows := manager.SManagedResourceBaseManager.FetchCustomizeColumns(ctx, userCred, query, objs, fields, isList)
 	accountIds := make([]string, len(objs))
 	for i := range rows {
 		rows[i] = api.ExternalProjectDetails{
 			VirtualResourceDetails: virRows[i],
+			ManagedResourceInfo:    managerRows[i],
 		}
 		proj := objs[i].(*SExternalProject)
 		accountIds[i] = proj.CloudaccountId
@@ -186,10 +238,18 @@ func (self *SExternalProject) syncRemoveCloudProject(ctx context.Context, userCr
 
 func (self *SExternalProject) SyncWithCloudProject(ctx context.Context, userCred mcclient.TokenCredential, account *SCloudaccount, ext cloudprovider.ICloudProject) error {
 	s := auth.GetAdminSession(ctx, consts.GetRegion(), "v1")
+	providers := account.GetCloudproviders()
+	providerMaps := map[string]string{}
+	for _, provider := range providers {
+		providerMaps[provider.Account] = provider.Id
+	}
 	diff, err := db.UpdateWithLock(ctx, self, func() error {
 		self.Name = ext.GetName()
 		self.IsEmulated = ext.IsEmulated()
 		self.Status = ext.GetStatus()
+		if accountId := ext.GetAccountId(); len(accountId) > 0 {
+			self.ManagerId, _ = providerMaps[accountId]
+		}
 		share := account.GetSharedInfo()
 		if self.DomainId != account.DomainId && !(share.PublicScope == rbacutils.ScopeSystem ||
 			(share.PublicScope == rbacutils.ScopeDomain && utils.IsInStringArray(self.DomainId, share.SharedDomains))) {
@@ -312,6 +372,16 @@ func (manager *SExternalProjectManager) newFromCloudProject(ctx context.Context,
 	project.DomainId = account.DomainId
 	project.ProjectId = account.ProjectId
 	project.ExternalDomainId = extProject.GetDomainId()
+
+	providers := account.GetCloudproviders()
+	providerMaps := map[string]string{}
+	for _, provider := range providers {
+		providerMaps[provider.Account] = provider.Id
+	}
+	if accountId := extProject.GetAccountId(); len(accountId) > 0 {
+		project.ManagerId, _ = providerMaps[accountId]
+	}
+
 	domainName := extProject.GetDomainName()
 	if len(project.ExternalDomainId) > 0 && len(domainName) > 0 {
 		domainId, err := account.getOrCreateDomain(ctx, userCred, project.ExternalDomainId, domainName)
@@ -440,6 +510,7 @@ func (manager *SExternalProjectManager) ListItemFilter(
 			}
 			return nil, httperrors.NewGeneralError(err)
 		}
+		q = q.Equals("manager_id", p.GetId())
 		provider := p.(*SCloudprovider)
 		query.CloudaccountId = []string{provider.CloudaccountId}
 	}

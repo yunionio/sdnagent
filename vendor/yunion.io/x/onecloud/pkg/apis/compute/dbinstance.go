@@ -160,6 +160,9 @@ type DBInstanceCreateInput struct {
 
 	// 从备份中创建新实例
 	DBInstancebackupId string `json:"dbinstancebackup_id"`
+
+	// 多可用区部署
+	MultiAZ bool `json:"multi_az"`
 }
 
 type SDBInstanceChangeConfigInput struct {
@@ -214,6 +217,9 @@ type DBInstanceListInput struct {
 	EngineVersion string `json:"engine_version"`
 
 	InstanceType string `json:"instance_type"`
+
+	// 通过IP搜索RDS实例
+	IpAddr string `json:"ip_addr"`
 }
 
 type DBInstanceBackupListInput struct {
@@ -298,9 +304,12 @@ type DBInstanceDetails struct {
 	// iops
 	// example: 0
 	Iops int `json:"iops"`
-	// IP子网名称
+	// IP子网名称, 若有多个以 ',' 分隔
 	// example: test-network
 	Network string `json:"network"`
+
+	// 内网IP地址, 若有多个以 ',' 分隔
+	IpAddrs string `json:"ip_addrs"`
 
 	// Zone1名称
 	Zone1Name string `json:"zone1_name"`

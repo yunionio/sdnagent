@@ -264,10 +264,6 @@ func listItemQueryFiltersRaw(manager IModelManager,
 		q = manager.FilterBySystemAttributes(q, userCred, query, queryScope)
 		q = manager.FilterByHiddenSystemAttributes(q, userCred, query, queryScope)
 	}
-	q, err = ListItemFilter(manager, ctx, q, userCred, query)
-	if err != nil {
-		return nil, err
-	}
 	if query.Contains("export_keys") {
 		exportKeys, _ := query.GetString("export_keys")
 		keys := stringutils2.NewSortedStrings(strings.Split(exportKeys, ","))
@@ -304,6 +300,10 @@ func listItemQueryFiltersRaw(manager IModelManager,
 		if err != nil {
 			return nil, err
 		}
+	}
+	q, err = ListItemFilter(manager, ctx, q, userCred, query)
+	if err != nil {
+		return nil, err
 	}
 	return q, nil
 }
@@ -519,6 +519,8 @@ func ListItems(manager IModelManager, ctx context.Context, userCred mcclient.Tok
 	limit, _ := query.Int("limit")
 	offset, _ := query.Int("offset")
 	pagingMarker, _ := query.GetString("paging_marker")
+	pagingOrderStr, _ := query.GetString("paging_order")
+	pagingOrder := sqlchemy.QueryOrderType(strings.ToUpper(pagingOrderStr))
 
 	var (
 		q           *sqlchemy.SQuery
@@ -559,6 +561,9 @@ func ListItems(manager IModelManager, ctx context.Context, userCred mcclient.Tok
 		if limit <= 0 {
 			limit = int64(pagingConf.DefaultLimit)
 		}
+		if pagingOrder != sqlchemy.SQL_ORDER_ASC && pagingOrder != sqlchemy.SQL_ORDER_DESC {
+			pagingOrder = pagingConf.Order
+		}
 	}
 
 	splitable := manager.GetSplitTable()
@@ -584,7 +589,7 @@ func ListItems(manager IModelManager, ctx context.Context, userCred mcclient.Tok
 					markers := decodePagingMarker(pagingMarker)
 					for markerIdx, marker := range markers {
 						if markerIdx < len(pagingConf.MarkerFields) {
-							if pagingConf.Order == sqlchemy.SQL_ORDER_ASC {
+							if pagingOrder == sqlchemy.SQL_ORDER_ASC {
 								subq = subq.GE(pagingConf.MarkerFields[markerIdx], marker)
 							} else {
 								subq = subq.LE(pagingConf.MarkerFields[markerIdx], marker)
@@ -593,7 +598,7 @@ func ListItems(manager IModelManager, ctx context.Context, userCred mcclient.Tok
 					}
 				}
 				for _, f := range pagingConf.MarkerFields {
-					if pagingConf.Order == sqlchemy.SQL_ORDER_ASC {
+					if pagingOrder == sqlchemy.SQL_ORDER_ASC {
 						subq = subq.Asc(f)
 					} else {
 						subq = subq.Desc(f)
@@ -653,7 +658,7 @@ func ListItems(manager IModelManager, ctx context.Context, userCred mcclient.Tok
 	// orders defined in pagingConf should have the highest priority
 	if pagingConf != nil {
 		for _, f := range pagingConf.MarkerFields {
-			if pagingConf.Order == sqlchemy.SQL_ORDER_ASC {
+			if pagingOrder == sqlchemy.SQL_ORDER_ASC {
 				q = q.Asc(f)
 			} else {
 				q = q.Desc(f)
@@ -729,7 +734,7 @@ func ListItems(manager IModelManager, ctx context.Context, userCred mcclient.Tok
 			markers := decodePagingMarker(pagingMarker)
 			for markerIdx, marker := range markers {
 				if markerIdx < len(pagingConf.MarkerFields) {
-					if pagingConf.Order == sqlchemy.SQL_ORDER_ASC {
+					if pagingOrder == sqlchemy.SQL_ORDER_ASC {
 						q = q.GE(pagingConf.MarkerFields[markerIdx], marker)
 					} else {
 						q = q.LE(pagingConf.MarkerFields[markerIdx], marker)
@@ -754,7 +759,7 @@ func ListItems(manager IModelManager, ctx context.Context, userCred mcclient.Tok
 			Data: retList, Limit: int(limit),
 			NextMarker:  nextMarker,
 			MarkerField: strings.Join(pagingConf.MarkerFields, ","),
-			MarkerOrder: string(pagingConf.Order),
+			MarkerOrder: string(pagingOrder),
 		}
 		return &retResult, nil
 	}
@@ -959,7 +964,7 @@ func (dispatcher *DBModelDispatcher) Get(ctx context.Context, idStr string, quer
 	if err == sql.ErrNoRows {
 		return nil, httperrors.NewResourceNotFoundError2(dispatcher.modelManager.Keyword(), idStr)
 	} else if err != nil {
-		return nil, err
+		return nil, errors.Wrapf(err, "fetchItem")
 	}
 
 	err = isObjectRbacAllowed(ctx, model, userCred, policy.PolicyActionGet)
@@ -1103,6 +1108,29 @@ func FetchModelObjects(modelManager IModelManager, query *sqlchemy.SQuery, targe
 		targetsValue.Set(newTargets)
 	}
 	return nil
+}
+
+func FetchIModelObjects(modelManager IModelManager, query *sqlchemy.SQuery) ([]IModel, error) {
+	// TODO: refactor below duplicated code from FetchModelObjects
+	rows, err := query.Rows()
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	objs := make([]IModel, 0)
+	for rows.Next() {
+		m, err := NewModelObject(modelManager)
+		if err != nil {
+			return nil, err
+		}
+		err = query.Row2Struct(rows, m)
+		if err != nil {
+			return nil, err
+		}
+		objs = append(objs, m)
+	}
+	return objs, nil
 }
 
 func DoCreate(manager IModelManager, ctx context.Context, userCred mcclient.TokenCredential, query jsonutils.JSONObject, data jsonutils.JSONObject, ownerId mcclient.IIdentityProvider) (IModel, error) {
@@ -1628,8 +1656,13 @@ func updateItem(manager IModelManager, item IModel, ctx context.Context, userCre
 	if err != nil {
 		return nil, httperrors.NewGeneralError(errors.Wrapf(err, "Update"))
 	}
-	OpsLog.LogEvent(item, ACT_UPDATE, diff, userCred)
-	logclient.AddActionLogWithContext(ctx, item, logclient.ACT_UPDATE, diff, userCred, true)
+	for _, skip := range skipLogFields(manager) {
+		delete(diff, skip)
+	}
+	if len(diff) > 0 {
+		OpsLog.LogEvent(item, ACT_UPDATE, diff, userCred)
+		logclient.AddActionLogWithContext(ctx, item, logclient.ACT_UPDATE, diff, userCred, true)
+	}
 
 	item.PostUpdate(ctx, userCred, query, data)
 
@@ -1699,6 +1732,13 @@ func DeleteModel(ctx context.Context, userCred mcclient.TokenCredential, item IM
 	}
 	if userCred != nil {
 		OpsLog.LogEvent(item, ACT_DELETE, item.GetShortDesc(ctx), userCred)
+		logclient.AddSimpleActionLog(item, logclient.ACT_DELETE, item.GetShortDesc(ctx), userCred, true)
+	}
+	if _, ok := item.(IStandaloneModel); ok && len(item.GetId()) > 0 {
+		err := Metadata.RemoveAll(ctx, item, userCred)
+		if err != nil {
+			return errors.Wrapf(err, "Metadata.RemoveAll")
+		}
 	}
 	return nil
 }

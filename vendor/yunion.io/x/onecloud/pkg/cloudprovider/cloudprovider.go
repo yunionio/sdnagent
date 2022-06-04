@@ -85,6 +85,9 @@ type SCloudaccountCredential struct {
 	//秘钥key (Qcloud)
 	SecretKey string `json:"secret_key"`
 
+	// 飞天允许的最高组织id, 默认为1
+	OrganizationId int `json:"organization_id"`
+
 	// Google服务账号email (gcp)
 	GCPClientEmail string `json:"gcp_client_email"`
 	// Google服务账号project id (gcp)
@@ -93,9 +96,6 @@ type SCloudaccountCredential struct {
 	GCPPrivateKeyId string `json:"gcp_private_key_id"`
 	// Google服务账号秘钥 (gcp)
 	GCPPrivateKey string `json:"gcp_private_key"`
-
-	// 阿里云专有云Endpoints
-	*SApsaraEndpoints
 
 	// 默认区域Id, Apara及HCSO需要此参数
 	// example: cn-north-2
@@ -166,12 +166,16 @@ type ProviderConfig struct {
 	Account string
 	Secret  string
 
+	ReadOnly bool
+
 	AccountId string
 
 	Options *jsonutils.JSONDict
 
 	DefaultRegion string
 	ProxyFunc     httputils.TransportProxyFunc
+
+	UpdatePermission func(service, permission string)
 }
 
 func (cp *ProviderConfig) AdaptiveTimeoutHttpClient() *http.Client {

@@ -92,15 +92,10 @@ type SStorage struct {
 	// 存储缓存Id
 	StoragecacheId string `width:"36" charset:"ascii" nullable:"true" list:"domain" get:"domain" update:"domain" create:"domain_optional"`
 
-	// 是否启用
-	// Enabled tristate.TriState `nullable:"false" default:"true" list:"user" create:"optional"`
-	// 状态
-	// Status string `width:"36" charset:"ascii" nullable:"false" default:"offline" update:"domain" list:"user" create:"optional"`
-
 	// indicating whether system disk can be allocated in this storage
 	// 是否可以用作系统盘存储
 	// example: true
-	IsSysDiskStore tristate.TriState `nullable:"false" default:"true" list:"user" create:"optional" update:"domain"`
+	IsSysDiskStore tristate.TriState `default:"true" list:"user" create:"optional" update:"domain"`
 }
 
 func (manager *SStorageManager) GetContextManagers() [][]db.IModelManager {
@@ -154,7 +149,28 @@ func (self *SStorage) StartStorageUpdateTask(ctx context.Context, userCred mccli
 	return nil
 }
 
+func (self *SStorage) getFakeDeletedSnapshots() ([]SSnapshot, error) {
+	q := SnapshotManager.Query().Equals("storage_id", self.Id).IsTrue("fake_deleted")
+	snapshots := make([]SSnapshot, 0)
+	err := db.FetchModelObjects(SnapshotManager, q, &snapshots)
+	if err != nil {
+		return nil, errors.Wrap(err, "FetchModelObjects")
+	}
+	return snapshots, nil
+}
+
 func (self *SStorage) Delete(ctx context.Context, userCred mcclient.TokenCredential) error {
+	// delete all hidden snapshots
+	fakeDeletedSnapshots, err := self.getFakeDeletedSnapshots()
+	if err != nil {
+		return errors.Wrap(err, "getFakeDeletedSnapshots")
+	}
+	for i := range fakeDeletedSnapshots {
+		err := fakeDeletedSnapshots[i].Delete(ctx, userCred)
+		if err != nil {
+			return errors.Wrap(err, "fakeDeletedSnapshots.Delete")
+		}
+	}
 	DeleteResourceJointSchedtags(self, ctx, userCred)
 	return self.SEnabledStatusInfrasResourceBase.Delete(ctx, userCred)
 }
@@ -245,9 +261,9 @@ func (self *SStorage) ValidateDeleteCondition(ctx context.Context, info jsonutil
 	if cnt > 0 {
 		return httperrors.NewNotEmptyError("storage has disks")
 	}
-	cnt, err = self.GetSnapshotCount()
+	cnt, err = self.GetVisibleSnapshotCount()
 	if err != nil {
-		return httperrors.NewInternalServerError("GetSnapshotCount fail %s", err)
+		return httperrors.NewInternalServerError("GetVisibleSnapshotCount fail %s", err)
 	}
 	if cnt > 0 {
 		return httperrors.NewNotEmptyError("storage has snapshots")
@@ -364,8 +380,8 @@ func (self *SStorage) GetDisks() []SDisk {
 	return disks
 }
 
-func (self *SStorage) GetSnapshotCount() (int, error) {
-	return SnapshotManager.Query().Equals("storage_id", self.Id).CountWithError()
+func (self *SStorage) GetVisibleSnapshotCount() (int, error) {
+	return SnapshotManager.Query().Equals("storage_id", self.Id).IsFalse("fake_deleted").CountWithError()
 }
 
 func (self *SStorage) IsLocal() bool {
@@ -493,7 +509,7 @@ func (self *SStorage) GetOvercommitBound() float32 {
 	}
 }
 
-func (self *SStorage) GetMasterHost() *SHost {
+func (self *SStorage) GetMasterHost() (*SHost, error) {
 	hosts := HostManager.Query().SubQuery()
 	hoststorages := HoststorageManager.Query().SubQuery()
 
@@ -505,19 +521,16 @@ func (self *SStorage) GetMasterHost() *SHost {
 	host.SetModelManager(HostManager, &host)
 	err := q.First(&host)
 	if err != nil {
-		if errors.Cause(err) != sql.ErrNoRows {
-			log.Errorf("GetMasterHost fail %s", err)
-		}
-		return nil
+		return nil, errors.Wrapf(err, "q.First")
 	}
-	return &host
+	return &host, nil
 }
 
 func (self *SStorage) GetZoneId() string {
 	if len(self.ZoneId) > 0 {
 		return self.ZoneId
 	}
-	host := self.GetMasterHost()
+	host, _ := self.GetMasterHost()
 	if host != nil {
 		_, err := db.Update(self, func() error {
 			self.ZoneId = host.ZoneId
@@ -757,7 +770,7 @@ func (sm *SStorageManager) SyncCapacityUsedForEsxiStorage(ctx context.Context, u
 	}
 	for i := range cloudproviders {
 		cp := cloudproviders[i]
-		icp, err := cp.GetProvider()
+		icp, err := cp.GetProvider(ctx)
 		if err != nil {
 			log.Errorf("unable to GetProvider: %v", err)
 			continue
@@ -828,7 +841,7 @@ func (s *SStorage) SyncCapacityUsed(ctx context.Context) error {
 	if !utils.IsInStringArray(cp.Provider, CapacityUsedCloudStorageProvider) {
 		return nil
 	}
-	icp, err := cp.GetProvider()
+	icp, err := cp.GetProvider(ctx)
 	if err != nil {
 		return errors.Wrap(err, "GetProvider")
 	}
@@ -940,7 +953,7 @@ type StorageCapacityStat struct {
 	TotalSizeVirtual float64
 }
 
-func filterDisksByScope(scope rbacutils.TRbacScope, ownerId mcclient.IIdentityProvider, pendingDeleted bool, includeSystem bool) *sqlchemy.SSubQuery {
+func filterDisksByScope(scope rbacutils.TRbacScope, ownerId mcclient.IIdentityProvider, pendingDeleted bool, includeSystem bool, policyResult rbacutils.SPolicyResult) *sqlchemy.SSubQuery {
 	q := DiskManager.Query()
 	switch scope {
 	case rbacutils.ScopeSystem:
@@ -957,11 +970,11 @@ func filterDisksByScope(scope rbacutils.TRbacScope, ownerId mcclient.IIdentityPr
 	if !includeSystem {
 		q = q.IsFalse("is_system")
 	}
-	return q.SubQuery()
+	return db.ObjectIdQueryWithPolicyResult(q, DiskManager, policyResult).SubQuery()
 }
 
-func (manager *SStorageManager) disksReadyQ(scope rbacutils.TRbacScope, ownerId mcclient.IIdentityProvider, pendingDeleted bool, includeSystem bool) *sqlchemy.SSubQuery {
-	disks := filterDisksByScope(scope, ownerId, pendingDeleted, includeSystem)
+func (manager *SStorageManager) disksReadyQ(scope rbacutils.TRbacScope, ownerId mcclient.IIdentityProvider, pendingDeleted bool, includeSystem bool, policyResult rbacutils.SPolicyResult) *sqlchemy.SSubQuery {
+	disks := filterDisksByScope(scope, ownerId, pendingDeleted, includeSystem, policyResult)
 	q := disks.Query(
 		disks.Field("storage_id"),
 		sqlchemy.SUM("used_capacity", disks.Field("disk_size")),
@@ -971,7 +984,7 @@ func (manager *SStorageManager) disksReadyQ(scope rbacutils.TRbacScope, ownerId 
 	return q.SubQuery()
 }
 
-func (manager *SStorageManager) diskIsAttachedQ(isAttached bool, scope rbacutils.TRbacScope, ownerId mcclient.IIdentityProvider, pendingDeleted bool, includeSystem bool) *sqlchemy.SSubQuery {
+func (manager *SStorageManager) diskIsAttachedQ(isAttached bool, scope rbacutils.TRbacScope, ownerId mcclient.IIdentityProvider, pendingDeleted bool, includeSystem bool, policyResult rbacutils.SPolicyResult) *sqlchemy.SSubQuery {
 	sumKey := "attached_used_capacity"
 	countKey := "attached_count"
 	cond := sqlchemy.In
@@ -981,7 +994,7 @@ func (manager *SStorageManager) diskIsAttachedQ(isAttached bool, scope rbacutils
 		cond = sqlchemy.NotIn
 	}
 	sq := GuestdiskManager.Query("disk_id").SubQuery()
-	disks := filterDisksByScope(scope, ownerId, pendingDeleted, includeSystem)
+	disks := filterDisksByScope(scope, ownerId, pendingDeleted, includeSystem, policyResult)
 	disks = disks.Query().Filter(cond(disks.Field("id"), sq)).SubQuery()
 	q := disks.Query(
 		disks.Field("storage_id"),
@@ -991,16 +1004,16 @@ func (manager *SStorageManager) diskIsAttachedQ(isAttached bool, scope rbacutils
 	return q.SubQuery()
 }
 
-func (manager *SStorageManager) diskAttachedQ(scope rbacutils.TRbacScope, ownerId mcclient.IIdentityProvider, pendingDeleted bool, includeSystem bool) *sqlchemy.SSubQuery {
-	return manager.diskIsAttachedQ(true, scope, ownerId, pendingDeleted, includeSystem)
+func (manager *SStorageManager) diskAttachedQ(scope rbacutils.TRbacScope, ownerId mcclient.IIdentityProvider, pendingDeleted bool, includeSystem bool, policyResult rbacutils.SPolicyResult) *sqlchemy.SSubQuery {
+	return manager.diskIsAttachedQ(true, scope, ownerId, pendingDeleted, includeSystem, policyResult)
 }
 
-func (manager *SStorageManager) diskDetachedQ(scope rbacutils.TRbacScope, ownerId mcclient.IIdentityProvider, pendingDeleted bool, includeSystem bool) *sqlchemy.SSubQuery {
-	return manager.diskIsAttachedQ(false, scope, ownerId, pendingDeleted, includeSystem)
+func (manager *SStorageManager) diskDetachedQ(scope rbacutils.TRbacScope, ownerId mcclient.IIdentityProvider, pendingDeleted bool, includeSystem bool, policyResult rbacutils.SPolicyResult) *sqlchemy.SSubQuery {
+	return manager.diskIsAttachedQ(false, scope, ownerId, pendingDeleted, includeSystem, policyResult)
 }
 
-func (manager *SStorageManager) disksFailedQ(scope rbacutils.TRbacScope, ownerId mcclient.IIdentityProvider, pendingDeleted bool, includeSystem bool) *sqlchemy.SSubQuery {
-	disks := filterDisksByScope(scope, ownerId, pendingDeleted, includeSystem)
+func (manager *SStorageManager) disksFailedQ(scope rbacutils.TRbacScope, ownerId mcclient.IIdentityProvider, pendingDeleted bool, includeSystem bool, policyResult rbacutils.SPolicyResult) *sqlchemy.SSubQuery {
+	disks := filterDisksByScope(scope, ownerId, pendingDeleted, includeSystem, policyResult)
 	q := disks.Query(
 		disks.Field("storage_id"),
 		sqlchemy.SUM("failed_capacity", disks.Field("disk_size")),
@@ -1017,12 +1030,43 @@ func (manager *SStorageManager) totalCapacityQ(
 	scope rbacutils.TRbacScope, ownerId mcclient.IIdentityProvider,
 	pendingDeleted bool, includeSystem bool,
 	storageOwnership bool,
+	policyResult rbacutils.SPolicyResult,
 ) *sqlchemy.SQuery {
-	stmt := manager.disksReadyQ(scope, ownerId, pendingDeleted, includeSystem)
-	stmt2 := manager.disksFailedQ(scope, ownerId, pendingDeleted, includeSystem)
-	attachedDisks := manager.diskAttachedQ(scope, ownerId, pendingDeleted, includeSystem)
-	detachedDisks := manager.diskDetachedQ(scope, ownerId, pendingDeleted, includeSystem)
-	storages := manager.Query().SubQuery()
+	stmt := manager.disksReadyQ(scope, ownerId, pendingDeleted, includeSystem, policyResult)
+	stmt2 := manager.disksFailedQ(scope, ownerId, pendingDeleted, includeSystem, policyResult)
+	attachedDisks := manager.diskAttachedQ(scope, ownerId, pendingDeleted, includeSystem, policyResult)
+	detachedDisks := manager.diskDetachedQ(scope, ownerId, pendingDeleted, includeSystem, policyResult)
+
+	sq := manager.Query()
+
+	if len(hostTypes) > 0 || len(resourceTypes) > 0 || len(rangeObjs) > 0 {
+		hosts := HostManager.Query().SubQuery()
+		subq := HoststorageManager.Query("storage_id")
+		subq = subq.Join(hosts, sqlchemy.Equals(hosts.Field("id"), subq.Field("host_id")))
+		subq = subq.Filter(sqlchemy.IsTrue(hosts.Field("enabled")))
+		subq = subq.Filter(sqlchemy.Equals(hosts.Field("host_status"), api.HOST_ONLINE))
+		subq = AttachUsageQuery(subq, hosts, hostTypes, resourceTypes, nil, nil, "", rangeObjs)
+
+		sq = sq.Filter(sqlchemy.In(sq.Field("id"), subq.SubQuery()))
+	}
+
+	if len(rangeObjs) > 0 || len(providers) > 0 || len(brands) > 0 || cloudEnv != "" {
+		sq = CloudProviderFilter(sq, sq.Field("manager_id"), providers, brands, cloudEnv)
+		sq = RangeObjectsFilter(sq, rangeObjs, nil, sq.Field("zone_id"), sq.Field("manager_id"), nil, sq.Field("id"))
+	}
+
+	if storageOwnership {
+		switch scope {
+		case rbacutils.ScopeSystem:
+		case rbacutils.ScopeDomain, rbacutils.ScopeProject:
+			sq = sq.Equals("domain_id", ownerId.GetProjectDomainId())
+		}
+	}
+
+	sq = db.ObjectIdQueryWithPolicyResult(sq, manager, policyResult)
+
+	storages := sq.SubQuery()
+
 	q := storages.Query(
 		storages.Field("capacity"),
 		storages.Field("reserved"),
@@ -1042,30 +1086,6 @@ func (manager *SStorageManager) totalCapacityQ(
 	q = q.LeftJoin(stmt2, sqlchemy.Equals(stmt2.Field("storage_id"), storages.Field("id")))
 	q = q.LeftJoin(attachedDisks, sqlchemy.Equals(attachedDisks.Field("storage_id"), storages.Field("id")))
 	q = q.LeftJoin(detachedDisks, sqlchemy.Equals(detachedDisks.Field("storage_id"), storages.Field("id")))
-
-	if len(hostTypes) > 0 || len(resourceTypes) > 0 || len(rangeObjs) > 0 {
-		hosts := HostManager.Query().SubQuery()
-		subq := HoststorageManager.Query("storage_id")
-		subq = subq.Join(hosts, sqlchemy.Equals(hosts.Field("id"), subq.Field("host_id")))
-		subq = subq.Filter(sqlchemy.IsTrue(hosts.Field("enabled")))
-		subq = subq.Filter(sqlchemy.Equals(hosts.Field("host_status"), api.HOST_ONLINE))
-		subq = AttachUsageQuery(subq, hosts, hostTypes, resourceTypes, nil, nil, "", rangeObjs)
-
-		q = q.Filter(sqlchemy.In(storages.Field("id"), subq.SubQuery()))
-	}
-
-	if len(rangeObjs) > 0 || len(providers) > 0 || len(brands) > 0 || cloudEnv != "" {
-		q = CloudProviderFilter(q, storages.Field("manager_id"), providers, brands, cloudEnv)
-		q = RangeObjectsFilter(q, rangeObjs, nil, storages.Field("zone_id"), storages.Field("manager_id"), nil, storages.Field("id"))
-	}
-
-	if storageOwnership {
-		switch scope {
-		case rbacutils.ScopeSystem:
-		case rbacutils.ScopeDomain, rbacutils.ScopeProject:
-			q = q.Equals("domain_id", ownerId.GetProjectDomainId())
-		}
-	}
 
 	return q
 }
@@ -1196,6 +1216,7 @@ func (manager *SStorageManager) TotalCapacity(
 	ownerId mcclient.IIdentityProvider,
 	pendingDeleted bool, includeSystem bool,
 	storageOwnership bool,
+	policyResult rbacutils.SPolicyResult,
 ) StoragesCapacityStat {
 	res1 := manager.calculateCapacity(
 		manager.totalCapacityQ(
@@ -1206,6 +1227,7 @@ func (manager *SStorageManager) TotalCapacity(
 			scope, ownerId,
 			pendingDeleted, includeSystem,
 			storageOwnership,
+			policyResult,
 		),
 	)
 	return res1
@@ -1214,6 +1236,7 @@ func (manager *SStorageManager) TotalCapacity(
 func (self *SStorage) createDisk(ctx context.Context, name string, diskConfig *api.DiskConfig, userCred mcclient.TokenCredential,
 	ownerId mcclient.IIdentityProvider, autoDelete bool, isSystem bool,
 	billingType string, billingCycle string,
+	encryptKeyId string,
 ) (*SDisk, error) {
 	disk := SDisk{}
 	disk.SetModelManager(DiskManager, &disk)
@@ -1230,6 +1253,8 @@ func (self *SStorage) createDisk(ctx context.Context, name string, diskConfig *a
 
 	disk.BillingType = billingType
 	disk.BillingCycle = billingCycle
+
+	disk.EncryptKeyId = encryptKeyId
 
 	err := disk.GetModelManager().TableSpec().Insert(ctx, &disk)
 	if err != nil {
@@ -1300,8 +1325,8 @@ func (self *SStorage) PerformUncacheImage(ctx context.Context, userCred mcclient
 	return cache.PerformUncacheImage(ctx, userCred, query, data)
 }
 
-func (self *SStorage) GetIStorage() (cloudprovider.ICloudStorage, error) {
-	provider, err := self.GetDriver()
+func (self *SStorage) GetIStorage(ctx context.Context) (cloudprovider.ICloudStorage, error) {
+	provider, err := self.GetDriver(ctx)
 	if err != nil {
 		return nil, errors.Wrap(err, "self.GetDriver")
 	}
@@ -1609,20 +1634,24 @@ func (self *SStorage) GetSchedtagJointManager() ISchedtagJointManager {
 }
 
 func (manager *SStorageManager) StorageSnapshotsRecycle(ctx context.Context, userCred mcclient.TokenCredential, isStart bool) {
-	storages := make([]SStorage, 0)
-	err := manager.Query().Equals("enabled", true).
+	storages := []SStorage{}
+	q := manager.Query().Equals("enabled", true).
 		In("status", []string{api.STORAGE_ENABLED, api.STORAGE_ONLINE}).
-		In("storage_type", api.SHARED_FILE_STORAGE).All(&storages)
+		In("storage_type", api.SHARED_FILE_STORAGE)
+	err := db.FetchModelObjects(manager, q, &storages)
 	if err != nil {
 		log.Errorf("Get shared file storage failed %s", err)
 		return
 	}
 	for i := 0; i < len(storages); i++ {
-		storages[i].SetModelManager(manager, &storages[i])
-		host := storages[i].GetMasterHost()
+		host, err := storages[i].GetMasterHost()
+		if err != nil {
+			log.Errorf("get master host for storage %s(%s) failed: %v", storages[i].Name, storages[i].Id, err)
+			continue
+		}
 		url := fmt.Sprintf("%s/storages/%s/snapshots-recycle", host.ManagerUri, storages[i].Id)
 		headers := mcclient.GetTokenHeaders(userCred)
-		_, _, err := httputils.JSONRequest(httputils.GetDefaultClient(), ctx, "POST", url, headers, nil, false)
+		_, _, err = httputils.JSONRequest(httputils.GetDefaultClient(), ctx, "POST", url, headers, nil, false)
 		if err != nil {
 			log.Errorf("Storage request snapshots recycle failed %s", err)
 		}
