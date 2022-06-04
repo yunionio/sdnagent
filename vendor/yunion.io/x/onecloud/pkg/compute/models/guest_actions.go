@@ -1832,19 +1832,23 @@ func (self *SGuest) PerformDetachdisk(ctx context.Context, userCred mcclient.Tok
 
 	if utils.IsInStringArray(self.Status, detachDiskStatus) {
 		self.SetStatus(userCred, api.VM_DETACH_DISK, "")
-		err = self.StartGuestDetachdiskTask(ctx, userCred, disk, input.KeepDisk, "", false)
+		err = self.StartGuestDetachdiskTask(ctx, userCred, disk, input.KeepDisk, "", false, false)
 		return nil, err
 	}
 	return nil, httperrors.NewInvalidStatusError("Server in %s not able to detach disk", self.Status)
 }
 
 func (self *SGuest) StartGuestDetachdiskTask(
-	ctx context.Context, userCred mcclient.TokenCredential, disk *SDisk, keepDisk bool, parentTaskId string, purge bool,
+	ctx context.Context, userCred mcclient.TokenCredential,
+	disk *SDisk, keepDisk bool, parentTaskId string, purge bool, syncDescOnly bool,
 ) error {
 	taskData := jsonutils.NewDict()
 	taskData.Add(jsonutils.NewString(disk.Id), "disk_id")
 	taskData.Add(jsonutils.NewBool(keepDisk), "keep_disk")
 	taskData.Add(jsonutils.NewBool(purge), "purge")
+
+	// finally reuse fw_only option
+	taskData.Add(jsonutils.NewBool(syncDescOnly), "sync_desc_only")
 	if utils.IsInStringArray(disk.Status, []string{api.DISK_INIT, api.DISK_ALLOC_FAILED}) {
 		//删除非正常状态下的disk
 		taskData.Add(jsonutils.JSONFalse, "keep_disk")
@@ -2488,7 +2492,7 @@ func (self *SGuest) PerformChangeConfig(ctx context.Context, userCred mcclient.T
 		return nil, httperrors.NewInputParameterError("%v", err)
 	}
 	if !utils.IsInStringArray(self.Status, changeStatus) {
-		return nil, httperrors.NewInvalidStatusError("Cannot change config in %s", self.Status)
+		return nil, httperrors.NewInvalidStatusError("Cannot change config in %s for %s, requires %s", self.Status, self.GetHypervisor(), changeStatus)
 	}
 
 	_, err = self.GetHost()
@@ -2974,16 +2978,7 @@ func (self *SGuest) SendMonitorCommand(ctx context.Context, userCred mcclient.To
 }
 
 func (self *SGuest) PerformAssociateEip(ctx context.Context, userCred mcclient.TokenCredential, query jsonutils.JSONObject, input api.ServerAssociateEipInput) (jsonutils.JSONObject, error) {
-	if !utils.IsInStringArray(self.Status, []string{api.VM_READY, api.VM_RUNNING}) {
-		return nil, httperrors.NewInvalidStatusError("cannot associate eip in status %s", self.Status)
-	}
-
-	err := ValidateAssociateEip(self)
-	if err != nil {
-		return nil, err
-	}
-
-	err = self.IsEipAssociable()
+	err := self.IsEipAssociable()
 	if err != nil {
 		return nil, httperrors.NewGeneralError(err)
 	}
@@ -3103,9 +3098,9 @@ func (self *SGuest) PerformCreateEip(ctx context.Context, userCred mcclient.Toke
 		autoDellocate = (input.AutoDellocate != nil && *input.AutoDellocate)
 	)
 
-	err := ValidateAssociateEip(self)
+	err := self.IsEipAssociable()
 	if err != nil {
-		return nil, err
+		return nil, httperrors.NewGeneralError(err)
 	}
 
 	if chargeType == "" {
@@ -3176,6 +3171,15 @@ func (self *SGuest) setUserData(ctx context.Context, userCred mcclient.TokenCred
 		return err
 	}
 	return nil
+}
+
+func (self *SGuest) GetUserData(ctx context.Context, userCred mcclient.TokenCredential) string {
+	userData := self.GetMetadata(ctx, "user_data", userCred)
+	if len(userData) == 0 {
+		return userData
+	}
+	decodeData, _ := userdata.Decode(userData)
+	return decodeData
 }
 
 func (self *SGuest) PerformUserData(ctx context.Context, userCred mcclient.TokenCredential, query jsonutils.JSONObject, input api.ServerUserDataInput) (jsonutils.JSONObject, error) {
@@ -3351,6 +3355,27 @@ func (self *SGuest) PerformBlockStreamFailed(ctx context.Context, userCred mccli
 		reason, _ := data.GetString("reason")
 		logclient.AddSimpleActionLog(self, logclient.ACT_VM_BLOCK_STREAM, reason, userCred, false)
 		return nil, self.SetStatus(userCred, api.VM_BLOCK_STREAM_FAIL, reason)
+	}
+	return nil, nil
+}
+
+func (self *SGuest) PerformBlockMirrorReady(ctx context.Context, userCred mcclient.TokenCredential, query jsonutils.JSONObject, data jsonutils.JSONObject) (jsonutils.JSONObject, error) {
+	if self.Status == api.VM_BLOCK_STREAM || self.Status == api.VM_RUNNING {
+		diskId, err := data.GetString("disk_id")
+		if err != nil {
+			return nil, httperrors.NewMissingParameterError("disk_id")
+		}
+		log.Infof("disk_id %s", diskId)
+		disk := DiskManager.FetchDiskById(diskId)
+		if disk == nil {
+			return nil, httperrors.NewNotFoundError("disk %s not found", diskId)
+		}
+
+		taskId := disk.GetMetadata(ctx, api.DISK_CLONE_TASK_ID, userCred)
+		log.Infof("task_id %s", taskId)
+		if err := self.startSwitchToClonedDisk(ctx, userCred, taskId); err != nil {
+			return nil, errors.Wrap(err, "startSwitchToClonedDisk")
+		}
 	}
 	return nil, nil
 }
@@ -3699,7 +3724,11 @@ func (self *SGuest) PerformPostpaidExpire(ctx context.Context, userCred mcclient
 	}
 
 	err = self.SaveRenewInfo(ctx, userCred, bc, nil, billing_api.BILLING_TYPE_POSTPAID)
-	return nil, err
+	if err != nil {
+		return nil, err
+	}
+	logclient.AddActionLogWithContext(ctx, self, logclient.ACT_SET_EXPIRED_TIME, input, userCred, true)
+	return nil, nil
 }
 
 func (self *SGuest) PerformRenew(ctx context.Context, userCred mcclient.TokenCredential, query jsonutils.JSONObject, data jsonutils.JSONObject) (jsonutils.JSONObject, error) {
@@ -5384,6 +5413,8 @@ func (self *SGuest) PerformChangeDiskStorage(ctx context.Context, userCred mccli
 		ServerChangeDiskStorageInput: *input,
 		StorageId:                    srcDisk.StorageId,
 		TargetDiskId:                 targetDisk.GetId(),
+		DiskFormat:                   srcDisk.DiskFormat,
+		GuestRunning:                 self.Status == api.VM_RUNNING,
 	}
 
 	return nil, self.StartChangeDiskStorageTask(ctx, userCred, internalInput, "")
@@ -5393,6 +5424,20 @@ func (self *SGuest) StartChangeDiskStorageTask(ctx context.Context, userCred mcc
 	reason := fmt.Sprintf("Change disk %s to storage %s", input.DiskId, input.TargetStorageId)
 	self.SetStatus(userCred, api.VM_DISK_CHANGE_STORAGE, reason)
 	return self.GetDriver().StartChangeDiskStorageTask(self, ctx, userCred, input, "")
+}
+
+func (self *SGuest) startSwitchToClonedDisk(ctx context.Context, userCred mcclient.TokenCredential, taskId string) error {
+	task := taskman.TaskManager.FetchTaskById(taskId)
+	if task == nil {
+		return errors.Errorf("no task %s found", taskId)
+	}
+	taskman.LocalTaskRun(task, func() (jsonutils.JSONObject, error) {
+		log.Infof("guest %s start switch to cloned disk task", self.Id)
+		params := jsonutils.NewDict()
+		params.Set("block_jobs_ready", jsonutils.JSONTrue)
+		return params, nil
+	})
+	return nil
 }
 
 func (self *SGuest) PerformProbeIsolatedDevices(ctx context.Context, userCred mcclient.TokenCredential, query jsonutils.JSONObject, data jsonutils.JSONObject) (jsonutils.JSONObject, error) {

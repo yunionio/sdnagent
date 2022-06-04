@@ -519,6 +519,8 @@ func ListItems(manager IModelManager, ctx context.Context, userCred mcclient.Tok
 	limit, _ := query.Int("limit")
 	offset, _ := query.Int("offset")
 	pagingMarker, _ := query.GetString("paging_marker")
+	pagingOrderStr, _ := query.GetString("paging_order")
+	pagingOrder := sqlchemy.QueryOrderType(strings.ToUpper(pagingOrderStr))
 
 	var (
 		q           *sqlchemy.SQuery
@@ -559,6 +561,9 @@ func ListItems(manager IModelManager, ctx context.Context, userCred mcclient.Tok
 		if limit <= 0 {
 			limit = int64(pagingConf.DefaultLimit)
 		}
+		if pagingOrder != sqlchemy.SQL_ORDER_ASC && pagingOrder != sqlchemy.SQL_ORDER_DESC {
+			pagingOrder = pagingConf.Order
+		}
 	}
 
 	splitable := manager.GetSplitTable()
@@ -584,7 +589,7 @@ func ListItems(manager IModelManager, ctx context.Context, userCred mcclient.Tok
 					markers := decodePagingMarker(pagingMarker)
 					for markerIdx, marker := range markers {
 						if markerIdx < len(pagingConf.MarkerFields) {
-							if pagingConf.Order == sqlchemy.SQL_ORDER_ASC {
+							if pagingOrder == sqlchemy.SQL_ORDER_ASC {
 								subq = subq.GE(pagingConf.MarkerFields[markerIdx], marker)
 							} else {
 								subq = subq.LE(pagingConf.MarkerFields[markerIdx], marker)
@@ -593,7 +598,7 @@ func ListItems(manager IModelManager, ctx context.Context, userCred mcclient.Tok
 					}
 				}
 				for _, f := range pagingConf.MarkerFields {
-					if pagingConf.Order == sqlchemy.SQL_ORDER_ASC {
+					if pagingOrder == sqlchemy.SQL_ORDER_ASC {
 						subq = subq.Asc(f)
 					} else {
 						subq = subq.Desc(f)
@@ -653,7 +658,7 @@ func ListItems(manager IModelManager, ctx context.Context, userCred mcclient.Tok
 	// orders defined in pagingConf should have the highest priority
 	if pagingConf != nil {
 		for _, f := range pagingConf.MarkerFields {
-			if pagingConf.Order == sqlchemy.SQL_ORDER_ASC {
+			if pagingOrder == sqlchemy.SQL_ORDER_ASC {
 				q = q.Asc(f)
 			} else {
 				q = q.Desc(f)
@@ -729,7 +734,7 @@ func ListItems(manager IModelManager, ctx context.Context, userCred mcclient.Tok
 			markers := decodePagingMarker(pagingMarker)
 			for markerIdx, marker := range markers {
 				if markerIdx < len(pagingConf.MarkerFields) {
-					if pagingConf.Order == sqlchemy.SQL_ORDER_ASC {
+					if pagingOrder == sqlchemy.SQL_ORDER_ASC {
 						q = q.GE(pagingConf.MarkerFields[markerIdx], marker)
 					} else {
 						q = q.LE(pagingConf.MarkerFields[markerIdx], marker)
@@ -754,7 +759,7 @@ func ListItems(manager IModelManager, ctx context.Context, userCred mcclient.Tok
 			Data: retList, Limit: int(limit),
 			NextMarker:  nextMarker,
 			MarkerField: strings.Join(pagingConf.MarkerFields, ","),
-			MarkerOrder: string(pagingConf.Order),
+			MarkerOrder: string(pagingOrder),
 		}
 		return &retResult, nil
 	}
@@ -1654,8 +1659,10 @@ func updateItem(manager IModelManager, item IModel, ctx context.Context, userCre
 	for _, skip := range skipLogFields(manager) {
 		delete(diff, skip)
 	}
-	OpsLog.LogEvent(item, ACT_UPDATE, diff, userCred)
-	logclient.AddActionLogWithContext(ctx, item, logclient.ACT_UPDATE, diff, userCred, true)
+	if len(diff) > 0 {
+		OpsLog.LogEvent(item, ACT_UPDATE, diff, userCred)
+		logclient.AddActionLogWithContext(ctx, item, logclient.ACT_UPDATE, diff, userCred, true)
+	}
 
 	item.PostUpdate(ctx, userCred, query, data)
 
@@ -1725,6 +1732,13 @@ func DeleteModel(ctx context.Context, userCred mcclient.TokenCredential, item IM
 	}
 	if userCred != nil {
 		OpsLog.LogEvent(item, ACT_DELETE, item.GetShortDesc(ctx), userCred)
+		logclient.AddSimpleActionLog(item, logclient.ACT_DELETE, item.GetShortDesc(ctx), userCred, true)
+	}
+	if _, ok := item.(IStandaloneModel); ok && len(item.GetId()) > 0 {
+		err := Metadata.RemoveAll(ctx, item, userCred)
+		if err != nil {
+			return errors.Wrapf(err, "Metadata.RemoveAll")
+		}
 	}
 	return nil
 }

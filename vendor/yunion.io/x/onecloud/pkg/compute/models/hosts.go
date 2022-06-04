@@ -1204,7 +1204,7 @@ func (self *SHost) GetSpec(statusCheck bool) *jsonutils.JSONDict {
 		if !self.GetEnabled() {
 			return nil
 		}
-		if self.Status != api.BAREMETAL_RUNNING || self.GetBaremetalServer() != nil || self.IsMaintenance {
+		if !utils.IsInStringArray(self.Status, []string{api.BAREMETAL_RUNNING, api.BAREMETAL_READY}) || self.GetBaremetalServer() != nil || self.IsMaintenance {
 			return nil
 		}
 		if self.MemSize == 0 || self.CpuCount == 0 {
@@ -4006,9 +4006,31 @@ func (self *SHost) StartSyncAllGuestsStatusTask(ctx context.Context, userCred mc
 	}
 }
 
-func (self *SHost) PerformPing(ctx context.Context, userCred mcclient.TokenCredential, query jsonutils.JSONObject, data jsonutils.JSONObject) (jsonutils.JSONObject, error) {
+func (self *SHost) PerformPing(ctx context.Context, userCred mcclient.TokenCredential, query jsonutils.JSONObject, input api.SHostPingInput) (jsonutils.JSONObject, error) {
+	if input.WithData {
+		// piggyback storage stats info
+		log.Debugf("host ping %s", jsonutils.Marshal(input))
+		for _, si := range input.StorageStats {
+			storageObj, err := StorageManager.FetchById(si.StorageId)
+			if err != nil {
+				log.Errorf("fetch storage %s error %s", si.StorageId, err)
+			} else {
+				storage := storageObj.(*SStorage)
+				_, err := db.Update(storage, func() error {
+					storage.Capacity = si.CapacityMb
+					storage.ActualCapacityUsed = si.ActualCapacityUsedMb
+					return nil
+				})
+				if err != nil {
+					log.Errorf("update storage info error %s", err)
+				}
+			}
+		}
+		self.SetMetadata(ctx, "root_partition_used_capacity_mb", input.RootPartitionUsedCapacityMb, userCred)
+		self.SetMetadata(ctx, "memory_used_mb", input.MemoryUsedMb, userCred)
+	}
 	if self.HostStatus != api.HOST_ONLINE {
-		self.PerformOnline(ctx, userCred, query, data)
+		self.PerformOnline(ctx, userCred, query, nil)
 	} else {
 		self.SaveUpdates(func() error {
 			self.LastPingAt = time.Now()
@@ -4350,6 +4372,7 @@ func (self *SHost) addNetif(ctx context.Context, userCred mcclient.TokenCredenti
 				if err != nil {
 					return err
 				}
+				hw.syncClassMetadata(ctx)
 			} else {
 				db.Update(hw, func() error {
 					hw.Bridge = bridge
@@ -4359,6 +4382,7 @@ func (self *SHost) addNetif(ctx context.Context, userCred mcclient.TokenCredenti
 					hw.IsMaster = isMaster
 					return nil
 				})
+				hw.syncClassMetadata(ctx)
 			}
 		}
 	}
@@ -6006,4 +6030,8 @@ func (self *SHost) GetPinnedCpusetCores(ctx context.Context, userCred mcclient.T
 		ret[gst.GetId()] = pinned
 	}
 	return ret, nil
+}
+
+func (h *SHost) GetDetailsAppOptions(ctx context.Context, userCred mcclient.TokenCredential, query jsonutils.JSONObject) (jsonutils.JSONObject, error) {
+	return h.Request(ctx, userCred, httputils.GET, "/app-options", nil, nil)
 }

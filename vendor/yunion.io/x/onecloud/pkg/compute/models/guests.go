@@ -163,6 +163,8 @@ type SGuest struct {
 	InstanceType string `width:"64" charset:"utf8" nullable:"true" list:"user" create:"optional"`
 
 	SshableLastState tristate.TriState `default:"false" list:"user"`
+
+	IsDaemon tristate.TriState `default:"false" list:"admin" create:"admin_optional" update:"admin"`
 }
 
 // 云主机实例列表
@@ -463,6 +465,9 @@ func (manager *SGuestManager) ListItemFilter(
 		case "backup":
 			query.Gpu = &falseVal
 			query.Backup = &trueVal
+		case "usb":
+			query.Usb = &trueVal
+			query.Backup = &falseVal
 		default:
 			return nil, httperrors.NewInputParameterError("unknown server type %s", query.ServerType)
 		}
@@ -476,18 +481,30 @@ func (manager *SGuestManager) ListItemFilter(
 		}
 	}
 
-	if query.Gpu != nil {
-		isodev := IsolatedDeviceManager.Query().SubQuery()
-		sgq := isodev.Query(isodev.Field("guest_id")).
-			Filter(sqlchemy.AND(
-				sqlchemy.IsNotNull(isodev.Field("guest_id")),
-				sqlchemy.Startswith(isodev.Field("dev_type"), "GPU")))
-		cond := sqlchemy.NotIn
-		if *query.Gpu {
-			cond = sqlchemy.In
+	devTypeQ := func(q *sqlchemy.SQuery, checkType *bool, dType string) *sqlchemy.SQuery {
+		if checkType != nil {
+			conditions := []sqlchemy.ICondition{}
+			isodev := IsolatedDeviceManager.Query().SubQuery()
+			sgq := isodev.Query(isodev.Field("guest_id")).
+				Filter(sqlchemy.AND(
+					sqlchemy.IsNotNull(isodev.Field("guest_id")),
+					sqlchemy.Startswith(isodev.Field("dev_type"), dType)))
+			cond := sqlchemy.NotIn
+			if *checkType {
+				cond = sqlchemy.In
+			}
+			if dType == "GPU" {
+				sq := ServerSkuManager.Query("name").GT("gpu_count", 0).Distinct().SubQuery()
+				conditions = append(conditions, cond(q.Field("instance_type"), sq))
+			}
+			conditions = append(conditions, cond(q.Field("id"), sgq))
+			return q.Filter(sqlchemy.OR(conditions...))
 		}
-		q = q.Filter(cond(q.Field("id"), sgq))
+		return q
 	}
+
+	q = devTypeQ(q, query.Gpu, "GPU")
+	q = devTypeQ(q, query.Usb, api.USB_TYPE)
 
 	groupFilter := query.GroupId
 	if len(groupFilter) != 0 {
@@ -4233,6 +4250,8 @@ func (self *SGuest) GetJsonDescAtHypervisor(ctx context.Context, host *SHost) *a
 		HostId:      host.Id,
 
 		EncryptKeyId: self.EncryptKeyId,
+
+		IsDaemon: self.IsDaemon.Bool(),
 	}
 
 	if len(self.BackupHostId) > 0 {
@@ -4772,6 +4791,9 @@ func (manager *SGuestManager) CleanPendingDeleteServers(ctx context.Context, use
 	for i := 0; i < len(guests); i += 1 {
 		opts := api.ServerDeleteInput{
 			OverridePendingDelete: true,
+			DeleteSnapshots:       options.Options.DeleteSnapshotExpiredRelease,
+			DeleteEip:             options.Options.DeleteEipExpiredRelease,
+			DeleteDisks:           options.Options.DeleteDisksExpiredRelease,
 		}
 		guests[i].StartDeleteGuestTask(ctx, userCred, "", opts)
 	}
@@ -4844,7 +4866,6 @@ func (manager *SGuestManager) DeleteExpiredPrepaidServers(ctx context.Context, u
 	if guests == nil {
 		return
 	}
-	deleteSnapshot := options.Options.DeleteSnapshotExpiredRelease
 	for i := 0; i < len(guests); i += 1 {
 		// fake delete expired prepaid servers
 		if len(guests[i].ExternalId) > 0 {
@@ -4855,7 +4876,9 @@ func (manager *SGuestManager) DeleteExpiredPrepaidServers(ctx context.Context, u
 		}
 		guests[i].SetDisableDelete(userCred, false)
 		opts := api.ServerDeleteInput{
-			DeleteSnapshots: deleteSnapshot,
+			DeleteSnapshots: options.Options.DeleteSnapshotExpiredRelease,
+			DeleteEip:       options.Options.DeleteEipExpiredRelease,
+			DeleteDisks:     options.Options.DeleteDisksExpiredRelease,
 		}
 		guests[i].StartDeleteGuestTask(ctx, userCred, "", opts)
 	}
@@ -4884,7 +4907,6 @@ func (manager *SGuestManager) DeleteExpiredPostpaidServers(ctx context.Context, 
 		log.Infof("No expired postpaid guest")
 		return
 	}
-	deleteSnapshot := options.Options.DeleteSnapshotExpiredRelease
 	for i := 0; i < len(guests); i++ {
 		if len(guests[i].ExternalId) > 0 {
 			err := guests[i].doExternalSync(ctx, userCred)
@@ -4893,7 +4915,11 @@ func (manager *SGuestManager) DeleteExpiredPostpaidServers(ctx context.Context, 
 			}
 		}
 		guests[i].SetDisableDelete(userCred, false)
-		opts := api.ServerDeleteInput{DeleteSnapshots: deleteSnapshot}
+		opts := api.ServerDeleteInput{
+			DeleteSnapshots: options.Options.DeleteSnapshotExpiredRelease,
+			DeleteEip:       options.Options.DeleteEipExpiredRelease,
+			DeleteDisks:     options.Options.DeleteDisksExpiredRelease,
+		}
 		guests[i].StartDeleteGuestTask(ctx, userCred, "", opts)
 	}
 }
@@ -5008,8 +5034,16 @@ func (self *SGuest) isInReconcile(userCred mcclient.TokenCredential) bool {
 }
 
 func (self *SGuest) IsEipAssociable() error {
+	if !utils.IsInStringArray(self.Status, []string{api.VM_READY, api.VM_RUNNING}) {
+		return errors.Wrapf(httperrors.ErrInvalidStatus, "cannot associate eip in status %s", self.Status)
+	}
+
+	err := ValidateAssociateEip(self)
+	if err != nil {
+		return errors.Wrap(err, "ValidateAssociateEip")
+	}
+
 	var eip *SElasticip
-	var err error
 	switch self.Hypervisor {
 	case api.HYPERVISOR_AWS:
 		eip, err = self.GetElasticIp()
