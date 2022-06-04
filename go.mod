@@ -4,26 +4,32 @@ go 1.12
 
 require (
 	github.com/coreos/go-iptables v0.4.5
+	github.com/coreos/go-systemd v0.0.0-20190620071333-e64a0ec8b42a // indirect
+	github.com/coreos/pkg v0.0.0-20180928190104-399ea9e2e55f // indirect
 	github.com/digitalocean/go-openvswitch v0.0.0-20190515160856-1141932ed5cf
 	github.com/fsnotify/fsnotify v1.4.9
-	github.com/golang/protobuf v1.4.2
+	github.com/golang/protobuf v1.5.2
 	github.com/kr/pty v1.1.5 // indirect
 	github.com/mitchellh/go-homedir v1.1.0
+	github.com/moul/http2curl v1.0.0 // indirect
 	github.com/pkg/errors v0.9.1
+	github.com/shirou/w32 v0.0.0-20160930032740-bb4de0191aa4 // indirect
 	github.com/spf13/cobra v0.0.5
 	github.com/spf13/pflag v1.0.3
 	github.com/spf13/viper v1.3.2
+	github.com/tmc/grpc-websocket-proxy v0.0.0-20190109142713-0ad062ec5ee5 // indirect
 	github.com/vishvananda/netlink v1.0.0
 	github.com/vishvananda/netns v0.0.0-20191106174202-0a2b9b5464df
-	golang.org/x/net v0.0.0-20210226172049-e18ecbb05110
-	google.golang.org/grpc v1.29.0
-	google.golang.org/protobuf v1.24.0
+	go.etcd.io/etcd v0.5.0-alpha.5.0.20200819165624-17cef6e3e9d5 // indirect
+	golang.org/x/net v0.0.0-20210525063256-abc453219eb5
+	google.golang.org/grpc v1.38.0
+	google.golang.org/protobuf v1.26.0
 	gopkg.in/go-playground/assert.v1 v1.2.1 // indirect
 	gopkg.in/go-playground/validator.v9 v9.29.1 // indirect
-	yunion.io/x/jsonutils v0.0.0-20211213041607-f6733e38783e
-	yunion.io/x/log v0.0.0-20201210064738-43181789dc74
-	yunion.io/x/onecloud v0.0.0-20220102004932-9fa6696e3c97
-	yunion.io/x/pkg v0.0.0-20211116020154-6a76ba2f7e97
+	yunion.io/x/jsonutils v1.0.0
+	yunion.io/x/log v1.0.0
+	yunion.io/x/onecloud v0.0.0-20220604023320-300fb781cba2
+	yunion.io/x/pkg v1.0.0
 )
 
 replace github.com/digitalocean/go-openvswitch => github.com/yousong/go-openvswitch v0.0.0-20200422025222-6b2d502be872

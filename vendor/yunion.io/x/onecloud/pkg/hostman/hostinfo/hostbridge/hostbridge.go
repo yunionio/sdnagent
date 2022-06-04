@@ -50,7 +50,7 @@ type IBridgeDriver interface {
 	CleanupConfig()
 	SetupBridgeDev() error
 	SetupInterface() error
-	PersistentMac() error
+	PersistentConfig() error
 	DisableDHCPClient() (bool, error)
 
 	GenerateIfupScripts(scriptPath string, nic jsonutils.JSONObject, isSlave bool) error
@@ -97,7 +97,7 @@ func (d *SBaseBridgeDriver) GetMac() string {
 	return d.bridge.Mac
 }
 
-func (d *SBaseBridgeDriver) PersistentMac() error {
+func (d *SBaseBridgeDriver) PersistentConfig() error {
 	return nil
 }
 
@@ -337,8 +337,7 @@ func (d *SBaseBridgeDriver) saveFileExecutable(scriptPath, script string) error 
 func (d *SBaseBridgeDriver) generateIfdownScripts(driver IBridgeDriver, scriptPath string, nic jsonutils.JSONObject, isSlave bool) error {
 	script, err := driver.getDownScripts(nic, isSlave)
 	if err != nil {
-		log.Errorln(err)
-		return err
+		return errors.Wrap(err, "getDownScripts")
 	}
 	return d.saveFileExecutable(scriptPath, script)
 }

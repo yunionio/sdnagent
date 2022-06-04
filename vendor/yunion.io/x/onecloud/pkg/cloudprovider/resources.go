@@ -32,6 +32,7 @@ type ICloudResource interface {
 	GetId() string
 	GetName() string
 	GetGlobalId() string
+	GetCreatedAt() time.Time
 
 	GetStatus() string
 
@@ -57,7 +58,6 @@ type IVirtualResource interface {
 
 type IBillingResource interface {
 	GetBillingType() string
-	GetCreatedAt() time.Time
 	GetExpiredAt() time.Time
 	SetAutoRenew(bc billing.SBillingCycle) error
 	Renew(bc billing.SBillingCycle) error
@@ -223,7 +223,6 @@ type ICloudImage interface {
 	GetMinOsDiskSizeGb() int
 	GetMinRamSizeMb() int
 	GetImageFormat() string
-	GetCreatedAt() time.Time
 	UEFI() bool
 	GetPublicScope() rbacutils.TRbacScope
 	GetSubImages() []SSubImage
@@ -371,7 +370,7 @@ type ICloudVM interface {
 	AttachDisk(ctx context.Context, diskId string) error
 	DetachDisk(ctx context.Context, diskId string) error
 
-	CreateDisk(ctx context.Context, sizeMb int, uuid string, driver string) error
+	CreateDisk(ctx context.Context, opts *GuestDiskCreateOptions) (string, error)
 
 	MigrateVM(hostid string) error
 	LiveMigrateVM(hostid string) error
@@ -553,6 +552,12 @@ type ICloudGlobalVpc interface {
 	Delete() error
 }
 
+type ICloudIPv6Gateway interface {
+	IVirtualResource
+
+	GetInstanceType() string
+}
+
 type ICloudVpc interface {
 	ICloudResource
 
@@ -585,6 +590,8 @@ type ICloudVpc interface {
 	GetAuthorityOwnerId() string
 
 	ProposeJoinICloudInterVpcNetwork(opts *SVpcJointInterVpcNetworkOption) error
+
+	GetICloudIPv6Gateways() ([]ICloudIPv6Gateway, error)
 }
 
 type ICloudInternetGateway interface {
@@ -847,6 +854,8 @@ type ICloudProject interface {
 
 	GetDomainId() string
 	GetDomainName() string
+
+	GetAccountId() string
 }
 
 type ICloudNatGateway interface {

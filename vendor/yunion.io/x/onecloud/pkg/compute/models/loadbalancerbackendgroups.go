@@ -30,6 +30,7 @@ import (
 	"yunion.io/x/onecloud/pkg/cloudcommon/db"
 	"yunion.io/x/onecloud/pkg/cloudcommon/db/lockman"
 	"yunion.io/x/onecloud/pkg/cloudcommon/db/taskman"
+	"yunion.io/x/onecloud/pkg/cloudcommon/notifyclient"
 	"yunion.io/x/onecloud/pkg/cloudcommon/policy"
 	"yunion.io/x/onecloud/pkg/cloudcommon/validators"
 	"yunion.io/x/onecloud/pkg/cloudprovider"
@@ -326,12 +327,12 @@ func (llbg *SLoadbalancerBackendGroup) GetRegion() (*SCloudregion, error) {
 	return loadbalancer.GetRegion()
 }
 
-func (lbbg *SLoadbalancerBackendGroup) GetIRegion() (cloudprovider.ICloudRegion, error) {
+func (lbbg *SLoadbalancerBackendGroup) GetIRegion(ctx context.Context) (cloudprovider.ICloudRegion, error) {
 	loadbalancer, err := lbbg.GetLoadbalancer()
 	if err != nil {
 		return nil, errors.Wrapf(err, "GetLoadbalancer")
 	}
-	return loadbalancer.GetIRegion()
+	return loadbalancer.GetIRegion(ctx)
 }
 
 func (lbbg *SLoadbalancerBackendGroup) GetBackends() ([]SLoadbalancerBackend, error) {
@@ -863,7 +864,7 @@ func (lbbg *SLoadbalancerBackendGroup) GetBackendsParams() ([]cloudprovider.SLoa
 	return ret, nil
 }
 
-func (lbbg *SLoadbalancerBackendGroup) GetICloudLoadbalancerBackendGroup() (cloudprovider.ICloudLoadbalancerBackendGroup, error) {
+func (lbbg *SLoadbalancerBackendGroup) GetICloudLoadbalancerBackendGroup(ctx context.Context) (cloudprovider.ICloudLoadbalancerBackendGroup, error) {
 	if len(lbbg.ExternalId) == 0 {
 		return nil, fmt.Errorf("backendgroup %s has no external id", lbbg.GetId())
 	}
@@ -873,7 +874,7 @@ func (lbbg *SLoadbalancerBackendGroup) GetICloudLoadbalancerBackendGroup() (clou
 		return nil, errors.Wrapf(err, "GetLoadbalacer")
 	}
 
-	iregion, err := lb.GetIRegion()
+	iregion, err := lb.GetIRegion(ctx)
 	if err != nil {
 		return nil, err
 	}
@@ -993,6 +994,10 @@ func (lbbg *SLoadbalancerBackendGroup) syncRemoveCloudLoadbalancerBackendgroup(c
 	if err != nil { // cannot delete
 		err = lbbg.SetStatus(userCred, api.LB_STATUS_UNKNOWN, "sync to delete")
 	} else {
+		notifyclient.EventNotify(ctx, userCred, notifyclient.SEventNotifyParam{
+			Obj:    lbbg,
+			Action: notifyclient.ActionSyncDelete,
+		})
 		lbbg.LBPendingDelete(ctx, userCred)
 	}
 	return err
@@ -1013,6 +1018,12 @@ func (lbbg *SLoadbalancerBackendGroup) SyncWithCloudLoadbalancerBackendgroup(
 	})
 	if err != nil {
 		return err
+	}
+	if len(diff) > 0 {
+		notifyclient.EventNotify(ctx, userCred, notifyclient.SEventNotifyParam{
+			Obj:    lbbg,
+			Action: notifyclient.ActionSyncUpdate,
+		})
 	}
 	db.OpsLog.LogSyncUpdate(lbbg, diff, userCred)
 
@@ -1074,6 +1085,10 @@ func (man *SLoadbalancerBackendGroupManager) newFromCloudLoadbalancerBackendgrou
 	}
 
 	SyncCloudProject(userCred, lbbg, syncOwnerId, extLoadbalancerBackendgroup, provider.Id)
+	notifyclient.EventNotify(ctx, userCred, notifyclient.SEventNotifyParam{
+		Obj:    lbbg,
+		Action: notifyclient.ActionSyncCreate,
+	})
 
 	db.OpsLog.LogEvent(lbbg, db.ACT_CREATE, lbbg.GetShortDesc(ctx), userCred)
 

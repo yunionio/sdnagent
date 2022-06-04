@@ -130,7 +130,7 @@ func (manager *SIsolatedDeviceManager) ValidateCreateData(ctx context.Context,
 	if input.DevType == "" {
 		return input, httperrors.NewNotEmptyError("dev_type is empty")
 	}
-	if !utils.IsInStringArray(input.DevType, []string{api.GPU_HPC_TYPE, api.GPU_VGA_TYPE, api.USB_TYPE, api.NIC_TYPE}) {
+	if !utils.IsInStringArray(input.DevType, api.VALID_PASSTHROUGH_TYPES) {
 		return input, httperrors.NewInputParameterError("device type %q not supported", input.DevType)
 	}
 
@@ -185,6 +185,14 @@ func (self *SIsolatedDevice) ValidateUpdateData(
 	}
 	if input.ReservedStorage != nil && *input.ReservedStorage < 0 {
 		return input, httperrors.NewInputParameterError("reserved storage must >= 0")
+	}
+	if input.DevType != "" && input.DevType != self.DevType {
+		if !utils.IsInStringArray(input.DevType, api.VALID_GPU_TYPES) {
+			return input, httperrors.NewInputParameterError("device type %q not support update", input.DevType)
+		}
+		if !self.IsGPU() {
+			return input, httperrors.NewInputParameterError("Can't update for device %q", self.DevType)
+		}
 	}
 	return input, nil
 }
@@ -532,13 +540,16 @@ func (manager *SIsolatedDeviceManager) totalCountQ(
 	resourceTypes []string,
 	providers []string, brands []string, cloudEnv string,
 	rangeObjs []db.IStandaloneModel,
+	policyResult rbacutils.SPolicyResult,
 ) *sqlchemy.SQuery {
-	hosts := HostManager.Query().SubQuery()
+	hq := HostManager.Query()
+	if scope == rbacutils.ScopeDomain {
+		hq = hq.Filter(sqlchemy.Equals(hq.Field("domain_id"), ownerId.GetProjectDomainId()))
+	}
+	hq = db.ObjectIdQueryWithPolicyResult(hq, HostManager, policyResult)
+	hosts := hq.SubQuery()
 	devs := manager.Query().SubQuery()
 	q := devs.Query().Join(hosts, sqlchemy.Equals(devs.Field("host_id"), hosts.Field("id")))
-	if scope == rbacutils.ScopeDomain {
-		q = q.Filter(sqlchemy.Equals(hosts.Field("domain_id"), ownerId.GetProjectDomainId()))
-	}
 	q = q.Filter(sqlchemy.IsTrue(hosts.Field("enabled")))
 	if len(devType) != 0 {
 		q = q.Filter(sqlchemy.In(devs.Field("dev_type"), devType))
@@ -561,6 +572,7 @@ func (manager *SIsolatedDeviceManager) totalCount(
 	brands []string,
 	cloudEnv string,
 	rangeObjs []db.IStandaloneModel,
+	policyResult rbacutils.SPolicyResult,
 ) (int, error) {
 	return manager.totalCountQ(
 		scope,
@@ -572,6 +584,7 @@ func (manager *SIsolatedDeviceManager) totalCount(
 		brands,
 		cloudEnv,
 		rangeObjs,
+		policyResult,
 	).CountWithError()
 }
 
@@ -584,19 +597,20 @@ func (manager *SIsolatedDeviceManager) TotalCount(
 	brands []string,
 	cloudEnv string,
 	rangeObjs []db.IStandaloneModel,
+	policyResult rbacutils.SPolicyResult,
 ) (IsolatedDeviceCountStat, error) {
 	stat := IsolatedDeviceCountStat{}
 	devCnt, err := manager.totalCount(
 		scope, ownerId, nil, hostType, resourceTypes,
 		providers, brands, cloudEnv,
-		rangeObjs)
+		rangeObjs, policyResult)
 	if err != nil {
 		return stat, err
 	}
 	gpuCnt, err := manager.totalCount(
 		scope, ownerId, VALID_GPU_TYPES, hostType, resourceTypes,
 		providers, brands, cloudEnv,
-		rangeObjs)
+		rangeObjs, policyResult)
 	if err != nil {
 		return stat, err
 	}

@@ -21,9 +21,20 @@ import (
 	"yunion.io/x/onecloud/pkg/util/fileutils2"
 )
 
-type SHostOptions struct {
+type SHostBaseOptions struct {
 	common_options.HostCommonOptions
+
+	ManageNtpConfiguration bool `default:"true"`
+
+	DisableSecurityGroup bool `help:"disable security group" default:"false"`
+}
+
+type SHostOptions struct {
 	common_options.EtcdOptions
+
+	SHostBaseOptions
+
+	CommonConfigFile string `help:"common config file for container"`
 
 	HostType        string   `help:"Host server type, either hypervisor or kubelet" default:"hypervisor"`
 	ListenInterface string   `help:"Master address of host server"`
@@ -33,14 +44,18 @@ type SHostOptions struct {
 	Slots           string   `help:"Slots of host (optional)"`
 	Hostname        string   `help:"Customized host name"`
 
-	ServersPath    string `help:"Path for virtual server configuration files" default:"/opt/cloud/workspace/servers"`
-	ImageCachePath string `help:"Path for storing image caches" default:"/opt/cloud/workspace/disks/image_cache"`
+	ServersPath         string `help:"Path for virtual server configuration files" default:"/opt/cloud/workspace/servers"`
+	ImageCachePath      string `help:"Path for storing image caches" default:"/opt/cloud/workspace/disks/image_cache"`
+	MemorySnapshotsPath string `help:"Path for memory snapshot stat files" default:"/opt/cloud/workspace/memory_snapshots"`
 	// ImageCacheLimit int    `help:"Maximal storage space for image caching, in GB" default:"20"`
 	AgentTempPath  string `help:"Path for ESXi agent"`
 	AgentTempLimit int    `help:"Maximal storage space for ESXi agent, in GB" default:"10"`
 
 	RecycleDiskfile         bool `help:"Recycle instead of remove deleted disk file" default:"true"`
 	RecycleDiskfileKeepDays int  `help:"How long recycled files kept, default 28 days" default:"28"`
+	AlwaysRecycleDiskfile   bool `help:"Always recycle disk files, no matter what" default:"true"`
+
+	ZeroCleanDiskData bool `help:"Clean disk data by writing zeros" default:"false"`
 
 	EnableTemplateBacking    bool `help:"Use template as backing file"`
 	AutoMergeBackingTemplate bool `help:"Automatically stream merging backing file"`
@@ -50,14 +65,16 @@ type SHostOptions struct {
 	EnableMonitor  bool `help:"Enable monitor"`
 	ReportInterval int  `help:"Report interval in seconds" default:"60"`
 
-	BwDownloadBandwidth int `help:"Default ingress bandwidth in mbit (0 disabled)" default:"10"`
+	BwDownloadBandwidth int `help:"Default ingress bandwidth in mbit (0 disabled)" default:"1000"`
 
 	DnsServer       string `help:"Address of host DNS server"`
 	DnsServerLegacy string `help:"Deprecated Address of host DNS server"`
 
-	ChntpwPath           string `help:"path to chntpw tool" default:"/usr/local/bin/chntpw.static"`
-	OvmfPath             string `help:"Path to OVMF.fd" default:"/opt/cloud/contrib/OVMF.fd"`
-	LinuxDefaultRootUser bool   `help:"Default account for linux system is root"`
+	ChntpwPath string `help:"path to chntpw tool" default:"/usr/local/bin/chntpw.static"`
+	OvmfPath   string `help:"Path to OVMF.fd" default:"/opt/cloud/contrib/OVMF.fd"`
+
+	LinuxDefaultRootUser    bool `help:"Default account for linux system is root"`
+	WindowsDefaultAdminUser bool `default:"true" help:"Default account for Windows system is Administrator"`
 
 	BlockIoScheduler string `help:"Block IO scheduler, deadline or cfq" default:"deadline"`
 	EnableKsm        bool   `help:"Enable Kernel Same Page Merging"`
@@ -68,7 +85,7 @@ type SHostOptions struct {
 	LocalImagePath  []string `help:"Local image storage paths"`
 	SharedStorages  []string `help:"Path of shared storages"`
 
-	DefaultQemuVersion string `help:"Default qemu version" default:"2.12.1"`
+	DefaultQemuVersion string `help:"Default qemu version" default:"4.2.0"`
 
 	DhcpRelay       []string `help:"DHCP relay upstream"`
 	DhcpLeaseTime   int      `default:"100663296" help:"DHCP lease time in seconds"`
@@ -95,20 +112,18 @@ type SHostOptions struct {
 	EnableCpuBinding         bool `default:"true" help:"Enable cpu binding and rebalance"`
 	EnableOpenflowController bool `default:"false"`
 
-	PingRegionInterval     int      `default:"60" help:"interval to ping region, deefault is 1 minute"`
-	ManageNtpConfiguration bool     `default:"true"`
-	LogSystemdUnits        []string `help:"Systemd units log collected by fluent-bit"`
+	PingRegionInterval int      `default:"60" help:"interval to ping region, deefault is 1 minute"`
+	LogSystemdUnits    []string `help:"Systemd units log collected by fluent-bit"`
 	// 更改默认带宽限速为400GBps, qiujian
 	BandwidthLimit int `default:"400000" help:"Bandwidth upper bound when migrating disk image in MB/sec, default 400GBps"`
 	// 热迁移带宽，预期不低于8MBps, 1G Memory takes 128 seconds
-	MigrateExpectRate        int `default:"8" help:"Expected memory migration rate in MB/sec, default 8MBps"`
+	MigrateExpectRate        int `default:"32" help:"Expected memory migration rate in MB/sec, default 32MBps"`
 	MinMigrateTimeoutSeconds int `default:"30" help:"minimal timeout for a migration process, default 30 seconds"`
 
 	SnapshotDirSuffix  string `help:"Snapshot dir name equal diskId concat snapshot dir suffix" default:"_snap"`
 	SnapshotRecycleDay int    `default:"1" help:"Snapshot Recycle delete Duration day"`
 
-	EnableTelegraf          bool `default:"true" help:"enable send monitoring data to telegraf"`
-	WindowsDefaultAdminUser bool `default:"true" help:"Default account for Windows system is Administrator"`
+	EnableTelegraf bool `default:"true" help:"enable send monitoring data to telegraf"`
 
 	HostCpuPassthrough bool `default:"true" help:"if it is true, set qemu cpu type as -cpu host, otherwise, qemu64. default is true"`
 	DisableSetCgroup   bool `default:"false" help:"disable cgroup for guests"`
@@ -116,8 +131,6 @@ type SHostOptions struct {
 	MaxReservedMemory int `default:"10240" help:"host reserved memory"`
 
 	DefaultRequestWorkerCount int `default:"8" help:"default request worker count"`
-
-	CommonConfigFile string `help:"common config file for container"`
 
 	AllowSwitchVMs bool `help:"allow machines run as switch (spoof mac)" default:"true"`
 	AllowRouterVMs bool `help:"allow machines run as router (spoof ip)" default:"true"`
@@ -138,13 +151,12 @@ type SHostOptions struct {
 	OvnEipBridge              string `help:"name of bridge for eip traffic management" default:"$HOST_OVN_EIP_BRIDGE|breip"`
 	OvnUnderlayMtu            int    `help:"mtu of ovn underlay network" default:"1500"`
 
-	EnableRemoteExecutor bool   `help:"Enable remote executor" default:"false"`
-	EnableHealthChecker  bool   `help:"enable host health checker" default:"false"`
-	HealthDriver         string `help:"Component save host health state" default:"etcd"`
-	HostHealthTimeout    int    `help:"host health timeout" default:"30"`
-	HostLeaseTimeout     int    `help:"lease timeout" default:"10"`
+	EnableHealthChecker bool   `help:"enable host health checker" default:"false"`
+	HealthDriver        string `help:"Component save host health state" default:"etcd"`
+	HostHealthTimeout   int    `help:"host health timeout" default:"30"`
+	HostLeaseTimeout    int    `help:"lease timeout" default:"10"`
 
-	SyncStorageInfoDurationSecond int  `help:"sync storage size duration, unit is second" default:"60"`
+	SyncStorageInfoDurationSecond int  `help:"sync storage size duration, unit is second, default is every 2 minutes" default:"120"`
 	StartHostIgnoreSysError       bool `help:"start host agent ignore sys error" default:"false"`
 
 	DisableProbeKubelet bool   `help:"Disable probe kubelet config" default:"false"`
@@ -159,7 +171,14 @@ type SHostOptions struct {
 
 	EnableVmUuid bool `help:"enable vm UUID" default:"true" json:"enable_vm_uuid"`
 
-	EnableVirtioRngDevice bool `help:"enable qemu virtio-rng device" default:"false"`
+	EnableVirtioRngDevice bool `help:"enable qemu virtio-rng device" default:"true"`
+
+	RestrictQemuImgConvertWorker bool `help:"restrict qemu-img convert worker" default:"false"`
+
+	DefaultLiveMigrateDowntime float32 `help:"allow downtime in seconds for live migrate" default:"5.0"`
+
+	LocalBackupStoragePath string `help:"path for mounting backup nfs storage" default:"/opt/cloud/workspace/backupstorage"`
+	LocalBackupTempPath    string `help:"the local temporary directory for backup" default:"/opt/cloud/workspace/run/backups"`
 }
 
 var (
@@ -169,11 +188,11 @@ var (
 func Parse() (hostOpts SHostOptions) {
 	common_options.ParseOptions(&hostOpts, os.Args, "host.conf", "host")
 	if len(hostOpts.CommonConfigFile) > 0 && fileutils2.Exists(hostOpts.CommonConfigFile) {
-		commonCfg := &common_options.HostCommonOptions{}
+		commonCfg := &SHostBaseOptions{}
 		commonCfg.Config = hostOpts.CommonConfigFile
 		common_options.ParseOptions(commonCfg, []string{os.Args[0]}, "common.conf", "host")
 		baseOpt := hostOpts.BaseOptions.BaseOptions
-		hostOpts.HostCommonOptions = *commonCfg
+		hostOpts.SHostBaseOptions = *commonCfg
 		// keep base options
 		hostOpts.BaseOptions.BaseOptions = baseOpt
 	}

@@ -188,7 +188,7 @@ func (self *SQuota) FetchUsage(ctx context.Context) error {
 
 	diskSize := totalDiskSize(scope, ownerId, tristate.None, tristate.None, false, false, rangeObjs, providers, brands, keys.CloudEnv, hypervisors)
 
-	guest := usageTotalGuestResouceCount(scope, ownerId, rangeObjs, nil, hypervisors, false, false, nil, nil, providers, brands, keys.CloudEnv, nil)
+	guest := usageTotalGuestResouceCount(scope, ownerId, rangeObjs, nil, hypervisors, false, false, nil, nil, providers, brands, keys.CloudEnv, nil, rbacutils.SPolicyResult{})
 
 	self.Count = guest.TotalGuestCount
 	self.Cpu = guest.TotalCpuCount
@@ -453,12 +453,14 @@ func fetchCloudQuotaKeys(scope rbacutils.TRbacScope, ownerId mcclient.IIdentityP
 	keys := quotas.SCloudResourceKeys{}
 	keys.SBaseProjectQuotaKeys = quotas.OwnerIdProjectQuotaKeys(scope, ownerId)
 	if manager != nil {
-		account := manager.GetCloudaccount()
-		keys.Provider = account.Provider
-		keys.Brand = account.Brand
-		keys.CloudEnv = account.GetCloudEnv()
-		keys.AccountId = account.Id
 		keys.ManagerId = manager.Id
+		account, _ := manager.GetCloudaccount()
+		if account != nil {
+			keys.Provider = account.Provider
+			keys.Brand = account.Brand
+			keys.CloudEnv = account.GetCloudEnv()
+			keys.AccountId = account.Id
+		}
 	} else {
 		keys.Provider = api.CLOUD_PROVIDER_ONECLOUD
 		keys.Brand = api.ONECLOUD_BRAND_ONECLOUD

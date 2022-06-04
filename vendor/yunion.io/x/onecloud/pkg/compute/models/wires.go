@@ -46,9 +46,8 @@ import (
 )
 
 type SWireManager struct {
-	db.SInfrasResourceBaseManager
+	db.SStatusInfrasResourceBaseManager
 	db.SExternalizedResourceBaseManager
-	db.SStatusResourceBaseManager
 	SManagedResourceBaseManager
 	SVpcResourceBaseManager
 	SZoneResourceBaseManager
@@ -58,7 +57,7 @@ var WireManager *SWireManager
 
 func init() {
 	WireManager = &SWireManager{
-		SInfrasResourceBaseManager: db.NewInfrasResourceBaseManager(
+		SStatusInfrasResourceBaseManager: db.NewStatusInfrasResourceBaseManager(
 			SWire{},
 			"wires_tbl",
 			"wire",
@@ -69,11 +68,9 @@ func init() {
 }
 
 type SWire struct {
-	db.SInfrasResourceBase
+	db.SStatusInfrasResourceBase
 	db.SExternalizedResourceBase
-	db.SStatusResourceBase
 
-	// SManagedResourceBase
 	SVpcResourceBase  `wdith:"36" charset:"ascii" nullable:"false" list:"domain" create:"domain_required" update:""`
 	SZoneResourceBase `width:"36" charset:"ascii" nullable:"true" list:"domain" create:"domain_required" update:""`
 
@@ -139,15 +136,11 @@ func (manager *SWireManager) ValidateCreateData(
 		return input, errors.Wrap(err, "ValidateZoneResourceInput")
 	}
 
-	input.InfrasResourceBaseCreateInput, err = manager.SInfrasResourceBaseManager.ValidateCreateData(ctx, userCred, ownerId, query, input.InfrasResourceBaseCreateInput)
+	input.StatusInfrasResourceBaseCreateInput, err = manager.SStatusInfrasResourceBaseManager.ValidateCreateData(ctx, userCred, ownerId, query, input.StatusInfrasResourceBaseCreateInput)
 	if err != nil {
 		return input, err
 	}
 	return input, nil
-}
-
-func (wire *SWire) SetStatus(userCred mcclient.TokenCredential, status string, reason string) error {
-	return db.StatusBaseSetStatus(wire, userCred, status, reason)
 }
 
 func (wire *SWire) ValidateUpdateData(ctx context.Context, userCred mcclient.TokenCredential, query jsonutils.JSONObject, input api.WireUpdateInput) (api.WireUpdateInput, error) {
@@ -528,8 +521,11 @@ func (manager *SWireManager) totalCountQ(
 	providers []string, brands []string, cloudEnv string,
 	scope rbacutils.TRbacScope,
 	ownerId mcclient.IIdentityProvider,
+	policyResult rbacutils.SPolicyResult,
 ) *sqlchemy.SQuery {
-	guestsQ := filterByScopeOwnerId(GuestManager.Query(), scope, ownerId, false)
+	guestsQ := GuestManager.Query()
+	guestsQ = filterByScopeOwnerId(guestsQ, scope, ownerId, false)
+	guestsQ = db.ObjectIdQueryWithPolicyResult(guestsQ, GuestManager, policyResult)
 	guests := guestsQ.SubQuery()
 
 	// hosts no filter, for guest networks
@@ -547,6 +543,7 @@ func (manager *SWireManager) totalCountQ(
 
 	// hosts filter by owner, for host networks
 	hostsQ2 := HostManager.Query()
+	hostsQ2 = db.ObjectIdQueryWithPolicyResult(hostsQ2, HostManager, policyResult)
 	hostsQ2 = filterByScopeOwnerId(hostsQ2, scope, ownerId, true)
 	if len(hostTypes) > 0 {
 		hostsQ2 = hostsQ2.In("host_type", hostTypes)
@@ -559,9 +556,14 @@ func (manager *SWireManager) totalCountQ(
 	}
 	hosts2 := hostsQ2.SubQuery()
 
-	groups := filterByScopeOwnerId(GroupManager.Query(), scope, ownerId, false).SubQuery()
+	groupsQ := GroupManager.Query()
+	groupsQ = db.ObjectIdQueryWithPolicyResult(groupsQ, GroupManager, policyResult)
+	groupsQ = filterByScopeOwnerId(groupsQ, scope, ownerId, false)
+	groups := groupsQ.SubQuery()
 
-	lbsQ := filterByScopeOwnerId(LoadbalancerManager.Query(), scope, ownerId, false)
+	lbsQ := LoadbalancerManager.Query()
+	lbsQ = db.ObjectIdQueryWithPolicyResult(lbsQ, LoadbalancerManager, policyResult)
+	lbsQ = filterByScopeOwnerId(lbsQ, scope, ownerId, false)
 	if len(providers) > 0 || len(brands) > 0 || len(cloudEnv) > 0 {
 		lbsQ = CloudProviderFilter(lbsQ, lbsQ.Field("manager_id"), providers, brands, cloudEnv)
 	}
@@ -570,7 +572,9 @@ func (manager *SWireManager) totalCountQ(
 	}
 	lbs := lbsQ.SubQuery()
 
-	dbsQ := filterByScopeOwnerId(DBInstanceManager.Query(), scope, ownerId, false)
+	dbsQ := DBInstanceManager.Query()
+	dbsQ = db.ObjectIdQueryWithPolicyResult(dbsQ, DBInstanceManager, policyResult)
+	dbsQ = filterByScopeOwnerId(dbsQ, scope, ownerId, false)
 	if len(providers) > 0 || len(brands) > 0 || len(cloudEnv) > 0 {
 		dbsQ = CloudProviderFilter(dbsQ, dbsQ.Field("manager_id"), providers, brands, cloudEnv)
 	}
@@ -613,6 +617,7 @@ func (manager *SWireManager) totalCountQ(
 	lbNicQ = lbNicQ.Filter(sqlchemy.IsFalse(lbs.Field("pending_deleted")))
 
 	eipNicsQ := ElasticipManager.Query().IsNotEmpty("network_id")
+	eipNicsQ = db.ObjectIdQueryWithPolicyResult(eipNicsQ, ElasticipManager, policyResult)
 	eipNics := filterByScopeOwnerId(eipNicsQ, scope, ownerId, false).SubQuery()
 	eipNicQ := eipNics.Query(
 		eipNics.Field("network_id"),
@@ -626,6 +631,7 @@ func (manager *SWireManager) totalCountQ(
 	}
 
 	netifsQ := NetworkInterfaceManager.Query()
+	netifsQ = db.ObjectIdQueryWithPolicyResult(netifsQ, NetworkInterfaceManager, policyResult)
 	netifsQ = filterByScopeOwnerId(netifsQ, scope, ownerId, true)
 	if len(providers) > 0 || len(brands) > 0 || len(cloudEnv) > 0 {
 		netifsQ = CloudProviderFilter(netifsQ, netifsQ.Field("manager_id"), providers, brands, cloudEnv)
@@ -685,6 +691,7 @@ func (manager *SWireManager) totalCountQ2(
 	providers []string, brands []string, cloudEnv string,
 	scope rbacutils.TRbacScope,
 	ownerId mcclient.IIdentityProvider,
+	policyResult rbacutils.SPolicyResult,
 ) *sqlchemy.SQuery {
 	revIps := filterExpiredReservedIps(ReservedipManager.Query()).SubQuery()
 	revQ := revIps.Query(
@@ -694,7 +701,9 @@ func (manager *SWireManager) totalCountQ2(
 
 	revSQ := revQ.GroupBy(revIps.Field("network_id")).SubQuery()
 
-	ownerNetworks := filterByScopeOwnerId(NetworkManager.Query(), scope, ownerId, false).SubQuery()
+	ownerNetQ1 := NetworkManager.Query()
+	ownerNetQ1 = db.ObjectIdQueryWithPolicyResult(ownerNetQ1, NetworkManager, policyResult)
+	ownerNetworks := filterByScopeOwnerId(ownerNetQ1, scope, ownerId, false).SubQuery()
 	ownerNetQ := ownerNetworks.Query(
 		ownerNetworks.Field("wire_id"),
 		sqlchemy.COUNT("id").Label("net_count"),
@@ -719,7 +728,10 @@ func (manager *SWireManager) totalCountQ3(
 	providers []string, brands []string, cloudEnv string,
 	scope rbacutils.TRbacScope,
 	ownerId mcclient.IIdentityProvider,
+	policyResult rbacutils.SPolicyResult,
 ) *sqlchemy.SQuery {
+	wiresQ := WireManager.Query()
+	wiresQ = db.ObjectIdQueryWithPolicyResult(wiresQ, WireManager, policyResult)
 	wires := filterByScopeOwnerId(WireManager.Query(), scope, ownerId, true).SubQuery()
 	q := wires.Query(
 		sqlchemy.COUNT("id").Label("wires_count"),
@@ -777,6 +789,7 @@ func (manager *SWireManager) TotalCount(
 	providers []string, brands []string, cloudEnv string,
 	scope rbacutils.TRbacScope,
 	ownerId mcclient.IIdentityProvider,
+	policyResult rbacutils.SPolicyResult,
 ) WiresCountStat {
 	vmwareP, hostProviders := fixVmwareProvider(providers)
 	vmwareB, hostBrands := fixVmwareProvider(brands)
@@ -811,6 +824,7 @@ func (manager *SWireManager) TotalCount(
 		hostTypes, hostProviders, hostBrands,
 		providers, brands, cloudEnv,
 		scope, ownerId,
+		policyResult,
 	).First(&stat)
 	if err != nil {
 		log.Errorf("Wire total count: %v", err)
@@ -820,6 +834,7 @@ func (manager *SWireManager) TotalCount(
 		hostTypes,
 		providers, brands, cloudEnv,
 		scope, ownerId,
+		policyResult,
 	).First(&stat)
 	if err != nil {
 		log.Errorf("Wire total count 2: %v", err)
@@ -829,6 +844,7 @@ func (manager *SWireManager) TotalCount(
 		hostTypes,
 		providers, brands, cloudEnv,
 		scope, ownerId,
+		policyResult,
 	).First(&stat)
 	if err != nil {
 		log.Errorf("Wire total count 2: %v", err)
@@ -1083,12 +1099,12 @@ func (wire *SWire) clearHostSchedDescCache() error {
 	return nil
 }
 
-func (self *SWire) GetIWire() (cloudprovider.ICloudWire, error) {
+func (self *SWire) GetIWire(ctx context.Context) (cloudprovider.ICloudWire, error) {
 	vpc, err := self.GetVpc()
 	if err != nil {
 		return nil, errors.Wrapf(err, "GetVpc")
 	}
-	ivpc, err := vpc.GetIVpc()
+	ivpc, err := vpc.GetIVpc(ctx)
 	if err != nil {
 		return nil, err
 	}
@@ -1264,6 +1280,23 @@ func (wm *SWireManager) handleWireIdChange(ctx context.Context, args *wireIdChan
 	return nil
 }
 
+func (wire *SWire) PerformSetClassMetadata(ctx context.Context, userCred mcclient.TokenCredential, query jsonutils.JSONObject, input apis.PerformSetClassMetadataInput) (jsonutils.JSONObject, error) {
+	vpc, err := wire.GetVpc()
+	if err != nil {
+		return nil, errors.Wrapf(err, "unable to get vpc of wire %s", wire.GetId())
+	}
+	if vpc.GetId() != api.DEFAULT_VPC_ID {
+		ok, err := db.IsInSameClass(ctx, vpc, db.ClassMetadataOwner(input))
+		if err != nil {
+			return nil, errors.Wrapf(err, "unable to check if vpc and wire are in same class")
+		}
+		if !ok {
+			return nil, httperrors.NewForbiddenError("the vpc %s and this wire have different class metadata", vpc.GetName())
+		}
+	}
+	return wire.SStatusInfrasResourceBase.PerformSetClassMetadata(ctx, userCred, query, input)
+}
+
 // 二层网络列表
 func (manager *SWireManager) ListItemFilter(
 	ctx context.Context,
@@ -1291,9 +1324,9 @@ func (manager *SWireManager) ListItemFilter(
 		return nil, errors.Wrap(err, "SZoneResourceBaseManager.ListItemFilter")
 	}
 
-	q, err = manager.SInfrasResourceBaseManager.ListItemFilter(ctx, q, userCred, query.InfrasResourceBaseListInput)
+	q, err = manager.SStatusInfrasResourceBaseManager.ListItemFilter(ctx, q, userCred, query.StatusInfrasResourceBaseListInput)
 	if err != nil {
-		return nil, errors.Wrap(err, "SInfrasResourceBaseManager.ListItemFilter")
+		return nil, errors.Wrap(err, "SStatusInfrasResourceBaseManager.ListItemFilter")
 	}
 
 	hostStr := query.HostId
@@ -1327,7 +1360,7 @@ func (manager *SWireManager) OrderByExtraFields(
 ) (*sqlchemy.SQuery, error) {
 	var err error
 
-	q, err = manager.SInfrasResourceBaseManager.OrderByExtraFields(ctx, q, userCred, query.InfrasResourceBaseListInput)
+	q, err = manager.SStatusInfrasResourceBaseManager.OrderByExtraFields(ctx, q, userCred, query.StatusInfrasResourceBaseListInput)
 	if err != nil {
 		return nil, errors.Wrap(err, "SInfrasResourceBaseManager.OrderByExtraFields")
 	}
@@ -1349,7 +1382,7 @@ func (manager *SWireManager) OrderByExtraFields(
 func (manager *SWireManager) QueryDistinctExtraField(q *sqlchemy.SQuery, field string) (*sqlchemy.SQuery, error) {
 	var err error
 
-	q, err = manager.SInfrasResourceBaseManager.QueryDistinctExtraField(q, field)
+	q, err = manager.SStatusInfrasResourceBaseManager.QueryDistinctExtraField(q, field)
 	if err == nil {
 		return q, nil
 	}
@@ -1365,21 +1398,6 @@ func (manager *SWireManager) QueryDistinctExtraField(q *sqlchemy.SQuery, field s
 	return q, httperrors.ErrNotFound
 }
 
-/*func (self *SWire) getRegion() *SCloudregion {
-	zone := self.GetZone()
-	if zone != nil {
-		return zone.GetRegion()
-	}
-
-	vpc := self.getVpc()
-	if vpc != nil {
-		region, _ := vpc.GetRegion()
-		return region
-	}
-
-	return nil
-}*/
-
 func (manager *SWireManager) FetchCustomizeColumns(
 	ctx context.Context,
 	userCred mcclient.TokenCredential,
@@ -1390,15 +1408,15 @@ func (manager *SWireManager) FetchCustomizeColumns(
 ) []api.WireDetails {
 	rows := make([]api.WireDetails, len(objs))
 
-	stdRows := manager.SInfrasResourceBaseManager.FetchCustomizeColumns(ctx, userCred, query, objs, fields, isList)
+	stdRows := manager.SStatusInfrasResourceBaseManager.FetchCustomizeColumns(ctx, userCred, query, objs, fields, isList)
 	vpcRows := manager.SVpcResourceBaseManager.FetchCustomizeColumns(ctx, userCred, query, objs, fields, isList)
 	zoneRows := manager.SZoneResourceBaseManager.FetchCustomizeColumns(ctx, userCred, query, objs, fields, isList)
 
 	for i := range rows {
 		rows[i] = api.WireDetails{
-			InfrasResourceBaseDetails: stdRows[i],
-			VpcResourceInfo:           vpcRows[i],
-			ZoneResourceInfoBase:      zoneRows[i].ZoneResourceInfoBase,
+			StatusInfrasResourceBaseDetails: stdRows[i],
+			VpcResourceInfo:                 vpcRows[i],
+			ZoneResourceInfoBase:            zoneRows[i].ZoneResourceInfoBase,
 		}
 		wire := objs[i].(*SWire)
 		rows[i].Networks, _ = wire.NetworkCount()
@@ -1447,6 +1465,18 @@ func (model *SWire) CustomizeCreate(ctx context.Context, userCred mcclient.Token
 	return model.SInfrasResourceBase.CustomizeCreate(ctx, userCred, ownerId, query, data)
 }
 
+func (model *SWire) PostCreate(ctx context.Context, userCred mcclient.TokenCredential, ownerId mcclient.IIdentityProvider, query jsonutils.JSONObject, data jsonutils.JSONObject) {
+	model.SStatusInfrasResourceBase.PostCreate(ctx, userCred, ownerId, query, data)
+	vpc, err := model.GetVpc()
+	if err != nil {
+		log.Errorf("unable to getvpc of wire %s: %s", model.GetId(), vpc.GetId())
+	}
+	err = db.InheritFromTo(ctx, vpc, model)
+	if err != nil {
+		log.Errorf("unable to inhert vpc to model %s: %s", model.GetId(), err.Error())
+	}
+}
+
 func (wire *SWire) GetChangeOwnerCandidateDomainIds() []string {
 	candidates := [][]string{}
 	vpc, _ := wire.GetVpc()
@@ -1485,9 +1515,9 @@ func (manager *SWireManager) ListItemExportKeys(ctx context.Context,
 	keys stringutils2.SSortedStrings,
 ) (*sqlchemy.SQuery, error) {
 	var err error
-	q, err = manager.SInfrasResourceBaseManager.ListItemExportKeys(ctx, q, userCred, keys)
+	q, err = manager.SStatusInfrasResourceBaseManager.ListItemExportKeys(ctx, q, userCred, keys)
 	if err != nil {
-		return nil, errors.Wrap(err, "SInfrasResourceBaseManager.ListItemExportKeys")
+		return nil, errors.Wrap(err, "SStatusInfrasResourceBaseManager.ListItemExportKeys")
 	}
 	if keys.ContainsAny(manager.SZoneResourceBaseManager.GetExportKeys()...) {
 		q, err = manager.SZoneResourceBaseManager.ListItemExportKeys(ctx, q, userCred, keys)
@@ -1524,6 +1554,7 @@ func (self *SWire) GetDetailsTopology(ctx context.Context, userCred mcclient.Tok
 	}
 	for i := range hosts {
 		hns := hosts[i].GetBaremetalnetworks()
+		hss := hosts[i]._getAttachedStorages(tristate.None, tristate.None, nil)
 		host := api.HostTopologyOutput{
 			Name:       hosts[i].Name,
 			Id:         hosts[i].Id,
@@ -1531,11 +1562,22 @@ func (self *SWire) GetDetailsTopology(ctx context.Context, userCred mcclient.Tok
 			HostStatus: hosts[i].HostStatus,
 			HostType:   hosts[i].HostType,
 			Networks:   []api.HostnetworkTopologyOutput{},
+			Schedtags:  GetSchedtagsDetailsToResourceV2(&hosts[i], ctx),
 		}
 		for j := range hns {
 			host.Networks = append(host.Networks, api.HostnetworkTopologyOutput{
 				IpAddr:  hns[j].IpAddr,
 				MacAddr: hns[j].MacAddr,
+			})
+		}
+		for j := range hss {
+			host.Storages = append(host.Storages, api.StorageShortDesc{
+				Name:        hss[j].Name,
+				Id:          hss[j].Id,
+				Status:      hss[j].Status,
+				Enabled:     hss[j].Enabled.Bool(),
+				StorageType: hss[j].StorageType,
+				CapacityMb:  hss[j].Capacity,
 			})
 		}
 		ret.Hosts = append(ret.Hosts, host)

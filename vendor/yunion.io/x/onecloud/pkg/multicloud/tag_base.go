@@ -21,6 +21,7 @@ import (
 
 	"yunion.io/x/onecloud/pkg/apis"
 	"yunion.io/x/onecloud/pkg/cloudprovider"
+	"yunion.io/x/onecloud/pkg/util/encode"
 )
 
 type STagBase struct {
@@ -49,6 +50,8 @@ type QcloudTags struct {
 	Tags []STag
 	// Cdn
 	Tag []STag
+	// TDSQL
+	ResourceTags []STag
 }
 
 func (self *QcloudTags) GetTags() (map[string]string, error) {
@@ -83,7 +86,12 @@ func (self *QcloudTags) GetTags() (map[string]string, error) {
 		}
 		ret[tag.TagKey] = tag.TagValue
 	}
-
+	for _, tag := range self.ResourceTags {
+		if tag.TagValue == "null" {
+			tag.TagValue = ""
+		}
+		ret[tag.TagKey] = tag.TagValue
+	}
 	return ret, nil
 }
 
@@ -194,7 +202,11 @@ type GoogleTags struct {
 }
 
 func (self *GoogleTags) GetTags() (map[string]string, error) {
-	return self.Labels, nil
+	ret := map[string]string{}
+	for k, v := range self.Labels {
+		ret[encode.DecodeGoogleLable(k)] = encode.DecodeGoogleLable(v)
+	}
+	return ret, nil
 }
 
 func (self *GoogleTags) GetSysTags() map[string]string {
@@ -226,8 +238,15 @@ type SAwsTag struct {
 	Value string `xml:"value"`
 }
 
+type SAwsRdsTag struct {
+	Key   string `xml:"Key"`
+	Value string `xml:"Value"`
+}
+
 type AwsTags struct {
 	TagSet []SAwsTag `xml:"tagSet>item"`
+	// rds
+	TagList []SAwsRdsTag `xml:"TagList>Tag"`
 }
 
 func (self AwsTags) GetName() string {
@@ -243,6 +262,12 @@ func (self *AwsTags) GetTags() (map[string]string, error) {
 	ret := map[string]string{}
 	for _, tag := range self.TagSet {
 		if tag.Key == "Name" || tag.Key == "Description" {
+			continue
+		}
+		ret[tag.Key] = tag.Value
+	}
+	for _, tag := range self.TagList {
+		if strings.ToLower(tag.Key) == "name" || strings.ToLower(tag.Key) == "description" {
 			continue
 		}
 		ret[tag.Key] = tag.Value
@@ -407,5 +432,28 @@ func (self *CloudpodsTags) GetSysTags() map[string]string {
 }
 
 func (self *CloudpodsTags) SetTags(tags map[string]string, replace bool) error {
+	return errors.Wrap(cloudprovider.ErrNotImplemented, "SetTags")
+}
+
+type BingoTags struct {
+	TagSet []struct {
+		Key   string
+		Value string
+	}
+}
+
+func (self *BingoTags) GetTags() (map[string]string, error) {
+	tags := map[string]string{}
+	for _, tag := range self.TagSet {
+		tags[tag.Key] = tag.Value
+	}
+	return tags, nil
+}
+
+func (self *BingoTags) GetSysTags() map[string]string {
+	return nil
+}
+
+func (self *BingoTags) SetTags(tags map[string]string, replace bool) error {
 	return errors.Wrap(cloudprovider.ErrNotImplemented, "SetTags")
 }

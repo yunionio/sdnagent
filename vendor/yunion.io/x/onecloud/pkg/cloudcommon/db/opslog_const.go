@@ -227,6 +227,11 @@ const (
 
 	ACT_GUEST_SRC_CHECK = "guest_src_check"
 
+	ACT_GUEST_CPUSET             = "guest_cpuset"
+	ACT_GUEST_CPUSET_FAIL        = "guest_cpuset_fail"
+	ACT_GUEST_CPUSET_REMOVE      = "guest_cpuset_remove"
+	ACT_GUEST_CPUSET_REMOVE_FAIL = "guest_cpuset_remove_fail"
+
 	ACT_CHANGE_BANDWIDTH = "eip_change_bandwidth"
 	ACT_EIP_CONVERT_FAIL = "eip_convert_fail"
 
@@ -287,4 +292,15 @@ const (
 
 	ACT_MERGE_NETWORK        = "merge_network"
 	ACT_MERGE_NETWORK_FAILED = "merge_network_failed"
+
+	ACT_RECOVERY      = "recovery"
+	ACT_RECOVERY_FAIL = "recovery_fail"
+	ACT_PACK          = "pack"
+	ACT_PACK_FAIL     = "pack_fail"
+	ACT_UNPACK        = "unpack"
+	ACT_UNPACK_FAIL   = "unpack_fail"
+
+	ACT_ENCRYPT_START = "encrypt_start"
+	ACT_ENCRYPT_FAIL  = "encrypt_fail"
+	ACT_ENCRYPT_DONE  = "encrypted"
 )

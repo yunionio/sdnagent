@@ -238,7 +238,7 @@ type BaseListOptions struct {
 
 	Manager      string   `help:"List objects belonging to the cloud provider" json:"manager,omitempty"`
 	Account      string   `help:"List objects belonging to the cloud account" json:"account,omitempty"`
-	Provider     []string `help:"List objects from the provider" choices:"OneCloud|VMware|Aliyun|Qcloud|Azure|Aws|Huawei|OpenStack|Ucloud|ZStack|Google|Ctyun|Cloudpods" json:"provider,omitempty"`
+	Provider     []string `help:"List objects from the provider" choices:"OneCloud|VMware|Aliyun|Apsara|Qcloud|Azure|Aws|Huawei|OpenStack|Ucloud|ZStack|Google|Ctyun|Cloudpods|Nutanix|BingoCloud" json:"provider,omitempty"`
 	Brand        []string `help:"List objects belonging to a special brand"`
 	CloudEnv     string   `help:"Cloud environment" choices:"public|private|onpremise|private_or_onpremise" json:"cloud_env,omitempty"`
 	PublicCloud  *bool    `help:"List objects belonging to public cloud" json:"public_cloud"`
@@ -247,6 +247,7 @@ type BaseListOptions struct {
 	IsManaged    *bool    `help:"List objects managed by external providers" token:"managed" json:"is_managed"`
 
 	PagingMarker string `help:"Marker for pagination" json:"paging_marker"`
+	PagingOrder  string `help:"paging order" choices:"DESC|ASC"`
 
 	OrderByTag string `help:"Order results by tag values, composed by a tag key and order, e.g user:部门:ASC"`
 

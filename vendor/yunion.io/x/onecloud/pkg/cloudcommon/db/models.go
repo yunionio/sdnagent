@@ -24,7 +24,6 @@ import (
 	"yunion.io/x/sqlchemy"
 
 	"yunion.io/x/onecloud/pkg/appsrv"
-	"yunion.io/x/onecloud/pkg/cloudcommon"
 	common_options "yunion.io/x/onecloud/pkg/cloudcommon/options"
 )
 
@@ -94,7 +93,7 @@ func mustCheckModelManager(modelMan IModelManager) {
 	}
 }
 
-func CheckSync(autoSync bool) bool {
+func CheckSync(autoSync bool, enableChecksumTables bool, skipInitChecksum bool) bool {
 	log.Infof("Start check database schema ...")
 	inSync := true
 	var err error
@@ -143,6 +142,19 @@ func CheckSync(autoSync bool) bool {
 				inSync = false
 			}
 		}
+
+		recordMan, ok := modelMan.(IRecordChecksumModelManager)
+		if ok {
+			recordMan.SetEnableRecordChecksum(enableChecksumTables)
+			if recordMan.EnableRecordChecksum() {
+				if len(sqls) > 0 || !skipInitChecksum {
+					if err := InjectModelsChecksum(recordMan); err != nil {
+						log.Errorf("InjectModelsChecksum for %q error: %v", modelMan.TableSpec().Name(), err)
+						return false
+					}
+				}
+			}
+		}
 	}
 	return inSync
 }
@@ -150,7 +162,7 @@ func CheckSync(autoSync bool) bool {
 func EnsureAppSyncDB(app *appsrv.Application, opt *common_options.DBOptions, modelInitDBFunc func() error) {
 	// cloudcommon.InitDB(opt)
 
-	if !CheckSync(opt.AutoSyncTable) {
+	if !CheckSync(opt.AutoSyncTable, opt.EnableDBChecksumTables, opt.DBChecksumSkipInit) {
 		log.Fatalf("database schema not in sync!")
 	}
 
@@ -165,7 +177,7 @@ func EnsureAppSyncDB(app *appsrv.Application, opt *common_options.DBOptions, mod
 		os.Exit(0)
 	}
 
-	cloudcommon.AppDBInit(app)
+	AppDBInit(app)
 }
 
 func GetModelManager(keyword string) IModelManager {

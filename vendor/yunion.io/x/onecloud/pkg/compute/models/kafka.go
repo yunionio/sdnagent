@@ -321,14 +321,17 @@ func (man *SKafkaManager) TotalCount(
 	ownerId mcclient.IIdentityProvider,
 	rangeObjs []db.IStandaloneModel,
 	providers []string, brands []string, cloudEnv string,
+	policyResult rbacutils.SPolicyResult,
 ) (SKafkaCountStat, error) {
-	sq := man.Query().SubQuery()
+	kq := man.Query()
+	kq = scopeOwnerIdFilter(kq, scope, ownerId)
+	kq = CloudProviderFilter(kq, kq.Field("manager_id"), providers, brands, cloudEnv)
+	kq = RangeObjectsFilter(kq, rangeObjs, kq.Field("cloudregion_id"), nil, kq.Field("manager_id"), nil, nil)
+	kq = db.ObjectIdQueryWithPolicyResult(kq, man, policyResult)
+
+	sq := kq.SubQuery()
 	q := sq.Query(sqlchemy.COUNT("total_kafka_count"),
 		sqlchemy.SUM("total_disk_size_gb", sq.Field("disk_size_gb")))
-
-	q = scopeOwnerIdFilter(q, scope, ownerId)
-	q = CloudProviderFilter(q, q.Field("manager_id"), providers, brands, cloudEnv)
-	q = RangeObjectsFilter(q, rangeObjs, q.Field("cloudregion_id"), nil, q.Field("manager_id"), nil, nil)
 
 	stat := SKafkaCountStat{}
 	row := q.Row()
@@ -366,23 +369,23 @@ func (self *SKafka) StartDeleteTask(ctx context.Context, userCred mcclient.Token
 	return nil
 }
 
-func (self *SKafka) GetIRegion() (cloudprovider.ICloudRegion, error) {
+func (self *SKafka) GetIRegion(ctx context.Context) (cloudprovider.ICloudRegion, error) {
 	region, err := self.GetRegion()
 	if err != nil {
 		return nil, errors.Wrapf(err, "GetRegion")
 	}
-	provider, err := self.GetDriver()
+	provider, err := self.GetDriver(ctx)
 	if err != nil {
 		return nil, errors.Wrap(err, "self.GetDriver")
 	}
 	return provider.GetIRegionById(region.GetExternalId())
 }
 
-func (self *SKafka) GetIKafka() (cloudprovider.ICloudKafka, error) {
+func (self *SKafka) GetIKafka(ctx context.Context) (cloudprovider.ICloudKafka, error) {
 	if len(self.ExternalId) == 0 {
 		return nil, errors.Wrapf(cloudprovider.ErrNotFound, "empty externalId")
 	}
-	iRegion, err := self.GetIRegion()
+	iRegion, err := self.GetIRegion(ctx)
 	if err != nil {
 		return nil, errors.Wrapf(cloudprovider.ErrNotFound, "GetIRegion")
 	}
@@ -643,7 +646,7 @@ func (self *SKafka) PerformSyncstatus(ctx context.Context, userCred mcclient.Tok
 
 // 获取Kafka Topic列表
 func (self *SKafka) GetDetailsTopics(ctx context.Context, userCred mcclient.TokenCredential, query jsonutils.JSONObject) ([]cloudprovider.SKafkaTopic, error) {
-	iKafka, err := self.GetIKafka()
+	iKafka, err := self.GetIKafka(ctx)
 	if err != nil {
 		return nil, httperrors.NewGeneralError(errors.Wrapf(err, "GetIKafka"))
 	}

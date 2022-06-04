@@ -86,6 +86,13 @@ type SDiskInfo struct {
 	Name              string
 }
 
+type GuestDiskCreateOptions struct {
+	SizeMb    int
+	UUID      string
+	Driver    string
+	StorageId string
+}
+
 const (
 	CLOUD_SHELL                 = "cloud-shell"
 	CLOUD_SHELL_WITHOUT_ENCRYPT = "cloud-shell-without-encrypt"
@@ -117,6 +124,7 @@ type SManagedVMCreateConfig struct {
 	Cpu                 int
 	MemoryMB            int
 	ExternalNetworkId   string
+	ExternalVpcId       string
 	IpAddr              string
 	Description         string
 	SysDisk             SDiskInfo
@@ -162,9 +170,7 @@ func (vmConfig *SManagedVMCreateConfig) GetConfig(config *jsonutils.JSONDict) er
 	if strings.ToLower(vmConfig.OsType) == strings.ToLower(osprofile.OS_TYPE_LINUX) {
 		adminPublicKey, _ := config.GetString("admin_public_key")
 		projectPublicKey, _ := config.GetString("project_public_key")
-		oUserData, _ := config.GetString("user_data")
-
-		vmConfig.UserData = generateUserData(adminPublicKey, projectPublicKey, oUserData)
+		vmConfig.UserData = generateUserData(adminPublicKey, projectPublicKey, vmConfig.UserData)
 	}
 
 	resetPassword := jsonutils.QueryBoolean(config, "reset_password", false)

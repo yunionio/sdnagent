@@ -24,6 +24,7 @@ import (
 	"yunion.io/x/pkg/errors"
 	"yunion.io/x/sqlchemy"
 
+	api "yunion.io/x/onecloud/pkg/apis/notify"
 	"yunion.io/x/onecloud/pkg/cloudcommon/informer"
 	"yunion.io/x/onecloud/pkg/util/nopanic"
 	"yunion.io/x/onecloud/pkg/util/splitable"
@@ -49,6 +50,10 @@ type ITableSpec interface {
 	Decrement(ctx context.Context, diff interface{}, target interface{}) error
 
 	GetSplitTable() *splitable.SSplitTableSpec
+
+	GetTableSpec() *sqlchemy.STableSpec
+
+	GetDBName() sqlchemy.DBName
 }
 
 type sTableSpec struct {
@@ -126,25 +131,90 @@ func (ts *sTableSpec) isMarkDeleted(dt interface{}) (bool, error) {
 	return obj.GetDeleted(), nil
 }
 
+func (ts *sTableSpec) rejectRecordChecksumAfterInsert(model IModel) error {
+	obj, ok := IsModelEnableRecordChecksum(model)
+	if !ok {
+		return nil
+	}
+	return UpdateModelChecksum(obj)
+}
+
 func (ts *sTableSpec) Insert(ctx context.Context, dt interface{}) error {
 	if err := ts.ITableSpec.Insert(dt); err != nil {
 		return err
 	}
+	ts.rejectRecordChecksumAfterInsert(dt.(IModel))
 	ts.inform(ctx, dt, informer.Create)
 	return nil
+}
+
+func (ts *sTableSpec) GetTableSpec() *sqlchemy.STableSpec {
+	return ts.ITableSpec.(*sqlchemy.STableSpec)
+}
+
+func (ts *sTableSpec) calculateRecordChecksum(dt interface{}) (string, error) {
+	return "", errors.ErrNotImplemented
 }
 
 func (ts *sTableSpec) InsertOrUpdate(ctx context.Context, dt interface{}) error {
 	if err := ts.ITableSpec.InsertOrUpdate(dt); err != nil {
 		return err
 	}
+	ts.rejectRecordChecksumAfterInsert(dt.(IModel))
 	ts.inform(ctx, dt, informer.Create)
 	return nil
 }
 
+func (ts *sTableSpec) CheckRecordChanged(dbObj IModel) error {
+	return ts.CheckRecordChecksumConsistent(dbObj)
+}
+
+func (ts *sTableSpec) CheckRecordChecksumConsistent(model IModel) error {
+	obj, ok := IsModelEnableRecordChecksum(model)
+	if !ok {
+		return nil
+	}
+	calChecksum, err := CalculateModelChecksum(obj)
+	if err != nil {
+		return errors.Wrap(err, "CalculateModelChecksum")
+	}
+	savedChecksum := obj.GetRecordChecksum()
+	if calChecksum != savedChecksum {
+		log.Errorf("Record %s(%s) checksum changed, expected(%s) != calculated(%s)", obj.Keyword(), obj.GetId(), savedChecksum, calChecksum)
+		return errors.Errorf("Record %s(%s) checksum changed, expected(%s) != calculated(%s)", obj.Keyword(), obj.GetId(), savedChecksum, calChecksum)
+	}
+	return nil
+}
+
+func checksumTestNotify(ctx context.Context, action api.SAction, resType string, obj jsonutils.JSONObject) {
+
+}
+
 func (ts *sTableSpec) Update(ctx context.Context, dt interface{}, doUpdate func() error) (sqlchemy.UpdateDiffs, error) {
+	model := dt.(IModel)
+	dbObj, isEnableRecordChecksum := IsModelEnableRecordChecksum(model)
+	if isEnableRecordChecksum {
+		if err := ts.CheckRecordChanged(dbObj); err != nil {
+			log.Errorf("checkRecordChanged when update error: %s", err)
+			return nil, errors.Wrap(err, "checkRecordChanged when update")
+		}
+	}
+
 	oldObj := jsonutils.Marshal(dt)
-	diffs, err := ts.ITableSpec.Update(dt, doUpdate)
+	diffs, err := ts.ITableSpec.Update(dt, func() error {
+		if err := doUpdate(); err != nil {
+			return err
+		}
+		if isEnableRecordChecksum {
+			dbObj = dt.(IRecordChecksumModel)
+			updateChecksum, err := CalculateModelChecksum(dbObj)
+			if err != nil {
+				return errors.Wrap(err, "CalculateModelChecksum for update")
+			}
+			dbObj.SetRecordChecksum(updateChecksum)
+		}
+		return nil
+	})
 	if err != nil {
 		return nil, err
 	}

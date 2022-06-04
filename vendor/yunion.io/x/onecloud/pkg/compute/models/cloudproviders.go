@@ -174,21 +174,12 @@ func (self *SCloudprovider) GetProjectMapping() (*SProjectMapping, error) {
 }
 
 func (self *SCloudprovider) ValidateDeleteCondition(ctx context.Context, info jsonutils.JSONObject) error {
-	// allow delete cloudprovider if it is disabled
-	// account := self.GetCloudaccount()
-	// if account != nil && account.EnableAutoSync {
-	// 	return httperrors.NewInvalidStatusError("auto syncing is enabled on account")
-	// }
 	if self.GetEnabled() {
 		return httperrors.NewInvalidStatusError("provider is enabled")
 	}
 	if self.SyncStatus != api.CLOUD_PROVIDER_SYNC_STATUS_IDLE {
 		return httperrors.NewInvalidStatusError("provider is not idle")
 	}
-	// usage := self.getUsage()
-	// if !usage.isEmpty() {
-	// 	return httperrors.NewNotEmptyError("Not an empty cloud provider")
-	// }
 	return self.SEnabledStatusStandaloneResourceBase.ValidateDeleteCondition(ctx, nil)
 }
 
@@ -374,13 +365,19 @@ func (self *SCloudprovider) getAccessUrl() string {
 	if len(self.AccessUrl) > 0 {
 		return self.AccessUrl
 	}
-	account := self.GetCloudaccount()
-	return account.AccessUrl
+	account, _ := self.GetCloudaccount()
+	if account != nil {
+		return account.AccessUrl
+	}
+	return ""
 }
 
 func (self *SCloudprovider) getPassword() (string, error) {
 	if len(self.Secret) == 0 {
-		account := self.GetCloudaccount()
+		account, err := self.GetCloudaccount()
+		if err != nil {
+			return "", errors.Wrapf(err, "GetCloudaccount")
+		}
 		return account.getPassword()
 	}
 	return utils.DescryptAESBase64(self.Id, self.Secret)
@@ -439,9 +436,9 @@ func (self *SCloudaccount) getOrCreateTenant(ctx context.Context, name, domainId
 }
 
 func (self *SCloudprovider) syncProject(ctx context.Context, userCred mcclient.TokenCredential) error {
-	account := self.GetCloudaccount()
-	if account == nil {
-		return errors.Error("no valid cloudaccount???")
+	account, err := self.GetCloudaccount()
+	if err != nil {
+		return errors.Wrapf(err, "GetCloudaccount")
 	}
 
 	desc := fmt.Sprintf("auto create from cloud provider %s (%s)", self.Name, self.Id)
@@ -628,12 +625,12 @@ func (self *SCloudprovider) PerformSync(ctx context.Context, userCred mcclient.T
 	if !self.GetEnabled() {
 		return nil, httperrors.NewInvalidStatusError("Cloudprovider disabled")
 	}
-	account := self.GetCloudaccount()
+	account, err := self.GetCloudaccount()
+	if err != nil {
+		return nil, errors.Wrapf(err, "GetCloudaccount")
+	}
 	if !account.GetEnabled() {
 		return nil, httperrors.NewInvalidStatusError("Cloudaccount disabled")
-	}
-	if account.EnableAutoSync && self.SyncStatus != api.CLOUD_PROVIDER_SYNC_STATUS_IDLE {
-		return nil, httperrors.NewInvalidStatusError("Cloudprovider is not idle")
 	}
 	syncRange := SSyncRange{input}
 	if syncRange.FullSync || len(syncRange.Region) > 0 || len(syncRange.Zone) > 0 || len(syncRange.Host) > 0 || len(syncRange.Resources) > 0 {
@@ -642,7 +639,7 @@ func (self *SCloudprovider) PerformSync(ctx context.Context, userCred mcclient.T
 	if self.CanSync() || syncRange.Force {
 		return nil, self.StartSyncCloudProviderInfoTask(ctx, userCred, &syncRange, "")
 	}
-	return nil, nil
+	return nil, httperrors.NewInvalidStatusError("Unable to synchronize frequently")
 }
 
 func (self *SCloudprovider) StartSyncCloudProviderInfoTask(ctx context.Context, userCred mcclient.TokenCredential, syncRange *SSyncRange, parentTaskId string) error {
@@ -652,17 +649,14 @@ func (self *SCloudprovider) StartSyncCloudProviderInfoTask(ctx context.Context, 
 	}
 	task, err := taskman.TaskManager.NewTask(ctx, "CloudProviderSyncInfoTask", self, userCred, params, parentTaskId, "", nil)
 	if err != nil {
-		log.Errorf("startSyncCloudProviderInfoTask newTask error %s", err)
-		return err
+		return errors.Wrapf(err, "NewTask")
 	}
-	if cloudaccount := self.GetCloudaccount(); cloudaccount != nil {
-		cloudaccount.markAutoSync(userCred)
-		cloudaccount.MarkSyncing(userCred)
+	if cloudaccount, _ := self.GetCloudaccount(); cloudaccount != nil {
+		cloudaccount.MarkSyncing(userCred, false)
 	}
 	self.markStartSync(userCred, syncRange)
 	db.OpsLog.LogEvent(self, db.ACT_SYNC_HOST_START, "", userCred)
-	task.ScheduleRun(nil)
-	return nil
+	return task.ScheduleRun(nil)
 }
 
 func (self *SCloudprovider) PerformChangeProject(ctx context.Context, userCred mcclient.TokenCredential, query jsonutils.JSONObject, input apis.PerformChangeProjectOwnerInput) (jsonutils.JSONObject, error) {
@@ -677,7 +671,10 @@ func (self *SCloudprovider) PerformChangeProject(ctx context.Context, userCred m
 		return nil, nil
 	}
 
-	account := self.GetCloudaccount()
+	account, err := self.GetCloudaccount()
+	if err != nil {
+		return nil, err
+	}
 	if self.DomainId != tenant.DomainId {
 		if !db.IsAdminAllowPerform(ctx, userCred, self, "change-project") {
 			return nil, httperrors.NewForbiddenError("not allow to change project across domain")
@@ -719,10 +716,6 @@ func (self *SCloudprovider) PerformChangeProject(ctx context.Context, userCred m
 
 	logclient.AddSimpleActionLog(self, logclient.ACT_CHANGE_OWNER, notes, userCred, true)
 
-	if account.EnableAutoSync { // no need to sync rightnow, will do it in auto sync
-		return nil, nil
-	}
-
 	return nil, self.StartSyncCloudProviderInfoTask(ctx, userCred, &SSyncRange{SyncRangeInput: api.SyncRangeInput{
 		FullSync: true, DeepSync: true,
 	}}, "")
@@ -734,8 +727,7 @@ func (self *SCloudprovider) markStartingSync(userCred mcclient.TokenCredential, 
 		return nil
 	})
 	if err != nil {
-		log.Errorf("Failed to markStartSync error: %v", err)
-		return errors.Wrap(err, "Update")
+		return errors.Wrap(err, "db.Update")
 	}
 	cprs := self.GetCloudproviderRegions()
 	for i := range cprs {
@@ -755,8 +747,7 @@ func (self *SCloudprovider) markStartSync(userCred mcclient.TokenCredential, syn
 		return nil
 	})
 	if err != nil {
-		log.Errorf("Failed to markStartSync error: %v", err)
-		return err
+		return errors.Wrapf(err, "db.Update")
 	}
 	cprs := self.GetCloudproviderRegions()
 	for i := range cprs {
@@ -808,7 +799,10 @@ func (self *SCloudprovider) markEndSyncWithLock(ctx context.Context, userCred mc
 		return err
 	}
 
-	account := self.GetCloudaccount()
+	account, err := self.GetCloudaccount()
+	if err != nil {
+		return errors.Wrapf(err, "GetCloudaccount")
+	}
 	return account.MarkEndSyncWithLock(ctx, userCred)
 }
 
@@ -848,7 +842,7 @@ func (self *SCloudprovider) GetProviderFactory() (cloudprovider.ICloudProviderFa
 	return cloudprovider.GetProviderFactory(self.Provider)
 }
 
-func (self *SCloudprovider) GetProvider() (cloudprovider.ICloudProvider, error) {
+func (self *SCloudprovider) GetProvider(ctx context.Context) (cloudprovider.ICloudProvider, error) {
 	if !self.GetEnabled() {
 		return nil, errors.Wrap(httperrors.ErrInvalidStatus, "Cloud provider is not enabled")
 	}
@@ -859,7 +853,10 @@ func (self *SCloudprovider) GetProvider() (cloudprovider.ICloudProvider, error) 
 		return nil, err
 	}
 
-	account := self.GetCloudaccount()
+	account, err := self.GetCloudaccount()
+	if err != nil {
+		return nil, errors.Wrapf(err, "GetCloudaccount")
+	}
 	defaultRegion, _ := jsonutils.Marshal(account.Options).GetString("default_region")
 	return cloudprovider.GetProvider(cloudprovider.ProviderConfig{
 		Id:        self.Id,
@@ -870,8 +867,12 @@ func (self *SCloudprovider) GetProvider() (cloudprovider.ICloudProvider, error) 
 		Secret:    passwd,
 		ProxyFunc: account.proxyFunc(),
 
+		ReadOnly: account.ReadOnly,
+
 		DefaultRegion: defaultRegion,
 		Options:       account.Options,
+
+		UpdatePermission: account.UpdatePermission(ctx),
 	})
 }
 
@@ -888,8 +889,12 @@ func (self *SCloudprovider) savePassword(secret string) error {
 	return err
 }
 
-func (self *SCloudprovider) GetCloudaccount() *SCloudaccount {
-	return CloudaccountManager.FetchCloudaccountById(self.CloudaccountId)
+func (self *SCloudprovider) GetCloudaccount() (*SCloudaccount, error) {
+	obj, err := CloudaccountManager.FetchById(self.CloudaccountId)
+	if err != nil {
+		return nil, errors.Wrapf(err, "FetchById(%s)", self.CloudaccountId)
+	}
+	return obj.(*SCloudaccount), nil
 }
 
 func (manager *SCloudproviderManager) FetchCloudproviderById(providerId string) *SCloudprovider {
@@ -915,7 +920,7 @@ func (manager *SCloudproviderManager) IsProviderAccountEnabled(providerId string
 	if !providerObj.GetEnabled() {
 		return false
 	}
-	account := providerObj.GetCloudaccount()
+	account, _ := providerObj.GetCloudaccount()
 	if account == nil {
 		return false
 	}
@@ -1013,6 +1018,7 @@ func (manager *SCloudproviderManager) FetchCustomizeColumns(
 	for i := range rows {
 		if account, ok := accounts[accountIds[i]]; ok {
 			rows[i].Cloudaccount = account.Name
+			rows[i].ReadOnly = account.ReadOnly
 			rows[i].Brand = account.Brand
 
 			ps := &rows[i].ProxySetting
@@ -1245,6 +1251,11 @@ func (manager *SCloudproviderManager) QueryDistinctExtraField(q *sqlchemy.SQuery
 		return q, nil
 	}
 
+	q, err = manager.SProjectizedResourceBaseManager.QueryDistinctExtraField(q, field)
+	if err == nil {
+		return q, nil
+	}
+
 	q, err = manager.SEnabledStatusStandaloneResourceBaseManager.QueryDistinctExtraField(q, field)
 	if err == nil {
 		return q, nil
@@ -1295,7 +1306,7 @@ func (provider *SCloudprovider) markProviderConnected(ctx context.Context, userC
 }
 
 func (provider *SCloudprovider) prepareCloudproviderRegions(ctx context.Context, userCred mcclient.TokenCredential) ([]SCloudproviderregion, error) {
-	driver, err := provider.GetProvider()
+	driver, err := provider.GetProvider(ctx)
 	if err != nil {
 		return nil, errors.Wrap(err, "provider.GetProvider")
 	}
@@ -1333,13 +1344,13 @@ func (provider *SCloudprovider) resetAutoSync() {
 	}
 }
 
-func (provider *SCloudprovider) syncCloudproviderRegions(ctx context.Context, userCred mcclient.TokenCredential, syncRange SSyncRange, wg *sync.WaitGroup, autoSync bool) {
+func (provider *SCloudprovider) syncCloudproviderRegions(ctx context.Context, userCred mcclient.TokenCredential, syncRange SSyncRange, wg *sync.WaitGroup) {
 	provider.markSyncing(userCred)
 	cprs := provider.GetCloudproviderRegions()
 	regionIds, _ := syncRange.GetRegionIds()
 	syncCnt := 0
 	for i := range cprs {
-		if cprs[i].Enabled && cprs[i].CanSync() && (!autoSync || cprs[i].needAutoSync()) && (len(regionIds) == 0 || utils.IsInStringArray(cprs[i].CloudregionId, regionIds)) {
+		if cprs[i].Enabled && cprs[i].CanSync() && (len(regionIds) == 0 || utils.IsInStringArray(cprs[i].CloudregionId, regionIds)) {
 			syncCnt += 1
 			if wg != nil {
 				wg.Add(1)
@@ -1360,7 +1371,7 @@ func (provider *SCloudprovider) syncCloudproviderRegions(ctx context.Context, us
 
 func (provider *SCloudprovider) SyncCallSyncCloudproviderRegions(ctx context.Context, userCred mcclient.TokenCredential, syncRange SSyncRange) {
 	var wg sync.WaitGroup
-	provider.syncCloudproviderRegions(ctx, userCred, syncRange, &wg, false)
+	provider.syncCloudproviderRegions(ctx, userCred, syncRange, &wg)
 	wg.Wait()
 }
 
@@ -1488,11 +1499,12 @@ func (self *SCloudprovider) PerformEnable(ctx context.Context, userCred mcclient
 	if err != nil {
 		return nil, err
 	}
-	account := self.GetCloudaccount()
-	if account != nil {
-		if !account.GetEnabled() {
-			return account.enableAccountOnly(ctx, userCred, nil, input)
-		}
+	account, err := self.GetCloudaccount()
+	if err != nil {
+		return nil, err
+	}
+	if !account.GetEnabled() {
+		return account.enableAccountOnly(ctx, userCred, nil, input)
 	}
 	return nil, nil
 }
@@ -1502,19 +1514,20 @@ func (self *SCloudprovider) PerformDisable(ctx context.Context, userCred mcclien
 	if err != nil {
 		return nil, err
 	}
-	account := self.GetCloudaccount()
-	if account != nil {
-		allDisable := true
-		providers := account.GetCloudproviders()
-		for i := range providers {
-			if providers[i].GetEnabled() {
-				allDisable = false
-				break
-			}
+	account, err := self.GetCloudaccount()
+	if err != nil {
+		return nil, err
+	}
+	allDisable := true
+	providers := account.GetCloudproviders()
+	for i := range providers {
+		if providers[i].GetEnabled() {
+			allDisable = false
+			break
 		}
-		if allDisable && account.GetEnabled() {
-			return account.PerformDisable(ctx, userCred, nil, input)
-		}
+	}
+	if allDisable && account.GetEnabled() {
+		return account.PerformDisable(ctx, userCred, nil, input)
 	}
 	return nil, nil
 }
@@ -1614,13 +1627,12 @@ func (provider *SCloudprovider) GetDetailsClirc(ctx context.Context, userCred mc
 		return nil, err
 	}
 
-	account := provider.GetCloudaccount()
-	var options *jsonutils.JSONDict
-	if account != nil {
-		options = account.Options
+	account, err := provider.GetCloudaccount()
+	if err != nil {
+		return nil, err
 	}
 
-	rc, err := cloudprovider.GetClientRC(provider.Name, accessUrl, provider.Account, passwd, provider.Provider, options)
+	rc, err := cloudprovider.GetClientRC(provider.Name, accessUrl, provider.Account, passwd, provider.Provider, account.Options)
 	if err != nil {
 		return nil, err
 	}
@@ -1637,7 +1649,7 @@ func (provider *SCloudprovider) GetDetailsStorageClasses(
 	input api.CloudproviderGetStorageClassInput,
 ) (api.CloudproviderGetStorageClassOutput, error) {
 	output := api.CloudproviderGetStorageClassOutput{}
-	driver, err := provider.GetProvider()
+	driver, err := provider.GetProvider(ctx)
 	if err != nil {
 		return output, httperrors.NewInternalServerError("fail to get provider driver %s", err)
 	}
@@ -1662,7 +1674,7 @@ func (provider *SCloudprovider) GetDetailsCannedAcls(
 	input api.CloudproviderGetCannedAclInput,
 ) (api.CloudproviderGetCannedAclOutput, error) {
 	output := api.CloudproviderGetCannedAclOutput{}
-	driver, err := provider.GetProvider()
+	driver, err := provider.GetProvider(ctx)
 	if err != nil {
 		return output, httperrors.NewInternalServerError("fail to get provider driver %s", err)
 	}
@@ -1679,12 +1691,15 @@ func (provider *SCloudprovider) GetDetailsCannedAcls(
 }
 
 func (provider *SCloudprovider) getAccountShareInfo() apis.SAccountShareInfo {
-	account := provider.GetCloudaccount()
-	return account.getAccountShareInfo()
+	account, _ := provider.GetCloudaccount()
+	if account != nil {
+		return account.getAccountShareInfo()
+	}
+	return apis.SAccountShareInfo{}
 }
 
 func (provider *SCloudprovider) IsSharable(reqUsrId mcclient.IIdentityProvider) bool {
-	account := provider.GetCloudaccount()
+	account, _ := provider.GetCloudaccount()
 	if account != nil {
 		if account.ShareMode == api.CLOUD_ACCOUNT_SHARE_MODE_SYSTEM {
 			return account.IsSharable(reqUsrId)
@@ -1698,7 +1713,10 @@ func (provider *SCloudprovider) GetDetailsChangeOwnerCandidateDomains(ctx contex
 }
 
 func (provider *SCloudprovider) GetChangeOwnerCandidateDomainIds() []string {
-	account := provider.GetCloudaccount()
+	account, _ := provider.GetCloudaccount()
+	if account == nil {
+		return []string{}
+	}
 	if account.ShareMode == api.CLOUD_ACCOUNT_SHARE_MODE_ACCOUNT_DOMAIN {
 		return []string{account.DomainId}
 	}
@@ -1711,9 +1729,9 @@ func (provider *SCloudprovider) GetChangeOwnerCandidateDomainIds() []string {
 }
 
 func (self *SCloudprovider) SyncProject(ctx context.Context, userCred mcclient.TokenCredential, id string) (string, error) {
-	account := self.GetCloudaccount()
-	if account == nil {
-		return "", fmt.Errorf("failed to get cloudprovider %s account", self.Name)
+	account, err := self.GetCloudaccount()
+	if err != nil {
+		return "", errors.Wrapf(err, "GetCloudaccount")
 	}
 	return account.SyncProject(ctx, userCred, id)
 }

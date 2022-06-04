@@ -26,16 +26,27 @@ type SDomainObject struct {
 	Domain SIdentityObject `json:"domain"`
 }
 
+type SDomainObjectWithMetadata struct {
+	SDomainObject
+	Metadata map[string]string `json:"metadata"`
+}
+
 type SFetchDomainObject struct {
 	SIdentityObject
 	Domain   string `json:"domain"`
 	DomainId string `json:"domain_id"`
 }
 
+type SFetchDomainObjectWithMetadata struct {
+	SFetchDomainObject
+
+	Metadata map[string]string `json:"metadata"`
+}
+
 type SRoleAssignment struct {
 	Scope struct {
-		Domain  SIdentityObject `json:"domain"`
-		Project SDomainObject   `json:"project"`
+		Domain  SIdentityObject           `json:"domain"`
+		Project SDomainObjectWithMetadata `json:"project"`
 	} `json:"scope"`
 	User  SDomainObject `json:"user"`
 	Group SDomainObject `json:"group"`

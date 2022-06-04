@@ -113,8 +113,8 @@ func (gtm *SGuestTemplateManager) ValidateCreateData(
 		return input, httperrors.NewMissingParameterError("content")
 	}
 
-	if !input.Content.Contains("name") {
-		input.Content.Set("name", jsonutils.NewString(input.Name))
+	if !input.Content.Contains("name") && !input.Content.Contains("generate_name") {
+		input.Content.Set("generate_name", jsonutils.NewString(input.Name))
 	}
 
 	input.GuestTemplateInput, err = gtm.validateData(ctx, userCred, ownerId, query, input.GuestTemplateInput)
@@ -197,6 +197,10 @@ func Brand2Hypervisor(brand string) string {
 }
 
 func (gtm *SGuestTemplateManager) validateContent(ctx context.Context, userCred mcclient.TokenCredential, ownerId mcclient.IIdentityProvider, query jsonutils.JSONObject, content *jsonutils.JSONDict) (*computeapis.ServerCreateInput, error) {
+	// hack
+	if !content.Contains("name") && !content.Contains("generate_name") {
+		content.Set("generate_name", jsonutils.NewString("fake_name"))
+	}
 	input, err := GuestManager.validateCreateData(ctx, userCred, ownerId, query, content)
 	if err != nil {
 		return nil, httperrors.NewInputParameterError("%v", err)

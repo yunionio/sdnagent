@@ -12,19 +12,6 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-//
-// Licensed under the Apache License, Version 2.0 (the "License");
-// you may not use this file except in compliance with the License.
-// You may obtain a copy of the License at
-//
-//     http://www.apache.org/licenses/LICENSE-2.0
-//
-// Unless required by applicable law or agreed to in writing, software
-// distributed under the License is distributed on an "AS IS" BASIS,
-// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-// See the License for the specific language governing permissions and
-// limitations under the License.
-
 package models
 
 import (
@@ -144,7 +131,7 @@ type SNetwork struct {
 
 	// 该网段是否用于自动分配IP地址，如果为false，则用户需要明确选择该网段，才会使用该网段分配IP，
 	// 如果为true，则用户不指定网段时，则自动从该值为true的网络中选择一个分配地址
-	IsAutoAlloc tristate.TriState `nullable:"true" list:"user" get:"user" update:"user" create:"optional"`
+	IsAutoAlloc tristate.TriState `list:"user" get:"user" update:"user" create:"optional"`
 
 	// 线路类型
 	BgpType string `width:"64" charset:"utf8" nullable:"false" list:"user" get:"user" update:"user" create:"optional"`
@@ -161,11 +148,13 @@ func (self *SNetwork) getMtu() int {
 
 	wire, _ := self.GetWire()
 	if wire != nil {
-		baseMtu = wire.Mtu
 		if IsOneCloudVpcResource(wire) {
-			baseMtu -= api.VPC_OVN_ENCAP_COST
+			return options.Options.OvnUnderlayMtu - api.VPC_OVN_ENCAP_COST
+		} else if wire.Mtu != 0 {
+			return wire.Mtu
+		} else {
+			return baseMtu
 		}
-		return baseMtu
 	}
 
 	return baseMtu
@@ -717,6 +706,10 @@ func (self *SNetwork) SyncWithCloudNetwork(ctx context.Context, userCred mcclien
 
 		self.AllocTimoutSeconds = extNet.GetAllocTimeoutSeconds()
 
+		if createdAt := extNet.GetCreatedAt(); !createdAt.IsZero() {
+			self.CreatedAt = createdAt
+		}
+
 		return nil
 	})
 	if err != nil {
@@ -731,7 +724,7 @@ func (self *SNetwork) SyncWithCloudNetwork(ctx context.Context, userCred mcclien
 		})
 	}
 
-	syncVirtualResourceMetadata(ctx, userCred, self, extNet)
+	//syncVirtualResourceMetadata(ctx, userCred, self, extNet)
 	SyncCloudProject(userCred, self, syncOwnerId, extNet, vpc.ManagerId)
 
 	if provider != nil {
@@ -768,6 +761,10 @@ func (manager *SNetworkManager) newFromCloudNetwork(ctx context.Context, userCre
 	// net.PublicScope = string(extScope)
 
 	net.AllocTimoutSeconds = extNet.GetAllocTimeoutSeconds()
+
+	if createdAt := extNet.GetCreatedAt(); !createdAt.IsZero() {
+		net.CreatedAt = createdAt
+	}
 
 	var err = func() error {
 		lockman.LockRawObject(ctx, manager.Keyword(), "name")
@@ -883,6 +880,7 @@ func (manager *SNetworkManager) totalPortCountQ(
 	brands []string,
 	cloudEnv string,
 	rangeObjs []db.IStandaloneModel,
+	policyResult rbacutils.SPolicyResult,
 ) *sqlchemy.SQuery {
 	q := manager.allNetworksQ(providers, brands, cloudEnv, rangeObjs)
 	switch scope {
@@ -892,6 +890,7 @@ func (manager *SNetworkManager) totalPortCountQ(
 	case rbacutils.ScopeProject:
 		q = q.Equals("tenant_id", userCred.GetProjectId())
 	}
+	q = db.ObjectIdQueryWithPolicyResult(q, manager, policyResult)
 	return manager.Query().In("id", q.Distinct().SubQuery())
 }
 
@@ -905,6 +904,7 @@ func (manager *SNetworkManager) TotalPortCount(
 	userCred mcclient.IIdentityProvider,
 	providers []string, brands []string, cloudEnv string,
 	rangeObjs []db.IStandaloneModel,
+	policyResult rbacutils.SPolicyResult,
 ) map[string]NetworkPortStat {
 	nets := make([]SNetwork, 0)
 	err := manager.totalPortCountQ(
@@ -912,6 +912,7 @@ func (manager *SNetworkManager) TotalPortCount(
 		userCred,
 		providers, brands, cloudEnv,
 		rangeObjs,
+		policyResult,
 	).All(&nets)
 	if err != nil {
 		log.Errorf("TotalPortCount: %v", err)
@@ -1460,7 +1461,7 @@ func (manager *SNetworkManager) validateEnsureZoneVpc(ctx context.Context, userC
 	}
 	externalId := ""
 	if cr.Provider == api.CLOUD_PROVIDER_CLOUDPODS {
-		iVpc, err := v.GetIVpc()
+		iVpc, err := v.GetIVpc(ctx)
 		if err != nil {
 			return nil, nil, nil, err
 		}
@@ -1632,6 +1633,26 @@ func (manager *SNetworkManager) ValidateCreateData(ctx context.Context, userCred
 	if input.ServerType != api.NETWORK_TYPE_EIP {
 		input.BgpType = ""
 	}
+	// check class metadata
+	if wire != nil {
+		var projectId string
+		if len(input.ProjectId) > 0 {
+			projectId = input.ProjectId
+		} else {
+			projectId = ownerId.GetProjectId()
+		}
+		project, err := db.TenantCacheManager.FetchTenantById(ctx, projectId)
+		if err != nil {
+			return input, errors.Wrapf(err, "unable to fetch tenant by id %s", projectId)
+		}
+		ok, err := db.IsInSameClass(ctx, wire, project)
+		if err != nil {
+			return input, errors.Wrapf(err, "unable to check if wire and project is in same class")
+		}
+		if !ok {
+			return input, httperrors.NewForbiddenError("the wire %s and project %s has different class metadata", wire.GetName(), project.GetName())
+		}
+	}
 
 	var (
 		ipStart = ipRange.StartIp()
@@ -1701,7 +1722,7 @@ func (self *SNetwork) validateUpdateData(ctx context.Context, userCred mcclient.
 
 	if input.GuestIpMask != nil {
 		maskLen64 := int64(*input.GuestIpMask)
-		if !isValidMaskLen(maskLen64) {
+		if !self.isManaged() && !isValidMaskLen(maskLen64) {
 			return input, httperrors.NewInputParameterError("Invalid masklen %d", maskLen64)
 		}
 		masklen = int8(maskLen64)
@@ -1992,12 +2013,12 @@ func (self *SNetwork) StartDeleteNetworkTask(ctx context.Context, userCred mccli
 	return nil
 }
 
-func (self *SNetwork) GetINetwork() (cloudprovider.ICloudNetwork, error) {
+func (self *SNetwork) GetINetwork(ctx context.Context) (cloudprovider.ICloudNetwork, error) {
 	wire, err := self.GetWire()
 	if err != nil {
 		return nil, errors.Wrapf(err, "GetWire")
 	}
-	iwire, err := wire.GetIWire()
+	iwire, err := wire.GetIWire(ctx)
 	if err != nil {
 		return nil, err
 	}
@@ -2761,6 +2782,15 @@ func (manager *SNetworkManager) PerformTryCreateNetwork(ctx context.Context, use
 			return nil, err
 		}
 		newNetwork.PostCreate(ctx, userCred, userCred, query, input.JSON(input))
+		// inherit wire's class metadata
+		wire, err := newNetwork.GetWire()
+		if err != nil {
+			return nil, errors.Wrap(err, "unable to get wire")
+		}
+		err = db.InheritFromTo(ctx, wire, newNetwork)
+		if err != nil {
+			return nil, errors.Wrap(err, "unable to inherit wire")
+		}
 	}
 	return ret, nil
 }
@@ -2798,6 +2828,21 @@ func (network *SNetwork) ClearSchedDescCache() error {
 }
 
 func (network *SNetwork) PerformChangeOwner(ctx context.Context, userCred mcclient.TokenCredential, query jsonutils.JSONObject, input apis.PerformChangeProjectOwnerInput) (jsonutils.JSONObject, error) {
+	wire, err := network.GetWire()
+	if err != nil {
+		return nil, errors.Wrap(err, "unable to get wire")
+	}
+	project, err := db.TenantCacheManager.FetchTenantById(ctx, input.ProjectId)
+	if err != nil {
+		return nil, errors.Wrapf(err, "unable to get project %s", input.ProjectId)
+	}
+	ok, err := db.IsInSameClass(ctx, wire, project)
+	if err != nil {
+		return nil, errors.Wrap(err, "unable to check if the wire and project is in same class")
+	}
+	if !ok {
+		return nil, httperrors.NewForbiddenError("the wire %s and the project %s has different class metadata", wire.GetName(), project.GetName())
+	}
 	ret, err := network.SSharableVirtualResourceBase.PerformChangeOwner(ctx, userCred, query, input)
 	if err != nil {
 		return nil, err
@@ -2821,6 +2866,13 @@ func (network *SNetwork) getUsedAddressQuery(owner mcclient.IIdentityProvider, s
 		queries[i] = provider.usedAddressQuery(args)
 	}
 	return sqlchemy.Union(queries...).Query()
+}
+
+func (self *SNetwork) Contains(ip string) bool {
+	start, _ := netutils.NewIPV4Addr(self.GuestIpStart)
+	end, _ := netutils.NewIPV4Addr(self.GuestIpEnd)
+	addr, _ := netutils.NewIPV4Addr(ip)
+	return netutils.NewIPV4AddrRange(start, end).Contains(addr)
 }
 
 type SNetworkUsedAddressList []api.SNetworkUsedAddress
