@@ -165,11 +165,13 @@ func (self *SNetwork) getMtu() int {
 
 	wire, _ := self.GetWire()
 	if wire != nil {
-		baseMtu = wire.Mtu
 		if IsOneCloudVpcResource(wire) {
-			baseMtu -= api.VPC_OVN_ENCAP_COST
+			return options.Options.OvnUnderlayMtu - api.VPC_OVN_ENCAP_COST
+		} else if wire.Mtu != 0 {
+			return wire.Mtu
+		} else {
+			return baseMtu
 		}
-		return baseMtu
 	}
 
 	return baseMtu
@@ -735,7 +737,7 @@ func (self *SNetwork) SyncWithCloudNetwork(ctx context.Context, userCred mcclien
 		})
 	}
 
-	syncVirtualResourceMetadata(ctx, userCred, self, extNet)
+	//syncVirtualResourceMetadata(ctx, userCred, self, extNet)
 	SyncCloudProject(userCred, self, syncOwnerId, extNet, vpc.ManagerId)
 
 	if provider != nil {
@@ -1717,7 +1719,7 @@ func (self *SNetwork) validateUpdateData(ctx context.Context, userCred mcclient.
 
 	if input.GuestIpMask != nil {
 		maskLen64 := int64(*input.GuestIpMask)
-		if !isValidMaskLen(maskLen64) {
+		if !self.isManaged() && !isValidMaskLen(maskLen64) {
 			return input, httperrors.NewInputParameterError("Invalid masklen %d", maskLen64)
 		}
 		masklen = int8(maskLen64)
@@ -2856,6 +2858,13 @@ func (network *SNetwork) getUsedAddressQuery(owner mcclient.IIdentityProvider, s
 		queries[i] = provider.usedAddressQuery(args)
 	}
 	return sqlchemy.Union(queries...).Query()
+}
+
+func (self *SNetwork) Contains(ip string) bool {
+	start, _ := netutils.NewIPV4Addr(self.GuestIpStart)
+	end, _ := netutils.NewIPV4Addr(self.GuestIpEnd)
+	addr, _ := netutils.NewIPV4Addr(ip)
+	return netutils.NewIPV4AddrRange(start, end).Contains(addr)
 }
 
 type SNetworkUsedAddressList []api.SNetworkUsedAddress

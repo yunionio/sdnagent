@@ -88,12 +88,12 @@ type SElasticip struct {
 	Mode string `width:"32" charset:"ascii" get:"user" list:"user" create:"optional"`
 
 	// IP地址
-	IpAddr string `width:"17" charset:"ascii" list:"user"`
+	IpAddr string `width:"17" charset:"ascii" list:"user" update:"admin"`
 
 	// 绑定资源类型
-	AssociateType string `width:"32" charset:"ascii" list:"user"`
+	AssociateType string `width:"32" charset:"ascii" list:"user" update:"admin"`
 	// 绑定资源Id
-	AssociateId string `width:"256" charset:"ascii" list:"user"`
+	AssociateId string `width:"256" charset:"ascii" list:"user" update:"admin"`
 
 	// 带宽大小
 	Bandwidth int `list:"user" create:"optional" default:"0"`
@@ -221,6 +221,17 @@ func (manager *SElasticipManager) ListItemFilter(
 					sqlchemy.IsNullOrEmpty(q.Field("associate_id")),
 				),
 			)
+		case api.EIP_ASSOCIATE_TYPE_LOADBALANCER:
+			_lb, err := validators.ValidateModel(userCred, LoadbalancerManager, &query.UsableEipForAssociateId)
+			if err != nil {
+				return nil, err
+			}
+			lb := _lb.(*SLoadbalancer)
+			q = q.Equals("cloudregion_id", lb.CloudregionId)
+			if len(lb.ManagerId) > 0 {
+				q = q.Equals("manager_id", lb.ManagerId)
+			}
+			q = q.IsNullOrEmpty("associate_type")
 		default:
 			return nil, httperrors.NewInputParameterError("Not support associate type %s, only support %s", associateType, api.EIP_ASSOCIATE_VALID_TYPES)
 		}
@@ -1159,7 +1170,47 @@ func (self *SElasticip) PerformAssociate(ctx context.Context, userCred mcclient.
 			return input, httperrors.NewInputParameterError("server and eip are not managed by the same provider")
 		}
 		input.InstanceExternalId = server.ExternalId
+	case api.EIP_ASSOCIATE_TYPE_INSTANCE_GROUP:
+		grpObj, err := GroupManager.FetchByIdOrName(userCred, input.InstanceId)
+		if err != nil {
+			if errors.Cause(err) == sql.ErrNoRows {
+				return input, httperrors.NewResourceNotFoundError("instance group %s not found", input.InstanceId)
+			}
+			return input, httperrors.NewGeneralError(err)
+		}
+		group := grpObj.(*SGroup)
+
+		lockman.LockObject(ctx, group)
+		defer lockman.ReleaseObject(ctx, group)
+
+		net, err := group.isEipAssociable()
+		if err != nil {
+			return input, errors.Wrap(err, "grp.isEipAssociable")
+		}
+		if net.Id == self.NetworkId {
+			return input, httperrors.NewInputParameterError("cannot associate eip with same network")
+		}
+
+		eipZone, _ := self.GetZone()
+		if eipZone != nil {
+			insZone, _ := net.GetZone()
+			if eipZone.Id != insZone.Id {
+				return input, httperrors.NewInputParameterError("cannot associate eip and instance in different zone")
+			}
+		}
+
 	case api.EIP_ASSOCIATE_TYPE_NAT_GATEWAY:
+		natgwObj, err := NatGatewayManager.FetchByIdOrName(userCred, input.InstanceId)
+		if err != nil {
+			if errors.Cause(err) == sql.ErrNoRows {
+				return input, httperrors.NewResourceNotFoundError("nat gateway %s not found", input.InstanceId)
+			}
+			return input, httperrors.NewGeneralError(err)
+		}
+		natgw := natgwObj.(*SNatGateway)
+
+		lockman.LockObject(ctx, natgw)
+		defer lockman.ReleaseObject(ctx, natgw)
 	}
 
 	return input, self.StartEipAssociateInstanceTask(ctx, userCred, input, "")

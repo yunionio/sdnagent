@@ -100,7 +100,7 @@ func (manager *SSecurityGroupManager) ListItemFilter(
 		if err != nil {
 			return q, httperrors.NewGeneralError(errors.Wrapf(err, "GetAllowList"))
 		}
-		sq := manager.Query().NotEquals("id", secgroup.Id)
+		sq := manager.Query().NotEquals("id", secgroup.Id).NotEquals("id", api.SECGROUP_DEFAULT_ID)
 		secgroups := []SSecurityGroup{}
 		err = db.FetchModelObjects(manager, sq, &secgroups)
 		if err != nil {
@@ -412,7 +412,7 @@ func (manager *SSecurityGroupManager) FetchCustomizeColumns(
 	}
 
 	guests := []SGuest{}
-	q = GuestManager.Query()
+	q = GuestManager.Query().IsFalse("pending_deleted")
 	q = q.Filter(sqlchemy.OR(
 		sqlchemy.In(q.Field("secgrp_id"), secgroupIds),
 		sqlchemy.In(q.Field("admin_secgrp_id"), secgroupIds),
@@ -454,7 +454,7 @@ func (manager *SSecurityGroupManager) FetchCustomizeColumns(
 		}
 	}
 
-	sq := GuestManager.Query("id")
+	sq := GuestManager.Query("id").IsFalse("pending_deleted")
 	sq = GuestManager.FilterByOwner(sq, ownerId, queryScope)
 
 	guestSecgroups := []SGuestsecgroup{}
@@ -917,6 +917,9 @@ func (self *SSecurityGroup) PerformMerge(ctx context.Context, userCred mcclient.
 			}
 			return nil, httperrors.NewGeneralError(err)
 		}
+		if _secgroup.GetId() == api.SECGROUP_DEFAULT_ID {
+			return nil, httperrors.NewInputParameterError("not allow merge default security group")
+		}
 		secgroup := _secgroup.(*SSecurityGroup)
 		secgroup.SetModelManager(SecurityGroupManager, secgroup)
 		_inAllowList, _outAllowList, err := secgroup.GetAllowList()
@@ -1345,8 +1348,11 @@ func (sm *SSecurityGroupManager) TotalCnt(secIds []string) (map[string]api.SSecu
 }
 
 func (self *SSecurityGroup) ValidateDeleteCondition(ctx context.Context, info jsonutils.JSONObject) error {
-	if self.Id == api.SECGROUP_DEFAULT_ID {
+	if self.Id == options.Options.DefaultSecurityGroupId {
 		return httperrors.NewProtectedResourceError("not allow to delete default security group")
+	}
+	if self.Id == options.Options.DefaultAdminSecurityGroupId {
+		return httperrors.NewProtectedResourceError("not allow to delete default admin security group")
 	}
 	cnts, err := SecurityGroupManager.TotalCnt([]string{self.Id})
 	if err != nil {

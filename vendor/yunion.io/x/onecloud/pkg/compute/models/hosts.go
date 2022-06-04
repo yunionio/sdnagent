@@ -40,11 +40,13 @@ import (
 	"yunion.io/x/onecloud/pkg/apis"
 	billing_api "yunion.io/x/onecloud/pkg/apis/billing"
 	api "yunion.io/x/onecloud/pkg/apis/compute"
+	napi "yunion.io/x/onecloud/pkg/apis/notify"
 	"yunion.io/x/onecloud/pkg/appsrv"
 	"yunion.io/x/onecloud/pkg/cloudcommon/db"
 	"yunion.io/x/onecloud/pkg/cloudcommon/db/lockman"
 	"yunion.io/x/onecloud/pkg/cloudcommon/db/quotas"
 	"yunion.io/x/onecloud/pkg/cloudcommon/db/taskman"
+	"yunion.io/x/onecloud/pkg/cloudcommon/notifyclient"
 	"yunion.io/x/onecloud/pkg/cloudcommon/types"
 	"yunion.io/x/onecloud/pkg/cloudprovider"
 	"yunion.io/x/onecloud/pkg/compute/baremetal"
@@ -99,7 +101,7 @@ type SHost struct {
 	AccessMac string `width:"32" charset:"ascii" nullable:"false" index:"true" list:"domain" update:"domain"`
 
 	// 管理口Ip地址
-	AccessIp string `width:"16" charset:"ascii" nullable:"true" list:"domain"`
+	AccessIp string `width:"16" charset:"ascii" nullable:"true" list:"domain" update:"domain"`
 
 	// 管理地址
 	ManagerUri string `width:"256" charset:"ascii" nullable:"true" list:"domain" update:"domain" create:"domain_optional"`
@@ -374,44 +376,35 @@ func (manager *SHostManager) ListItemFilter(
 		}
 	}
 
-	if len(query.Rack) > 0 {
-		q = q.In("rack", query.Rack)
+	fieldQueryMap := map[string][]string{
+		"rack":             query.Rack,
+		"slots":            query.Slots,
+		"access_mac":       query.AccessMac,
+		"access_ip":        query.AccessIp,
+		"sn":               query.SN,
+		"storage_type":     query.StorageType,
+		"ipmi_ip":          query.IpmiIp,
+		"host_status":      query.HostStatus,
+		"host_type":        query.HostType,
+		"version":          query.Version,
+		"ovn_version":      query.OvnVersion,
+		"uuid":             query.Uuid,
+		"boot_mode":        query.BootMode,
+		"cpu_architecture": query.CpuArchitecture,
 	}
-	if len(query.Slots) > 0 {
-		q = q.In("slots", query.Slots)
+
+	for f, vars := range fieldQueryMap {
+		vars = stringutils2.FilterEmpty(vars)
+		if len(vars) > 0 {
+			q = q.In(f, vars)
+		}
 	}
-	if len(query.AccessMac) > 0 {
-		q = q.In("access_mac", query.AccessMac)
-	}
-	if len(query.AccessIp) > 0 {
-		q = q.In("access_ip", query.AccessIp)
-	}
-	if len(query.SN) > 0 {
-		q = q.In("sn", query.SN)
-	}
+
 	if len(query.CpuCount) > 0 {
 		q = q.In("cpu_count", query.CpuCount)
 	}
 	if len(query.MemSize) > 0 {
 		q = q.In("mem_size", query.MemSize)
-	}
-	if len(query.StorageType) > 0 {
-		q = q.In("storage_type", query.StorageType)
-	}
-	if len(query.IpmiIp) > 0 {
-		q = q.In("ipmi_ip", query.IpmiIp)
-	}
-	if len(query.HostStatus) > 0 {
-		q = q.In("host_status", query.HostStatus)
-	}
-	if len(query.HostType) > 0 {
-		q = q.In("host_type", query.HostType)
-	}
-	if len(query.Version) > 0 {
-		q = q.In("version", query.Version)
-	}
-	if len(query.OvnVersion) > 0 {
-		q = q.In("ovn_version", query.OvnVersion)
 	}
 	if query.IsMaintenance != nil {
 		if *query.IsMaintenance {
@@ -433,15 +426,6 @@ func (manager *SHostManager) ListItemFilter(
 		} else {
 			q = q.IsFalse("enable_pxe_boot")
 		}
-	}
-	if len(query.Uuid) > 0 {
-		q = q.In("uuid", query.Uuid)
-	}
-	if len(query.BootMode) > 0 {
-		q = q.In("boot_mode", query.BootMode)
-	}
-	if len(query.CpuArchitecture) > 0 {
-		q = q.Equals("cpu_architecture", query.CpuArchitecture)
 	}
 	if len(query.OsArch) > 0 {
 		q = db.ListQueryByArchitecture(q, "cpu_architecture", query.OsArch)
@@ -503,6 +487,125 @@ func (manager *SHostManager) OrderByExtraFields(
 		).GroupBy("host_id").SubQuery()
 		q = q.LeftJoin(guestCounts, sqlchemy.Equals(q.Field("id"), guestCounts.Field("host_id")))
 		db.OrderByFields(q, []string{query.OrderByServerCount}, []sqlchemy.IQueryField{guestCounts.Field("guest_count")})
+	}
+
+	if db.NeedOrderQuery([]string{query.OrderByCpuCommitRate}) {
+		guestsQ := GuestManager.Query()
+		if options.Options.IgnoreNonrunningGuests {
+			guestsQ = guestsQ.Equals("status", api.VM_RUNNING)
+		}
+		guests := guestsQ.SubQuery()
+		hosts := HostManager.Query().SubQuery()
+		hostQ := hosts.Query(
+			hosts.Field("id"),
+			hosts.Field("cpu_count"),
+			hosts.Field("cpu_reserved"),
+			sqlchemy.SUM("guest_vcpu_count", guests.Field("vcpu_count")),
+		).LeftJoin(guests, sqlchemy.Equals(hosts.Field("id"), guests.Field("host_id")))
+
+		hostSQ := hostQ.GroupBy(hostQ.Field("host_id")).SubQuery()
+
+		divSQ := hostSQ.Query(
+			hostSQ.Field("id"),
+			sqlchemy.SUB("vcpu_count", hostSQ.Field("cpu_count"), hostSQ.Field("cpu_reserved")),
+			hostSQ.Field("guest_vcpu_count"),
+		).SubQuery()
+
+		sq := divSQ.Query(
+			divSQ.Field("id").Label("host_id"),
+			sqlchemy.DIV("cpu_commit_rate", divSQ.Field("guest_vcpu_count"), divSQ.Field("vcpu_count")),
+		).SubQuery()
+
+		q = q.LeftJoin(sq, sqlchemy.Equals(q.Field("id"), sq.Field("host_id")))
+
+		db.OrderByFields(q, []string{query.OrderByCpuCommitRate}, []sqlchemy.IQueryField{sq.Field("cpu_commit_rate")})
+	}
+
+	if db.NeedOrderQuery([]string{query.OrderByStorage}) {
+		hoststorages := HoststorageManager.Query().SubQuery()
+		storages := StorageManager.Query().IsTrue("enabled").In("storage_type", api.HOST_STORAGE_LOCAL_TYPES).SubQuery()
+		hoststoragesQ := hoststorages.Query(
+			hoststorages.Field("host_id"),
+			sqlchemy.SUM("storage_capacity", storages.Field("capacity")),
+		)
+
+		hoststoragesQ = hoststoragesQ.LeftJoin(storages, sqlchemy.Equals(hoststoragesQ.Field("storage_id"), storages.Field("id")))
+		hoststoragesSQ := hoststoragesQ.GroupBy(hoststoragesQ.Field("host_id")).SubQuery()
+
+		q = q.LeftJoin(hoststoragesSQ, sqlchemy.Equals(q.Field("id"), hoststoragesSQ.Field("host_id")))
+		db.OrderByFields(q, []string{query.OrderByStorage}, []sqlchemy.IQueryField{hoststoragesSQ.Field("storage_capacity")})
+	}
+
+	if db.NeedOrderQuery([]string{query.OrderByStorageCommitRate}) {
+		hoststorages := HoststorageManager.Query().SubQuery()
+		disks := DiskManager.Query().Equals("status", api.DISK_READY).SubQuery()
+		storages := StorageManager.Query().IsTrue("enabled").In("storage_type", api.HOST_STORAGE_LOCAL_TYPES).SubQuery()
+
+		disksQ := disks.Query(
+			disks.Field("storage_id"),
+			sqlchemy.SUM("disk_size", disks.Field("disk_size")),
+			storages.Field("capacity"),
+			storages.Field("reserved"),
+		).LeftJoin(storages, sqlchemy.Equals(disks.Field("storage_id"), storages.Field("id")))
+
+		disksSQ := disksQ.GroupBy(disksQ.Field("storage_id")).SubQuery()
+
+		divSQ := disksSQ.Query(
+			disksSQ.Field("storage_id"),
+			disksSQ.Field("disk_size"),
+			sqlchemy.SUB("storage_capacity", disksSQ.Field("capacity"), disksSQ.Field("reserved")),
+		).SubQuery()
+
+		hoststoragesQ := hoststorages.Query(
+			hoststorages.Field("host_id"),
+			sqlchemy.SUM("storage_used", divSQ.Field("disk_size")),
+			sqlchemy.SUM("storage_capacity", divSQ.Field("storage_capacity")),
+		)
+		hoststoragesQ = hoststoragesQ.LeftJoin(divSQ, sqlchemy.Equals(hoststoragesQ.Field("storage_id"), divSQ.Field("storage_id")))
+		hoststoragesSQ1 := hoststoragesQ.GroupBy(hoststoragesQ.Field("host_id")).SubQuery()
+
+		hoststoragesSQ := hoststoragesSQ1.Query(
+			hoststoragesSQ1.Field("host_id"),
+			sqlchemy.DIV("storage_commit_rate",
+				hoststoragesSQ1.Field("storage_used"),
+				hoststoragesSQ1.Field("storage_capacity"),
+			),
+		).SubQuery()
+
+		q = q.LeftJoin(hoststoragesSQ, sqlchemy.Equals(q.Field("id"), hoststoragesSQ.Field("host_id")))
+		db.OrderByFields(q, []string{query.OrderByStorageCommitRate}, []sqlchemy.IQueryField{hoststoragesSQ.Field("storage_commit_rate")})
+	}
+
+	if db.NeedOrderQuery([]string{query.OrderByMemCommitRate}) {
+		guestsQ := GuestManager.Query()
+		if options.Options.IgnoreNonrunningGuests {
+			guestsQ = guestsQ.Equals("status", api.VM_RUNNING)
+		}
+		guests := guestsQ.SubQuery()
+		hosts := HostManager.Query().SubQuery()
+		hostQ := hosts.Query(
+			hosts.Field("id"),
+			hosts.Field("mem_size"),
+			hosts.Field("mem_reserved"),
+			sqlchemy.SUM("guest_vmem_size", guests.Field("vmem_size")),
+		).LeftJoin(guests, sqlchemy.Equals(hosts.Field("id"), guests.Field("host_id")))
+
+		hostSQ := hostQ.GroupBy(hostQ.Field("host_id")).SubQuery()
+
+		divSQ := hostSQ.Query(
+			hostSQ.Field("id"),
+			sqlchemy.SUB("vmem_size", hostSQ.Field("mem_size"), hostSQ.Field("mem_reserved")),
+			hostSQ.Field("guest_vmem_size"),
+		).SubQuery()
+
+		sq := divSQ.Query(
+			divSQ.Field("id").Label("host_id"),
+			sqlchemy.DIV("mem_commit_rate", divSQ.Field("guest_vmem_size"), divSQ.Field("vmem_size")),
+		).SubQuery()
+
+		q = q.LeftJoin(sq, sqlchemy.Equals(q.Field("id"), sq.Field("host_id")))
+
+		db.OrderByFields(q, []string{query.OrderByMemCommitRate}, []sqlchemy.IQueryField{sq.Field("mem_commit_rate")})
 	}
 
 	return q, nil
@@ -1144,7 +1247,7 @@ func (self *SHost) GetSpec(statusCheck bool) *jsonutils.JSONDict {
 		if !self.GetEnabled() {
 			return nil
 		}
-		if self.Status != api.BAREMETAL_RUNNING || self.GetBaremetalServer() != nil || self.IsMaintenance {
+		if !utils.IsInStringArray(self.Status, []string{api.BAREMETAL_RUNNING, api.BAREMETAL_READY}) || self.GetBaremetalServer() != nil || self.IsMaintenance {
 			return nil
 		}
 		if self.MemSize == 0 || self.CpuCount == 0 {
@@ -1413,17 +1516,15 @@ func (self *SHost) getAttachedWires() []SWire {
 	return ret
 }
 
-func (self *SHost) GetMasterHostwire() *SHostwire {
-	hw := SHostwire{}
-	hw.SetModelManager(HostwireManager, &hw)
-
-	q := self.GetWiresQuery().IsTrue("is_master")
-	err := q.First(&hw)
+func (self *SHostManager) GetEnabledKvmHost() (*SHost, error) {
+	hostq := HostManager.Query().IsTrue("enabled").Equals("host_status", api.HOST_ONLINE).In("host_type", []string{api.HOST_TYPE_HYPERVISOR, api.HOST_TYPE_KVM})
+	host := SHost{}
+	err := hostq.First(&host)
 	if err != nil {
-		log.Errorf("GetMasterHostwire %s", err)
-		return nil
+		return nil, err
 	}
-	return &hw
+	host.SetModelManager(HostManager, &host)
+	return &host, nil
 }
 
 func (self *SHost) GetMasterWire() *SWire {
@@ -1924,17 +2025,18 @@ func (s *SHost) syncSchedtags(ctx context.Context, userCred mcclient.TokenCreden
 			st.DomainId = s.DomainId
 			st.Name = stStr
 			st.Description = "Sync from cloud"
+			st.SetModelManager(SchedtagManager, st)
 			err := SchedtagManager.TableSpec().Insert(ctx, st)
 			if err != nil {
 				return errors.Wrapf(err, "unable to create schedtag %q", stStr)
 			}
-			st.SetModelManager(SchedtagManager, st)
 			st.SetMetadata(ctx, METADATA_EXT_SCHEDTAG_KEY, stStr, userCred)
 		}
 		// attach
 		hostschedtag := &SHostschedtag{
 			HostId: s.GetId(),
 		}
+		hostschedtag.SetModelManager(HostschedtagManager, hostschedtag)
 		hostschedtag.SchedtagId = st.GetId()
 		err = HostschedtagManager.TableSpec().Insert(ctx, hostschedtag)
 		if err != nil {
@@ -2374,6 +2476,19 @@ func (self *SHost) SyncHostVMs(ctx context.Context, userCred mcclient.TokenCrede
 		return nil, syncResult
 	}
 
+	skipFunc := func(ext cloudprovider.ICloudVM) (bool, string) {
+		if len(options.Options.SkipServerBySysTagKeys) == 0 {
+			return false, ""
+		}
+		keys := strings.Split(options.Options.SkipServerBySysTagKeys, ",")
+		for key := range ext.GetSysTags() {
+			if utils.IsInStringArray(key, keys) {
+				return true, key
+			}
+		}
+		return false, ""
+	}
+
 	for i := 0; i < len(removed); i += 1 {
 		err := removed[i].syncRemoveCloudVM(ctx, userCred)
 		if err != nil {
@@ -2384,21 +2499,37 @@ func (self *SHost) SyncHostVMs(ctx context.Context, userCred mcclient.TokenCrede
 	}
 
 	for i := 0; i < len(commondb); i += 1 {
+		skip, key := skipFunc(commonext[i])
+		if skip {
+			log.Infof("skip server %s(%s) sync for delete with system tag key: %s", commonext[i].GetName(), commonext[i].GetGlobalId(), key)
+			err := commondb[i].syncRemoveCloudVM(ctx, userCred)
+			if err != nil {
+				syncResult.DeleteError(err)
+				continue
+			}
+			syncResult.Delete()
+			continue
+		}
 		err := commondb[i].syncWithCloudVM(ctx, userCred, iprovider, self, commonext[i], syncOwnerId, true)
 		if err != nil {
 			syncResult.UpdateError(err)
-		} else {
-			syncVMPair := SGuestSyncResult{
-				Local:  &commondb[i],
-				Remote: commonext[i],
-				IsNew:  false,
-			}
-			syncVMPairs = append(syncVMPairs, syncVMPair)
-			syncResult.Update()
+			continue
 		}
+		syncVMPair := SGuestSyncResult{
+			Local:  &commondb[i],
+			Remote: commonext[i],
+			IsNew:  false,
+		}
+		syncVMPairs = append(syncVMPairs, syncVMPair)
+		syncResult.Update()
 	}
 
 	for i := 0; i < len(added); i += 1 {
+		skip, key := skipFunc(added[i])
+		if skip {
+			log.Infof("skip server %s(%s) sync with system tag key: %s", added[i].GetName(), added[i].GetGlobalId(), key)
+			continue
+		}
 		vm, err := db.FetchByExternalIdAndManagerId(GuestManager, added[i].GetGlobalId(), func(q *sqlchemy.SQuery) *sqlchemy.SQuery {
 			sq := HostManager.Query().SubQuery()
 			return q.Join(sq, sqlchemy.Equals(sq.Field("id"), q.Field("host_id"))).Filter(sqlchemy.Equals(sq.Field("manager_id"), self.ManagerId))
@@ -2804,16 +2935,18 @@ func (self *SHost) GetIHostAndProvider() (cloudprovider.ICloudHost, cloudprovide
 	var iregion cloudprovider.ICloudRegion
 	if provider.GetFactory().IsOnPremise() {
 		iregion, err = provider.GetOnPremiseIRegion()
+		if err != nil {
+			return nil, nil, errors.Wrapf(err, "provider.GetOnPremiseIRegio")
+		}
 	} else {
 		region, err := self.GetRegion()
 		if err != nil {
 			return nil, nil, errors.Wrapf(err, "GetRegion")
 		}
 		iregion, err = provider.GetIRegionById(region.ExternalId)
-	}
-	if err != nil {
-		log.Errorf("fail to find iregion: %s", err)
-		return nil, nil, err
+		if err != nil {
+			return nil, nil, errors.Wrapf(err, "provider.GetIRegionById(%s)", region.ExternalId)
+		}
 	}
 	ihost, err := iregion.GetIHostById(self.ExternalId)
 	if err != nil {
@@ -3830,11 +3963,11 @@ func (self *SHost) AllowPerformOffline(ctx context.Context,
 	return db.IsAdminAllowPerform(userCred, self, "offline")
 }
 
-func (self *SHost) PerformOffline(ctx context.Context, userCred mcclient.TokenCredential, query jsonutils.JSONObject, data jsonutils.JSONObject) (jsonutils.JSONObject, error) {
+func (self *SHost) PerformOffline(ctx context.Context, userCred mcclient.TokenCredential, query jsonutils.JSONObject, input *api.HostOfflineInput) (jsonutils.JSONObject, error) {
 	if self.HostStatus != api.HOST_OFFLINE {
 		_, err := self.SaveUpdates(func() error {
 			self.HostStatus = api.HOST_OFFLINE
-			if jsonutils.QueryBoolean(data, "update_health_status", false) {
+			if input.UpdateHealthStatus != nil && *input.UpdateHealthStatus {
 				self.EnableHealthCheck = false
 			}
 			// Note: update host status to unknown on host offline
@@ -3848,8 +3981,13 @@ func (self *SHost) PerformOffline(ctx context.Context, userCred mcclient.TokenCr
 		if hostHealthChecker != nil {
 			hostHealthChecker.UnwatchHost(context.Background(), self.Id)
 		}
-		db.OpsLog.LogEvent(self, db.ACT_OFFLINE, "", userCred)
-		logclient.AddActionLogWithContext(ctx, self, logclient.ACT_OFFLINE, nil, userCred, true)
+		db.OpsLog.LogEvent(self, db.ACT_OFFLINE, input.Reason, userCred)
+		logclient.AddActionLogWithContext(ctx, self, logclient.ACT_OFFLINE, input, userCred, true)
+		ndata := jsonutils.Marshal(self).(*jsonutils.JSONDict)
+		if len(input.Reason) > 0 {
+			ndata.Add(jsonutils.NewString(input.Reason), "reason")
+		}
+		notifyclient.SystemExceptionNotify(ctx, napi.ActionOffline, HostManager.Keyword(), ndata)
 		self.SyncAttachedStorageStatus()
 	}
 	return nil, nil
@@ -3880,7 +4018,7 @@ func (self *SHost) PerformOnline(ctx context.Context, userCred mcclient.TokenCre
 			hostHealthChecker.WatchHost(context.Background(), self.Id)
 		}
 		db.OpsLog.LogEvent(self, db.ACT_ONLINE, "", userCred)
-		logclient.AddActionLogWithContext(ctx, self, logclient.ACT_ONLINE, nil, userCred, true)
+		logclient.AddActionLogWithContext(ctx, self, logclient.ACT_ONLINE, data, userCred, true)
 		self.SyncAttachedStorageStatus()
 		self.StartSyncAllGuestsStatusTask(ctx, userCred)
 	}
@@ -5045,6 +5183,7 @@ func (host *SHost) SyncEsxiHostWires(ctx context.Context, userCred mcclient.Toke
 				HostId:  host.GetId(),
 				WireId:  vsWire.WireId,
 			}
+			hostwire.SetModelManager(HostwireManager, hostwire)
 			hostwire.MacAddr = vsWire.Mac
 			err := HostwireManager.TableSpec().Insert(ctx, hostwire)
 			if err != nil {
@@ -5284,20 +5423,25 @@ func (self *SHost) doAgentRequest(agentType api.TAgentType, ctx context.Context,
 	return data, err
 }
 
-func (manager *SHostManager) GetHostByIp(hostIp string) (*SHost, error) {
+func (manager *SHostManager) GetHostByIp(managerId, hostType, hostIp string) (*SHost, error) {
 	q := manager.Query()
-	q = q.Equals("access_ip", hostIp)
+	q = q.Equals("access_ip", hostIp).Equals("host_type", hostType)
+	if len(managerId) > 0 {
+		q = q.Equals("manager_id", managerId)
+	}
 
-	host, err := db.NewModelObject(manager)
+	ret := []SHost{}
+	err := db.FetchModelObjects(manager, q, &ret)
 	if err != nil {
 		return nil, err
 	}
-	err = q.First(host)
-	if err != nil {
-		return nil, err
+	if len(ret) == 0 {
+		return nil, errors.Wrapf(cloudprovider.ErrNotFound, "%s %s", hostType, hostIp)
 	}
-
-	return host.(*SHost), nil
+	if len(ret) > 1 {
+		return nil, errors.Wrapf(cloudprovider.ErrDuplicateId, "%s %s", hostType, hostIp)
+	}
+	return &ret[0], nil
 }
 
 func (self *SHost) getCloudProviderInfo() SCloudProviderInfo {
@@ -5332,24 +5476,19 @@ func (manager *SHostManager) PingDetectionTask(ctx context.Context, userCred mcc
 	q = q.Filter(sqlchemy.OR(sqlchemy.IsNull(q.Field("last_ping_at")),
 		sqlchemy.LT(q.Field("last_ping_at"), deadline)))
 
-	rows, err := q.Rows()
+	hosts := []SHost{}
+	err := db.FetchModelObjects(manager, q, &hosts)
 	if err != nil {
-		log.Errorln(err)
 		return
 	}
-	defer rows.Close()
 
-	data := jsonutils.NewDict()
-	data.Set("update_health_status", jsonutils.JSONFalse)
-	for rows.Next() {
-		var host = new(SHost)
-		q.Row2Struct(rows, host)
-		host.SetModelManager(manager, host)
+	updateHealthStatus := false
+	for i := range hosts {
 		func() {
-			lockman.LockObject(ctx, host)
-			defer lockman.ReleaseObject(ctx, host)
-			host.PerformOffline(ctx, userCred, nil, data)
-			host.MarkGuestUnknown(userCred)
+			lockman.LockObject(ctx, &hosts[i])
+			defer lockman.ReleaseObject(ctx, &hosts[i])
+			hosts[i].PerformOffline(ctx, userCred, nil, &api.HostOfflineInput{UpdateHealthStatus: &updateHealthStatus, Reason: fmt.Sprintf("last ping detection at %s", deadline)})
+			hosts[i].MarkGuestUnknown(userCred)
 		}()
 	}
 }
@@ -5474,6 +5613,8 @@ func (host *SHost) OnHostDown(ctx context.Context, userCred mcclient.TokenCreden
 	}); err != nil {
 		log.Errorf("update host %s failed %s", host.Id, err)
 	}
+
+	logclient.AddActionLogWithContext(ctx, host, logclient.ACT_OFFLINE, map[string]string{"reason": "host down"}, userCred, false)
 	host.SyncCleanSchedDescCache()
 	host.switchWithBackup(ctx, userCred)
 	host.migrateOnHostDown(ctx, userCred)
@@ -5537,6 +5678,7 @@ func (host *SHost) MigrateSharedStorageServers(ctx context.Context, userCred mcc
 	if err != nil {
 		return errors.Wrapf(err, "host %s(%s) get guests", host.Name, host.Id)
 	}
+	migGuests := []*SGuest{}
 	hostGuests := []*api.GuestBatchMigrateParams{}
 
 	for i := 0; i < len(guests); i++ {
@@ -5554,11 +5696,12 @@ func (host *SHost) MigrateSharedStorageServers(ctx context.Context, userCred mcc
 			}
 			guests[i].SetStatus(userCred, api.VM_START_MIGRATE, "host down")
 			hostGuests = append(hostGuests, bmp)
+			migGuests = append(migGuests, &guests[i])
 		}
 	}
 	kwargs := jsonutils.NewDict()
 	kwargs.Set("guests", jsonutils.Marshal(hostGuests))
-	return GuestManager.StartHostGuestsMigrateTask(ctx, userCred, host, kwargs, "")
+	return GuestManager.StartHostGuestsMigrateTask(ctx, userCred, migGuests, kwargs, "")
 }
 
 func (host *SHost) SetStatus(userCred mcclient.TokenCredential, status string, reason string) error {
@@ -6041,4 +6184,8 @@ func (host *SHost) IsAssignable(userCred mcclient.TokenCredential) error {
 
 func (self *SHost) PerformProbeIsolatedDevices(ctx context.Context, userCred mcclient.TokenCredential, query jsonutils.JSONObject, data jsonutils.JSONObject) (jsonutils.JSONObject, error) {
 	return self.GetHostDriver().RequestProbeIsolatedDevices(ctx, userCred, self, data)
+}
+
+func (h *SHost) GetDetailsAppOptions(ctx context.Context, userCred mcclient.TokenCredential, query jsonutils.JSONObject) (jsonutils.JSONObject, error) {
+	return h.Request(ctx, userCred, httputils.GET, "/app-options", nil, nil)
 }

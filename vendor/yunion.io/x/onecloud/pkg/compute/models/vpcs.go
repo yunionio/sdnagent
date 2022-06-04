@@ -476,7 +476,6 @@ func (manager *SVpcManager) SyncVPCs(ctx context.Context, userCred mcclient.Toke
 			syncResult.UpdateError(err)
 			continue
 		}
-		syncMetadata(ctx, userCred, &commondb[i], commonext[i])
 		localVPCs = append(localVPCs, commondb[i])
 		remoteVPCs = append(remoteVPCs, commonext[i])
 		syncResult.Update()
@@ -487,7 +486,6 @@ func (manager *SVpcManager) SyncVPCs(ctx context.Context, userCred mcclient.Toke
 			syncResult.AddError(err)
 			continue
 		}
-		syncMetadata(ctx, userCred, newVpc, added[i])
 		localVPCs = append(localVPCs, *newVpc)
 		remoteVPCs = append(remoteVPCs, added[i])
 		syncResult.Add()
@@ -552,7 +550,7 @@ func (self *SVpc) SyncWithCloudVpc(ctx context.Context, userCred mcclient.TokenC
 		return err
 	}
 
-	syncMetadata(ctx, userCred, self, extVPC)
+	//syncMetadata(ctx, userCred, self, extVPC)
 
 	if provider != nil {
 		SyncCloudDomain(userCred, self, provider.GetOwnerId())
@@ -1292,7 +1290,7 @@ func (vpc *SVpc) PerformSync(ctx context.Context, userCred mcclient.TokenCredent
 func (self *SVpc) initWire(ctx context.Context, zone *SZone, externalId string) (*SWire, error) {
 	wire := &SWire{
 		Bandwidth: 10000,
-		Mtu:       1500,
+		Mtu:       options.Options.OvnUnderlayMtu,
 	}
 	wire.VpcId = self.Id
 	wire.ZoneId = zone.Id
@@ -1775,6 +1773,7 @@ func (self *SVpc) GetDetailsTopology(ctx context.Context, userCred mcclient.Toke
 				HostStatus: hosts[i].HostStatus,
 				HostType:   hosts[i].HostType,
 				Networks:   []api.HostnetworkTopologyOutput{},
+				Schedtags:  GetSchedtagsDetailsToResourceV2(&hosts[i], ctx),
 			}
 			for j := range hns {
 				host.Networks = append(host.Networks, api.HostnetworkTopologyOutput{

@@ -21,8 +21,10 @@ import (
 
 	"yunion.io/x/jsonutils"
 	"yunion.io/x/log"
+	"yunion.io/x/pkg/errors"
 
 	api "yunion.io/x/onecloud/pkg/apis/compute"
+	"yunion.io/x/onecloud/pkg/httperrors"
 	"yunion.io/x/onecloud/pkg/mcclient"
 	"yunion.io/x/onecloud/pkg/mcclient/modules"
 	"yunion.io/x/onecloud/pkg/util/procutils"
@@ -111,11 +113,7 @@ func (man *isolatedDeviceManager) GetDevices() []IDevice {
 }
 
 func (man *isolatedDeviceManager) ProbePCIDevices(skipGPUs, skipUSBs bool) error {
-	if len(man.devices) > 0 {
-		// already probed, skip
-		return nil
-	}
-
+	man.devices = make([]IDevice, 0)
 	if !skipGPUs {
 		gpus, err := getPassthroughGPUS()
 		if err != nil {
@@ -196,7 +194,14 @@ func (man *isolatedDeviceManager) StartDetachTask() {
 	go func() {
 		for _, dev := range man.DetachedDevices {
 			for {
-				if _, err := modules.IsolatedDevices.PerformAction(man.getSession(), dev.Id, "purge", nil); err != nil {
+				log.Infof("Start delete cloud device %s", jsonutils.Marshal(dev))
+				if _, err := modules.IsolatedDevices.PerformAction(man.getSession(), dev.Id, "purge",
+					jsonutils.Marshal(map[string]interface{}{
+						"purge": true,
+					})); err != nil {
+					if errors.Cause(err) == httperrors.ErrResourceNotFound {
+						break
+					}
 					log.Errorf("Detach device %s failed: %v, try again later", dev.Id, err)
 					time.Sleep(30 * time.Second)
 					continue

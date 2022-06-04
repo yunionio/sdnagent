@@ -165,6 +165,9 @@ type SCloudaccount struct {
 	vmwareHostWireCache map[string][]SVs2Wire
 
 	SProjectMappingResourceBase
+
+	// 缺失的权限，云账号操作资源时自动更新
+	LakeOfPermissions *api.SAccountPermissions `length:"medium" get:"user" list:"user"`
 }
 
 func (self *SCloudaccount) GetCloudproviders() []SCloudprovider {
@@ -351,6 +354,12 @@ func (self *SCloudaccount) PostUpdate(ctx context.Context, userCred mcclient.Tok
 	if input.Options != nil {
 		logclient.AddSimpleActionLog(self, logclient.ACT_UPDATE_BILLING_OPTIONS, input.Options, userCred, true)
 	}
+	if input.CleanLakeOfPermissions {
+		db.Update(self, func() error {
+			self.LakeOfPermissions = nil
+			return nil
+		})
+	}
 }
 
 func (manager *SCloudaccountManager) ValidateCreateData(
@@ -415,12 +424,6 @@ func (manager *SCloudaccountManager) validateCreateData(
 		}
 		if proj.DomainId != ownerId.GetProjectDomainId() {
 			return input, httperrors.NewInputParameterError("Project %s(%s) not belong to domain %s(%s)", proj.Name, proj.Id, ownerId.GetProjectDomain(), ownerId.GetProjectDomainId())
-		}
-		if input.AutoCreateProject != nil && *input.AutoCreateProject {
-			log.Warningf("project_id and auto_create_project should not be turned on at the same time")
-		}
-		if !forceAutoCreateProject {
-			input.AutoCreateProject = nil
 		}
 	} else if input.AutoCreateProject == nil || !*input.AutoCreateProject {
 		log.Warningf("auto_create_project is off while no project_id specified")
@@ -640,9 +643,9 @@ func (self *SCloudaccount) PerformSync(ctx context.Context, userCred mcclient.To
 		syncRange.DeepSync = true
 	}
 	if self.CanSync() || syncRange.Force {
-		err = self.StartSyncCloudProviderInfoTask(ctx, userCred, &syncRange, "")
+		return nil, self.StartSyncCloudProviderInfoTask(ctx, userCred, &syncRange, "")
 	}
-	return nil, err
+	return nil, httperrors.NewInvalidStatusError("Unable to synchronize frequently")
 }
 
 func (self *SCloudaccount) AllowPerformTestConnectivity(ctx context.Context, userCred mcclient.TokenCredential, query jsonutils.JSONObject, data jsonutils.JSONObject) bool {
@@ -821,14 +824,21 @@ func (self *SCloudaccount) StartSyncCloudProviderInfoTask(ctx context.Context, u
 		params.Add(jsonutils.Marshal(syncRange), "sync_range")
 	}
 
+	cloudaccountPendingSyncsMutex.Lock()
+	defer cloudaccountPendingSyncsMutex.Unlock()
+
+	// 提前判断是否云账号已经在后台进行同步
+	if _, ok := cloudaccountPendingSyncs[self.Id]; ok {
+		return errors.Wrap(httperrors.ErrConflict, "account alread in syncing")
+	}
+
 	task, err := taskman.TaskManager.NewTask(ctx, "CloudAccountSyncInfoTask", self, userCred, params, "", "", nil)
 	if err != nil {
 		return errors.Wrapf(err, "NewTask")
 	}
 	self.markStartSync(userCred, syncRange)
 	db.OpsLog.LogEvent(self, db.ACT_SYNC_HOST_START, "", userCred)
-	task.ScheduleRun(nil)
-	return nil
+	return task.ScheduleRun(nil)
 }
 
 func (self *SCloudaccount) markStartSync(userCred mcclient.TokenCredential, syncRange *SSyncRange) error {
@@ -932,11 +942,41 @@ func (self *SCloudaccount) proxyFunc() httputils.TransportProxyFunc {
 	return nil
 }
 
+func (self *SCloudaccount) UpdatePermission() func(string, string) {
+	return func(service, permission string) {
+		ctx, key := context.Background(), "update permission"
+
+		lockman.LockRawObject(ctx, self.Id, key)
+		defer lockman.ReleaseRawObject(ctx, self.Id, key)
+
+		db.Update(self, func() error {
+			data := api.SAccountPermissions{}
+			if self.LakeOfPermissions != nil {
+				data = *self.LakeOfPermissions
+			}
+			_, ok := data[service]
+			if !ok {
+				data[service] = api.SAccountPermission{}
+			}
+			permissions := data[service].Permissions
+			if !utils.IsInStringArray(permission, permissions) {
+				permissions = append(permissions, permission)
+				data[service] = api.SAccountPermission{
+					Permissions: permissions,
+				}
+			}
+			self.LakeOfPermissions = &data
+			return nil
+		})
+	}
+}
+
 func (self *SCloudaccount) getProviderInternal() (cloudprovider.ICloudProvider, error) {
 	secret, err := self.getPassword()
 	if err != nil {
 		return nil, fmt.Errorf("Invalid password %s", err)
 	}
+
 	return cloudprovider.GetProvider(cloudprovider.ProviderConfig{
 		Id:      self.Id,
 		Name:    self.Name,
@@ -947,6 +987,8 @@ func (self *SCloudaccount) getProviderInternal() (cloudprovider.ICloudProvider, 
 
 		Options:   self.Options,
 		ProxyFunc: self.proxyFunc(),
+
+		UpdatePermission: self.UpdatePermission(),
 	})
 }
 
@@ -1209,7 +1251,7 @@ func (self *SCloudaccount) GetEnvironment() string {
 	return self.AccessUrl
 }
 
-func (self *SCloudaccount) getMoreDetails(out api.CloudaccountDetail) api.CloudaccountDetail {
+func (self *SCloudaccount) getMoreDetails(ctx context.Context, out api.CloudaccountDetail) api.CloudaccountDetail {
 	out.EipCount, _ = self.GetEipCount()
 	out.VpcCount, _ = self.GetVpcCount()
 	out.DiskCount, _ = self.GetDiskCount()
@@ -1222,7 +1264,7 @@ func (self *SCloudaccount) getMoreDetails(out api.CloudaccountDetail) api.Clouda
 
 	out.Projects = []api.ProviderProject{}
 	for _, projectId := range self.getProjectIds() {
-		if proj, _ := db.TenantCacheManager.FetchTenantById(context.Background(), projectId); proj != nil {
+		if proj, _ := db.TenantCacheManager.FetchTenantById(ctx, projectId); proj != nil {
 			project := api.ProviderProject{
 				Tenant:   proj.Name,
 				TenantId: proj.Id,
@@ -1285,7 +1327,7 @@ func (manager *SCloudaccountManager) FetchCustomizeColumns(
 			detail.ProxySetting.HTTPSProxy = proxySetting.HTTPSProxy
 			detail.ProxySetting.NoProxy = proxySetting.NoProxy
 		}
-		rows[i] = account.getMoreDetails(detail)
+		rows[i] = account.getMoreDetails(ctx, detail)
 	}
 
 	return rows
@@ -2072,9 +2114,7 @@ func (account *SCloudaccount) SubmitSyncAccountTask(ctx context.Context, userCre
 	if _, ok := cloudaccountPendingSyncs[account.Id]; ok {
 		if waitChan != nil {
 			go func() {
-				// an active cloudaccount sync task is running, return with conflict error
-				log.Errorf("an active cloudaccount sync task is running, early return with conflict error")
-				waitChan <- errors.Wrap(httperrors.ErrConflict, "cloudaccountPendingSyncs")
+				waitChan <- errors.Wrap(httperrors.ErrConflict, "an active cloudaccount sync task is running, early return with conflict error")
 			}()
 		}
 		return
@@ -2253,7 +2293,6 @@ func (account *SCloudaccount) PerformPublic(ctx context.Context, userCred mcclie
 
 	syncRange := &SSyncRange{FullSync: true}
 	account.StartSyncCloudProviderInfoTask(ctx, userCred, syncRange, "")
-
 	return nil, nil
 }
 
@@ -2823,9 +2862,13 @@ func (self *SCloudaccount) SyncDnsZones(ctx context.Context, userCred mcclient.T
 			result.AddError(err)
 			continue
 		}
-		if isNew {
-			result.Add()
+		if !isNew {
+			_, err = dnsZone.newCache(ctx, userCred, self.Id, added[i])
+			if err != nil {
+				result.AddError(errors.Wrapf(err, "newCache"))
+			}
 		}
+		result.Add()
 		localZones = append(localZones, *dnsZone)
 		remoteZones = append(remoteZones, added[i])
 	}

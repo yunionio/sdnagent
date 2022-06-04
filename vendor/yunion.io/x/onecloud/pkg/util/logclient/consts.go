@@ -73,6 +73,7 @@ const (
 	ACT_CREATE_BACKUP                = "create_backup"
 	ACT_SWITCH_TO_BACKUP             = "switch_to_backup"
 	ACT_RENEW                        = "renew"
+	ACT_SAVE_IMAGE                   = "save_image"
 	ACT_SET_AUTO_RENEW               = "set_auto_renew"
 	ACT_MIGRATE                      = "migrate"
 	ACT_EIP_ASSOCIATE                = "eip_associate"
@@ -102,7 +103,9 @@ const (
 	ACT_VM_CONVERT                   = "vm_convert"
 	ACT_FREEZE                       = "freeze"
 	ACT_UNFREEZE                     = "unfreeze"
-	ACT_VM_SYNC_ISOLATED_DEVICE      = "vm_sync_isolated_device"
+	// 到期释放
+	ACT_SET_EXPIRED_TIME        = "set_expired_time"
+	ACT_VM_SYNC_ISOLATED_DEVICE = "vm_sync_isolated_device"
 
 	ACT_CACHED_IMAGE = "cached_image"
 
@@ -116,6 +119,7 @@ const (
 	ACT_IMAGE_PROBE = "image_probe"
 
 	ACT_AUTHENTICATE = "authenticate"
+	ACT_LOGOUT       = "logout"
 
 	ACT_HEALTH_CHECK = "health_check"
 
@@ -214,4 +218,6 @@ const (
 	ACT_MERGE_NETWORK = "merge_network"
 
 	ACT_RESTART_NETWORK = "restart_network"
+
+	ACT_RECOVERY = "recovery"
 )

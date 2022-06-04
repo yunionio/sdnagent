@@ -66,7 +66,7 @@ func (st *STimer) Update(now time.Time) {
 		return
 	}
 
-	newNextTime := time.Date(now.Year(), now.Month(), now.Day(), st.Hour, st.Minute, 0, 0, now.Location())
+	newNextTime := time.Date(now.Year(), now.Month(), now.Day(), st.Hour, st.Minute, 0, 0, time.UTC).In(now.Location())
 	if now.After(newNextTime) {
 		newNextTime = newNextTime.AddDate(0, 0, 1)
 	}
@@ -172,13 +172,13 @@ func init() {
 	timerDescTable.Set("timerLang", i18n.NewTableEntry().EN("en").CN("cn"))
 }
 
-func (st *STimer) Description(ctx context.Context) string {
+func (st *STimer) Description(ctx context.Context, zone *time.Location) string {
 	lang := timerDescTable.Lookup(ctx, TIMERLANG)
 	switch lang {
 	case "en":
-		return st.descEnglish()
+		return st.descEnglish(zone)
 	case "cn":
-		return st.descChinese()
+		return st.descChinese(zone)
 	}
 	return ""
 }
@@ -186,11 +186,9 @@ func (st *STimer) Description(ctx context.Context) string {
 var (
 	wdsCN = []string{"", "一", "二", "三", "四", "五", "六", "日"}
 	wdsEN = []string{"", "Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday"}
-	zone  = time.Now().Local().Location()
-	//zone  = time.FixedZone("GMT", 8*3600)
 )
 
-func (st *STimer) descChinese() string {
+func (st *STimer) descChinese(zone *time.Location) string {
 	format := "2006-01-02 15:04:05"
 	var prefix string
 	switch st.Type {
@@ -213,21 +211,27 @@ func (st *STimer) descChinese() string {
 		}
 		prefix = fmt.Sprintf("每月 【%s】", strings.Join(monthDays, "｜"))
 	}
-	return fmt.Sprintf("%s %02d:%02d触发 有效时间为%s至%s", prefix, st.Hour, st.Minute, st.StartTime.In(zone).Format(format), st.EndTime.In(zone).Format(format))
+	return fmt.Sprintf("%s %s触发 有效时间为%s至%s", prefix, st.hourMinutesDesc(zone), st.StartTime.In(zone).Format(format), st.EndTime.In(zone).Format(format))
 }
 
-func (st *STimer) descEnglish() string {
+func (st *STimer) hourMinutesDesc(zone *time.Location) string {
+	now := time.Now()
+	t := time.Date(now.Year(), now.Month(), now.Day(), st.Hour, st.Minute, 0, 0, time.UTC).In(zone)
+	return fmt.Sprintf("%02d:%02d", t.Hour(), t.Minute())
+}
+
+func (st *STimer) descEnglish(zone *time.Location) string {
 	var detail string
 	format := "2006-01-02 15:04:05"
 	switch st.Type {
 	case api.TIMER_TYPE_ONCE:
 		return st.EndTime.In(zone).Format(format)
 	case api.TIMER_TYPE_DAY:
-		detail = fmt.Sprintf("%d:%d every day", st.Hour, st.Minute)
+		detail = fmt.Sprintf("%s every day", st.hourMinutesDesc(zone))
 	case api.TIMER_TYPE_WEEK:
-		detail = st.weekDaysDesc()
+		detail = st.weekDaysDesc(zone)
 	case api.TIMER_TYPE_MONTH:
-		detail = st.monthDaysDesc()
+		detail = st.monthDaysDesc(zone)
 	}
 	if st.EndTime.IsZero() {
 		return detail
@@ -235,14 +239,14 @@ func (st *STimer) descEnglish() string {
 	return fmt.Sprintf("%s, from %s to %s", detail, st.StartTime.In(zone).Format(format), st.EndTime.In(zone).Format(format))
 }
 
-func (st *STimer) weekDaysDesc() string {
+func (st *STimer) weekDaysDesc(zone *time.Location) string {
 	if st.WeekDays == 0 {
 		return ""
 	}
 	var desc strings.Builder
 	wds := st.GetWeekDays()
 	i := 0
-	desc.WriteString(fmt.Sprintf("%d:%d every %s", st.Hour, st.Minute, wdsEN[wds[i]]))
+	desc.WriteString(fmt.Sprintf("%s every %s", st.hourMinutesDesc(zone), wdsEN[wds[i]]))
 	for i++; i < len(wds)-1; i++ {
 		desc.WriteString(", ")
 		desc.WriteString(wdsEN[wds[i]])
@@ -254,14 +258,14 @@ func (st *STimer) weekDaysDesc() string {
 	return desc.String()
 }
 
-func (st *STimer) monthDaysDesc() string {
+func (st *STimer) monthDaysDesc(zone *time.Location) string {
 	if st.MonthDays == 0 {
 		return ""
 	}
 	var desc strings.Builder
 	mds := st.GetMonthDays()
 	i := 0
-	desc.WriteString(fmt.Sprintf("%d:%d on the %d%s", st.Hour, st.Minute, mds[i], st.dateSuffix(mds[i])))
+	desc.WriteString(fmt.Sprintf("%s on the %d%s", st.hourMinutesDesc(zone), mds[i], st.dateSuffix(mds[i])))
 	for i++; i < len(mds)-1; i++ {
 		desc.WriteString(", ")
 		desc.WriteString(strconv.Itoa(mds[i]))

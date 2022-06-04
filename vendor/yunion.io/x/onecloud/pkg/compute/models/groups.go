@@ -199,7 +199,7 @@ func (sm *SGroupManager) FetchCustomizeColumns(
 		}
 		eip, _ := objs[i].(*SGroup).getElasticIp()
 		if eip != nil {
-			rows[i].Eip = eip.IpAddr
+			rows[i].VipEip = eip.IpAddr
 		}
 	}
 
@@ -695,6 +695,9 @@ func (grp *SGroup) isEipAssociable() (*SNetwork, error) {
 	}
 	if net == nil {
 		return nil, errors.Wrap(httperrors.ErrInvalidStatus, "group no attached network")
+	}
+	if !IsOneCloudVpcResource(net) {
+		return nil, errors.Wrap(httperrors.ErrInvalidStatus, "group network is not a VPC network")
 	}
 
 	gns, err := grp.getGroupnetworks()

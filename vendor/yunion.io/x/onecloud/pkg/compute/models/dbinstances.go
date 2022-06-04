@@ -1472,7 +1472,6 @@ func (manager *SDBInstanceManager) SyncDBInstances(ctx context.Context, userCred
 			syncResult.UpdateError(err)
 			continue
 		}
-		syncVirtualResourceMetadata(ctx, userCred, &commondb[i], commonext[i])
 		localDBInstances = append(localDBInstances, commondb[i])
 		remoteDBInstances = append(remoteDBInstances, commonext[i])
 		syncResult.Update()
@@ -1484,7 +1483,6 @@ func (manager *SDBInstanceManager) SyncDBInstances(ctx context.Context, userCred
 			syncResult.AddError(err)
 			continue
 		}
-		syncVirtualResourceMetadata(ctx, userCred, instance, added[i])
 		localDBInstances = append(localDBInstances, *instance)
 		remoteDBInstances = append(remoteDBInstances, added[i])
 		syncResult.Add()
@@ -1712,6 +1710,7 @@ func (self *SDBInstance) SyncWithCloudDBInstance(ctx context.Context, userCred m
 		return err
 	}
 	syncVirtualResourceMetadata(ctx, userCred, self, extInstance)
+	SyncCloudProject(userCred, self, provider.GetOwnerId(), extInstance, provider.Id)
 	db.OpsLog.LogSyncUpdate(self, diff, userCred)
 	if len(diff) > 0 {
 		notifyclient.EventNotify(ctx, userCred, notifyclient.SEventNotifyParam{
@@ -1804,7 +1803,8 @@ func (manager *SDBInstanceManager) newFromCloudDBInstance(ctx context.Context, u
 		return nil, errors.Wrapf(err, "newFromCloudDBInstance.Insert")
 	}
 
-	SyncCloudProject(userCred, &instance, ownerId, extInstance, provider.Id)
+	syncVirtualResourceMetadata(ctx, userCred, &instance, extInstance)
+	SyncCloudProject(userCred, &instance, provider.GetOwnerId(), extInstance, provider.Id)
 
 	db.OpsLog.LogEvent(&instance, db.ACT_CREATE, instance.GetShortDesc(ctx), userCred)
 
@@ -2124,4 +2124,12 @@ func (self *SDBInstance) StartSyncSecgroupsTask(ctx context.Context, userCred mc
 	self.SetStatus(userCred, api.DBINSTANCE_DEPLOYING, "sync secgroups")
 	task.ScheduleRun(nil)
 	return nil
+}
+
+func (manager *SDBInstanceManager) GetExpiredModels(advanceDay int) ([]IBillingModel, error) {
+	return fetchExpiredModels(manager, advanceDay)
+}
+
+func (self *SDBInstance) GetExpiredAt() time.Time {
+	return self.ExpiredAt
 }

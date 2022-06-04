@@ -883,7 +883,7 @@ func (manager *SServerSkuManager) GetMatchedSku(regionId string, cpu int64, memM
 func (manager *SServerSkuManager) FetchSkuByNameAndProvider(name string, provider string, checkConsistency bool) (*SServerSku, error) {
 	q := manager.Query().IsTrue("enabled")
 	q = q.Equals("name", name)
-	if utils.IsInStringArray(provider, []string{api.CLOUD_PROVIDER_ONECLOUD, api.CLOUD_PROVIDER_VMWARE}) {
+	if utils.IsInStringArray(provider, []string{api.CLOUD_PROVIDER_ONECLOUD, api.CLOUD_PROVIDER_VMWARE, api.CLOUD_PROVIDER_NUTANIX}) {
 		q = q.Filter(
 			sqlchemy.Equals(q.Field("provider"), api.CLOUD_PROVIDER_ONECLOUD),
 		)
@@ -1127,20 +1127,11 @@ func (manager *SServerSkuManager) newFromCloudSku(ctx context.Context, userCred 
 	sku.constructSku(extSku)
 
 	sku.CloudregionId = region.Id
+	sku.Name = extSku.GetName()
 
 	sku.SetModelManager(manager, sku)
-	var err = func() error {
-		lockman.LockRawObject(ctx, manager.Keyword(), "name")
-		defer lockman.ReleaseRawObject(ctx, manager.Keyword(), "name")
 
-		var err error
-		sku.Name, err = db.GenerateName(ctx, manager, userCred, extSku.GetName())
-		if err != nil {
-			return errors.Wrap(err, "db.GenerateName")
-		}
-
-		return manager.TableSpec().Insert(ctx, sku)
-	}()
+	err := manager.TableSpec().Insert(ctx, sku)
 	if err != nil {
 		return errors.Wrapf(err, "Insert")
 	}
@@ -1161,6 +1152,7 @@ func (self *SServerSku) syncWithCloudSku(ctx context.Context, userCred mcclient.
 		self.InstanceTypeCategory = extSku.InstanceTypeCategory
 		self.PrepaidStatus = extSku.PrepaidStatus
 		self.PostpaidStatus = extSku.PostpaidStatus
+		self.Name = extSku.GetName()
 		self.CpuArch = extSku.CpuArch
 		self.SysDiskType = extSku.SysDiskType
 		self.DataDiskTypes = extSku.DataDiskTypes
@@ -1384,14 +1376,19 @@ func (manager *SServerSkuManager) InitializeData() error {
 	}
 
 	privateSkus := make([]SServerSku, 0)
-	err = manager.Query().IsNullOrEmpty("local_category").IsNullOrEmpty("zone_id").All(&privateSkus)
+	q := manager.Query().IsNullOrEmpty("local_category").IsNotNull("instance_type_category").IsNullOrEmpty("zone_id")
 	if err != nil {
 		return err
 	}
 
-	for _, sku := range privateSkus {
-		_, err = manager.TableSpec().Update(context.TODO(), &sku, func() error {
-			sku.LocalCategory = sku.InstanceTypeCategory
+	err = db.FetchModelObjects(manager, q, &privateSkus)
+	if err != nil {
+		return err
+	}
+
+	for i := range privateSkus {
+		_, err = db.Update(&privateSkus[i], func() error {
+			privateSkus[i].LocalCategory = privateSkus[i].InstanceTypeCategory
 			return nil
 		})
 		if err != nil {
