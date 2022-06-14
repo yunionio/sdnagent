@@ -70,7 +70,10 @@ docker-image:
 docker-image-push:
 	PUSH=true DEBUG=${DEBUG} REGISTRY=${REGISTRY} TAG=${VERSION} ARCH=${ARCH} ${CURDIR}/scripts/docker_push.sh
 
+image: docker-image-push
+
 .PHONY: docker-image
 .PHONY: docker-image-push
+.PHONY: image
 
 .PHONY: all $(bins) rpm test
