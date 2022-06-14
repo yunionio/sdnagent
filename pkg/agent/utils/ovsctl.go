@@ -22,6 +22,11 @@ import (
 )
 
 func RunOvsctl(ctx context.Context, args []string) error {
+	_, err := ExecOvsctl(ctx, args)
+	return err
+}
+
+func ExecOvsctl(ctx context.Context, args []string) ([]byte, error) {
 	if len(args) == 0 {
 		panic("exec: empty args")
 	}
@@ -37,11 +42,11 @@ func RunOvsctl(ctx context.Context, args []string) error {
 		return s
 	}
 	cmd := exec.CommandContext(ctx, args[0], args[1:]...)
-	_, err := cmd.Output()
+	output, err := cmd.Output()
 	if err != nil {
 		s := tos(args)
 		err = errors.Wrap(err, s)
-		return err
+		return nil, err
 	}
-	return nil
+	return output, nil
 }

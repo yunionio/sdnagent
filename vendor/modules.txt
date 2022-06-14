@@ -493,6 +493,7 @@ yunion.io/x/onecloud/pkg/util/splitable
 yunion.io/x/onecloud/pkg/util/ssh
 yunion.io/x/onecloud/pkg/util/streamutils
 yunion.io/x/onecloud/pkg/util/stringutils2
+yunion.io/x/onecloud/pkg/util/sysutils
 yunion.io/x/onecloud/pkg/util/tagutils
 yunion.io/x/onecloud/pkg/util/validate
 yunion.io/x/onecloud/pkg/util/version

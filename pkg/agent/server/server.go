@@ -39,6 +39,7 @@ type AgentServer struct {
 	ctx        context.Context
 	ctxCancel  context.CancelFunc
 	hostConfig *utils.HostConfig
+	hostId     string
 
 	rpcServer *grpc.Server
 }
@@ -58,6 +59,11 @@ func (s *AgentServer) GetFlowMan(bridge string) *FlowMan {
 
 func (s *AgentServer) HostConfig(hostConfig *utils.HostConfig) *AgentServer {
 	s.hostConfig = hostConfig
+	return s
+}
+
+func (s *AgentServer) HostId(hostId string) *AgentServer {
+	s.hostId = hostId
 	return s
 }
 
@@ -107,6 +113,12 @@ func (s *AgentServer) Start(ctx context.Context) error {
 		eipMan := newEipMan(s)
 		s.wg.Add(1)
 		go eipMan.Start(s.ctx)
+	}
+
+	if s.hostConfig.SdnEnableTapMan {
+		tapMan := newTapMan(s)
+		s.wg.Add(1)
+		go tapMan.Start(s.ctx)
 	}
 
 	return nil
