@@ -12,15 +12,24 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-package clickhouse
+package compute
 
 import (
-	"fmt"
-
-	"yunion.io/x/sqlchemy"
+	"yunion.io/x/onecloud/pkg/mcclient/modulebase"
+	"yunion.io/x/onecloud/pkg/mcclient/modules"
 )
 
-// GROUP_CONCAT1 represents the SQL function GROUP_CONCAT
-func (click *SClickhouseBackend) GROUP_CONCAT2(name string, sep string, field sqlchemy.IQueryField) sqlchemy.IQueryField {
-	return sqlchemy.NewFunctionField(name, fmt.Sprintf("arrayStringConcat(groupUniqArray(%%s), '%s')", sep), field)
+var (
+	NetTapServices modulebase.ResourceManager
+)
+
+func init() {
+	NetTapServices = modules.NewComputeManager("tap_service", "tap_services",
+		[]string{
+			"id", "name", "enabled", "type", "target_id", "target", "target_ips", "mac_addr", "flow_count",
+		},
+		[]string{},
+	)
+
+	modules.RegisterCompute(&NetTapServices)
 }

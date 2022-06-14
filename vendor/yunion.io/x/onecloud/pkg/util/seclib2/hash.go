@@ -12,15 +12,24 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-package clickhouse
+package seclib2
 
 import (
+	"crypto/sha256"
+	"encoding/binary"
 	"fmt"
-
-	"yunion.io/x/sqlchemy"
 )
 
-// GROUP_CONCAT1 represents the SQL function GROUP_CONCAT
-func (click *SClickhouseBackend) GROUP_CONCAT2(name string, sep string, field sqlchemy.IQueryField) sqlchemy.IQueryField {
-	return sqlchemy.NewFunctionField(name, fmt.Sprintf("arrayStringConcat(groupUniqArray(%%s), '%s')", sep), field)
+func HashId(seed string, idx byte, width int) string {
+	h := sha256.New()
+	h.Write([]byte(seed))
+	if idx > 0 {
+		h.Write([]byte{idx})
+	}
+	sum := h.Sum(nil)
+	numStr := fmt.Sprintf(fmt.Sprintf("%%0%dx", width), binary.BigEndian.Uint64(sum[:8]))
+	if len(numStr) > width {
+		numStr = numStr[:width]
+	}
+	return numStr
 }
