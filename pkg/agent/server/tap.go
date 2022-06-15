@@ -17,6 +17,7 @@ package server
 import (
 	"context"
 	"fmt"
+	"strings"
 	"sync"
 	"time"
 
@@ -195,11 +196,17 @@ func (man *tapMan) syncTapConfig(ctx context.Context) error {
 	if err != nil {
 		return errors.Wrap(err, "fetchMirrorList")
 	}
+	portMap, err := fetchPortNameIdMap(ctx)
+	if err != nil {
+		return errors.Wrap(err, "fetchPortNameIdMap")
+	}
 	allMirrors := make([]string, 0)
+	allMirrorPorts := make([]string, 0)
 	if len(cfg.Mirrors) > 0 {
 		for _, m := range cfg.Mirrors {
 			tm := newTapMirror(m)
 			allMirrors = append(allMirrors, tm.mirrorName())
+			allMirrorPorts = append(allMirrorPorts, tm.mirrorPort())
 			if _, ok := mirrorMap[tm.mirrorName()]; ok {
 				// mirror exists, do nothing
 				continue
@@ -240,10 +247,19 @@ func (man *tapMan) syncTapConfig(ctx context.Context) error {
 			if err != nil {
 				return errors.Wrap(err, "exec remove mirror")
 			}
-			// also need to remove the port
-			err = cli.DeletePort(cfg.Bridge, cfg.OutputPort)
-			if err != nil {
-				return errors.Wrap(err, "delete %s from %s fail %s", cfg.OutputPort, cfg.Bridge, err)
+			// also need to remove the port, do it next
+		}
+	}
+	for p := range portMap {
+		if strings.HasPrefix(p, LocalMirrorPrefix) || strings.HasPrefix(p, RemoteMirrorPrefix) {
+			if !pkgutils.IsInStringArray(p, allMirrorPorts) {
+				// need to remove mirror port
+				if br, err := cli.PortToBridge(p); err == nil {
+					err := cli.DeletePort(br, p)
+					if err != nil {
+						return errors.Wrapf(err, "delete %s from %s fail %s", p, br, err)
+					}
+				}
 			}
 		}
 	}
@@ -344,10 +360,10 @@ func (s *sTapService) flows(tapBridge string) ([]*ovs.Flow, error) {
 }
 
 type sTapMirror struct {
-	api.SHostBridgeMirrorConfig
+	api.SMirrorConfig
 }
 
-func newTapMirror(m api.SHostBridgeMirrorConfig) sTapMirror {
+func newTapMirror(m api.SMirrorConfig) sTapMirror {
 	tm := sTapMirror{m}
 	if tm.Bridge == api.HostVpcBridge {
 		tm.Bridge = vpcBridge
@@ -355,29 +371,36 @@ func newTapMirror(m api.SHostBridgeMirrorConfig) sTapMirror {
 	return tm
 }
 
-func (s *sTapService) newTapMirror(m api.SHostBridgeMirrorConfig) sTapMirror {
+func (s *sTapService) newTapMirror(m api.SMirrorConfig) sTapMirror {
 	tm := newTapMirror(m)
 	tm.TapHostIp = s.TapHostIp
 	return tm
 }
 
+const (
+	LocalTapPrefix     = "t-loc"
+	LocalMirrorPrefix  = "m-loc"
+	RemoteTapPrefix    = "t-gre"
+	RemoteMirrorPrefix = "m-gre"
+)
+
 func (m *sTapMirror) mirrorPort() string {
 	if m.TapHostIp == m.HostIp {
 		// same host, patch port
-		return fmt.Sprintf("m-loc%04x", m.FlowId)
+		return fmt.Sprintf("%s%04x", LocalMirrorPrefix, m.FlowId)
 	} else {
 		// remote host, gre port
-		return fmt.Sprintf("m-gre%04x", m.FlowId)
+		return fmt.Sprintf("%s%04x", RemoteMirrorPrefix, m.FlowId)
 	}
 }
 
 func (m *sTapMirror) tapPort() string {
 	if m.TapHostIp == m.HostIp {
 		// same host, patch port
-		return fmt.Sprintf("t-loc%04x", m.FlowId)
+		return fmt.Sprintf("%s%04x", LocalTapPrefix, m.FlowId)
 	} else {
 		// remote host, gre port
-		return fmt.Sprintf("t-gre%04x", m.FlowId)
+		return fmt.Sprintf("%s%04x", RemoteTapPrefix, m.FlowId)
 	}
 }
 
@@ -437,33 +460,36 @@ func (m *sTapMirror) mirrorArgs() []string {
 		"ovs-vsctl",
 		"--", fmt.Sprintf("--id=@%s", m.mirrorPort()), "get", "Port", m.mirrorPort(),
 	}
-	for _, p := range m.Port {
-		args = append(args, "--", fmt.Sprintf("--id=@%s", p), "get", "Port", p)
+	if len(m.Port) > 0 {
+		args = append(args, "--", fmt.Sprintf("--id=@%s", m.Port), "get", "Port", m.Port)
 	}
 	args = append(args, "--", "--id=@m", "create", "Mirror", fmt.Sprintf("name=%s", m.mirrorName()), fmt.Sprintf("output-port=@%s", m.mirrorPort()))
 	if len(m.Port) == 0 {
+		// select all
 		args = append(args, "select_all=true")
-	}
-	if len(m.Port) > 0 {
-		for _, p := range m.Port {
-			args = append(args, "--", "add", "Mirror", m.mirrorName())
-			if m.Direction == api.TapFlowDirectionIn || m.Direction == api.TapFlowDirectionBoth {
-				args = append(args, "select_dst_port", fmt.Sprintf("@%s", p))
-			} else if m.Direction == api.TapFlowDirectionOut || m.Direction == api.TapFlowDirectionBoth {
-				args = append(args, "select_src_port", fmt.Sprintf("@%s", p))
-			}
+		if m.VlanId > 0 {
+			args = append(args, fmt.Sprintf("select_vlan=%d", m.VlanId))
 		}
 	} else {
-		for _, vlanId := range m.VlanId {
-			args = append(args, "--", "add", "Mirror", m.mirrorName(), "select_vlan", fmt.Sprintf("%d", vlanId))
+		if m.Direction == api.TapFlowDirectionIn || m.Direction == api.TapFlowDirectionBoth {
+			args = append(args, fmt.Sprintf("select_dst_port=@%s", m.Port))
+		}
+		if m.Direction == api.TapFlowDirectionOut || m.Direction == api.TapFlowDirectionBoth {
+			args = append(args, fmt.Sprintf("select_src_port=@%s", m.Port))
 		}
 	}
 	args = append(args, "--", "add", "Bridge", m.Bridge, "mirrors", "@m")
 	return args
 }
 
+type sMirrorConfig struct {
+	Mirror string
+	Bridge string
+	Output string
+}
+
 // return map[mirror]bridge
-func fetchMirrorList(ctx context.Context) (map[string]string, error) {
+func fetchMirrorList(ctx context.Context) (map[string]sMirrorConfig, error) {
 	mirrorNameIdMap, err := fetchMirrorNameIdMap(ctx)
 	if err != nil {
 		return nil, errors.Wrap(err, "fetchMirrorNameIdMap")
@@ -472,28 +498,46 @@ func fetchMirrorList(ctx context.Context) (map[string]string, error) {
 	if err != nil {
 		return nil, errors.Wrap(err, "fetchMirrorIdBridgeMap")
 	}
-	ret := make(map[string]string)
+	portIdName, err := fetchPortNameIdMap(ctx)
+	if err != nil {
+		return nil, errors.Wrap(err, "fetchPortNameIdMap")
+	}
+	ret := make(map[string]sMirrorConfig)
 	for k, v := range mirrorNameIdMap {
-		ret[k] = mirrorIdBridgeMap[v]
+		conf := sMirrorConfig{
+			Mirror: k,
+			Bridge: mirrorIdBridgeMap[v.Mirror],
+			Output: portIdName[v.Output],
+		}
+		ret[k] = conf
 	}
 	return ret, nil
 }
 
-func fetchSets(arr jsonutils.JSONObject) []string {
+func fetchValue(arr jsonutils.JSONObject) string {
+	idList, _ := arr.GetArray()
+	if len(idList) > 1 {
+		idKey, _ := idList[0].GetString()
+		id, _ := idList[1].GetString()
+		if idKey == "uuid" {
+			return id
+		}
+	}
+	return ""
 }
 
-func fetchMirrorNameIdMap(ctx context.Context) (map[string]string, error) {
+func fetchPortNameIdMap(ctx context.Context) (map[string]string, error) {
 	args := []string{
-		"ovs-vsctl", "--format=json", "--columns=name,_uuid,output_port,select_dst_port,select_src_port,select_vlan", "list", "Mirror",
+		"ovs-vsctl", "--format=json", "--columns=name,_uuid", "list", "Port",
 	}
 	output, err := utils.ExecOvsctl(ctx, args)
 	if err != nil {
 		return nil, errors.Wrap(err, "utils.ExecOvsctl")
 	}
-	return fetchMirrorNameIdMapInternal(output)
+	return fetchPortNameIdMapInternal(output)
 }
 
-func fetchMirrorNameIdMapInternal(output []byte) (map[string]string, error) {
+func fetchPortNameIdMapInternal(output []byte) (map[string]string, error) {
 	ret := make(map[string]string)
 	bridgeJson, err := jsonutils.Parse(output)
 	if err != nil {
@@ -510,13 +554,43 @@ func fetchMirrorNameIdMapInternal(output []byte) (map[string]string, error) {
 		}
 		if len(data) > 1 {
 			name, _ := data[0].GetString()
-			idList, _ := data[1].GetArray()
-			if len(idList) > 1 {
-				idKey, _ := idList[0].GetString()
-				id, _ := idList[1].GetString()
-				if idKey == "uuid" {
-					ret[name] = id
-				}
+			ret[name] = fetchValue(data[1])
+		}
+	}
+	return ret, nil
+}
+
+func fetchMirrorNameIdMap(ctx context.Context) (map[string]sMirrorConfig, error) {
+	args := []string{
+		"ovs-vsctl", "--format=json", "--columns=name,_uuid,output_port", "list", "Mirror",
+	}
+	output, err := utils.ExecOvsctl(ctx, args)
+	if err != nil {
+		return nil, errors.Wrap(err, "utils.ExecOvsctl")
+	}
+	return fetchMirrorNameIdMapInternal(output)
+}
+
+func fetchMirrorNameIdMapInternal(output []byte) (map[string]sMirrorConfig, error) {
+	ret := make(map[string]sMirrorConfig)
+	bridgeJson, err := jsonutils.Parse(output)
+	if err != nil {
+		return nil, errors.Wrap(err, "jsonutils.Parse mirror output")
+	}
+	dataList, err := bridgeJson.GetArray("data")
+	if err != nil {
+		return nil, errors.Wrap(err, "get data list")
+	}
+	for i := range dataList {
+		data, err := dataList[i].GetArray()
+		if err != nil {
+			return nil, errors.Wrapf(err, "get data at %d", i)
+		}
+		if len(data) > 1 {
+			name, _ := data[0].GetString()
+			ret[name] = sMirrorConfig{
+				Mirror: fetchValue(data[1]),
+				Output: fetchValue(data[2]),
 			}
 		}
 	}
@@ -545,12 +619,16 @@ func fetchMirrorIdBridgeMapInternal(output []byte) (map[string]string, error) {
 	if err != nil {
 		return nil, errors.Wrap(err, "get data list")
 	}
+	// [["br1",["set",[]]],["br0",["set",[["uuid","5ab854d3-b050-48de-9d60-3f5791478d1c"],["uuid","d5dfa2a6-7633-4f13-89d9-ecfa2b161bda"]]]],["brtap",["set",[]]],["brmapped",["set",[]]],["breip",["set",[]]],["brvpc",["set",[]]]]
 	for i := range dataList {
+		// ["br0",["set",[["uuid","5ab854d3-b050-48de-9d60-3f5791478d1c"],["uuid","d5dfa2a6-7633-4f13-89d9-ecfa2b161bda"]]]]
 		data, err := dataList[i].GetArray()
 		if err != nil {
 			return nil, errors.Wrapf(err, "get data at %d", i)
 		}
 		if len(data) > 1 {
+			brName, _ := data[0].GetString()
+			// ["set",[["uuid","5ab854d3-b050-48de-9d60-3f5791478d1c"],["uuid","d5dfa2a6-7633-4f13-89d9-ecfa2b161bda"]]]
 			mirrorsList, err := data[1].GetArray()
 			if err != nil {
 				return nil, errors.Wrap(err, "get data mirrors")
@@ -560,10 +638,17 @@ func fetchMirrorIdBridgeMapInternal(output []byte) (map[string]string, error) {
 				if err != nil {
 					return nil, errors.Wrap(err, "get data mirrors name")
 				}
-				if mirrorKey == "uuid" {
-					brName, _ := data[0].GetString()
-					for i := 1; i < len(mirrorsList); i++ {
-						mirrorUuid, _ := mirrorsList[i].GetString()
+				switch mirrorKey {
+				case "uuid":
+					mirrorUuid, _ := mirrorsList[1].GetString()
+					ret[mirrorUuid] = brName
+				case "set":
+					// mirrorsList[1]: [["uuid","5ab854d3-b050-48de-9d60-3f5791478d1c"],["uuid","d5dfa2a6-7633-4f13-89d9-ecfa2b161bda"]]
+					mirrorsList2, _ := mirrorsList[1].GetArray()
+					for i := 0; i < len(mirrorsList2); i++ {
+						// mirrorsList3: ["uuid","5ab854d3-b050-48de-9d60-3f5791478d1c"]
+						mirrorsList3, _ := mirrorsList2[i].GetArray()
+						mirrorUuid, _ := mirrorsList3[1].GetString()
 						ret[mirrorUuid] = brName
 					}
 				}

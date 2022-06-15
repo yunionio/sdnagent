@@ -23,7 +23,7 @@ require (
 	gopkg.in/go-playground/validator.v9 v9.29.1 // indirect
 	yunion.io/x/jsonutils v1.0.0
 	yunion.io/x/log v1.0.0
-	yunion.io/x/onecloud v0.0.0-20220614212143-14e7e9603c6f
+	yunion.io/x/onecloud v0.0.0-20220615185618-dc3c08e8fe73
 	yunion.io/x/pkg v1.0.0
 )
 
