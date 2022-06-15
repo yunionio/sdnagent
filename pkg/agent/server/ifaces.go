@@ -120,6 +120,10 @@ func (ij *ifaceJanitor) scan(ctx context.Context) error {
 				return fmt.Errorf("ovs-vsctl list-ports %s: %s", br, err)
 			}
 			for _, port := range ports {
+				// exclude those tap interfaces
+				if strings.HasPrefix(port, LocalMirrorPrefix) || strings.HasPrefix(port, RemoteMirrorPrefix) {
+					continue
+				}
 				gotMap.add(br, port)
 			}
 		}
