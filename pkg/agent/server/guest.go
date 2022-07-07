@@ -238,6 +238,9 @@ func (g *Guest) UpdateSettings(ctx context.Context) {
 		g.updateClassicFlows(ctx)
 		g.updateTc(ctx)
 		g.updateOvn(ctx)
+		if g.HostId != "" {
+			g.watcher.agent.HostId(g.HostId)
+		}
 	case errNotRunning, errPortNotReady, errSlaveMachine:
 		g.ClearSettings(ctx)
 	}

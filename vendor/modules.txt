@@ -372,7 +372,7 @@ yunion.io/x/jsonutils
 # yunion.io/x/log v1.0.0
 yunion.io/x/log
 yunion.io/x/log/hooks
-# yunion.io/x/onecloud v0.0.0-20220604023331-43d04043a5b5
+# yunion.io/x/onecloud v0.0.0-20220615185618-dc3c08e8fe73
 yunion.io/x/onecloud/cmd/climc/shell
 yunion.io/x/onecloud/locales
 yunion.io/x/onecloud/pkg/apihelper
@@ -493,6 +493,7 @@ yunion.io/x/onecloud/pkg/util/splitable
 yunion.io/x/onecloud/pkg/util/ssh
 yunion.io/x/onecloud/pkg/util/streamutils
 yunion.io/x/onecloud/pkg/util/stringutils2
+yunion.io/x/onecloud/pkg/util/sysutils
 yunion.io/x/onecloud/pkg/util/tagutils
 yunion.io/x/onecloud/pkg/util/validate
 yunion.io/x/onecloud/pkg/util/version
@@ -527,7 +528,7 @@ yunion.io/x/pkg/util/version
 yunion.io/x/pkg/utils
 # yunion.io/x/s3cli v0.0.0-20190917004522-13ac36d8687e
 yunion.io/x/s3cli
-# yunion.io/x/sqlchemy v1.1.2-0.20220530125156-f4b471d64c78
+# yunion.io/x/sqlchemy v1.1.2-0.20220611090616-7f6b1618bbc8
 yunion.io/x/sqlchemy
 yunion.io/x/sqlchemy/backends/clickhouse
 # yunion.io/x/structarg v0.0.0-20220312084958-9c6c79c7d1c6

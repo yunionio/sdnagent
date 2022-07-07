@@ -13,6 +13,7 @@ require (
 	github.com/spf13/cobra v0.0.5
 	github.com/spf13/pflag v1.0.3
 	github.com/spf13/viper v1.3.2
+	github.com/tencentcloud/tencentcloud-sdk-go v3.0.135+incompatible // indirect
 	github.com/vishvananda/netlink v1.0.0
 	github.com/vishvananda/netns v0.0.0-20211101163701-50045581ed74
 	golang.org/x/net v0.0.0-20210525063256-abc453219eb5
@@ -22,7 +23,7 @@ require (
 	gopkg.in/go-playground/validator.v9 v9.29.1 // indirect
 	yunion.io/x/jsonutils v1.0.0
 	yunion.io/x/log v1.0.0
-	yunion.io/x/onecloud v0.0.0-20220604023331-43d04043a5b5
+	yunion.io/x/onecloud v0.0.0-20220615185618-dc3c08e8fe73
 	yunion.io/x/pkg v1.0.0
 )
 

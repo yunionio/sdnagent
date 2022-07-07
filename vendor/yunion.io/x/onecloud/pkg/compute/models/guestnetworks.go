@@ -18,7 +18,6 @@ import (
 	"context"
 	"database/sql"
 	"fmt"
-	"math/rand"
 	"regexp"
 	"time"
 
@@ -69,6 +68,7 @@ func init() {
 		}
 		GuestnetworkManager.SetVirtualObject(GuestnetworkManager)
 		GuestnetworkManager.TableSpec().AddIndex(true, "ip_addr", "guest_id")
+		GuestnetworkManager.TableSpec().AddIndex(false, "mac_addr", "deleted")
 	})
 }
 
@@ -78,13 +78,15 @@ type SGuestnetwork struct {
 	NetworkId string `width:"36" charset:"ascii" nullable:"false" list:"user" `
 
 	// MAC地址
-	MacAddr string `width:"32" charset:"ascii" nullable:"false" list:"user"`
+	MacAddr string `width:"32" charset:"ascii" nullable:"false" list:"user" index:"true"`
 	// IPv4地址
 	IpAddr string `width:"16" charset:"ascii" nullable:"false" list:"user"`
 	// IPv6地址
 	Ip6Addr string `width:"64" charset:"ascii" nullable:"true" list:"user"`
 	// 虚拟网卡驱动
 	Driver string `width:"16" charset:"ascii" nullable:"true" list:"user" update:"user"`
+	// 网卡队列数
+	NumQueues int `nullable:"true" default:"1" list:"user" update:"user"`
 	// 带宽限制，单位mbps
 	BwLimit int `nullable:"false" default:"0" list:"user"`
 	// 网卡序号
@@ -207,37 +209,12 @@ func (manager *SGuestnetworkManager) fetchByRowId(
 	return &gns[0], nil
 }
 
-const MAX_TRIES = 10
+func (manager *SGuestnetworkManager) GenerateMac(suggestion string) (string, error) {
+	return generateMac(suggestion)
+}
 
-func (manager *SGuestnetworkManager) GenerateMac(netId string, suggestion string) (string, error) {
-	for tried := 0; tried < MAX_TRIES; tried += 1 {
-		var mac string
-		if len(suggestion) > 0 && regutils.MatchMacAddr(suggestion) {
-			mac = suggestion
-			suggestion = ""
-		} else {
-			b := make([]byte, 4)
-			_, err := rand.Read(b)
-			if err != nil {
-				log.Errorf("generate random mac failed: %s", err)
-				continue
-			}
-			mac = fmt.Sprintf("%s:%02x:%02x:%02x:%02x", options.Options.GlobalMacPrefix, b[0], b[1], b[2], b[3])
-		}
-		q := manager.Query().Equals("mac_addr", mac)
-		if len(netId) > 0 {
-			q = q.Equals("network_id", netId)
-		}
-		cnt, err := q.CountWithError()
-		if err != nil {
-			log.Errorf("find mac %s error %s", mac, err)
-			return "", err
-		}
-		if cnt == 0 {
-			return mac, nil
-		}
-	}
-	return "", fmt.Errorf("maximal retry reached")
+func (manager *SGuestnetworkManager) FilterByMac(mac string) *sqlchemy.SQuery {
+	return manager.Query().Equals("mac_addr", mac)
 }
 
 type newGuestNetworkArgs struct {
@@ -256,6 +233,7 @@ type newGuestNetworkArgs struct {
 	macAddr     string
 	bwLimit     int
 	nicDriver   string
+	numQueues   int
 	teamWithMac string
 
 	virtual bool
@@ -276,6 +254,7 @@ func (manager *SGuestnetworkManager) newGuestNetwork(
 		address              = args.ipAddr
 		mac                  = args.macAddr
 		driver               = args.nicDriver
+		numQueues            = args.numQueues
 		bwLimit              = args.bwLimit
 		virtual              = args.virtual
 		reserved             = args.tryReserved
@@ -294,6 +273,7 @@ func (manager *SGuestnetworkManager) newGuestNetwork(
 		driver = "virtio"
 	}
 	gn.Driver = driver
+	gn.NumQueues = numQueues
 	if bwLimit >= 0 {
 		gn.BwLimit = bwLimit
 	}
@@ -308,7 +288,7 @@ func (manager *SGuestnetworkManager) newGuestNetwork(
 
 	provider := vpc.GetProviderName()
 
-	macAddr, err := manager.GenerateMac(network.Id, mac)
+	macAddr, err := manager.GenerateMac(mac)
 	if err != nil {
 		return nil, err
 	}
@@ -584,6 +564,7 @@ func (self *SGuestnetwork) getJsonDesc() *api.GuestnetworkJsonDesc {
 	desc.Ifname = self.GetIfname()
 	desc.Masklen = net.GuestIpMask
 	desc.Driver = self.Driver
+	desc.NumQueues = self.NumQueues
 	desc.Vlan = net.VlanId
 	desc.Bw = self.getBandwidth()
 	desc.Mtu = self.getMtu(net)
