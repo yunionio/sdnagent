@@ -25,6 +25,9 @@ import (
 	"strings"
 	"time"
 
+	v1 "k8s.io/api/core/v1"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+
 	"yunion.io/x/jsonutils"
 	"yunion.io/x/log"
 	"yunion.io/x/pkg/errors"
@@ -40,6 +43,7 @@ import (
 	"yunion.io/x/onecloud/pkg/apis"
 	billing_api "yunion.io/x/onecloud/pkg/apis/billing"
 	api "yunion.io/x/onecloud/pkg/apis/compute"
+	hostapi "yunion.io/x/onecloud/pkg/apis/host"
 	napi "yunion.io/x/onecloud/pkg/apis/notify"
 	"yunion.io/x/onecloud/pkg/appsrv"
 	"yunion.io/x/onecloud/pkg/cloudcommon/db"
@@ -56,7 +60,9 @@ import (
 	"yunion.io/x/onecloud/pkg/mcclient/auth"
 	"yunion.io/x/onecloud/pkg/mcclient/modules/scheduler"
 	"yunion.io/x/onecloud/pkg/multicloud/esxi"
+	"yunion.io/x/onecloud/pkg/util/cgrouputils/cpuset"
 	"yunion.io/x/onecloud/pkg/util/httputils"
+	"yunion.io/x/onecloud/pkg/util/k8s/tokens"
 	"yunion.io/x/onecloud/pkg/util/logclient"
 	"yunion.io/x/onecloud/pkg/util/rbacutils"
 	"yunion.io/x/onecloud/pkg/util/stringutils2"
@@ -171,8 +177,9 @@ type SHost struct {
 	// 是否处于维护状态
 	IsMaintenance bool `nullable:"true" default:"false" list:"domain"`
 
-	LastPingAt        time.Time ``
-	EnableHealthCheck bool      `nullable:"true" default:"false"`
+	LastPingAt time.Time ``
+	// health check enabled by host agent online
+	EnableHealthCheck bool `nullable:"true" default:"false"`
 
 	ResourceType string `width:"36" charset:"ascii" nullable:"false" list:"domain" update:"domain" create:"domain_optional" default:"shared"`
 
@@ -782,15 +789,11 @@ func (self *SHost) RealDelete(ctx context.Context, userCred mcclient.TokenCreden
 	DeleteResourceJointSchedtags(self, ctx, userCred)
 
 	// delete tap devices
-	if srvs, err := NetTapServiceManager.getTapServicesByHostId(self.Id, false); err != nil {
+	if err := NetTapServiceManager.removeTapServicesByHostId(ctx, userCred, self.Id); err != nil {
 		return errors.Wrap(err, "NetTapServiceManager.getTapServicesByHostId")
-	} else {
-		for _, srv := range srvs {
-			err := srv.cleanup(ctx, userCred)
-			if err != nil {
-				return errors.Wrap(err, "srv.Delete")
-			}
-		}
+	}
+	if err := NetTapFlowManager.removeTapFlowsByHostId(ctx, userCred, self.Id); err != nil {
+		return errors.Wrap(err, "NetTapFlowManager.getTapFlowsByHostId")
 	}
 
 	IsolatedDeviceManager.DeleteDevicesByHost(ctx, userCred, self)
@@ -2669,6 +2672,18 @@ func (manager *SHostManager) FetchHostById(hostId string) *SHost {
 	}
 }
 
+func (manager *SHostManager) FetchHostByHostname(hostname string) *SHost {
+	host := SHost{}
+	host.SetModelManager(manager, &host)
+	err := manager.Query().Startswith("name", hostname).First(&host)
+	if err != nil {
+		log.Errorf("fetch host by hostname %s failed %s", hostname, err)
+		return nil
+	} else {
+		return &host
+	}
+}
+
 func (manager *SHostManager) totalCountQ(
 	userCred mcclient.IIdentityProvider,
 	scope rbacutils.TRbacScope,
@@ -3052,8 +3067,11 @@ func (self *SHost) getMoreDetails(ctx context.Context, out api.HostDetails, show
 	if self.EnableHealthCheck && hostHealthChecker != nil {
 		out.AllowHealthCheck = true
 	}
-	if self.GetMetadata(ctx, "__auto_migrate_on_host_down", nil) == "enable" {
+	if self.GetMetadata(ctx, api.HOSTMETA_AUTO_MIGRATE_ON_HOST_DOWN, nil) == "enable" {
 		out.AutoMigrateOnHostDown = true
+	}
+	if self.GetMetadata(ctx, api.HOSTMETA_AUTO_MIGRATE_ON_HOST_SHUTDOWN, nil) == "enable" {
+		out.AutoMigrateOnHostShutdown = true
 	}
 
 	if count, rs := self.GetReservedResourceForIsolatedDevice(); rs != nil {
@@ -3928,6 +3946,7 @@ func (self *SHost) StartSyncstatus(ctx context.Context, userCred mcclient.TokenC
 }
 
 func (self *SHost) PerformOffline(ctx context.Context, userCred mcclient.TokenCredential, query jsonutils.JSONObject, input *api.HostOfflineInput) (jsonutils.JSONObject, error) {
+	log.Errorf("input %v", *input.UpdateHealthStatus)
 	if self.HostStatus != api.HOST_OFFLINE {
 		_, err := self.SaveUpdates(func() error {
 			self.HostStatus = api.HOST_OFFLINE
@@ -3941,9 +3960,6 @@ func (self *SHost) PerformOffline(ctx context.Context, userCred mcclient.TokenCr
 		})
 		if err != nil {
 			return nil, err
-		}
-		if hostHealthChecker != nil {
-			hostHealthChecker.UnwatchHost(context.Background(), self.Id)
 		}
 		db.OpsLog.LogEvent(self, db.ACT_OFFLINE, input.Reason, userCred)
 		logclient.AddActionLogWithContext(ctx, self, logclient.ACT_OFFLINE, input, userCred, true)
@@ -3972,7 +3988,7 @@ func (self *SHost) PerformOnline(ctx context.Context, userCred mcclient.TokenCre
 			return nil, err
 		}
 		if hostHealthChecker != nil {
-			hostHealthChecker.WatchHost(context.Background(), self.Id)
+			hostHealthChecker.WatchHost(context.Background(), self.GetHostnameByName())
 		}
 		db.OpsLog.LogEvent(self, db.ACT_ONLINE, "", userCred)
 		logclient.AddActionLogWithContext(ctx, self, logclient.ACT_ONLINE, data, userCred, true)
@@ -3983,26 +3999,24 @@ func (self *SHost) PerformOnline(ctx context.Context, userCred mcclient.TokenCre
 }
 
 func (self *SHost) PerformAutoMigrateOnHostDown(
-	ctx context.Context, userCred mcclient.TokenCredential, query jsonutils.JSONObject, data jsonutils.JSONObject,
+	ctx context.Context, userCred mcclient.TokenCredential, query jsonutils.JSONObject, input api.HostAutoMigrateInput,
 ) (jsonutils.JSONObject, error) {
-	val, _ := data.GetString("auto_migrate_on_host_down")
+	var meta = make(map[string]interface{})
+	if input.AutoMigrateOnHostShutdown == "enable" {
+		meta[api.HOSTMETA_AUTO_MIGRATE_ON_HOST_SHUTDOWN] = "enable"
+	} else if input.AutoMigrateOnHostShutdown == "disable" {
+		meta[api.HOSTMETA_AUTO_MIGRATE_ON_HOST_SHUTDOWN] = "disable"
+	}
 
-	var meta map[string]interface{}
-	if val == "enable" {
-		meta = map[string]interface{}{
-			"__auto_migrate_on_host_down": "enable",
-			"__on_host_down":              "shutdown-servers",
-		}
+	if input.AutoMigrateOnHostDown == "enable" {
+		meta[api.HOSTMETA_AUTO_MIGRATE_ON_HOST_DOWN] = "enable"
 		_, err := self.Request(ctx, userCred, "POST", "/hosts/shutdown-servers-on-host-down",
 			mcclient.GetTokenHeaders(userCred), nil)
 		if err != nil {
 			return nil, err
 		}
-	} else {
-		meta = map[string]interface{}{
-			"__auto_migrate_on_host_down": "disable",
-			"__on_host_down":              "",
-		}
+	} else if input.AutoMigrateOnHostDown == "disable" {
+		meta[api.HOSTMETA_AUTO_MIGRATE_ON_HOST_DOWN] = "disable"
 	}
 
 	return nil, self.SetAllMetadata(ctx, meta, userCred)
@@ -4066,6 +4080,102 @@ func (self *SHost) PerformPing(ctx context.Context, userCred mcclient.TokenCrede
 	}
 
 	return result, nil
+}
+
+func (host *SHost) getHostLogicalCores() ([]int, error) {
+	cpuObj, err := host.SysInfo.Get("cpu_info")
+	if err != nil {
+		return nil, errors.Wrap(err, "get cpu info from host sys_info")
+	}
+	cpuInfo := new(hostapi.HostCPUInfo)
+	if err := cpuObj.Unmarshal(cpuInfo); err != nil {
+		return nil, errors.Wrap(err, "Unmarshal host cpu info struct")
+	}
+
+	// get host logical cores
+	allCores := []int{}
+
+	if len(cpuInfo.Processors) != 0 {
+		for _, p := range cpuInfo.Processors {
+			for _, core := range p.Cores {
+				allCores = append(allCores, core.LogicalProcessors...)
+			}
+		}
+		sort.Ints(allCores)
+	} else {
+		topoObj, err := host.SysInfo.Get("topology")
+		if err != nil {
+			return nil, errors.Wrap(err, "get topology from host sys_info")
+		}
+
+		hostTopo := new(hostapi.HostTopology)
+		if err := topoObj.Unmarshal(hostTopo); err != nil {
+			return nil, errors.Wrap(err, "Unmarshal host topology struct")
+		}
+
+		for _, node := range hostTopo.Nodes {
+			for _, cores := range node.Cores {
+				allCores = append(allCores, cores.LogicalProcessors...)
+			}
+		}
+	}
+	return allCores, nil
+}
+
+func (self *SHost) PerformUnreserveCpus(
+	ctx context.Context, userCred mcclient.TokenCredential,
+	query jsonutils.JSONObject, data jsonutils.JSONObject,
+) (jsonutils.JSONObject, error) {
+	return nil, self.RemoveMetadata(ctx, api.HOSTMETA_RESERVED_CPUS_INFO, userCred)
+}
+
+func (self *SHost) PerformReserveCpus(
+	ctx context.Context, userCred mcclient.TokenCredential,
+	query jsonutils.JSONObject, input api.HostReserveCpusInput,
+) (jsonutils.JSONObject, error) {
+	if self.HostType != api.HOST_TYPE_HYPERVISOR {
+		return nil, httperrors.NewNotSupportedError("host type %s not support reserve cpus", self.HostType)
+	}
+
+	cnt, err := self.GetRunningGuestCount()
+	if err != nil {
+		return nil, err
+	}
+	if cnt > 0 {
+		return nil, httperrors.NewBadRequestError("host %s has %d guests, can't update reserve cpus", self.Id, cnt)
+	}
+
+	if input.Cpus == "" {
+		return nil, httperrors.NewInputParameterError("missing cpus")
+	}
+	cs, err := cpuset.Parse(input.Cpus)
+	if err != nil {
+		return nil, httperrors.NewInputParameterError("cpus %s not valid", input.Cpus)
+	}
+
+	allCores, err := self.getHostLogicalCores()
+	if err != nil {
+		return nil, err
+	}
+
+	if !sets.NewInt(allCores...).HasAll(cs.ToSlice()...) {
+		return nil, httperrors.NewInputParameterError("Host cores not contains input %v", input.Cpus)
+	}
+
+	if input.Mems != "" {
+		mems, err := cpuset.Parse(input.Mems)
+		if err != nil {
+			return nil, httperrors.NewInputParameterError("mems %s not valid", input.Mems)
+		}
+		// to slice will sort slice default
+		memSlice := mems.ToSlice()
+		if 0 > memSlice[len(memSlice)-1] || memSlice[len(memSlice)-1] >= int(self.NodeCount) {
+			return nil, httperrors.NewInputParameterError("mems %s out of range", input.Mems)
+		}
+	}
+
+	err = self.SetMetadata(ctx, api.HOSTMETA_RESERVED_CPUS_INFO, input, userCred)
+	return nil, err
 }
 
 func (self *SHost) HasBMC() bool {
@@ -5450,8 +5560,74 @@ func (host *SHost) PerformHostMaintenance(ctx context.Context, userCred mcclient
 	return nil, host.StartMaintainTask(ctx, userCred, kwargs)
 }
 
+func (host *SHost) autoMigrateOnHostShutdown(ctx context.Context) bool {
+	return host.GetMetadata(ctx, api.HOSTMETA_AUTO_MIGRATE_ON_HOST_SHUTDOWN, nil) == "enable"
+}
+
+func (host *SHost) RemoteHealthStatus(ctx context.Context) string {
+	var status = api.HOST_HEALTH_STATUS_UNKNOWN
+	userCred := auth.AdminCredential()
+	res, err := host.Request(
+		ctx, userCred, "POST", "/hosts/health-status",
+		mcclient.GetTokenHeaders(userCred), nil,
+	)
+	if err != nil {
+		log.Errorf("failed get remote health status %s", err)
+	} else {
+		status, _ = res.GetString("status")
+	}
+
+	log.Infof("remote health status %s", status)
+	return status
+}
+
+func (host *SHost) GetHostnameByName() string {
+	hostname := host.Name
+	accessIp := strings.Replace(host.AccessIp, ".", "-", -1)
+	if strings.HasSuffix(host.Name, "-"+accessIp) {
+		hostname = hostname[0 : len(hostname)-len(accessIp)-1]
+	}
+	return hostname
+}
+
 func (host *SHost) OnHostDown(ctx context.Context, userCred mcclient.TokenCredential) {
-	log.Errorf("watched host down %s", host.Id)
+	log.Errorf("watched host down %s, status %s", host.Name, host.HostStatus)
+	hostHealthChecker.UnwatchHost(ctx, host.GetHostnameByName())
+
+	if host.HostStatus == api.HOST_OFFLINE && !host.EnableHealthCheck &&
+		host.autoMigrateOnHostShutdown(ctx) {
+		// hostagent requested offline, and not enable auto migrate on host shutdown
+		log.Infof("host not need auto migrate on host shutdown")
+		return
+	}
+
+	hostname := host.Name
+	if host.HostStatus == api.HOST_OFFLINE {
+		// host has been marked offline, check host status in k8s
+		coreCli, err := tokens.GetCoreClient()
+		if err != nil {
+			log.Errorf("failed get k8s client %s", err)
+			return
+		}
+		hostname = host.GetHostnameByName()
+
+		node, err := coreCli.Nodes().Get(context.TODO(), hostname, metav1.GetOptions{})
+		if err != nil {
+			log.Errorf("failed get node %s info %s", hostname, err)
+			return
+		}
+
+		// check node status is ready
+		if length := len(node.Status.Conditions); length > 0 {
+			if node.Status.Conditions[length-1].Type == v1.NodeReady &&
+				node.Status.Conditions[length-1].Status == v1.ConditionTrue {
+				log.Infof("node %s status ready, no need entry rescue", hostname)
+				return
+			}
+		}
+	}
+
+	log.Errorf("host %s down, try rescue guests", hostname)
 	db.OpsLog.LogEvent(host, db.ACT_HOST_DOWN, "", userCred)
 	if _, err := host.SaveCleanUpdates(func() error {
 		host.EnableHealthCheck = false
@@ -5513,7 +5689,7 @@ func (host *SHost) switchWithBackup(ctx context.Context, userCred mcclient.Token
 }
 
 func (host *SHost) migrateOnHostDown(ctx context.Context, userCred mcclient.TokenCredential) {
-	if host.GetMetadata(ctx, "__auto_migrate_on_host_down", nil) == "enable" {
+	if host.GetMetadata(ctx, api.HOSTMETA_AUTO_MIGRATE_ON_HOST_DOWN, nil) == "enable" {
 		if err := host.MigrateSharedStorageServers(ctx, userCred); err != nil {
 			db.OpsLog.LogEvent(host, db.ACT_HOST_DOWN, fmt.Sprintf("migrate servers failed %s", err), userCred)
 		}
