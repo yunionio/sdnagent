@@ -210,17 +210,25 @@ func (flow *SNetTapFlow) getMoreDetails(ctx context.Context, details api.NetTapF
 	switch flow.Type {
 	case api.TapFlowVSwitch:
 		host := HostManager.FetchHostById(flow.SourceId)
-		details.Source = host.Name
-		details.SourceIps = host.AccessIp
+		if host != nil {
+			details.Source = host.Name
+			details.SourceIps = host.AccessIp
+		}
 		wire := WireManager.FetchWireById(flow.NetId)
-		details.Net = wire.Name
+		if wire != nil {
+			details.Net = wire.Name
+		}
 	case api.TapFlowGuestNic:
 		guest := GuestManager.FetchGuestById(flow.SourceId)
-		details.Source = guest.Name
-		ret := fetchGuestIPs([]string{flow.SourceId}, tristate.False)
-		details.SourceIps = strings.Join(ret[flow.SourceId], ",")
+		if guest != nil {
+			details.Source = guest.Name
+			ret := fetchGuestIPs([]string{flow.SourceId}, tristate.False)
+			details.SourceIps = strings.Join(ret[flow.SourceId], ",")
+		}
 		netObj, _ := NetworkManager.FetchById(flow.NetId)
-		details.Net = netObj.GetName()
+		if netObj != nil {
+			details.Net = netObj.GetName()
+		}
 	}
 	return details
 }
@@ -245,7 +253,8 @@ func (manager *SNetTapFlowManager) ValidateCreateData(
 			return input, errors.Wrap(err, "NetTapServiceManager.FetchByIdOrName")
 		}
 	}
-	input.TapId = tapObj.GetId()
+	tap := tapObj.(*SNetTapService)
+	input.TapId = tap.Id
 	switch input.Type {
 	case api.TapFlowVSwitch:
 		hostObj, err := HostManager.FetchByIdOrName(userCred, input.HostId)
@@ -329,8 +338,20 @@ func (manager *SNetTapFlowManager) ValidateCreateData(
 		input.MacAddr = gn.MacAddr
 		input.NetId = gn.NetworkId
 		input.VlanId = nil
+		// check loop
+		if tap.Type == api.TapServiceGuest && tap.TargetId == input.SourceId {
+			return input, errors.Wrap(httperrors.ErrInputParameter, "cannot tap trafic from guest itself")
+		}
 	default:
 		return input, errors.Wrapf(httperrors.ErrInputParameter, "invalid flow type %s", input.Type)
+	}
+	// check duplicity
+	dupCnt, err := manager.Query().Equals("tap_id", tap.Id).Equals("type", input.Type).Equals("source_id", input.SourceId).Equals("net_id", input.NetId).CountWithError()
+	if err != nil {
+		return input, errors.Wrap(err, "query duplicity")
+	}
+	if dupCnt > 0 {
+		return input, errors.Wrap(httperrors.ErrConflict, "this source has been added")
 	}
 	if len(input.Direction) == 0 {
 		input.Direction = api.TapFlowDirectionBoth
@@ -419,6 +440,10 @@ func (flow *SNetTapFlow) getMirrorConfig(needTapHostIp bool) (api.SMirrorConfig,
 		wireId = flow.NetId
 	case api.TapFlowGuestNic:
 		guest := GuestManager.FetchGuestById(flow.SourceId)
+		if guest == nil {
+			// guest has been deleted?
+			return ret, errors.Wrap(errors.ErrNotFound, "source not found")
+		}
 		gn, err := guest.GetGuestnetworkByMac(flow.MacAddr)
 		if err != nil {
 			return ret, errors.Wrap(err, "GetGuestnetworkByMac")
@@ -448,5 +473,39 @@ func (flow *SNetTapFlow) getMirrorConfig(needTapHostIp bool) (api.SMirrorConfig,
 	ret.FlowId = flow.FlowId
 	ret.VlanId = flow.VlanId
 	ret.Direction = flow.Direction
+	return ret, nil
+}
+
+func (manager *SNetTapFlowManager) removeTapFlowsByGuestId(ctx context.Context, userCred mcclient.TokenCredential, sourceId string) error {
+	return manager.removeTapFlows(ctx, userCred, api.TapFlowGuestNic, sourceId)
+}
+
+func (manager *SNetTapFlowManager) removeTapFlowsByHostId(ctx context.Context, userCred mcclient.TokenCredential, sourceId string) error {
+	return manager.removeTapFlows(ctx, userCred, api.TapFlowVSwitch, sourceId)
+}
+
+func (manager *SNetTapFlowManager) removeTapFlows(ctx context.Context, userCred mcclient.TokenCredential, srvType string, targetId string) error {
+	srvs, err := manager.getTapFlows(srvType, targetId)
+	if err != nil {
+		return errors.Wrap(err, "getTapServicesByHostId")
+	}
+	for i := range srvs {
+		err := srvs[i].Delete(ctx, userCred)
+		if err != nil {
+			return errors.Wrap(err, "Delete")
+		}
+	}
+	return nil
+}
+
+func (manager *SNetTapFlowManager) getTapFlows(srvType string, sourceId string) ([]SNetTapFlow, error) {
+	q := manager.Query()
+	q = q.Equals("type", srvType)
+	q = q.Equals("source_id", sourceId)
+	ret := make([]SNetTapFlow, 0)
+	err := db.FetchModelObjects(manager, q, &ret)
+	if err != nil {
+		return nil, errors.Wrap(err, "FetchModelObjects")
+	}
 	return ret, nil
 }
