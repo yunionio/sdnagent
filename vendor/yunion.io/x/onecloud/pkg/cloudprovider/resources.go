@@ -192,6 +192,8 @@ type ICloudRegion interface {
 
 	GetICloudKubeClusters() ([]ICloudKubeCluster, error)
 	GetICloudKubeClusterById(id string) (ICloudKubeCluster, error)
+
+	GetICloudTablestores() ([]ICloudTablestore, error)
 }
 
 type ICloudZone interface {
@@ -501,6 +503,7 @@ type ICloudDisk interface {
 	GetDiskType() string
 	GetFsFormat() string
 	GetIsNonPersistent() bool
+	GetIops() int
 
 	GetDriver() string
 	GetCacheMode() string
@@ -1048,6 +1051,8 @@ type ICloudElasticcache interface {
 	GetZoneId() string
 	GetNetworkType() string
 	GetNetworkId() string
+	GetBandwidth() int
+	GetConnections() int
 
 	GetPrivateDNS() string
 	GetPrivateIpAddr() string
@@ -1554,4 +1559,8 @@ type ICloudKubeNode interface {
 
 type ICloudKubeNodePool interface {
 	ICloudResource
+}
+
+type ICloudTablestore interface {
+	IVirtualResource
 }

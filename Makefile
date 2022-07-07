@@ -34,7 +34,8 @@ pkg/agent/proto/agent_pb2.py: pkg/agent/proto/agent.proto
 
 mod:
 	GOPROXY=direct go get -v yunion.io/x/onecloud@release/3.9
-	GOPROXY=direct go mod vendor -v
+	go mod tidy
+	go mod vendor -v
 
 .PHONY: mod
 
