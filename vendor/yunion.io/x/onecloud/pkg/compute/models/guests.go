@@ -167,6 +167,32 @@ type SGuest struct {
 	IsDaemon tristate.TriState `default:"false" list:"admin" create:"admin_optional" update:"admin"`
 }
 
+func (manager *SGuestManager) GetPropertyStatistics(ctx context.Context, userCred mcclient.TokenCredential, query jsonutils.JSONObject) (*apis.StatusStatistic, error) {
+	ret, err := manager.SVirtualResourceBaseManager.GetPropertyStatistics(ctx, userCred, query)
+	if err != nil {
+		return nil, err
+	}
+
+	q := manager.Query()
+	q, err = db.ListItemQueryFilters(manager, ctx, q, userCred, query, policy.PolicyActionList)
+	if err != nil {
+		return nil, err
+	}
+
+	sq := q.SubQuery()
+	statQ := sq.Query(sqlchemy.SUM("total_cpu_count", sq.Field("vcpu_count")), sqlchemy.SUM("total_mem_size_mb", sq.Field("vmem_size")))
+	err = statQ.First(ret)
+	if err != nil {
+		return ret, err
+	}
+	diskQ := DiskManager.Query()
+	gdsSQ := GuestdiskManager.Query().SubQuery()
+	diskQ = diskQ.Join(gdsSQ, sqlchemy.Equals(diskQ.Field("id"), gdsSQ.Field("disk_id"))).
+		Join(sq, sqlchemy.Equals(gdsSQ.Field("guest_id"), sq.Field("id")))
+	diskSQ := diskQ.SubQuery()
+	return ret, diskSQ.Query(sqlchemy.SUM("total_disk_size_mb", diskSQ.Field("disk_size"))).First(ret)
+}
+
 // 云主机实例列表
 func (manager *SGuestManager) ListItemFilter(
 	ctx context.Context,
@@ -2951,6 +2977,7 @@ type Attach2NetworkArgs struct {
 
 	BwLimit   int
 	NicDriver string
+	NumQueues int
 	NicConfs  []SNicConfig
 
 	Virtual bool
@@ -2973,6 +3000,7 @@ func (args *Attach2NetworkArgs) onceArgs(i int) attach2NetworkOnceArgs {
 
 		bwLimit:   args.BwLimit,
 		nicDriver: args.NicDriver,
+		numQueues: args.NumQueues,
 		nicConf:   args.NicConfs[i],
 
 		virtual: args.Virtual,
@@ -2988,6 +3016,7 @@ func (args *Attach2NetworkArgs) onceArgs(i int) attach2NetworkOnceArgs {
 		r.useDesignatedIP = false
 		r.nicConf = args.NicConfs[i]
 		r.nicDriver = ""
+		r.numQueues = 1
 	}
 	return r
 }
@@ -3003,6 +3032,7 @@ type attach2NetworkOnceArgs struct {
 
 	bwLimit     int
 	nicDriver   string
+	numQueues   int
 	nicConf     SNicConfig
 	teamWithMac string
 
@@ -3073,6 +3103,7 @@ func (self *SGuest) attach2NetworkOnce(
 		macAddr:     args.nicConf.Mac,
 		bwLimit:     args.bwLimit,
 		nicDriver:   nicDriver,
+		numQueues:   args.numQueues,
 		teamWithMac: args.teamWithMac,
 
 		virtual: args.virtual,
@@ -3647,6 +3678,13 @@ func (self *SGuest) CreateNetworksOnHost(
 		if candidateNet != nil {
 			networkIds = candidateNet.NetworkIds
 		}
+		if idx == 0 && netConfig.NumQueues == 0 {
+			numQueues := self.VcpuCount / 2
+			if numQueues > 16 {
+				numQueues = 16
+			}
+			netConfig.NumQueues = numQueues
+		}
 		_, err = self.attach2NetworkDesc(ctx, userCred, host, netConfig, pendingUsage, networkIds)
 		if err != nil {
 			return errors.Wrap(err, "self.attach2NetworkDesc")
@@ -3711,6 +3749,7 @@ func (self *SGuest) attach2NamedNetworkDesc(ctx context.Context, userCred mcclie
 			PendingUsage:        pendingUsage,
 			IpAddr:              netConfig.Address,
 			NicDriver:           netConfig.Driver,
+			NumQueues:           netConfig.NumQueues,
 			BwLimit:             netConfig.BwLimit,
 			Virtual:             netConfig.Vip,
 			TryReserved:         netConfig.Reserved,
@@ -4033,6 +4072,18 @@ func (self *SGuest) Delete(ctx context.Context, userCred mcclient.TokenCredentia
 }
 
 func (self *SGuest) RealDelete(ctx context.Context, userCred mcclient.TokenCredential) error {
+	// delete tap devices
+	if srvs, err := NetTapServiceManager.getTapServicesByGuestId(self.Id, false); err != nil {
+		return errors.Wrap(err, "NetTapServiceManager.getTapServicesByGuestId")
+	} else {
+		for _, srv := range srvs {
+			err := srv.cleanup(ctx, userCred)
+			if err != nil {
+				return errors.Wrap(err, "srv.Delete")
+			}
+		}
+	}
+
 	return self.SVirtualResourceBase.Delete(ctx, userCred)
 }
 
@@ -4278,6 +4329,18 @@ func (self *SGuest) GetJsonDescAtHypervisor(ctx context.Context, host *SHost) *a
 		desc.Nics = append(desc.Nics, nicDesc)
 		if len(nicDesc.Domain) > 0 {
 			desc.Domain = nicDesc.Domain
+		}
+	}
+
+	{
+		var prevNicDesc *api.GuestnetworkJsonDesc
+		if len(desc.Nics) > 0 {
+			prevNicDesc = desc.Nics[len(desc.Nics)-1]
+		}
+		// append tap nic
+		tapNicDesc := self.getTapNicJsonDesc(ctx, prevNicDesc)
+		if tapNicDesc != nil {
+			desc.Nics = append(desc.Nics, tapNicDesc)
 		}
 	}
 

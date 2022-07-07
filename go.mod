@@ -3,23 +3,26 @@ module yunion.io/x/sdnagent
 go 1.12
 
 require (
-	github.com/coreos/go-iptables v0.4.5
+	github.com/coreos/go-iptables v0.6.0
 	github.com/coreos/go-systemd v0.0.0-20190620071333-e64a0ec8b42a // indirect
 	github.com/coreos/pkg v0.0.0-20180928190104-399ea9e2e55f // indirect
 	github.com/digitalocean/go-openvswitch v0.0.0-20190515160856-1141932ed5cf
+	github.com/frankban/quicktest v1.14.3 // indirect
 	github.com/fsnotify/fsnotify v1.4.9
 	github.com/golang/protobuf v1.5.2
 	github.com/kr/pty v1.1.5 // indirect
 	github.com/mitchellh/go-homedir v1.1.0
 	github.com/moul/http2curl v1.0.0 // indirect
+	github.com/pierrec/lz4 v2.6.1+incompatible // indirect
 	github.com/pkg/errors v0.9.1
 	github.com/shirou/w32 v0.0.0-20160930032740-bb4de0191aa4 // indirect
 	github.com/spf13/cobra v0.0.5
 	github.com/spf13/pflag v1.0.3
 	github.com/spf13/viper v1.3.2
+	github.com/tencentcloud/tencentcloud-sdk-go v3.0.135+incompatible // indirect
 	github.com/tmc/grpc-websocket-proxy v0.0.0-20190109142713-0ad062ec5ee5 // indirect
 	github.com/vishvananda/netlink v1.0.0
-	github.com/vishvananda/netns v0.0.0-20191106174202-0a2b9b5464df
+	github.com/vishvananda/netns v0.0.0-20211101163701-50045581ed74
 	go.etcd.io/etcd v0.5.0-alpha.5.0.20200819165624-17cef6e3e9d5 // indirect
 	golang.org/x/net v0.0.0-20210525063256-abc453219eb5
 	google.golang.org/grpc v1.38.0
@@ -28,7 +31,7 @@ require (
 	gopkg.in/go-playground/validator.v9 v9.29.1 // indirect
 	yunion.io/x/jsonutils v1.0.0
 	yunion.io/x/log v1.0.0
-	yunion.io/x/onecloud v0.0.0-20220604023320-300fb781cba2
+	yunion.io/x/onecloud v0.0.0-20220615185627-dccd99d4d01e
 	yunion.io/x/pkg v1.0.0
 )
 

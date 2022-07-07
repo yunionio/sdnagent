@@ -29,4 +29,5 @@ const (
 	WatcherRefreshRateOnError time.Duration = 3 * time.Second
 	WatcherRecentPendingTime  time.Duration = WatcherRefreshRateOnError * 5
 	IfaceJanitorInterval      time.Duration = 57 * time.Second
+	TapManRefreshRate         time.Duration = 27 * time.Second
 )

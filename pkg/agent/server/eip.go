@@ -17,7 +17,6 @@ package server
 import (
 	"context"
 	"fmt"
-	"os/exec"
 	"strings"
 	"sync"
 	"time"
@@ -166,28 +165,7 @@ func (man *eipMan) ensureEipBridgeVpcPort(ctx context.Context, vpcId string) err
 }
 
 func (man *eipMan) exec(ctx context.Context, args []string) error {
-	if len(args) == 0 {
-		panic("exec: empty args")
-	}
-	tos := func(args []string) string {
-		s := ""
-		for _, arg := range args {
-			if arg != "--" {
-				s += " " + arg
-			} else {
-				s += " \\\n  " + arg
-			}
-		}
-		return s
-	}
-	cmd := exec.CommandContext(ctx, args[0], args[1:]...)
-	_, err := cmd.Output()
-	if err != nil {
-		s := tos(args)
-		err = errors.Wrap(err, s)
-		return err
-	}
-	return nil
+	return utils.RunOvsctl(ctx, args)
 }
 
 func (man *eipMan) pnamePair(vpcId string) (string, string) {

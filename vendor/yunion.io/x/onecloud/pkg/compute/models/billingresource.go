@@ -208,9 +208,9 @@ type SBillingResourceCheckManager struct {
 
 type SBillingResourceCheck struct {
 	db.SResourceBase
-	ResourceId   string `width:"128" charset:"ascii" index:"true"`
-	ResourceType string `width:"36" charset:"ascii" index:"true"`
-	AdvanceDays  int
+	ResourceId   string `width:"128" charset:"ascii" primary:"true"`
+	ResourceType string `width:"36" charset:"ascii" primary:"true"`
+	AdvanceDays  int    `primary:"true"`
 	LastCheck    time.Time
 	NotifyNumber int
 }
@@ -221,7 +221,7 @@ func init() {
 	BillingResourceCheckManager = &SBillingResourceCheckManager{
 		SResourceBaseManager: db.NewResourceBaseManager(
 			SBillingResourceCheck{},
-			"billingresourcecheck_tbl",
+			"billingresourcecheck2_tbl",
 			"billingresourcecheck",
 			"billingresourcechecks",
 		),
@@ -270,7 +270,7 @@ func (bm *SBillingResourceCheckManager) Create(ctx context.Context, resourceId, 
 		LastCheck:    time.Now(),
 		NotifyNumber: 1,
 	}
-	return bm.TableSpec().Insert(ctx, &bc)
+	return bm.TableSpec().InsertOrUpdate(ctx, &bc)
 }
 
 func (bm *SBillingResourceCheckManager) Fetch(resourceIds []string, advanceDays int, length int) (map[string]*SBillingResourceCheck, error) {
