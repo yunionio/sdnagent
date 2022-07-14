@@ -643,7 +643,7 @@ yunion.io/x/jsonutils
 ## explicit; go 1.12
 yunion.io/x/log
 yunion.io/x/log/hooks
-# yunion.io/x/onecloud v0.0.0-20220707022827-02a9d84d6e25
+# yunion.io/x/onecloud v0.0.0-20220714042151-0ec0a182c004
 ## explicit; go 1.18
 yunion.io/x/onecloud/cmd/climc/shell
 yunion.io/x/onecloud/locales
