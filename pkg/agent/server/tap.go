@@ -322,7 +322,7 @@ func (s *sTapService) portsArgs(cli *ovs.VSwitchService, tapBridge string) [][]s
 		}
 		args := []string{
 			"ovs-vsctl",
-			"--", "--may-exist", "add-br", tapBridge, s.Ifname,
+			"--", "--may-exist", "add-port", tapBridge, s.Ifname,
 		}
 		ret = append(ret, args)
 	}
