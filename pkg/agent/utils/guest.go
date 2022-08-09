@@ -32,6 +32,7 @@ type guestDesc struct {
 	Name               string
 
 	IsMaster bool   `json:"is_master"`
+	IsSlave  bool   `json:"is_slave"`
 	HostId   string `json:"host_id"`
 
 	SrcIpCheck  bool `json:"src_ip_check"`
@@ -40,7 +41,8 @@ type guestDesc struct {
 
 func newGuestDesc() *guestDesc {
 	desc := &guestDesc{
-		IsMaster:    true,
+		IsMaster:    false,
+		IsSlave:     false,
 		SrcIpCheck:  true,
 		SrcMacCheck: true,
 	}
@@ -232,7 +234,11 @@ func (g *Guest) LoadDesc() error {
 			g.NICs = append(g.NICs[:i], g.NICs[i+1:]...)
 		}
 	}
-	g.isSlave = !desc.IsMaster
+	if !desc.IsMaster && desc.IsSlave {
+		g.isSlave = true
+	} else {
+		g.isSlave = false
+	}
 
 	g.srcIpCheck = desc.SrcIpCheck
 	g.srcMacCheck = desc.SrcMacCheck
