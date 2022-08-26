@@ -23,6 +23,7 @@ import (
 	"strings"
 
 	"yunion.io/x/jsonutils"
+	"yunion.io/x/pkg/errors"
 )
 
 type guestDesc struct {
@@ -198,11 +199,11 @@ func (g *Guest) GetJSONObjectDesc() (jsonutils.JSONObject, error) {
 	descPath := path.Join(g.Path, "desc")
 	data, err := ioutil.ReadFile(descPath)
 	if err != nil {
-		return nil, err
+		return nil, errors.Wrap(err, "ReadFile")
 	}
 	obj, err := jsonutils.Parse(data)
 	if err != nil {
-		return nil, err
+		return nil, errors.Wrap(err, "json.Parse")
 	}
 	return obj, nil
 }

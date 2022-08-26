@@ -76,6 +76,10 @@ func (h *APIHelper) ModelSets() <-chan IModelSets {
 	return h.modelSetsCh
 }
 
+func (h *APIHelper) RunManually(ctx context.Context) {
+	h.run(ctx)
+}
+
 func (h *APIHelper) run(ctx context.Context) {
 	changed, err := h.doSync(ctx)
 	if err != nil {
@@ -124,7 +128,6 @@ func (h *APIHelper) adminClientSession(ctx context.Context) *mcclient.ClientSess
 	}
 
 	region := h.opts.CommonOptions.Region
-	apiVersion := "v2"
-	h.mcclientSession = auth.GetAdminSession(ctx, region, apiVersion)
+	h.mcclientSession = auth.GetAdminSession(ctx, region)
 	return h.mcclientSession
 }

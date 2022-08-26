@@ -266,7 +266,7 @@ func (self *SGuest) PerformSaveGuestImage(ctx context.Context, userCred mcclient
 		kwargs.OsArch = self.OsArch
 	}
 
-	s := auth.GetSession(ctx, userCred, consts.GetRegion(), "")
+	s := auth.GetSession(ctx, userCred, consts.GetRegion())
 	ret, err := image.GuestImages.Create(s, jsonutils.Marshal(kwargs))
 	if err != nil {
 		return nil, err
@@ -444,7 +444,7 @@ func (self *SGuest) PerformMigrateForecast(ctx context.Context, userCred mcclien
 	}
 
 	schedParams := self.GetSchedMigrateParams(userCred, input)
-	s := auth.GetAdminSession(ctx, options.Options.Region, "")
+	s := auth.GetAdminSession(ctx, options.Options.Region)
 	_, res, err := scheduler.SchedManager.DoScheduleForecast(s, schedParams, 1)
 	if err != nil {
 		return nil, errors.Wrap(err, "Do schedule migrate forecast")
@@ -2637,7 +2637,7 @@ func (self *SGuest) PerformChangeConfig(ctx context.Context, userCred mcclient.T
 	// schedulr forecast
 	schedDesc := self.changeConfToSchedDesc(addCpu, addMem, schedInputDisks)
 	confs.Set("sched_desc", jsonutils.Marshal(schedDesc))
-	s := auth.GetAdminSession(ctx, options.Options.Region, "")
+	s := auth.GetAdminSession(ctx, options.Options.Region)
 	canChangeConf, res, err := scheduler.SchedManager.DoScheduleForecast(s, schedDesc, 1)
 	if err != nil {
 		return nil, err
@@ -3214,6 +3214,13 @@ func (self *SGuest) PerformSetQemuParams(ctx context.Context, userCred mcclient.
 	usbKbd, err := data.GetString("disable_usb_kbd")
 	if err == nil {
 		err = self.SetMetadata(ctx, "disable_usb_kbd", usbKbd, userCred)
+		if err != nil {
+			return nil, err
+		}
+	}
+	usbContType, err := data.GetString("usb_controller_type")
+	if err == nil {
+		err = self.SetMetadata(ctx, "usb_controller_type", usbContType, userCred)
 		if err != nil {
 			return nil, err
 		}
@@ -5400,7 +5407,6 @@ func (self *SGuest) PerformChangeDiskStorage(ctx context.Context, userCred mccli
 	diskConf := &api.DiskConfig{
 		Index:    -1,
 		ImageId:  srcDisk.TemplateId,
-		Format:   srcDisk.DiskFormat,
 		SizeMb:   srcDisk.DiskSize,
 		Fs:       srcDisk.FsFormat,
 		DiskType: srcDisk.DiskType,
@@ -5415,7 +5421,6 @@ func (self *SGuest) PerformChangeDiskStorage(ctx context.Context, userCred mccli
 		ServerChangeDiskStorageInput: *input,
 		StorageId:                    srcDisk.StorageId,
 		TargetDiskId:                 targetDisk.GetId(),
-		DiskFormat:                   srcDisk.DiskFormat,
 		GuestRunning:                 self.Status == api.VM_RUNNING,
 	}
 
@@ -5599,4 +5604,8 @@ func (self *SGuest) PerformCalculateRecordChecksum(ctx context.Context, userCred
 	return jsonutils.Marshal(map[string]string{
 		"checksum": checksum,
 	}), nil
+}
+
+func (self *SGuest) PerformEnableMemclean(ctx context.Context, userCred mcclient.TokenCredential, query jsonutils.JSONObject, data jsonutils.JSONObject) (jsonutils.JSONObject, error) {
+	return nil, self.SetMetadata(ctx, api.VM_METADATA_ENABLE_MEMCLEAN, "true", userCred)
 }

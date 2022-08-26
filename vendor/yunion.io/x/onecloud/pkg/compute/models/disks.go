@@ -129,6 +129,9 @@ type SDisk struct {
 
 	// 最大连接数
 	Iops int `nullable:"true" list:"user" create:"optional"`
+
+	// 磁盘吞吐量
+	Throughput int `nullable:"true" list:"user" create:"optional"`
 }
 
 func (manager *SDiskManager) GetContextManagers() [][]db.IModelManager {
@@ -277,7 +280,31 @@ func (manager *SDiskManager) OrderByExtraFields(
 	if err != nil {
 		return nil, errors.Wrap(err, "SBillingResourceBaseManager.OrderByExtraFields")
 	}
+	if db.NeedOrderQuery([]string{query.OrderByServer}) {
+		guestDiskQuery := GuestdiskManager.Query("disk_id", "guest_id").SubQuery()
+		q = q.LeftJoin(guestDiskQuery, sqlchemy.Equals(q.Field("id"), guestDiskQuery.Field("disk_id")))
+		guestQuery := GuestManager.Query().SubQuery()
+		q.AppendField(q.QueryFields()...)
+		q.AppendField(guestQuery.Field("name", "guest_name"))
+		q.Join(guestQuery, sqlchemy.Equals(guestQuery.Field("id"), guestDiskQuery.Field("guest_id")))
+		db.OrderByFields(q, []string{query.OrderByServer}, []sqlchemy.IQueryField{guestQuery.Field("name")})
+	}
+	if db.NeedOrderQuery([]string{query.OrderByGuestCount}) {
+		guestdisks := GuestdiskManager.Query().SubQuery()
+		disks := DiskManager.Query().SubQuery()
+		guestdiskQ := guestdisks.Query(
+			guestdisks.Field("guest_id"),
+			guestdisks.Field("disk_id"),
+			sqlchemy.COUNT("guest_count", guestdisks.Field("guest_id")),
+		)
 
+		guestdiskQ = guestdiskQ.LeftJoin(disks, sqlchemy.Equals(guestdiskQ.Field("disk_id"), disks.Field("id")))
+		guestdiskSQ := guestdiskQ.GroupBy(guestdiskQ.Field("disk_id")).SubQuery()
+		q.AppendField(q.QueryFields()...)
+		q.AppendField(guestdiskSQ.Field("guest_count"))
+		q = q.LeftJoin(guestdiskSQ, sqlchemy.Equals(q.Field("id"), guestdiskSQ.Field("disk_id")))
+		db.OrderByFields(q, []string{query.OrderByGuestCount}, []sqlchemy.IQueryField{guestdiskQ.Field("guest_count")})
+	}
 	q, err = manager.SVirtualResourceBaseManager.OrderByExtraFields(ctx, q, userCred, query.VirtualResourceListInput)
 	if err != nil {
 		return nil, errors.Wrap(err, "SVirtualResourceBaseManager.OrderByExtraFields")
@@ -291,6 +318,14 @@ func (manager *SDiskManager) QueryDistinctExtraField(q *sqlchemy.SQuery, field s
 
 	q, err = manager.SVirtualResourceBaseManager.QueryDistinctExtraField(q, field)
 	if err == nil {
+		return q, nil
+	}
+	if field == "guest_status" {
+		guestDiskQuery := GuestdiskManager.Query("disk_id", "guest_id").SubQuery()
+		q = q.LeftJoin(guestDiskQuery, sqlchemy.Equals(q.Field("id"), guestDiskQuery.Field("disk_id")))
+		guestQuery := GuestManager.Query().SubQuery()
+		q.AppendField(guestQuery.Field("status", field)).Distinct()
+		q.Join(guestQuery, sqlchemy.Equals(guestQuery.Field("id"), guestDiskQuery.Field("guest_id")))
 		return q, nil
 	}
 	q, err = manager.SStorageResourceBaseManager.QueryDistinctExtraField(q, field)
@@ -461,12 +496,17 @@ func (manager *SDiskManager) ValidateCreateData(ctx context.Context, userCred mc
 	if err != nil {
 		return input, err
 	}
+	if input.ExistingPath != "" && input.Storage == "" {
+		return input, httperrors.NewInputParameterError("disk create from existing disk must give storage")
+	}
+
 	input.ProjectId = ownerId.GetProjectId()
 	input.ProjectDomainId = ownerId.GetProjectDomainId()
 
 	var quotaKey quotas.IQuotaKeys
 
 	storageID := input.Storage
+
 	if storageID != "" {
 		storageObj, err := StorageManager.FetchByIdOrName(nil, storageID)
 		if err != nil {
@@ -558,6 +598,13 @@ func (manager *SDiskManager) validateDiskOnStorage(diskConfig *api.DiskConfig, s
 	if storage.StorageType != diskConfig.Backend {
 		return httperrors.NewInputParameterError("Storage type[%s] not match backend %s", storage.StorageType, diskConfig.Backend)
 	}
+	if diskConfig.ExistingPath != "" {
+		if !utils.IsInStringArray(storage.StorageType, api.FIEL_STORAGE) {
+			return httperrors.NewInputParameterError(
+				"Disk create from existing path, unsupport storage type %s", storage.StorageType)
+		}
+	}
+
 	if host, _ := storage.GetMasterHost(); host != nil {
 		//公有云磁盘大小检查。
 		if err := host.GetHostDriver().ValidateDiskSize(storage, diskConfig.SizeMb>>10); err != nil {
@@ -663,12 +710,24 @@ func getDiskResourceRequirements(ctx context.Context, userCred mcclient.TokenCre
 	return newData
 }*/
 
+func (disk *SDisk) PostCreate(ctx context.Context, userCred mcclient.TokenCredential, ownerId mcclient.IIdentityProvider, query jsonutils.JSONObject, data jsonutils.JSONObject) {
+	input := api.DiskCreateInput{}
+	err := data.Unmarshal(&input)
+	if err != nil {
+		log.Errorf("!!!data.Unmarshal api.DiskCreateInput fail %s", err)
+	}
+	if input.ExistingPath != "" {
+		disk.SetMetadata(ctx, api.DISK_META_EXISTING_PATH, input.ExistingPath, userCred)
+	}
+}
+
 func (manager *SDiskManager) OnCreateComplete(ctx context.Context, items []db.IModel, userCred mcclient.TokenCredential, ownerId mcclient.IIdentityProvider, query jsonutils.JSONObject, data jsonutils.JSONObject) {
 	input := api.DiskCreateInput{}
 	err := data.Unmarshal(&input)
 	if err != nil {
 		log.Errorf("!!!data.Unmarshal api.DiskCreateInput fail %s", err)
 	}
+
 	pendingUsage := getDiskResourceRequirements(ctx, userCred, ownerId, input, len(items))
 	parentTaskId, _ := data.GetString("parent_task_id")
 	RunBatchCreateTask(ctx, items, userCred, data, pendingUsage, SRegionQuota{}, "DiskBatchCreateTask", parentTaskId)
@@ -693,6 +752,15 @@ func (self *SDisk) StartDiskCreateTask(ctx context.Context, userCred mcclient.To
 		task.ScheduleRun(nil)
 	}
 	return nil
+}
+
+func (self *SDisk) GetSnapshotFuseUrl() (string, error) {
+	snapObj, err := SnapshotManager.FetchById(self.SnapshotId)
+	if err != nil {
+		return "", errors.Wrapf(err, "SnapshotManager.FetchById(%s)", self.SnapshotId)
+	}
+	snapshot := snapObj.(*SSnapshot)
+	return snapshot.GetFuseUrl()
 }
 
 func (self *SDisk) GetSnapshotCount() (int, error) {
@@ -761,6 +829,10 @@ func (self *SDisk) StartAllocate(ctx context.Context, host *SHost, storage *SSto
 			return errors.Wrap(err, "GetEncryptInfo")
 		}
 	}
+	if ePath := self.GetMetadata(ctx, api.DISK_META_EXISTING_PATH, userCred); ePath != "" {
+		input.ExistingPath = ePath
+	}
+
 	if rebuild {
 		return host.GetHostDriver().RequestRebuildDiskOnStorage(ctx, host, storage, self, task, input)
 	} else {
@@ -1026,7 +1098,7 @@ func (self *SDisk) PrepareSaveImage(ctx context.Context, userCred mcclient.Token
 		return "", httperrors.NewResourceNotFoundError("No zone for this disk")
 	}
 	if len(input.GenerateName) == 0 {
-		s := auth.GetAdminSession(ctx, options.Options.Region, "")
+		s := auth.GetAdminSession(ctx, options.Options.Region)
 		imageList, err := image.Images.List(s, jsonutils.Marshal(map[string]string{"name": input.Name, "admin": "true"}))
 		if err != nil {
 			return "", err
@@ -1078,7 +1150,7 @@ func (self *SDisk) PrepareSaveImage(ctx context.Context, userCred mcclient.Token
 		if _, err := image.ImageQuotas.DoQuotaCheck(session, jsonutils.Marshal(&quota)); err != nil {
 			return "", err
 		}*/
-	us := auth.GetSession(ctx, userCred, options.Options.Region, "")
+	us := auth.GetSession(ctx, userCred, options.Options.Region)
 	result, err := image.Images.Create(us, jsonutils.Marshal(opts))
 	if err != nil {
 		return "", err
@@ -1816,7 +1888,7 @@ func parseDiskInfo(ctx context.Context, userCred mcclient.TokenCredential, info 
 	// if len(diskConfig.ImageId) > 0 && diskConfig.SizeMb == 0 {
 	// 	diskConfig.SizeMb = options.Options.DefaultDiskSize // MB
 	// else
-	if len(info.ImageId) == 0 && info.SizeMb == 0 {
+	if len(info.ImageId) == 0 && info.SizeMb == 0 && info.ExistingPath == "" {
 		return nil, httperrors.NewInputParameterError("Diskinfo index %d: both imageID and size are absent", info.Index)
 	}
 	return info, nil
@@ -1963,7 +2035,8 @@ func fillDiskConfigByStorage(userCred mcclient.TokenCredential,
 	if storage.Status != api.STORAGE_ONLINE {
 		return errors.Wrap(httperrors.ErrInvalidStatus, "storage not online")
 	}
-	diskConfig.Storage = storageObj.GetId()
+	diskConfig.Storage = storage.Id
+	diskConfig.Backend = storage.StorageType
 	return nil
 }
 
