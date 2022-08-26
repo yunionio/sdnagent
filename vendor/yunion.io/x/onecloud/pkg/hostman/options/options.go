@@ -182,6 +182,11 @@ type SHostOptions struct {
 
 	LocalBackupStoragePath string `help:"path for mounting backup nfs storage" default:"/opt/cloud/workspace/backupstorage"`
 	LocalBackupTempPath    string `help:"the local temporary directory for backup" default:"/opt/cloud/workspace/run/backups"`
+
+	BinaryMemcleanPath string `help:"execute binary memclean path" default:"/opt/yunion/bin/memclean"`
+
+	MaxHotplugVCpuCount int `help:"maximal possible vCPU count that the platform kvm supports"`
+	PcieRootPortCount   int `help:"pcie root port count" default:"2"`
 }
 
 var (

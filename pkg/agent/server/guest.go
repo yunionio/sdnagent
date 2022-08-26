@@ -82,8 +82,7 @@ func (g *Guest) reloadDesc(ctx context.Context) error {
 			// desc change will be picked up by watcher
 			log.Infof("guest sync %s", g.Id)
 			hc := g.watcher.hostConfig
-			apiVer := ""
-			s := auth.GetAdminSession(ctx, hc.Region, apiVer)
+			s := auth.GetAdminSession(ctx, hc.Region)
 			_, err := mcclient_modules.Servers.PerformAction(s, g.Id, "sync", nil)
 			if err != nil {
 				log.Errorf("guest sync %s: %v", g.Id, err)

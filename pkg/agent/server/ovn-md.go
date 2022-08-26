@@ -29,13 +29,13 @@ import (
 	"github.com/vishvananda/netlink"
 	"github.com/vishvananda/netns"
 
-	"yunion.io/x/jsonutils"
 	"yunion.io/x/log"
 	"yunion.io/x/pkg/errors"
 
 	"yunion.io/x/onecloud/pkg/appsrv"
 	"yunion.io/x/onecloud/pkg/cloudcommon/app"
 	common_options "yunion.io/x/onecloud/pkg/cloudcommon/options"
+	"yunion.io/x/onecloud/pkg/hostman/guestman/desc"
 	fwdpb "yunion.io/x/onecloud/pkg/hostman/guestman/forwarder/api"
 	"yunion.io/x/onecloud/pkg/hostman/metadata"
 	"yunion.io/x/onecloud/pkg/util/iproute2"
@@ -49,7 +49,7 @@ type mdDescGetter struct {
 	watcher *serversWatcher
 }
 
-func (g *mdDescGetter) Get(ip string) jsonutils.JSONObject {
+func (g *mdDescGetter) Get(ip string) *desc.SGuestDesc {
 	guestDesc := g.watcher.FindGuestDescByNetIdIP(g.netId, ip)
 	return guestDesc
 }

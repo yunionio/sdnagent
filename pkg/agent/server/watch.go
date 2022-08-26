@@ -25,9 +25,9 @@ import (
 
 	"github.com/fsnotify/fsnotify"
 
-	"yunion.io/x/jsonutils"
 	"yunion.io/x/log"
 
+	"yunion.io/x/onecloud/pkg/hostman/guestman/desc"
 	fwdpb "yunion.io/x/onecloud/pkg/hostman/guestman/forwarder/api"
 
 	"yunion.io/x/sdnagent/pkg/agent/utils"
@@ -49,7 +49,7 @@ const (
 type wCmdFindGuestDescByIdIPData struct {
 	NetId  string
 	IP     string
-	RespCh chan<- jsonutils.JSONObject
+	RespCh chan<- *desc.SGuestDesc
 }
 
 type wCmdReq struct {
@@ -279,7 +279,7 @@ func (w *serversWatcher) Start(ctx context.Context, agent *AgentServer) {
 					data  = cmd.data.(wCmdFindGuestDescByIdIPData)
 					netId = data.NetId
 					ip    = data.IP
-					robj  jsonutils.JSONObject
+					robj  *desc.SGuestDesc
 				)
 				for guestId, guest := range w.guests {
 					if nic := guest.FindNicByNetIdIP(netId, ip); nic != nil {
@@ -300,8 +300,8 @@ func (w *serversWatcher) Start(ctx context.Context, agent *AgentServer) {
 out:
 }
 
-func (w *serversWatcher) FindGuestDescByNetIdIP(netId, ip string) jsonutils.JSONObject {
-	respCh := make(chan jsonutils.JSONObject)
+func (w *serversWatcher) FindGuestDescByNetIdIP(netId, ip string) *desc.SGuestDesc {
+	respCh := make(chan *desc.SGuestDesc)
 	reqData := wCmdFindGuestDescByIdIPData{
 		NetId:  netId,
 		IP:     ip,

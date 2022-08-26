@@ -23,6 +23,9 @@ import (
 	"strings"
 
 	"yunion.io/x/jsonutils"
+	"yunion.io/x/pkg/errors"
+
+	"yunion.io/x/onecloud/pkg/hostman/guestman/desc"
 )
 
 type guestDesc struct {
@@ -196,17 +199,22 @@ func (g *Guest) IsSlave() bool {
 	return g.isSlave
 }
 
-func (g *Guest) GetJSONObjectDesc() (jsonutils.JSONObject, error) {
+func (g *Guest) GetJSONObjectDesc() (*desc.SGuestDesc, error) {
 	descPath := path.Join(g.Path, "desc")
 	data, err := ioutil.ReadFile(descPath)
 	if err != nil {
-		return nil, err
+		return nil, errors.Wrap(err, "ReadFile")
 	}
 	obj, err := jsonutils.Parse(data)
 	if err != nil {
-		return nil, err
+		return nil, errors.Wrap(err, "json.Parse")
 	}
-	return obj, nil
+	desc := desc.SGuestDesc{}
+	err = obj.Unmarshal(&desc)
+	if err != nil {
+		return nil, errors.Wrap(err, "Unmarshal")
+	}
+	return &desc, nil
 }
 
 func (g *Guest) LoadDesc() error {

@@ -115,14 +115,13 @@ func (self *SGuest) PerformMonitor(
 	ctx context.Context,
 	userCred mcclient.TokenCredential,
 	query jsonutils.JSONObject,
-	data jsonutils.JSONObject,
+	input *api.ServerMonitorInput,
 ) (jsonutils.JSONObject, error) {
 	if utils.IsInStringArray(self.Status, []string{api.VM_RUNNING, api.VM_BLOCK_STREAM, api.VM_MIGRATING}) {
-		cmd, err := data.GetString("command")
-		if err != nil {
+		if input.COMMAND == "" {
 			return nil, httperrors.NewMissingParameterError("command")
 		}
-		return self.SendMonitorCommand(ctx, userCred, cmd)
+		return self.SendMonitorCommand(ctx, userCred, input)
 	}
 	return nil, httperrors.NewInvalidStatusError("Cannot send command in status %s", self.Status)
 }
@@ -266,7 +265,7 @@ func (self *SGuest) PerformSaveGuestImage(ctx context.Context, userCred mcclient
 		kwargs.OsArch = self.OsArch
 	}
 
-	s := auth.GetSession(ctx, userCred, consts.GetRegion(), "")
+	s := auth.GetSession(ctx, userCred, consts.GetRegion())
 	ret, err := image.GuestImages.Create(s, jsonutils.Marshal(kwargs))
 	if err != nil {
 		return nil, err
@@ -418,33 +417,64 @@ func (self *SGuest) validateMigrate(
 	}
 }
 
+func (self *SGuest) validateConvertToKvm(
+	ctx context.Context,
+	userCred mcclient.TokenCredential,
+	migrateInput *api.GuestMigrateInput,
+) error {
+	if len(migrateInput.PreferHost) > 0 {
+		iHost, _ := HostManager.FetchByIdOrName(userCred, migrateInput.PreferHost)
+		if iHost == nil {
+			return httperrors.NewBadRequestError("Host %s not found", migrateInput.PreferHost)
+		}
+		host := iHost.(*SHost)
+		migrateInput.PreferHost = host.Id
+	}
+	if self.Status != api.VM_READY {
+		return httperrors.NewServerStatusError("can't convert guest in status %s", self.Status)
+	}
+	return nil
+}
+
 func (self *SGuest) PerformMigrateForecast(ctx context.Context, userCred mcclient.TokenCredential, _ jsonutils.JSONObject, input *api.ServerMigrateForecastInput) (jsonutils.JSONObject, error) {
 	var (
 		mInput  *api.GuestMigrateInput     = nil
 		lmInput *api.GuestLiveMigrateInput = nil
 	)
 
-	if input.LiveMigrate {
-		lmInput = &api.GuestLiveMigrateInput{
-			PreferHost:   input.PreferHostId,
-			SkipCpuCheck: &input.SkipCpuCheck,
-		}
-		if err := self.validateMigrate(ctx, userCred, nil, lmInput); err != nil {
-			return nil, err
-		}
-		input.PreferHostId = lmInput.PreferHost
-	} else {
-		mInput = &api.GuestMigrateInput{
-			PreferHost: input.PreferHostId,
-		}
-		if err := self.validateMigrate(ctx, userCred, mInput, nil); err != nil {
+	if input.ConvertToKvm {
+		mInput = &api.GuestMigrateInput{PreferHost: input.PreferHostId}
+		if err := self.validateConvertToKvm(ctx, userCred, mInput); err != nil {
 			return nil, err
 		}
 		input.PreferHostId = mInput.PreferHost
+	} else {
+		if input.LiveMigrate {
+			lmInput = &api.GuestLiveMigrateInput{
+				PreferHost:   input.PreferHostId,
+				SkipCpuCheck: &input.SkipCpuCheck,
+			}
+			if err := self.validateMigrate(ctx, userCred, nil, lmInput); err != nil {
+				return nil, err
+			}
+			input.PreferHostId = lmInput.PreferHost
+		} else {
+			mInput = &api.GuestMigrateInput{
+				PreferHost: input.PreferHostId,
+			}
+			if err := self.validateMigrate(ctx, userCred, mInput, nil); err != nil {
+				return nil, err
+			}
+			input.PreferHostId = mInput.PreferHost
+		}
 	}
 
 	schedParams := self.GetSchedMigrateParams(userCred, input)
-	s := auth.GetAdminSession(ctx, options.Options.Region, "")
+	if input.ConvertToKvm {
+		schedParams.Hypervisor = api.HYPERVISOR_KVM
+	}
+
+	s := auth.GetAdminSession(ctx, options.Options.Region)
 	_, res, err := scheduler.SchedManager.DoScheduleForecast(s, schedParams, 1)
 	if err != nil {
 		return nil, errors.Wrap(err, "Do schedule migrate forecast")
@@ -2637,7 +2667,7 @@ func (self *SGuest) PerformChangeConfig(ctx context.Context, userCred mcclient.T
 	// schedulr forecast
 	schedDesc := self.changeConfToSchedDesc(addCpu, addMem, schedInputDisks)
 	confs.Set("sched_desc", jsonutils.Marshal(schedDesc))
-	s := auth.GetAdminSession(ctx, options.Options.Region, "")
+	s := auth.GetAdminSession(ctx, options.Options.Region)
 	canChangeConf, res, err := scheduler.SchedManager.DoScheduleForecast(s, schedDesc, 1)
 	if err != nil {
 		return nil, err
@@ -2927,7 +2957,7 @@ func (self *SGuest) PerformSendkeys(ctx context.Context, userCred mcclient.Token
 	if err == nil {
 		cmd = fmt.Sprintf("%s %d", cmd, duration)
 	}
-	_, err = self.SendMonitorCommand(ctx, userCred, cmd)
+	_, err = self.SendMonitorCommand(ctx, userCred, &api.ServerMonitorInput{COMMAND: cmd})
 	return nil, err
 }
 
@@ -2962,13 +2992,14 @@ func (self *SGuest) IsLegalKey(key string) bool {
 	return true
 }
 
-func (self *SGuest) SendMonitorCommand(ctx context.Context, userCred mcclient.TokenCredential, cmd string) (jsonutils.JSONObject, error) {
+func (self *SGuest) SendMonitorCommand(ctx context.Context, userCred mcclient.TokenCredential, cmd *api.ServerMonitorInput) (jsonutils.JSONObject, error) {
 	host, _ := self.GetHost()
 	url := fmt.Sprintf("%s/servers/%s/monitor", host.ManagerUri, self.Id)
 	header := http.Header{}
 	header.Add("X-Auth-Token", userCred.GetTokenString())
 	body := jsonutils.NewDict()
-	body.Add(jsonutils.NewString(cmd), "cmd")
+	body.Add(jsonutils.NewString(cmd.COMMAND), "cmd")
+	body.Add(jsonutils.NewBool(cmd.QMP), "qmp")
 	_, res, err := httputils.JSONRequest(httputils.GetDefaultClient(), ctx, "POST", url, header, body, false)
 	if err != nil {
 		return nil, err
@@ -3214,6 +3245,13 @@ func (self *SGuest) PerformSetQemuParams(ctx context.Context, userCred mcclient.
 	usbKbd, err := data.GetString("disable_usb_kbd")
 	if err == nil {
 		err = self.SetMetadata(ctx, "disable_usb_kbd", usbKbd, userCred)
+		if err != nil {
+			return nil, err
+		}
+	}
+	usbContType, err := data.GetString("usb_controller_type")
+	if err == nil {
+		err = self.SetMetadata(ctx, "usb_controller_type", usbContType, userCred)
 		if err != nil {
 			return nil, err
 		}
@@ -5400,7 +5438,6 @@ func (self *SGuest) PerformChangeDiskStorage(ctx context.Context, userCred mccli
 	diskConf := &api.DiskConfig{
 		Index:    -1,
 		ImageId:  srcDisk.TemplateId,
-		Format:   srcDisk.DiskFormat,
 		SizeMb:   srcDisk.DiskSize,
 		Fs:       srcDisk.FsFormat,
 		DiskType: srcDisk.DiskType,
@@ -5415,7 +5452,6 @@ func (self *SGuest) PerformChangeDiskStorage(ctx context.Context, userCred mccli
 		ServerChangeDiskStorageInput: *input,
 		StorageId:                    srcDisk.StorageId,
 		TargetDiskId:                 targetDisk.GetId(),
-		DiskFormat:                   srcDisk.DiskFormat,
 		GuestRunning:                 self.Status == api.VM_RUNNING,
 	}
 
@@ -5599,4 +5635,8 @@ func (self *SGuest) PerformCalculateRecordChecksum(ctx context.Context, userCred
 	return jsonutils.Marshal(map[string]string{
 		"checksum": checksum,
 	}), nil
+}
+
+func (self *SGuest) PerformEnableMemclean(ctx context.Context, userCred mcclient.TokenCredential, query jsonutils.JSONObject, data jsonutils.JSONObject) (jsonutils.JSONObject, error) {
+	return nil, self.SetMetadata(ctx, api.VM_METADATA_ENABLE_MEMCLEAN, "true", userCred)
 }

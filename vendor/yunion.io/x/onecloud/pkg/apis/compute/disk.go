@@ -143,6 +143,9 @@ type DiskListInput struct {
 
 	FsFormat string `json:"fs_format"`
 
+	OrderByServer string `json:"order_by_server" choices:"asc|desc"`
+
+	OrderByGuestCount string `json:"order_by_guest_count" choices:"asc|desc"`
 	// 镜像
 	ImageId string `json:"image_id"`
 	// swagger:ignore
@@ -296,6 +299,7 @@ type DiskAllocateInput struct {
 	Protocol           string
 	SrcDiskId          string
 	SrcPool            string
+	ExistingPath       string
 
 	// vmware
 	HostIp    string
