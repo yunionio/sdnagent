@@ -1170,7 +1170,7 @@ func (self *SHostManager) ClearSchedDescCache(hostId string) error {
 }
 
 func (self *SHostManager) ClearSchedDescSessionCache(hostId, sessionId string) error {
-	s := auth.GetAdminSession(context.Background(), options.Options.Region, "")
+	s := auth.GetAdminSession(context.Background(), options.Options.Region)
 	return scheduler.SchedManager.CleanCache(s, hostId, sessionId, false)
 }
 
@@ -1184,7 +1184,7 @@ func (self *SHost) ClearSchedDescSessionCache(sessionId string) error {
 
 // sync clear sched desc on scheduler side
 func (self *SHostManager) SyncClearSchedDescSessionCache(hostId, sessionId string) error {
-	s := auth.GetAdminSession(context.Background(), options.Options.Region, "")
+	s := auth.GetAdminSession(context.Background(), options.Options.Region)
 	return scheduler.SchedManager.CleanCache(s, hostId, sessionId, true)
 }
 
@@ -1433,7 +1433,7 @@ func _getLeastUsedStorage(storages []SStorage, backends []string) *SStorage {
 	return best
 }
 
-func getLeastUsedStorage(storages []SStorage, backend string) *SStorage {
+func ChooseLeastUsedStorage(storages []SStorage, backend string) *SStorage {
 	var backends []string
 	if backend == api.STORAGE_LOCAL {
 		backends = []string{api.STORAGE_NAS, api.STORAGE_LOCAL}
@@ -1448,7 +1448,7 @@ func getLeastUsedStorage(storages []SStorage, backend string) *SStorage {
 func (self *SHost) GetLeastUsedStorage(backend string) *SStorage {
 	storages := self.GetAttachedEnabledHostStorages(nil)
 	if storages != nil {
-		return getLeastUsedStorage(storages, backend)
+		return ChooseLeastUsedStorage(storages, backend)
 	}
 	return nil
 }
@@ -3238,7 +3238,7 @@ func (manager *SHostManager) GetHostsByManagerAndRegion(managerId string, region
 }
 
 func (self *SHost) Request(ctx context.Context, userCred mcclient.TokenCredential, method httputils.THttpMethod, url string, headers http.Header, body jsonutils.JSONObject) (jsonutils.JSONObject, error) {
-	s := auth.GetSession(ctx, userCred, "", "")
+	s := auth.GetSession(ctx, userCred, "")
 	_, ret, err := s.JSONRequest(self.ManagerUri, "", method, url, headers, body)
 	return ret, err
 }
@@ -4038,6 +4038,9 @@ func (self *SHost) StartSyncAllGuestsStatusTask(ctx context.Context, userCred mc
 }
 
 func (self *SHost) PerformPing(ctx context.Context, userCred mcclient.TokenCredential, query jsonutils.JSONObject, input api.SHostPingInput) (jsonutils.JSONObject, error) {
+	if self.HostType == api.HOST_TYPE_BAREMETAL {
+		return nil, httperrors.NewNotSupportedError("ping host type %s not support", self.HostType)
+	}
 	if input.WithData {
 		// piggyback storage stats info
 		log.Debugf("host ping %s", jsonutils.Marshal(input))

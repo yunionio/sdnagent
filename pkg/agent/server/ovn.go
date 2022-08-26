@@ -106,8 +106,7 @@ func (man *ovnMan) setIpMac(ctx context.Context) error {
 	man.mac = mac.HashVpcHostDistgwMac(man.hostId)
 	{
 		hc := man.watcher.hostConfig
-		apiVer := ""
-		s := auth.GetAdminSession(ctx, hc.Region, apiVer)
+		s := auth.GetAdminSession(ctx, hc.Region)
 		obj, err := mcclient_modules.Hosts.Get(s, man.hostId, nil)
 		if err != nil {
 			return errors.Wrapf(err, "GET host %s", man.hostId)

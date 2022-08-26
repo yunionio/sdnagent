@@ -15,6 +15,8 @@
 package compute
 
 import (
+	"strings"
+
 	"yunion.io/x/jsonutils"
 
 	"yunion.io/x/onecloud/pkg/apis"
@@ -192,7 +194,7 @@ type HostDetails struct {
 	// CPU超售比
 	CpuCommitBound float32 `json:"cpu_commit_bound"`
 	// 内存超售比
-	MemCommitBound float32 `json:"mem_commint_bound"`
+	MemCommitBound float32 `json:"mem_commit_bound"`
 	// 存储大小
 	Storage int64 `json:"storage"`
 	// 已使用存储大小
@@ -226,6 +228,38 @@ type HostDetails struct {
 	SysWarn string `json:"sys_warn"`
 	// host init error info
 	SysError string `json:"sys_error"`
+}
+
+func (self HostDetails) GetMetricTags() map[string]string {
+	ret := map[string]string{
+		"host_id":        self.Id,
+		"host_ip":        self.AccessIp,
+		"host":           self.Name,
+		"zone":           self.Zone,
+		"zone_id":        self.ZoneId,
+		"zone_ext_id":    self.ZoneExtId,
+		"status":         self.Status,
+		"cloudregion":    self.Cloudregion,
+		"cloudregion_id": self.CloudregionId,
+		"region_ext_id":  self.RegionExtId,
+		"brand":          self.Brand,
+		"domain_id":      self.DomainId,
+		"project_domain": self.ProjectDomain,
+		"account":        self.Account,
+		"res_type":       "host",
+		"account_id":     self.AccountId,
+	}
+	for k, v := range self.Metadata {
+		if strings.HasPrefix(k, apis.USER_TAG_PREFIX) {
+			ret[k] = v
+		}
+	}
+	return ret
+}
+
+func (self HostDetails) GetMetricPairs() map[string]string {
+	ret := map[string]string{}
+	return ret
 }
 
 type HostResourceInfo struct {

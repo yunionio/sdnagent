@@ -99,12 +99,17 @@ type SDBInstance struct {
 	// 存储大小
 	// example: 10240
 	DiskSizeGB int `nullable:"false" list:"user" create:"required"`
+	// 已使用的存储大小
+	DiskSizeUsedMB int `nullable:"false" list:"user"`
 	// 端口
 	// example: 3306
 	Port int `nullable:"false" list:"user" create:"optional"`
 	// 实例类型
 	// example: ha
 	Category string `nullable:"false" list:"user" create:"optional"`
+
+	// 最大连接数
+	Iops int `nullable:"true" list:"user" create:"optional"`
 
 	// 引擎
 	// example: MySQL
@@ -660,6 +665,27 @@ func (manager *SDBInstanceManager) FetchCustomizeColumns(
 		if ok {
 			rows[i].IpAddrs = strings.Join(ipAddrs, ",")
 		}
+	}
+
+	q = DBInstanceDatabaseManager.Query().In("dbinstance_id", rdsIds)
+	databases := []SDBInstanceDatabase{}
+	err = db.FetchModelObjects(DBInstanceDatabaseManager, q, &databases)
+	if err != nil {
+		return rows
+	}
+	databaseMap := map[string][]apis.IdNameDetails{}
+	for i := range databases {
+		_, ok := databaseMap[databases[i].DBInstanceId]
+		if !ok {
+			databaseMap[databases[i].DBInstanceId] = []apis.IdNameDetails{}
+		}
+		databaseMap[databases[i].DBInstanceId] = append(databaseMap[databases[i].DBInstanceId], apis.IdNameDetails{
+			Id:   databases[i].Id,
+			Name: databases[i].Name,
+		})
+	}
+	for i := range rows {
+		rows[i].Databases, _ = databaseMap[rdsIds[i]]
 	}
 
 	return rows
@@ -1596,10 +1622,14 @@ func (self *SDBInstance) SyncWithCloudDBInstance(ctx context.Context, userCred m
 		self.VcpuCount = ext.GetVcpuCount()
 		self.VmemSizeMb = ext.GetVmemSizeMB()
 		self.DiskSizeGB = ext.GetDiskSizeGB()
+		self.DiskSizeUsedMB = ext.GetDiskSizeUsedMB()
 		self.StorageType = ext.GetStorageType()
 		self.Category = ext.GetCategory()
 		self.Status = ext.GetStatus()
 		self.Port = ext.GetPort()
+		if iops := ext.GetIops(); iops > 0 {
+			self.Iops = iops
+		}
 
 		self.ConnectionStr = ext.GetConnectionStr()
 		self.InternalConnectionStr = ext.GetInternalConnectionStr()
@@ -1688,6 +1718,7 @@ func (manager *SDBInstanceManager) newFromCloudDBInstance(ctx context.Context, u
 	instance.Status = extInstance.GetStatus()
 	instance.Port = extInstance.GetPort()
 
+	instance.Iops = extInstance.GetIops()
 	instance.Engine = extInstance.GetEngine()
 	instance.EngineVersion = extInstance.GetEngineVersion()
 	instance.InstanceType = extInstance.GetInstanceType()
@@ -1695,6 +1726,7 @@ func (manager *SDBInstanceManager) newFromCloudDBInstance(ctx context.Context, u
 	instance.VcpuCount = extInstance.GetVcpuCount()
 	instance.VmemSizeMb = extInstance.GetVmemSizeMB()
 	instance.DiskSizeGB = extInstance.GetDiskSizeGB()
+	instance.DiskSizeUsedMB = extInstance.GetDiskSizeUsedMB()
 	instance.ConnectionStr = extInstance.GetConnectionStr()
 	instance.StorageType = extInstance.GetStorageType()
 	instance.InternalConnectionStr = extInstance.GetInternalConnectionStr()
@@ -1766,9 +1798,12 @@ func (manager *SDBInstanceManager) newFromCloudDBInstance(ctx context.Context, u
 }
 
 type SRdsCountStat struct {
-	TotalRdsCount  int
-	TotalCpuCount  int
-	TotalMemSizeMb int
+	TotalRdsCount       int
+	TotalCpuCount       int
+	TotalMemSizeMb      int
+	TotalDiskSizeGb     int
+	TotalDiskSizeUsedMb int
+	DiskUsedRate        float64
 }
 
 func (man *SDBInstanceManager) TotalCount(
@@ -1788,11 +1823,17 @@ func (man *SDBInstanceManager) TotalCount(
 
 	q := sq.Query(sqlchemy.COUNT("total_rds_count"),
 		sqlchemy.SUM("total_cpu_count", sq.Field("vcpu_count")),
-		sqlchemy.SUM("total_mem_size_mb", sq.Field("vmem_size_mb")))
+		sqlchemy.SUM("total_mem_size_mb", sq.Field("vmem_size_mb")),
+		sqlchemy.SUM("total_disk_size_gb", sq.Field("disk_size_gb")),
+		sqlchemy.SUM("total_disk_size_used_mb", sq.Field("disk_size_used_mb")),
+	)
 
 	stat := SRdsCountStat{}
 	row := q.Row()
 	err := q.Row2Struct(row, &stat)
+	if stat.TotalDiskSizeGb > 0 {
+		stat.DiskUsedRate = float64(stat.TotalDiskSizeUsedMb) / float64(stat.TotalDiskSizeGb) / 1024
+	}
 	return stat, err
 }
 
