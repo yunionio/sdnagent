@@ -20,11 +20,11 @@ import (
 	"regexp"
 	"strings"
 
-	"yunion.io/x/jsonutils"
 	"yunion.io/x/log"
 	"yunion.io/x/pkg/errors"
 	"yunion.io/x/pkg/utils"
 
+	"yunion.io/x/onecloud/pkg/hostman/guestman/desc"
 	"yunion.io/x/onecloud/pkg/hostman/options"
 	"yunion.io/x/onecloud/pkg/util/iproute2"
 	"yunion.io/x/onecloud/pkg/util/procutils"
@@ -83,15 +83,15 @@ func (l *SLinuxBridgeDriver) Interfaces() ([]string, error) {
 	return infs, nil
 }
 
-func (l *SLinuxBridgeDriver) GenerateIfdownScripts(scriptPath string, nic jsonutils.JSONObject, isSlave bool) error {
+func (l *SLinuxBridgeDriver) GenerateIfdownScripts(scriptPath string, nic *desc.SGuestNetwork, isSlave bool) error {
 	return l.generateIfdownScripts(l, scriptPath, nic, isSlave)
 }
 
-func (l *SLinuxBridgeDriver) GenerateIfupScripts(scriptPath string, nic jsonutils.JSONObject, isSlave bool) error {
+func (l *SLinuxBridgeDriver) GenerateIfupScripts(scriptPath string, nic *desc.SGuestNetwork, isSlave bool) error {
 	return l.generateIfupScripts(l, scriptPath, nic, isSlave)
 }
 
-func (l *SLinuxBridgeDriver) getUpScripts(nic jsonutils.JSONObject, isSlave bool) (string, error) {
+func (l *SLinuxBridgeDriver) getUpScripts(nic *desc.SGuestNetwork, isSlave bool) (string, error) {
 	s := "#!/bin/bash\n\n"
 	s += fmt.Sprintf("switch='%s'\n", l.bridge)
 	if options.HostOptions.TunnelPaddingBytes > 0 {
@@ -103,7 +103,7 @@ func (l *SLinuxBridgeDriver) getUpScripts(nic jsonutils.JSONObject, isSlave bool
 	return s, nil
 }
 
-func (l *SLinuxBridgeDriver) getDownScripts(nic jsonutils.JSONObject, isSlave bool) (string, error) {
+func (l *SLinuxBridgeDriver) getDownScripts(nic *desc.SGuestNetwork, isSlave bool) (string, error) {
 	s := "#!/bin/sh\n\n"
 	s += fmt.Sprintf("switch='%s'\n", l.bridge)
 	s += "brctl show ${switch} | grep $1\n"

@@ -165,6 +165,11 @@ type SGuest struct {
 	SshableLastState tristate.TriState `default:"false" list:"user"`
 
 	IsDaemon tristate.TriState `default:"false" list:"admin" create:"admin_optional" update:"admin"`
+
+	// 最大内网带宽
+	InternetMaxBandwidthOut int `nullable:"true" list:"user" create:"optional"`
+	// 磁盘吞吐量
+	Throughput int `nullable:"true" list:"user" create:"optional"`
 }
 
 func (manager *SGuestManager) GetPropertyStatistics(ctx context.Context, userCred mcclient.TokenCredential, query jsonutils.JSONObject) (*apis.StatusStatistic, error) {
@@ -665,6 +670,13 @@ func (manager *SGuestManager) OrderByExtraFields(ctx context.Context, q *sqlchem
 
 		q = q.LeftJoin(guestdiskSQ, sqlchemy.Equals(q.Field("id"), guestdiskSQ.Field("guest_id")))
 		db.OrderByFields(q, []string{query.OrderByDisk}, []sqlchemy.IQueryField{guestdiskSQ.Field("disks_size")})
+	}
+	if db.NeedOrderQuery([]string{query.OrderByIp}) {
+		guestnet := GuestnetworkManager.Query("guest_id", "ip_addr").SubQuery()
+		q.AppendField(q.QueryFields()...)
+		q.AppendField(guestnet.Field("ip_addr"))
+		q = q.LeftJoin(guestnet, sqlchemy.Equals(q.Field("id"), guestnet.Field("guest_id")))
+		db.OrderByFields(q, []string{query.OrderByIp}, []sqlchemy.IQueryField{sqlchemy.INET_ATON(q.Field("ip_addr"))})
 	}
 
 	return q, nil
@@ -2016,6 +2028,10 @@ func (guest *SGuest) PostCreate(ctx context.Context, userCred mcclient.TokenCred
 	if osProfileJson != nil {
 		guest.setOSProfile(ctx, userCred, osProfileJson)
 	}
+
+	if jsonutils.QueryBoolean(data, api.VM_METADATA_ENABLE_MEMCLEAN, false) {
+		guest.SetMetadata(ctx, api.VM_METADATA_ENABLE_MEMCLEAN, "true", userCred)
+	}
 	if jsonutils.QueryBoolean(data, imageapi.IMAGE_DISABLE_USB_KBD, false) {
 		guest.SetMetadata(ctx, imageapi.IMAGE_DISABLE_USB_KBD, "true", userCred)
 	}
@@ -2705,6 +2721,8 @@ func (self *SGuest) syncWithCloudVM(ctx context.Context, userCred mcclient.Token
 		if !recycle {
 			self.HostId = host.Id
 		}
+		self.InternetMaxBandwidthOut = extVM.GetInternetMaxBandwidthOut()
+		self.Throughput = extVM.GetThroughput()
 
 		instanceType := extVM.GetInstanceType()
 
@@ -2791,6 +2809,8 @@ func (manager *SGuestManager) newCloudVM(ctx context.Context, userCred mcclient.
 	guest.Machine = extVM.GetMachine()
 	guest.Hypervisor = extVM.GetHypervisor()
 	guest.Hostname = extVM.GetHostname()
+	guest.InternetMaxBandwidthOut = extVM.GetInternetMaxBandwidthOut()
+	guest.Throughput = extVM.GetThroughput()
 
 	guest.IsEmulated = extVM.IsEmulated()
 
@@ -3363,7 +3383,12 @@ func (self *SGuest) attach2Disk(ctx context.Context, disk *SDisk, userCred mccli
 		// depends the last disk of this guest
 		existingDisks, _ := self.GetGuestDisks()
 		if len(existingDisks) > 0 {
-			driver = existingDisks[len(existingDisks)-1].Driver
+			prevDisk := existingDisks[len(existingDisks)-1]
+			if prevDisk.Driver == api.DISK_DRIVER_IDE {
+				driver = api.DISK_DRIVER_VIRTIO
+			} else {
+				driver = prevDisk.Driver
+			}
 		} else {
 			osProf := self.GetOSProfile()
 			driver = osProf.DiskDriver
@@ -3583,7 +3608,6 @@ func _guestResourceCountQuery(
 	} else {
 		gq = GuestManager.Query()
 	}
-
 	if len(rangeObjs) > 0 || len(hostTypes) > 0 || len(resourceTypes) > 0 || len(providers) > 0 || len(brands) > 0 || len(cloudEnv) > 0 {
 		gq = filterGuestByRange(gq, rangeObjs, hostTypes, resourceTypes, providers, brands, cloudEnv)
 	}
@@ -3902,6 +3926,10 @@ func (self *SGuest) createDiskOnHost(
 	if err != nil {
 		return nil, err
 	}
+	if diskConfig.ExistingPath != "" {
+		disk.SetMetadata(ctx, api.DISK_META_EXISTING_PATH, diskConfig.ExistingPath, userCred)
+	}
+
 	if len(self.BackupHostId) > 0 {
 		backupHost := HostManager.FetchHostById(self.BackupHostId)
 		backupStorage, err := self.ChooseHostStorage(backupHost, diskConfig, backupCandidate)
@@ -4241,7 +4269,7 @@ func (self *SGuest) GetDeployConfigOnHost(ctx context.Context, userCred mcclient
 }
 
 func (self *SGuest) getVga() string {
-	if utils.IsInStringArray(self.Vga, []string{"cirrus", "vmware", "qxl"}) {
+	if utils.IsInStringArray(self.Vga, []string{"cirrus", "vmware", "qxl", "virtio", "std"}) {
 		return self.Vga
 	}
 	return "std"
@@ -5809,7 +5837,7 @@ func (self *SGuestManager) checkGuestImage(ctx context.Context, input *api.Serve
 	params := jsonutils.NewDict()
 	params.Add(jsonutils.JSONTrue, "details")
 
-	s := auth.GetAdminSession(ctx, options.Options.Region, "")
+	s := auth.GetAdminSession(ctx, options.Options.Region)
 	ret, err := image.GuestImages.Get(s, guestImageId, params)
 	if err != nil {
 		return errors.Wrap(err, "get guest image from glance error")

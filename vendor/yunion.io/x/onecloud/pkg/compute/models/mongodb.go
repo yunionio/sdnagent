@@ -96,6 +96,10 @@ type SMongoDB struct {
 	// example: 3
 	ReplicationNum int `nullable:"false" default:"0" list:"user" create:"optional"`
 
+	// 最大连接数
+	MaxConnections int `nullable:"true" list:"user" create:"optional"`
+	Iops           int `nullable:"true" list:"user" create:"optional"`
+
 	// 实例IP地址
 	IpAddr string `nullable:"false" list:"user"`
 
@@ -118,6 +122,9 @@ type SMongoDB struct {
 
 	// 所属网络ID
 	NetworkId string `width:"36" charset:"ascii" nullable:"false" list:"user" create:"optional" json:"network_id"`
+
+	// 连接地址
+	NetworkAddress string `width:"256" charset:"ascii" nullable:"true" list:"user" create:"optional"`
 }
 
 func (manager *SMongoDBManager) GetContextManagers() [][]db.IModelManager {
@@ -495,6 +502,11 @@ func (self *SMongoDB) SyncWithCloudMongoDB(ctx context.Context, userCred mcclien
 		self.MaintainTime = ext.GetMaintainTime()
 		self.Status = ext.GetStatus()
 		self.Port = ext.GetPort()
+		if iops := ext.GetIops(); iops > 0 {
+			self.Iops = iops
+		}
+		self.MaxConnections = ext.GetMaxConnections()
+		self.NetworkAddress = ext.GetNetworkAddress()
 
 		if vpcId := ext.GetVpcId(); len(vpcId) > 0 {
 			vpc, err := db.FetchByExternalIdAndManagerId(VpcManager, vpcId, func(q *sqlchemy.SQuery) *sqlchemy.SQuery {
@@ -567,6 +579,9 @@ func (self *SCloudregion) newFromCloudMongoDB(ctx context.Context, userCred mccl
 	ins.MaintainTime = ext.GetMaintainTime()
 	ins.Port = ext.GetPort()
 	ins.ReplicationNum = ext.GetReplicationNum()
+	ins.Iops = ext.GetIops()
+	ins.MaxConnections = ext.GetMaxConnections()
+	ins.NetworkAddress = ext.GetNetworkAddress()
 
 	if zoneId := ext.GetZoneId(); len(zoneId) > 0 {
 		zone, err := self.GetZoneBySuffix(zoneId)

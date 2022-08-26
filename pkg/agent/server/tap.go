@@ -128,8 +128,7 @@ func (man *tapMan) syncTapConfig(ctx context.Context) error {
 	cli := ovs.New().VSwitch
 
 	hc := man.agent.hostConfig
-	apiVer := ""
-	s := auth.GetAdminSession(ctx, hc.Region, apiVer)
+	s := auth.GetAdminSession(ctx, hc.Region)
 	cfgJson, err := compute_modules.Hosts.GetSpecific(s, man.agent.hostId, "tap-config", nil)
 	if err != nil {
 		return errors.Wrap(err, "Hosts.GetSpecific tap-config")

@@ -74,6 +74,7 @@ type ServerListInput struct {
 	// enum: asc,desc
 	OrderByDisk string `json:"order_by_disk"`
 
+	OrderByIp string `json:"order_by_ip"`
 	// 根据ip查找机器
 	IpAddr string `json:"ip_addr"`
 
@@ -573,6 +574,7 @@ type ServerMigrateForecastInput struct {
 	LiveMigrate     bool   `json:"live_migrate"`
 	SkipCpuCheck    bool   `json:"skip_cpu_check"`
 	SkipKernelCheck bool   `json:"skip_kernel_check"`
+	ConvertToKvm    bool   `json:"convert_to_kvm"`
 }
 
 type ServerResizeDiskInput struct {
@@ -838,6 +840,11 @@ type ServerGetCPUSetCoresResp struct {
 	PinnedCores   []int `json:"pinned_cores"`
 	HostCores     []int `json:"host_cores"`
 	HostUsedCores []int `json:"host_used_cores"`
+}
+
+type ServerMonitorInput struct {
+	COMMAND string
+	QMP     bool
 }
 
 type ServerQemuInfo struct {
