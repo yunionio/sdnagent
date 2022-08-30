@@ -166,6 +166,7 @@ func (g *Guest) getMetadataInfo(nic *GuestNIC) (mdIP string, mdMAC string, mdPor
 func (g *Guest) FlowsMap() (map[string][]*ovs.Flow, error) {
 	r := map[string][]*ovs.Flow{}
 	allGood := true
+	disableSecgrp := g.HostConfig.DisableSecurityGroup
 	for _, nic := range g.NICs {
 		if nic.PortNo <= 0 {
 			allGood = false
@@ -236,7 +237,7 @@ func (g *Guest) FlowsMap() (map[string][]*ovs.Flow, error) {
 			F(0, 28300, T("in_port=LOCAL,dl_dst={{.MAC}},udp,tp_src={{.DHCPServerPort}},tp_dst=68"), T("mod_tp_src:67,output:{{.PortNo}}")),
 			F(0, 26700, T("in_port={{.PortNoPhy}},dl_dst={{.MAC}},{{._dl_vlan}}"), "normal"),
 		)
-		if !g.SrcMacCheck() {
+		if !g.SrcMacCheck() || disableSecgrp {
 			flows = append(flows, F(0, 24670, T("in_port={{.PortNo}}"), "normal"))
 		} else {
 			if !g.SrcIpCheck() {
@@ -255,7 +256,9 @@ func (g *Guest) FlowsMap() (map[string][]*ovs.Flow, error) {
 				F(0, 24660, T("in_port={{.PortNo}}"), "drop"),
 			)
 		}
-		flows = append(flows, g.SecurityRules.Flows(g, m)...)
+		if !disableSecgrp {
+			flows = append(flows, g.SecurityRules.Flows(g, m)...)
+		}
 		if fs, ok := r[nic.Bridge]; ok {
 			flows = append(fs, flows...)
 		}
