@@ -61,7 +61,7 @@ func (fm *FlowMan) doDumpFlows() (*utils.FlowSet, error) {
 	ofCli := ovs.New().OpenFlow
 	flows, err := ofCli.DumpFlows(fm.bridge)
 	if err != nil {
-		log.Errorf("flowman %s: dump-flows failed: %s", fm.bridge, err)
+		log.Fatalf("flowman %s: dump-flows failed: %s", fm.bridge, err)
 		return nil, err
 	}
 	for _, of := range flows {
