@@ -26,6 +26,9 @@ import (
 	"github.com/digitalocean/go-openvswitch/ovs"
 
 	"yunion.io/x/log"
+	"yunion.io/x/pkg/errors"
+
+	"yunion.io/x/onecloud/pkg/util/fileutils2"
 
 	"yunion.io/x/sdnagent/pkg/agent/utils"
 )
@@ -58,11 +61,16 @@ type FlowMan struct {
 }
 
 func (fm *FlowMan) doDumpFlows() (*utils.FlowSet, error) {
+	// check existence of ovs-db's sock file
+	const ovsDbSock = "/var/run/openvswitch/db.sock"
+	if !fileutils2.Exists(ovsDbSock) {
+		log.Fatalf("%s not exists!", ovsDbSock)
+	}
 	ofCli := ovs.New().OpenFlow
 	flows, err := ofCli.DumpFlows(fm.bridge)
 	if err != nil {
 		log.Errorf("flowman %s: dump-flows failed: %s", fm.bridge, err)
-		return nil, err
+		return nil, errors.Wrap(err, "DumpFlows")
 	}
 	for _, of := range flows {
 		utils.OVSFlowOrderMatch(of)
