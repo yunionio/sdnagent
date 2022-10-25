@@ -416,25 +416,14 @@ func (manager *SCloudaccountManager) validateCreateData(
 		input.Zone = obj.GetId()
 	}
 
-	var endpointOptions jsonutils.JSONObject
-
-	if input.SCloudaccountCredential.SHCSOEndpoints != nil {
-		endpointOptions = jsonutils.Marshal(input.SCloudaccountCredential.SHCSOEndpoints)
-	}
-
-	if input.SCloudaccountCredential.SCtyunExtraOptions != nil {
-		endpointOptions = jsonutils.Marshal(input.SCloudaccountCredential.SCtyunExtraOptions)
-	}
-
 	if input.Options == nil {
 		input.Options = jsonutils.NewDict()
 	}
+	input.Options.Update(jsonutils.Marshal(input.SCloudaccountCredential.SHCSOEndpoints))
+	input.Options.Update(jsonutils.Marshal(input.SCloudaccountCredential.SCtyunExtraOptions))
+
 	if len(input.DefaultRegion) > 0 {
 		input.Options.Add(jsonutils.NewString(input.DefaultRegion), "default_region")
-	}
-
-	if endpointOptions != nil {
-		input.Options.Update(endpointOptions)
 	}
 
 	input.SCloudaccount, err = providerDriver.ValidateCreateCloudaccountData(ctx, userCred, input.SCloudaccountCredential)
@@ -456,20 +445,22 @@ func (manager *SCloudaccountManager) validateCreateData(
 	input.IsPublicCloud = providerDriver.IsPublicCloud()
 	input.IsOnPremise = providerDriver.IsOnPremise()
 
-	q := manager.Query().Equals("provider", input.Provider)
-	if len(input.Account) > 0 {
-		q = q.Equals("account", input.Account)
-	}
-	if len(input.AccessUrl) > 0 {
-		q = q.Equals("access_url", input.AccessUrl)
-	}
+	if !input.SkipDuplicateAccountCheck {
+		q := manager.Query().Equals("provider", input.Provider)
+		if len(input.Account) > 0 {
+			q = q.Equals("account", input.Account)
+		}
+		if len(input.AccessUrl) > 0 {
+			q = q.Equals("access_url", input.AccessUrl)
+		}
 
-	cnt, err := q.CountWithError()
-	if err != nil {
-		return input, httperrors.NewInternalServerError("check uniqness fail %s", err)
-	}
-	if cnt > 0 {
-		return input, httperrors.NewConflictError("The account has been registered")
+		cnt, err := q.CountWithError()
+		if err != nil {
+			return input, httperrors.NewInternalServerError("check uniqness fail %s", err)
+		}
+		if cnt > 0 {
+			return input, httperrors.NewConflictError("The account has been registered")
+		}
 	}
 
 	var proxyFunc httputils.TransportProxyFunc
@@ -522,7 +513,7 @@ func (manager *SCloudaccountManager) validateCreateData(
 	}
 
 	// check accountId uniqueness
-	if len(accountId) > 0 {
+	if len(accountId) > 0 && !input.SkipDuplicateAccountCheck {
 		cnt, err := manager.Query().Equals("account_id", accountId).CountWithError()
 		if err != nil {
 			return input, httperrors.NewInternalServerError("check account_id duplication error %s", err)
@@ -1009,8 +1000,32 @@ func (self *SCloudaccount) importSubAccount(ctx context.Context, userCred mcclie
 		if err != nil {
 			return nil, isNew, errors.Wrapf(err, "q.First")
 		}
+		if len(provider.ProjectId) == 0 {
+			db.Update(provider, func() error {
+				if len(subAccount.DefaultProjectId) > 0 {
+					proj, err := self.getDefaultExternalProject(subAccount.DefaultProjectId)
+					if err != nil {
+						logclient.AddSimpleActionLog(provider, logclient.ACT_UPDATE, errors.Wrapf(err, "getDefaultExternalProject(%s)", subAccount.DefaultProjectId), userCred, false)
+					} else {
+						provider.DomainId = proj.DomainId
+						provider.ProjectId = proj.ProjectId
+						return nil
+					}
+				}
+				// find default project of domain
+				ownerId := self.GetOwnerId()
+				t, err := db.TenantCacheManager.FindFirstProjectOfDomain(ctx, ownerId.GetProjectDomainId())
+				if err != nil {
+					logclient.AddSimpleActionLog(provider, logclient.ACT_UPDATE, errors.Wrapf(err, "FindFirstProjectOfDomain(%s)", ownerId.GetProjectDomainId()), userCred, false)
+					return errors.Wrapf(err, "FindFirstProjectOfDomain(%s)", ownerId.GetProjectDomainId())
+				}
+				provider.DomainId = t.DomainId
+				provider.ProjectId = t.Id
+				return nil
+			})
+		}
 		provider.markProviderConnected(ctx, userCred, subAccount.HealthStatus)
-		provider.updateName(ctx, userCred, subAccount.Name)
+		provider.updateName(ctx, userCred, subAccount.Name, subAccount.Desc)
 		return provider, isNew, nil
 	}
 	// not found, create a new cloudprovider
@@ -1024,6 +1039,9 @@ func (self *SCloudaccount) importSubAccount(ctx context.Context, userCred mcclie
 		newCloudprovider.Provider = self.Provider
 		newCloudprovider.AccessUrl = self.AccessUrl
 		newCloudprovider.HealthStatus = subAccount.HealthStatus
+		newCloudprovider.Description = subAccount.Desc
+		newCloudprovider.DomainId = self.DomainId
+		newCloudprovider.ProjectId = self.ProjectId
 		if !options.Options.CloudaccountHealthStatusCheck {
 			newCloudprovider.HealthStatus = api.CLOUD_PROVIDER_HEALTH_NORMAL
 		}
@@ -1034,40 +1052,10 @@ func (self *SCloudaccount) importSubAccount(ctx context.Context, userCred mcclie
 			newCloudprovider.SetEnabled(false)
 			newCloudprovider.Status = api.CLOUD_PROVIDER_DISCONNECTED
 		}
-		if len(subAccount.DefaultProjectId) > 0 {
-			proj, err := self.getDefaultExternalProject(subAccount.DefaultProjectId)
-			if err != nil {
-				log.Errorf("getDefaultExternalProject: %v", err)
-			} else {
-				newCloudprovider.DomainId = proj.DomainId
-				newCloudprovider.ProjectId = proj.ProjectId
-			}
-		}
-		if len(newCloudprovider.ProjectId) == 0 && (!self.AutoCreateProject || len(self.ProjectId) > 0) {
+		if len(newCloudprovider.ProjectId) == 0 {
 			ownerId := self.GetOwnerId()
-			if len(self.ProjectId) > 0 {
-				t, err := db.TenantCacheManager.FetchTenantById(ctx, self.ProjectId)
-				if err != nil {
-					log.Errorf("cannot find tenant %s for domain %s", self.ProjectId, ownerId.GetProjectDomainId())
-					return nil, err
-				}
-				ownerId = &db.SOwnerId{
-					DomainId:  t.DomainId,
-					ProjectId: t.Id,
-				}
-			} else if ownerId == nil || ownerId.GetProjectDomainId() == userCred.GetProjectDomainId() {
+			if ownerId.GetProjectDomainId() == userCred.GetProjectDomainId() {
 				ownerId = userCred
-			} else {
-				// find default project of domain
-				t, err := db.TenantCacheManager.FindFirstProjectOfDomain(ctx, ownerId.GetProjectDomainId())
-				if err != nil {
-					log.Errorf("cannot find a valid porject for domain %s", ownerId.GetProjectDomainId())
-					return nil, err
-				}
-				ownerId = &db.SOwnerId{
-					DomainId:  t.DomainId,
-					ProjectId: t.Id,
-				}
 			}
 			newCloudprovider.DomainId = ownerId.GetProjectDomainId()
 			newCloudprovider.ProjectId = ownerId.GetProjectId()
@@ -2588,7 +2576,7 @@ func (account *SCloudaccount) GetUsages() []db.IUsage {
 	}
 }
 
-func (self *SCloudaccount) GetAvailableExternalProject(local *db.STenant, projects []SExternalProject) *SExternalProject {
+func GetAvailableExternalProject(local *db.STenant, projects []SExternalProject) *SExternalProject {
 	var ret *SExternalProject = nil
 	for i := 0; i < len(projects); i++ {
 		if projects[i].Status == api.EXTERNAL_PROJECT_STATUS_AVAILABLE {
@@ -2629,7 +2617,7 @@ func (self *SCloudaccount) SyncProject(ctx context.Context, userCred mcclient.To
 		return "", errors.Wrapf(err, "GetExternalProjectsByProjectIdOrName(%s,%s)", projectId, project.Name)
 	}
 
-	extProj := self.GetAvailableExternalProject(project, projects)
+	extProj := GetAvailableExternalProject(project, projects)
 	if extProj != nil {
 		return extProj.ExternalId, nil
 	}

@@ -47,7 +47,9 @@ func init() {
 type SGuestcdrom struct {
 	db.SModelBase
 
-	Id            string    `width:"36" charset:"ascii" primary:"true"`   // = Column(VARCHAR(36, charset='ascii'), primary_key=True)
+	RowId         int64     `primary:"true" auto_increment:"true" list:"user"`
+	Ordinal       int       `nullable:"false" default:"0"`                // = Column(Integer, nullable=False, default=0)
+	Id            string    `width:"36" charset:"ascii"`                  // = Column(VARCHAR(36, charset='ascii'), primary_key=True)
 	ImageId       string    `width:"36" charset:"ascii" nullable:"true"`  // Column(VARCHAR(36, charset='ascii'), nullable=True)
 	Name          string    `width:"64" charset:"ascii" nullable:"true"`  // Column(VARCHAR(64, charset='ascii'), nullable=True)
 	Path          string    `width:"256" charset:"ascii" nullable:"true"` // Column(VARCHAR(256, charset='ascii'), nullable=True)
@@ -127,6 +129,7 @@ func (self *SGuestcdrom) GetDetails() string {
 func (self *SGuestcdrom) getJsonDesc() *api.GuestcdromJsonDesc {
 	if len(self.ImageId) > 0 && len(self.Path) > 0 {
 		return &api.GuestcdromJsonDesc{
+			Ordinal: self.Ordinal,
 			ImageId: self.ImageId,
 			Path:    self.Path,
 			Name:    self.Name,

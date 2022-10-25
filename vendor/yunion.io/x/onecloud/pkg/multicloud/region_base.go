@@ -127,6 +127,10 @@ func (self *SRegion) GetIElasticcaches() ([]cloudprovider.ICloudElasticcache, er
 	return nil, errors.Wrapf(cloudprovider.ErrNotImplemented, "GetIElasticcaches")
 }
 
+func (self *SRegion) GetIElasticcacheSkus() ([]cloudprovider.ICloudElasticcacheSku, error) {
+	return nil, errors.Wrapf(cloudprovider.ErrNotImplemented, "GetIElasticcacheSkus")
+}
+
 func (self *SRegion) CreateIDBInstance(desc *cloudprovider.SManagedDBInstanceCreateConfig) (cloudprovider.ICloudDBInstance, error) {
 	return nil, errors.Wrapf(cloudprovider.ErrNotImplemented, "CreateIDBInstance")
 }
@@ -355,7 +359,7 @@ func (self *SRegionSecurityGroupBase) CreateISecurityGroup(conf *cloudprovider.S
 }
 
 func (self *SRegionSecurityGroupBase) GetISecurityGroupById(secgroupId string) (cloudprovider.ICloudSecurityGroup, error) {
-	return nil, errors.Wrapf(cloudprovider.ErrNotImplemented, "GetIElasticSearchById")
+	return nil, errors.Wrapf(cloudprovider.ErrNotImplemented, "GetISecurityGroupById")
 }
 
 func (self *SRegionSecurityGroupBase) GetISecurityGroupByName(opts *cloudprovider.SecurityGroupFilterOptions) (cloudprovider.ICloudSecurityGroup, error) {
@@ -375,4 +379,24 @@ func (self *SRegionEipBase) GetIEips() ([]cloudprovider.ICloudEIP, error) {
 
 func (self *SRegionEipBase) CreateEIP(eip *cloudprovider.SEip) (cloudprovider.ICloudEIP, error) {
 	return nil, errors.Wrapf(cloudprovider.ErrNotImplemented, "CreateEIP")
+}
+
+func (self *SRegion) GetIModelartsPools() ([]cloudprovider.ICloudModelartsPool, error) {
+	return nil, errors.Wrapf(cloudprovider.ErrNotImplemented, "GetIModelartsPools")
+}
+
+func (self *SRegion) GetIModelartsPoolById(id string) (cloudprovider.ICloudModelartsPool, error) {
+	return nil, errors.Wrapf(cloudprovider.ErrNotImplemented, "GetIModelartsPoolDetail")
+}
+
+func (self *SRegion) CreateIModelartsPool(pool *cloudprovider.ModelartsPoolCreateOption) (cloudprovider.ICloudModelartsPool, error) {
+	return nil, errors.Wrapf(cloudprovider.ErrNotImplemented, "CreateIModelartsPool")
+}
+
+func (self *SRegion) GetIModelartsPoolSku() ([]cloudprovider.ICloudModelartsPoolSku, error) {
+	return nil, errors.Wrapf(cloudprovider.ErrNotImplemented, "GetIModelartsPoolSku")
+}
+
+func (self *SRegion) GetIMiscResources() ([]cloudprovider.ICloudMiscResource, error) {
+	return nil, errors.Wrapf(cloudprovider.ErrNotImplemented, "GetIMiscResources")
 }

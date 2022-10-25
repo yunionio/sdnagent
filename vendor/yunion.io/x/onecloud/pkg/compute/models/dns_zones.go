@@ -293,8 +293,8 @@ func (manager *SDnsZoneManager) FetchCustomizeColumns(
 				objs[i] = &caches[i]
 			}
 			cacheDetails := DnsZoneCacheManager.FetchCustomizeColumns(ctx, userCred, jsonutils.NewDict(), objs, stringutils2.SSortedStrings{}, true)
-			for i := range cacheDetails {
-				jsonDict := jsonutils.Marshal(cacheDetails[i]).(*jsonutils.JSONDict)
+			for j := range cacheDetails {
+				jsonDict := jsonutils.Marshal(cacheDetails[j]).(*jsonutils.JSONDict)
 				jsonDict.Update(jsonutils.Marshal(objs[i]).(*jsonutils.JSONDict))
 				rows[i].CloudCaches = append(rows[i].CloudCaches, jsonDict)
 			}
@@ -576,6 +576,22 @@ func (self *SDnsZone) RealDelete(ctx context.Context, userCred mcclient.TokenCre
 		}
 	}
 	return self.SEnabledStatusInfrasResourceBase.Delete(ctx, userCred)
+}
+
+func (self *SDnsZone) GetDetailsExports(ctx context.Context, userCred mcclient.TokenCredential, query jsonutils.JSONObject) (jsonutils.JSONObject, error) {
+	records, err := self.GetDnsRecordSets()
+	if err != nil {
+		return nil, errors.Wrapf(err, "GetDnsRecordSets")
+	}
+	result := "$ORIGIN " + self.Name + ".\n"
+	lines := []string{}
+	for _, record := range records {
+		lines = append(lines, record.ToZoneLine())
+	}
+	result += strings.Join(lines, "\n")
+	rr := make(map[string]string)
+	rr["zone"] = result
+	return jsonutils.Marshal(rr), nil
 }
 
 func (self *SDnsZone) GetDnsRecordSets() ([]SDnsRecordSet, error) {

@@ -15,6 +15,7 @@
 package compute
 
 type GuestcdromJsonDesc struct {
+	Ordinal int    `json:"ordinal"`
 	ImageId string `json:"image_id"`
 	Path    string `json:"path"`
 	Name    string `json:"name"`
