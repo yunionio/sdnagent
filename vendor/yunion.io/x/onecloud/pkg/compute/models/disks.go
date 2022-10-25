@@ -19,6 +19,7 @@ import (
 	"database/sql"
 	"fmt"
 	"path"
+	"path/filepath"
 	"strings"
 	"time"
 
@@ -1471,17 +1472,33 @@ func (manager *SDiskManager) SyncDisks(ctx context.Context, userCred mcclient.To
 	}
 
 	for i := 0; i < len(commondb); i += 1 {
+		skip, key := IsNeedSkipSync(commonext[i])
+		if skip {
+			log.Infof("delete disk %s(%s) with tag key: %s", commonext[i].GetName(), commonext[i].GetGlobalId(), key)
+			err := commondb[i].purge(ctx, userCred)
+			if err != nil {
+				syncResult.DeleteError(err)
+				continue
+			}
+			syncResult.Delete()
+			continue
+		}
 		err = commondb[i].syncWithCloudDisk(ctx, userCred, provider, commonext[i], -1, syncOwnerId, storage.ManagerId)
 		if err != nil {
 			syncResult.UpdateError(err)
-		} else {
-			localDisks = append(localDisks, commondb[i])
-			remoteDisks = append(remoteDisks, commonext[i])
-			syncResult.Update()
+			continue
 		}
+		localDisks = append(localDisks, commondb[i])
+		remoteDisks = append(remoteDisks, commonext[i])
+		syncResult.Update()
 	}
 
 	for i := 0; i < len(added); i += 1 {
+		skip, key := IsNeedSkipSync(added[i])
+		if skip {
+			log.Infof("skip disk %s(%s) sync with tag key: %s", added[i].GetName(), added[i].GetGlobalId(), key)
+			continue
+		}
 		extId := added[i].GetGlobalId()
 		_disk, err := db.FetchByExternalIdAndManagerId(manager, extId, func(q *sqlchemy.SQuery) *sqlchemy.SQuery {
 			sq := StorageManager.Query().SubQuery()
@@ -1759,11 +1776,11 @@ func (manager *SDiskManager) newFromCloudDisk(ctx context.Context, userCred mccl
 	// create new joint model aboutsnapshotpolicy and disk
 	snapshotpolicies, err := extDisk.GetExtSnapshotPolicyIds()
 	if err != nil {
-		return nil, errors.Wrapf(err, "Get snapshot policies of ICloudDisk %s.", extDisk.GetId())
+		log.Warningln("GetExtSnapshotPolicyIds:", errors.Wrapf(err, "Get snapshot policies of ICloudDisk %s.", extDisk.GetId()))
 	}
 	err = SnapshotPolicyDiskManager.SyncAttachDiskExt(ctx, userCred, snapshotpolicies, syncOwnerId, &disk, storage)
 	if err != nil {
-		return nil, err
+		log.Warningln("SyncAttachDiskExt:", err)
 	}
 
 	syncVirtualResourceMetadata(ctx, userCred, &disk, extDisk)
@@ -1882,6 +1899,13 @@ func parseDiskInfo(ctx context.Context, userCred mcclient.TokenCredential, info 
 				// otherwise, the disk was crated by snapshot or backup, not depends on vald image info
 				return nil, errors.Wrap(err, "fillDiskConfigByImage")
 			}
+		}
+	}
+	if info.ExistingPath != "" {
+		info.ExistingPath = strings.TrimSpace(info.ExistingPath)
+		_, err := filepath.Rel("/", info.ExistingPath)
+		if err != nil {
+			return nil, errors.Wrap(err, "invaild existing path")
 		}
 	}
 	// XXX: do not set default disk size here, set it by each hypervisor driver
@@ -2512,6 +2536,7 @@ func (self *SDisk) ClearHostSchedCache() error {
 func (self *SDisk) GetShortDesc(ctx context.Context) *jsonutils.JSONDict {
 	desc := self.SVirtualResourceBase.GetShortDesc(ctx)
 	desc.Add(jsonutils.NewInt(int64(self.DiskSize)), "size")
+	desc.Add(jsonutils.NewString(self.DiskType), "disk_type")
 	storage, _ := self.GetStorage()
 	if storage != nil {
 		desc.Add(jsonutils.NewString(storage.StorageType), "storage_type")
@@ -2606,8 +2631,8 @@ func (manager *SDiskManager) CleanPendingDeleteDisks(ctx context.Context, userCr
 }
 
 func (manager *SDiskManager) getAutoSnapshotDisksId(isExternal bool) ([]SSnapshotPolicyDisk, error) {
-
-	t := time.Now()
+	tz, _ := time.LoadLocation(options.Options.TimeZone)
+	t := time.Now().In(tz)
 	week := t.Weekday()
 	if week == 0 { // sunday is zero
 		week += 7

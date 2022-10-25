@@ -74,6 +74,7 @@ func init() {
 		),
 	}
 	DBInstanceManager.SetVirtualObject(DBInstanceManager)
+	notifyclient.AddNotifyDBHookResources(DBInstanceManager.KeywordPlural())
 }
 
 type SDBInstance struct {
@@ -934,7 +935,7 @@ func (self *SDBInstance) PerformReboot(ctx context.Context, userCred mcclient.To
 	return nil, self.StartDBInstanceRebootTask(ctx, userCred, jsonutils.NewDict(), "")
 }
 
-//同步RDS实例状态
+// 同步RDS实例状态
 func (self *SDBInstance) PerformSyncstatus(ctx context.Context, userCred mcclient.TokenCredential, query jsonutils.JSONObject, data jsonutils.JSONObject) (jsonutils.JSONObject, error) {
 	return self.PerformSync(ctx, userCred, query, data)
 }
@@ -1135,6 +1136,21 @@ func (self *SDBInstance) SaveRenewInfo(
 	}
 	db.OpsLog.LogEvent(self, db.ACT_RENEW, self.GetShortDesc(ctx), userCred)
 	return nil
+}
+
+func (self *SDBInstance) GetShortDesc(ctx context.Context) *jsonutils.JSONDict {
+	desc := self.SVirtualResourceBase.GetShortDesc(ctx)
+	region, _ := self.GetRegion()
+	provider := self.GetCloudprovider()
+	info := MakeCloudProviderInfo(region, nil, provider)
+	desc.Set("engine", jsonutils.NewString(self.Engine))
+	desc.Set("storage_type", jsonutils.NewString(self.StorageType))
+	desc.Set("instance_type", jsonutils.NewString(self.InstanceType))
+	desc.Set("vcpu_count", jsonutils.NewInt(int64(self.VcpuCount)))
+	desc.Set("vmem_size_mb", jsonutils.NewInt(int64(self.VmemSizeMb)))
+	desc.Set("disk_size_gb", jsonutils.NewInt(int64(self.DiskSizeGB)))
+	desc.Update(jsonutils.Marshal(&info))
+	return desc
 }
 
 func (self *SDBInstance) StartDBInstanceDeleteTask(ctx context.Context, userCred mcclient.TokenCredential, data *jsonutils.JSONDict, parentTaskId string) error {
@@ -2110,4 +2126,8 @@ func (manager *SDBInstanceManager) GetExpiredModels(advanceDay int) ([]IBillingM
 
 func (self *SDBInstance) GetExpiredAt() time.Time {
 	return self.ExpiredAt
+}
+
+func (db *SDBInstance) PostUpdate(ctx context.Context, userCred mcclient.TokenCredential, query jsonutils.JSONObject, data jsonutils.JSONObject) {
+	db.SVirtualResourceBase.PostUpdate(ctx, userCred, query, data)
 }

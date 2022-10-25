@@ -324,6 +324,7 @@ type DBInstanceDetails struct {
 
 func (self DBInstanceDetails) GetMetricTags() map[string]string {
 	ret := map[string]string{
+		"id":             self.Id,
 		"rds_id":         self.Id,
 		"rds_name":       self.Name,
 		"zone":           self.Zone1Name,
@@ -339,14 +340,10 @@ func (self DBInstanceDetails) GetMetricTags() map[string]string {
 		"brand":          self.Brand,
 		"domain_id":      self.DomainId,
 		"project_domain": self.ProjectDomain,
+		"external_id":    self.ExternalId,
 	}
 	if len(self.IpAddrs) > 0 {
 		ret["rds_ip"] = strings.ReplaceAll(self.IpAddrs, ",", "|")
-	}
-	for k, v := range self.Metadata {
-		if strings.HasPrefix(k, apis.USER_TAG_PREFIX) {
-			ret[k] = v
-		}
 	}
 	return ret
 }

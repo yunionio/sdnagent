@@ -52,6 +52,25 @@ type KubeClusterDetails struct {
 }
 
 func (self KubeClusterDetails) GetMetricTags() map[string]string {
+	ret := map[string]string{
+		"id":             self.ExternalClusterId,
+		"res_type":       "kube_cluster",
+		"cluster_id":     self.ExternalClusterId,
+		"cluster_name":   self.Name,
+		"status":         self.Status,
+		"cloudregion":    self.Cloudregion,
+		"cloudregion_id": self.CloudregionId,
+		"region_ext_id":  self.RegionExtId,
+		"domain_id":      self.DomainId,
+		"project_domain": self.ProjectDomain,
+		"account":        self.Account,
+		"account_id":     self.AccountId,
+		"external_id":    self.ExternalId,
+	}
+	return ret
+}
+
+func (self KubeClusterDetails) GetMetricPairs() map[string]string {
 	ret := map[string]string{}
 	return ret
 }

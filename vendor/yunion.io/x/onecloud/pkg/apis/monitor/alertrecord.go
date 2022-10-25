@@ -54,11 +54,12 @@ type AlertRecordDetails struct {
 
 func (self AlertRecordDetails) GetMetricTags() map[string]string {
 	ret := map[string]string{
+		"id":             self.Id,
 		"alert_id":       self.AlertId,
 		"alert_name":     self.AlertName,
 		"domain_id":      self.DomainId,
 		"project_domain": self.ProjectDomain,
-		"res_type":       "agent",
+		"res_type":       self.ResType,
 		"tenant":         self.Tenant,
 		"tenant_id":      self.TenantId,
 	}
