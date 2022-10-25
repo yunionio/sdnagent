@@ -644,6 +644,13 @@ func (manager *SGuestManager) OrderByExtraFields(ctx context.Context, q *sqlchem
 		q = q.LeftJoin(guestdiskSQ, sqlchemy.Equals(q.Field("id"), guestdiskSQ.Field("guest_id")))
 		db.OrderByFields(q, []string{query.OrderByDisk}, []sqlchemy.IQueryField{guestdiskSQ.Field("disks_size")})
 	}
+	if db.NeedOrderQuery([]string{query.OrderByIp}) {
+		guestnet := GuestnetworkManager.Query("guest_id", "ip_addr").SubQuery()
+		q.AppendField(q.QueryFields()...)
+		q.AppendField(guestnet.Field("ip_addr"))
+		q = q.LeftJoin(guestnet, sqlchemy.Equals(q.Field("id"), guestnet.Field("guest_id")))
+		db.OrderByFields(q, []string{query.OrderByIp}, []sqlchemy.IQueryField{sqlchemy.INET_ATON(q.Field("ip_addr"))})
+	}
 
 	return q, nil
 }
@@ -2540,7 +2547,7 @@ func (self *SGuest) syncRemoveCloudVM(ctx context.Context, userCred mcclient.Tok
 			}
 		}
 	} else if errors.Cause(err) != cloudprovider.ErrNotFound {
-		return err
+		return errors.Wrap(err, "GetIVMById")
 	}
 
 	if options.SyncPurgeRemovedResources.Contains(self.Keyword()) {
@@ -2593,6 +2600,32 @@ func (guest *SGuest) SyncAllWithCloudVM(ctx context.Context, userCred mcclient.T
 	return nil
 }
 
+func (g *SGuest) SyncOsInfo(ctx context.Context, userCred mcclient.TokenCredential, extVM cloudprovider.IOSInfo) error {
+	// save os info
+	osinfo := map[string]interface{}{}
+	for k, v := range map[string]string{
+		"os_full_name":    extVM.GetFullOsName(),
+		"os_name":         string(extVM.GetOsType()),
+		"os_arch":         extVM.GetOsArch(),
+		"os_type":         string(extVM.GetOsType()),
+		"os_distribution": extVM.GetOsDist(),
+		"os_version":      extVM.GetOsVersion(),
+		"os_language":     extVM.GetOsLang(),
+	} {
+		if len(v) == 0 {
+			continue
+		}
+		osinfo[k] = v
+	}
+	if len(osinfo) > 0 {
+		err := g.SetAllMetadata(ctx, osinfo, userCred)
+		if err != nil {
+			return errors.Wrap(err, "SetAllMetadata")
+		}
+	}
+	return nil
+}
+
 func (self *SGuest) syncWithCloudVM(ctx context.Context, userCred mcclient.TokenCredential, provider cloudprovider.ICloudProvider, host *SHost, extVM cloudprovider.ICloudVM, syncOwnerId mcclient.IIdentityProvider, syncStatus bool) error {
 	recycle := false
 
@@ -2616,9 +2649,15 @@ func (self *SGuest) syncWithCloudVM(ctx context.Context, userCred mcclient.Token
 		self.BootOrder = extVM.GetBootOrder()
 		self.Vga = extVM.GetVga()
 		self.Vdi = extVM.GetVdi()
-		self.OsArch = extVM.GetOSArch()
-		self.OsType = string(extVM.GetOsType())
-		self.Bios = extVM.GetBios()
+		if len(self.OsArch) == 0 {
+			self.OsArch = extVM.GetOsArch()
+		}
+		if len(self.OsType) == 0 {
+			self.OsType = string(extVM.GetOsType())
+		}
+		if len(self.Bios) == 0 {
+			self.Bios = string(extVM.GetBios())
+		}
 		self.Machine = extVM.GetMachine()
 		if !recycle {
 			self.HostId = host.Id
@@ -2678,6 +2717,8 @@ func (self *SGuest) syncWithCloudVM(ctx context.Context, userCred mcclient.Token
 		})
 	}
 
+	self.SyncOsInfo(ctx, userCred, extVM)
+
 	syncVirtualResourceMetadata(ctx, userCred, self, extVM)
 	SyncCloudProject(userCred, self, syncOwnerId, extVM, host.ManagerId)
 
@@ -2703,9 +2744,9 @@ func (manager *SGuestManager) newCloudVM(ctx context.Context, userCred mcclient.
 	guest.BootOrder = extVM.GetBootOrder()
 	guest.Vga = extVM.GetVga()
 	guest.Vdi = extVM.GetVdi()
-	guest.OsArch = extVM.GetOSArch()
+	guest.OsArch = extVM.GetOsArch()
 	guest.OsType = string(extVM.GetOsType())
-	guest.Bios = extVM.GetBios()
+	guest.Bios = string(extVM.GetBios())
 	guest.Machine = extVM.GetMachine()
 	guest.Hypervisor = extVM.GetHypervisor()
 
@@ -2775,6 +2816,8 @@ func (manager *SGuestManager) newCloudVM(ctx context.Context, userCred mcclient.
 	if err != nil {
 		return nil, errors.Wrapf(err, "Insert")
 	}
+
+	guest.SyncOsInfo(ctx, userCred, extVM)
 
 	syncVirtualResourceMetadata(ctx, userCred, &guest, extVM)
 	SyncCloudProject(userCred, &guest, syncOwnerId, extVM, host.ManagerId)
@@ -2893,6 +2936,7 @@ type Attach2NetworkArgs struct {
 
 	BwLimit   int
 	NicDriver string
+	NumQueues int
 	NicConfs  []SNicConfig
 
 	Virtual bool
@@ -2915,6 +2959,7 @@ func (args *Attach2NetworkArgs) onceArgs(i int) attach2NetworkOnceArgs {
 
 		bwLimit:   args.BwLimit,
 		nicDriver: args.NicDriver,
+		numQueues: args.NumQueues,
 		nicConf:   args.NicConfs[i],
 
 		virtual: args.Virtual,
@@ -2930,6 +2975,7 @@ func (args *Attach2NetworkArgs) onceArgs(i int) attach2NetworkOnceArgs {
 		r.useDesignatedIP = false
 		r.nicConf = args.NicConfs[i]
 		r.nicDriver = ""
+		r.numQueues = 1
 	}
 	return r
 }
@@ -2945,6 +2991,7 @@ type attach2NetworkOnceArgs struct {
 
 	bwLimit     int
 	nicDriver   string
+	numQueues   int
 	nicConf     SNicConfig
 	teamWithMac string
 
@@ -3015,6 +3062,7 @@ func (self *SGuest) attach2NetworkOnce(
 		macAddr:     args.nicConf.Mac,
 		bwLimit:     args.bwLimit,
 		nicDriver:   nicDriver,
+		numQueues:   args.numQueues,
 		teamWithMac: args.teamWithMac,
 
 		virtual: args.virtual,
@@ -3274,7 +3322,12 @@ func (self *SGuest) attach2Disk(ctx context.Context, disk *SDisk, userCred mccli
 		// depends the last disk of this guest
 		existingDisks, _ := self.GetGuestDisks()
 		if len(existingDisks) > 0 {
-			driver = existingDisks[len(existingDisks)-1].Driver
+			prevDisk := existingDisks[len(existingDisks)-1]
+			if prevDisk.Driver == api.DISK_DRIVER_IDE {
+				driver = api.DISK_DRIVER_VIRTIO
+			} else {
+				driver = prevDisk.Driver
+			}
 		} else {
 			osProf := self.GetOSProfile()
 			driver = osProf.DiskDriver
@@ -3580,6 +3633,13 @@ func (self *SGuest) CreateNetworksOnHost(
 		if candidateNet != nil {
 			networkIds = candidateNet.NetworkIds
 		}
+		if idx == 0 && netConfig.NumQueues == 0 {
+			numQueues := self.VcpuCount / 2
+			if numQueues > 16 {
+				numQueues = 16
+			}
+			netConfig.NumQueues = numQueues
+		}
 		_, err = self.attach2NetworkDesc(ctx, userCred, host, netConfig, pendingUsage, networkIds)
 		if err != nil {
 			return errors.Wrap(err, "self.attach2NetworkDesc")
@@ -3644,6 +3704,7 @@ func (self *SGuest) attach2NamedNetworkDesc(ctx context.Context, userCred mcclie
 			PendingUsage:        pendingUsage,
 			IpAddr:              netConfig.Address,
 			NicDriver:           netConfig.Driver,
+			NumQueues:           netConfig.NumQueues,
 			BwLimit:             netConfig.BwLimit,
 			Virtual:             netConfig.Vip,
 			TryReserved:         netConfig.Reserved,
@@ -4267,7 +4328,7 @@ func (self *SGuest) GetJsonDescAtHypervisor(ctx context.Context, host *SHost) *a
 	// add scaling group
 	sggs, err := ScalingGroupGuestManager.Fetch("", self.Id)
 	if err == nil && len(sggs) > 0 {
-		desc.ScallingGroupId = sggs[0].ScalingGroupId
+		desc.ScalingGroupId = sggs[0].ScalingGroupId
 	}
 
 	return desc

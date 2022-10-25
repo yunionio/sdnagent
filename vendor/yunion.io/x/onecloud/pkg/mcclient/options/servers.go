@@ -58,6 +58,7 @@ type ServerListOptions struct {
 	OrderByDisk    string `help:"Order by disk size" choices:"asc|desc"`
 	OrderByHost    string `help:"Order by host name" choices:"asc|desc"`
 	OrderByNetwork string `help:"Order by network name" choices:"asc|desc"`
+	OrderByIp      string `help:"Order by ip" choices:"asc|desc"`
 
 	ResourceType string `help:"Resource type" choices:"shared|prepaid|dedicated"`
 
@@ -588,6 +589,8 @@ type ServerUpdateOptions struct {
 	Delete           string `help:"Lock server to prevent from deleting" choices:"enable|disable" json:"-"`
 	ShutdownBehavior string `help:"Behavior after VM server shutdown" choices:"stop|terminate"`
 	Machine          string `help:"Machine type" choices:"q35|pc"`
+
+	PendingDeletedAt string `help:"change pending deleted time"`
 }
 
 func (opts *ServerUpdateOptions) Params() (jsonutils.JSONObject, error) {

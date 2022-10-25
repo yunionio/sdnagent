@@ -270,7 +270,31 @@ func (manager *SDiskManager) OrderByExtraFields(
 	if err != nil {
 		return nil, errors.Wrap(err, "SBillingResourceBaseManager.OrderByExtraFields")
 	}
+	if db.NeedOrderQuery([]string{query.OrderByServer}) {
+		guestDiskQuery := GuestdiskManager.Query("disk_id", "guest_id").SubQuery()
+		q = q.LeftJoin(guestDiskQuery, sqlchemy.Equals(q.Field("id"), guestDiskQuery.Field("disk_id")))
+		guestQuery := GuestManager.Query().SubQuery()
+		q.AppendField(q.QueryFields()...)
+		q.AppendField(guestQuery.Field("name", "guest_name"))
+		q.Join(guestQuery, sqlchemy.Equals(guestQuery.Field("id"), guestDiskQuery.Field("guest_id")))
+		db.OrderByFields(q, []string{query.OrderByServer}, []sqlchemy.IQueryField{guestQuery.Field("name")})
+	}
+	if db.NeedOrderQuery([]string{query.OrderByGuestCount}) {
+		guestdisks := GuestdiskManager.Query().SubQuery()
+		disks := DiskManager.Query().SubQuery()
+		guestdiskQ := guestdisks.Query(
+			guestdisks.Field("guest_id"),
+			guestdisks.Field("disk_id"),
+			sqlchemy.COUNT("guest_count", guestdisks.Field("guest_id")),
+		)
 
+		guestdiskQ = guestdiskQ.LeftJoin(disks, sqlchemy.Equals(guestdiskQ.Field("disk_id"), disks.Field("id")))
+		guestdiskSQ := guestdiskQ.GroupBy(guestdiskQ.Field("disk_id")).SubQuery()
+		q.AppendField(q.QueryFields()...)
+		q.AppendField(guestdiskSQ.Field("guest_count"))
+		q = q.LeftJoin(guestdiskSQ, sqlchemy.Equals(q.Field("id"), guestdiskSQ.Field("disk_id")))
+		db.OrderByFields(q, []string{query.OrderByGuestCount}, []sqlchemy.IQueryField{guestdiskQ.Field("guest_count")})
+	}
 	q, err = manager.SVirtualResourceBaseManager.OrderByExtraFields(ctx, q, userCred, query.VirtualResourceListInput)
 	if err != nil {
 		return nil, errors.Wrap(err, "SVirtualResourceBaseManager.OrderByExtraFields")
@@ -284,6 +308,14 @@ func (manager *SDiskManager) QueryDistinctExtraField(q *sqlchemy.SQuery, field s
 
 	q, err = manager.SVirtualResourceBaseManager.QueryDistinctExtraField(q, field)
 	if err == nil {
+		return q, nil
+	}
+	if field == "guest_status" {
+		guestDiskQuery := GuestdiskManager.Query("disk_id", "guest_id").SubQuery()
+		q = q.LeftJoin(guestDiskQuery, sqlchemy.Equals(q.Field("id"), guestDiskQuery.Field("disk_id")))
+		guestQuery := GuestManager.Query().SubQuery()
+		q.AppendField(guestQuery.Field("status", field)).Distinct()
+		q.Join(guestQuery, sqlchemy.Equals(guestQuery.Field("id"), guestDiskQuery.Field("guest_id")))
 		return q, nil
 	}
 	q, err = manager.SStorageResourceBaseManager.QueryDistinctExtraField(q, field)
@@ -2502,8 +2534,8 @@ func (manager *SDiskManager) CleanPendingDeleteDisks(ctx context.Context, userCr
 }
 
 func (manager *SDiskManager) getAutoSnapshotDisksId(isExternal bool) ([]SSnapshotPolicyDisk, error) {
-
-	t := time.Now()
+	tz, _ := time.LoadLocation(options.Options.TimeZone)
+	t := time.Now().In(tz)
 	week := t.Weekday()
 	if week == 0 { // sunday is zero
 		week += 7
