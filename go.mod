@@ -14,12 +14,12 @@ require (
 	github.com/spf13/viper v1.3.2
 	github.com/vishvananda/netlink v1.0.0
 	github.com/vishvananda/netns v0.0.0-20211101163701-50045581ed74
-	golang.org/x/net v0.0.0-20210525063256-abc453219eb5
+	golang.org/x/net v0.0.0-20220418201149-a630d4f3e7a2
 	google.golang.org/grpc v1.38.0
 	google.golang.org/protobuf v1.27.1
 	yunion.io/x/jsonutils v1.0.1-0.20220819091305-3bab322ab4fd
 	yunion.io/x/log v1.0.0
-	yunion.io/x/onecloud v0.0.0-20220826114007-dcd06f7c945c
+	yunion.io/x/onecloud v0.3.9-2.0.20221025181049-d67d7555e657
 	yunion.io/x/pkg v1.0.1-0.20220819080140-55b265a8658e
 )
 
@@ -27,6 +27,7 @@ require (
 	github.com/360EntSecGroup-Skylar/excelize v1.4.0 // indirect
 	github.com/ClickHouse/clickhouse-go v1.5.4 // indirect
 	github.com/StackExchange/wmi v1.2.1 // indirect
+	github.com/basgys/goxml2json v1.1.1-0.20181031222924-996d9fc8d313 // indirect
 	github.com/beevik/etree v1.1.0 // indirect
 	github.com/cloudflare/golz4 v0.0.0-20150217214814-ef862a3cdc58 // indirect
 	github.com/coredns/coredns v1.3.0 // indirect
@@ -52,7 +53,6 @@ require (
 	github.com/inconshreveable/mousetrap v1.0.0 // indirect
 	github.com/jaypipes/ghw v0.9.1 // indirect
 	github.com/json-iterator/go v1.1.12 // indirect
-	github.com/konsorten/go-windows-terminal-sequences v1.0.3 // indirect
 	github.com/kr/pretty v0.3.0 // indirect
 	github.com/leodido/go-urn v1.2.0 // indirect
 	github.com/ma314smith/signedxml v0.0.0-20200410192636-c342a2d0ae60 // indirect
@@ -69,7 +69,7 @@ require (
 	github.com/mozillazg/go-pinyin v0.15.0 // indirect
 	github.com/pelletier/go-toml v1.2.0 // indirect
 	github.com/serialx/hashring v0.0.0-20180504054112-49a4782e9908 // indirect
-	github.com/sirupsen/logrus v1.6.0 // indirect
+	github.com/sirupsen/logrus v1.9.0 // indirect
 	github.com/spf13/afero v1.2.2 // indirect
 	github.com/spf13/cast v1.3.0 // indirect
 	github.com/spf13/jwalterweatherman v1.0.0 // indirect
@@ -84,11 +84,11 @@ require (
 	go.uber.org/atomic v1.7.0 // indirect
 	go.uber.org/multierr v1.6.0 // indirect
 	go.uber.org/zap v1.17.0 // indirect
-	golang.org/x/crypto v0.0.0-20210817164053-32db794688a5 // indirect
+	golang.org/x/crypto v0.0.0-20220411220226-7b82a4e95df4 // indirect
 	golang.org/x/oauth2 v0.0.0-20210514164344-f6687ab2804c // indirect
 	golang.org/x/sync v0.0.0-20210220032951-036812b2e83c // indirect
-	golang.org/x/sys v0.0.0-20220429233432-b5fbb4746d32 // indirect
-	golang.org/x/term v0.0.0-20210615171337-6886f2dfbf5b // indirect
+	golang.org/x/sys v0.0.0-20220829200755-d48e67d00261 // indirect
+	golang.org/x/term v0.0.0-20210927222741-03fcf44c2211 // indirect
 	golang.org/x/text v0.3.7 // indirect
 	golang.org/x/time v0.0.0-20191024005414-555d28b269f0 // indirect
 	google.golang.org/appengine v1.6.6 // indirect
@@ -108,7 +108,7 @@ require (
 	sigs.k8s.io/yaml v1.2.0 // indirect
 	yunion.io/x/executor v0.0.0-20211018100936-39a2cd966656 // indirect
 	yunion.io/x/s3cli v0.0.0-20190917004522-13ac36d8687e // indirect
-	yunion.io/x/sqlchemy v1.1.2-0.20220815121507-5d4f1362bdf7 // indirect
+	yunion.io/x/sqlchemy v1.1.2-0.20220923040147-ddd3e96868af // indirect
 	yunion.io/x/structarg v0.0.0-20220312084958-9c6c79c7d1c6 // indirect
 )
 

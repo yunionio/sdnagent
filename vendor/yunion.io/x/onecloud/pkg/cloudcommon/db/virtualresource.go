@@ -61,7 +61,7 @@ type SVirtualResourceBase struct {
 	IsSystem bool `nullable:"true" default:"false" list:"admin" create:"optional" json:"is_system"`
 
 	// 资源放入回收站时间
-	PendingDeletedAt time.Time `json:"pending_deleted_at" list:"user"`
+	PendingDeletedAt time.Time `json:"pending_deleted_at" list:"user" update:"admin"`
 	// 资源是否处于回收站中
 	PendingDeleted bool `nullable:"false" default:"false" index:"true" get:"user" list:"user" json:"pending_deleted"`
 	// 资源是否被冻结
@@ -608,6 +608,8 @@ func (model *SVirtualResourceBase) GetShortDesc(ctx context.Context) *jsonutils.
 	tc, _ := TenantCacheManager.FetchTenantById(ctx, model.ProjectId)
 	if tc != nil {
 		desc.Add(jsonutils.NewString(tc.GetName()), "owner_tenant")
+		metadata, _ := GetVisiableMetadata(ctx, tc, nil)
+		desc.Set("project_tags", jsonutils.Marshal(metadata))
 	}
 	return desc
 }

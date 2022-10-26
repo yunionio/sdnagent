@@ -15,8 +15,6 @@
 package compute
 
 import (
-	"strings"
-
 	"yunion.io/x/jsonutils"
 
 	"yunion.io/x/onecloud/pkg/apis"
@@ -232,6 +230,7 @@ type HostDetails struct {
 
 func (self HostDetails) GetMetricTags() map[string]string {
 	ret := map[string]string{
+		"id":             self.Id,
 		"host_id":        self.Id,
 		"host_ip":        self.AccessIp,
 		"host":           self.Name,
@@ -248,11 +247,7 @@ func (self HostDetails) GetMetricTags() map[string]string {
 		"account":        self.Account,
 		"res_type":       "host",
 		"account_id":     self.AccountId,
-	}
-	for k, v := range self.Metadata {
-		if strings.HasPrefix(k, apis.USER_TAG_PREFIX) {
-			ret[k] = v
-		}
+		"external_id":    self.ExternalId,
 	}
 	return ret
 }

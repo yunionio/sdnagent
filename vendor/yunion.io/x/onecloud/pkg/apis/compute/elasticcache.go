@@ -15,7 +15,6 @@
 package compute
 
 import (
-	"strings"
 	"time"
 
 	"yunion.io/x/onecloud/pkg/apis"
@@ -40,6 +39,7 @@ type ElasticcacheDetails struct {
 
 func (self ElasticcacheDetails) GetMetricTags() map[string]string {
 	ret := map[string]string{
+		"id":             self.Id,
 		"redis_id":       self.Id,
 		"redis_ip":       self.PrivateIpAddr,
 		"redis_name":     self.Name,
@@ -50,16 +50,12 @@ func (self ElasticcacheDetails) GetMetricTags() map[string]string {
 		"cloudregion":    self.Cloudregion,
 		"cloudregion_id": self.CloudregionId,
 		"region_ext_id":  self.RegionExtId,
-		"tenant":         self.Tenant,
-		"tenant_id":      self.TenantId,
+		"tenant":         self.Project,
+		"tenant_id":      self.ProjectId,
 		"brand":          self.Brand,
 		"domain_id":      self.DomainId,
 		"project_domain": self.ProjectDomain,
-	}
-	for k, v := range self.Metadata {
-		if strings.HasPrefix(k, apis.USER_TAG_PREFIX) {
-			ret[k] = v
-		}
+		"external_id":    self.ExternalId,
 	}
 	return ret
 }

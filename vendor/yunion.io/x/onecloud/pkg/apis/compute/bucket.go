@@ -16,7 +16,6 @@ package compute
 
 import (
 	"net/http"
-	"strings"
 
 	"yunion.io/x/pkg/errors"
 	"yunion.io/x/pkg/util/regutils"
@@ -66,6 +65,7 @@ type BucketDetails struct {
 
 func (self BucketDetails) GetMetricTags() map[string]string {
 	ret := map[string]string{
+		"id":             self.Id,
 		"brand":          self.Brand,
 		"cloudregion":    self.Cloudregion,
 		"cloudregion_id": self.CloudregionId,
@@ -75,13 +75,9 @@ func (self BucketDetails) GetMetricTags() map[string]string {
 		"project_domain": self.ProjectDomain,
 		"region_ext_id":  self.RegionExtId,
 		"status":         self.Status,
-		"tenant":         self.Tenant,
-		"tenant_id":      self.TenantId,
-	}
-	for k, v := range self.Metadata {
-		if strings.HasPrefix(k, apis.USER_TAG_PREFIX) {
-			ret[k] = v
-		}
+		"tenant":         self.Project,
+		"tenant_id":      self.ProjectId,
+		"external_id":    self.ExternalId,
 	}
 	return ret
 }

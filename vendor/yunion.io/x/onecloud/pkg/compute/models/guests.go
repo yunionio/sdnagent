@@ -38,6 +38,7 @@ import (
 	"yunion.io/x/onecloud/pkg/apis"
 	billing_api "yunion.io/x/onecloud/pkg/apis/billing"
 	api "yunion.io/x/onecloud/pkg/apis/compute"
+	apiidentity "yunion.io/x/onecloud/pkg/apis/identity"
 	imageapi "yunion.io/x/onecloud/pkg/apis/image"
 	schedapi "yunion.io/x/onecloud/pkg/apis/scheduler"
 	"yunion.io/x/onecloud/pkg/cloudcommon/cmdline"
@@ -52,6 +53,7 @@ import (
 	"yunion.io/x/onecloud/pkg/cloudprovider"
 	"yunion.io/x/onecloud/pkg/compute/options"
 	"yunion.io/x/onecloud/pkg/compute/sshkeys"
+	devtool_utils "yunion.io/x/onecloud/pkg/devtool/utils"
 	"yunion.io/x/onecloud/pkg/httperrors"
 	"yunion.io/x/onecloud/pkg/mcclient"
 	"yunion.io/x/onecloud/pkg/mcclient/auth"
@@ -99,6 +101,7 @@ func init() {
 	GuestManager.SetVirtualObject(GuestManager)
 	GuestManager.SetAlias("guest", "guests")
 	GuestManager.NameRequireAscii = false
+	notifyclient.AddNotifyDBHookResources(GuestManager.KeywordPlural(), GuestManager.AliasPlural())
 }
 
 type SGuest struct {
@@ -170,6 +173,8 @@ type SGuest struct {
 	InternetMaxBandwidthOut int `nullable:"true" list:"user" create:"optional"`
 	// 磁盘吞吐量
 	Throughput int `nullable:"true" list:"user" create:"optional"`
+
+	QgaStatus string `width:"36" charset:"ascii" nullable:"false" default:"unknown" list:"user" create:"optional"`
 }
 
 func (manager *SGuestManager) GetPropertyStatistics(ctx context.Context, userCred mcclient.TokenCredential, query jsonutils.JSONObject) (*apis.StatusStatistic, error) {
@@ -2534,7 +2539,7 @@ func (self *SGuest) getAdminSecgroupName() string {
 	return ""
 }
 
-//获取多个安全组规则，优先级降序排序
+// 获取多个安全组规则，优先级降序排序
 func (self *SGuest) getSecurityGroupsRules() string {
 	secgroups, _ := self.GetSecgroups()
 	secgroupids := []string{}
@@ -2636,7 +2641,7 @@ func (self *SGuest) syncRemoveCloudVM(ctx context.Context, userCred mcclient.Tok
 			}
 		}
 	} else if errors.Cause(err) != cloudprovider.ErrNotFound {
-		return err
+		return errors.Wrap(err, "GetIVMById")
 	}
 
 	if options.SyncPurgeRemovedResources.Contains(self.Keyword()) {
@@ -2689,6 +2694,32 @@ func (guest *SGuest) SyncAllWithCloudVM(ctx context.Context, userCred mcclient.T
 	return nil
 }
 
+func (g *SGuest) SyncOsInfo(ctx context.Context, userCred mcclient.TokenCredential, extVM cloudprovider.IOSInfo) error {
+	// save os info
+	osinfo := map[string]interface{}{}
+	for k, v := range map[string]string{
+		"os_full_name":    extVM.GetFullOsName(),
+		"os_name":         string(extVM.GetOsType()),
+		"os_arch":         extVM.GetOsArch(),
+		"os_type":         string(extVM.GetOsType()),
+		"os_distribution": extVM.GetOsDist(),
+		"os_version":      extVM.GetOsVersion(),
+		"os_language":     extVM.GetOsLang(),
+	} {
+		if len(v) == 0 {
+			continue
+		}
+		osinfo[k] = v
+	}
+	if len(osinfo) > 0 {
+		err := g.SetAllMetadata(ctx, osinfo, userCred)
+		if err != nil {
+			return errors.Wrap(err, "SetAllMetadata")
+		}
+	}
+	return nil
+}
+
 func (self *SGuest) syncWithCloudVM(ctx context.Context, userCred mcclient.TokenCredential, provider cloudprovider.ICloudProvider, host *SHost, extVM cloudprovider.ICloudVM, syncOwnerId mcclient.IIdentityProvider, syncStatus bool) error {
 	recycle := false
 
@@ -2714,9 +2745,15 @@ func (self *SGuest) syncWithCloudVM(ctx context.Context, userCred mcclient.Token
 		self.BootOrder = extVM.GetBootOrder()
 		self.Vga = extVM.GetVga()
 		self.Vdi = extVM.GetVdi()
-		self.OsArch = extVM.GetOSArch()
-		self.OsType = string(extVM.GetOsType())
-		self.Bios = extVM.GetBios()
+		if len(self.OsArch) == 0 {
+			self.OsArch = extVM.GetOsArch()
+		}
+		if len(self.OsType) == 0 {
+			self.OsType = string(extVM.GetOsType())
+		}
+		if len(self.Bios) == 0 {
+			self.Bios = string(extVM.GetBios())
+		}
 		self.Machine = extVM.GetMachine()
 		if !recycle {
 			self.HostId = host.Id
@@ -2778,6 +2815,8 @@ func (self *SGuest) syncWithCloudVM(ctx context.Context, userCred mcclient.Token
 		})
 	}
 
+	self.SyncOsInfo(ctx, userCred, extVM)
+
 	syncVirtualResourceMetadata(ctx, userCred, self, extVM)
 	SyncCloudProject(userCred, self, syncOwnerId, extVM, host.ManagerId)
 
@@ -2803,9 +2842,9 @@ func (manager *SGuestManager) newCloudVM(ctx context.Context, userCred mcclient.
 	guest.BootOrder = extVM.GetBootOrder()
 	guest.Vga = extVM.GetVga()
 	guest.Vdi = extVM.GetVdi()
-	guest.OsArch = extVM.GetOSArch()
+	guest.OsArch = extVM.GetOsArch()
 	guest.OsType = string(extVM.GetOsType())
-	guest.Bios = extVM.GetBios()
+	guest.Bios = string(extVM.GetBios())
 	guest.Machine = extVM.GetMachine()
 	guest.Hypervisor = extVM.GetHypervisor()
 	guest.Hostname = extVM.GetHostname()
@@ -2878,6 +2917,8 @@ func (manager *SGuestManager) newCloudVM(ctx context.Context, userCred mcclient.
 	if err != nil {
 		return nil, errors.Wrapf(err, "Insert")
 	}
+
+	guest.SyncOsInfo(ctx, userCred, extVM)
 
 	syncVirtualResourceMetadata(ctx, userCred, &guest, extVM)
 	SyncCloudProject(userCred, &guest, syncOwnerId, extVM, host.ManagerId)
@@ -2978,7 +3019,7 @@ func (self *SGuest) GetOSProfile() osprofile.SOSProfile {
 
 // Summary of network address allocation strategy
 //
-// IpAddr when specified must be part of the network
+// # IpAddr when specified must be part of the network
 //
 // Use IpAddr without checking if it's already allocated when UseDesignatedIP
 // is true.  See b31bc7fa ("feature: 1. baremetal server reuse host ip...")
@@ -4265,7 +4306,38 @@ func (self *SGuest) GetDeployConfigOnHost(ctx context.Context, userCred mcclient
 
 	config.Add(jsonutils.NewString(onFinish), "on_finish")
 
+	if jsonutils.QueryBoolean(params, "deploy_telegraf", false) {
+		s := auth.GetAdminSessionWithPublic(nil, consts.GetRegion())
+		influxdbUrl, err := s.GetServiceURL("influxdb", apiidentity.EndpointInterfacePublic, "")
+		if err != nil {
+			return nil, errors.Wrap(err, "get influxdb url")
+		}
+		config.Add(jsonutils.JSONTrue, "deploy_telegraf")
+		serverDetails, err := self.getDetails(ctx, userCred)
+		if err != nil {
+			return nil, errors.Wrap(err, "get details")
+		}
+		telegrafConf, err := devtool_utils.GenerateTelegrafConf(
+			serverDetails, influxdbUrl, self.OsType, self.Hypervisor)
+		if err != nil {
+			return nil, errors.Wrap(err, "get telegraf conf")
+		}
+		config.Add(jsonutils.NewString(telegrafConf), "telegraf_conf")
+	}
+
 	return config, nil
+}
+
+func (self *SGuest) getDetails(ctx context.Context, userCred mcclient.TokenCredential) (*api.ServerDetails, error) {
+	res := GuestManager.FetchCustomizeColumns(ctx, userCred, jsonutils.NewDict(), []interface{}{self}, nil, false)
+	jsonDict := jsonutils.Marshal(res[0]).(*jsonutils.JSONDict)
+	jsonDict.Update(jsonutils.Marshal(self).(*jsonutils.JSONDict))
+	serverDetails := new(api.ServerDetails)
+	err := jsonDict.Unmarshal(serverDetails)
+	if err != nil {
+		return nil, err
+	}
+	return serverDetails, nil
 }
 
 func (self *SGuest) getVga() string {
@@ -4437,7 +4509,7 @@ func (self *SGuest) GetJsonDescAtHypervisor(ctx context.Context, host *SHost) *a
 	// add scaling group
 	sggs, err := ScalingGroupGuestManager.Fetch("", self.Id)
 	if err == nil && len(sggs) > 0 {
-		desc.ScallingGroupId = sggs[0].ScalingGroupId
+		desc.ScalingGroupId = sggs[0].ScalingGroupId
 	}
 
 	return desc
@@ -4738,13 +4810,14 @@ func (self *SGuest) saveOsType(userCred mcclient.TokenCredential, osType string)
 }
 
 type sDeployInfo struct {
-	Os       string
-	Account  string
-	Key      string
-	Distro   string
-	Version  string
-	Arch     string
-	Language string
+	Os               string
+	Account          string
+	Key              string
+	Distro           string
+	Version          string
+	Arch             string
+	Language         string
+	TelegrafDeployed bool
 }
 
 func (self *SGuest) SaveDeployInfo(ctx context.Context, userCred mcclient.TokenCredential, data jsonutils.JSONObject) {
@@ -4780,6 +4853,9 @@ func (self *SGuest) SaveDeployInfo(ctx context.Context, userCred mcclient.TokenC
 	}
 	if len(deployInfo.Language) > 0 {
 		info["os_language"] = deployInfo.Language
+	}
+	if deployInfo.TelegrafDeployed {
+		info["telegraf_deployed"] = true
 	}
 	self.SetAllMetadata(ctx, info, userCred)
 	self.saveOldPassword(ctx, userCred)

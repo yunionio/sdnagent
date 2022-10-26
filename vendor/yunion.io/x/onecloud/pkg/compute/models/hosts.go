@@ -1867,6 +1867,10 @@ func (self *SHost) syncWithCloudHost(ctx context.Context, userCred mcclient.Toke
 			self.MemCmtbound = memCmt
 		}
 
+		if arch := extHost.GetCpuArchitecture(); len(arch) > 0 {
+			self.CpuArchitecture = arch
+		}
+
 		if reservedMem := extHost.GetReservedMemoryMb(); reservedMem > 0 {
 			self.MemReserved = reservedMem
 		}
@@ -2106,6 +2110,9 @@ func (manager *SHostManager) NewFromCloudHost(ctx context.Context, userCred mccl
 	host.MemCmtbound = 1.0
 	if memCmt := extHost.GetMemCmtbound(); memCmt > 0 {
 		host.MemCmtbound = memCmt
+	}
+	if arch := extHost.GetCpuArchitecture(); len(arch) > 0 {
+		host.CpuArchitecture = arch
 	}
 
 	if reservedMem := extHost.GetReservedMemoryMb(); reservedMem > 0 {
@@ -2417,6 +2424,26 @@ type SGuestSyncResult struct {
 	IsNew  bool
 }
 
+func IsNeedSkipSync(ext cloudprovider.ICloudResource) (bool, string) {
+	if len(options.Options.SkipServerBySysTagKeys) == 0 && len(options.Options.SkipServerBySysTagKeys) == 0 {
+		return false, ""
+	}
+	keys := strings.Split(options.Options.SkipServerBySysTagKeys, ",")
+	for key := range ext.GetSysTags() {
+		if utils.IsInStringArray(key, keys) {
+			return true, key
+		}
+	}
+	userKeys := strings.Split(options.Options.SkipServerByUserTagKeys, ",")
+	tags, _ := ext.GetTags()
+	for key := range tags {
+		if utils.IsInStringArray(key, userKeys) {
+			return true, key
+		}
+	}
+	return false, ""
+}
+
 func (self *SHost) SyncHostVMs(ctx context.Context, userCred mcclient.TokenCredential, iprovider cloudprovider.ICloudProvider, vms []cloudprovider.ICloudVM, syncOwnerId mcclient.IIdentityProvider) ([]SGuestSyncResult, compare.SyncResult) {
 	lockman.LockRawObject(ctx, "guests", self.Id)
 	defer lockman.ReleaseRawObject(ctx, "guests", self.Id)
@@ -2448,19 +2475,6 @@ func (self *SHost) SyncHostVMs(ctx context.Context, userCred mcclient.TokenCrede
 		return nil, syncResult
 	}
 
-	skipFunc := func(ext cloudprovider.ICloudVM) (bool, string) {
-		if len(options.Options.SkipServerBySysTagKeys) == 0 {
-			return false, ""
-		}
-		keys := strings.Split(options.Options.SkipServerBySysTagKeys, ",")
-		for key := range ext.GetSysTags() {
-			if utils.IsInStringArray(key, keys) {
-				return true, key
-			}
-		}
-		return false, ""
-	}
-
 	for i := 0; i < len(removed); i += 1 {
 		err := removed[i].syncRemoveCloudVM(ctx, userCred)
 		if err != nil {
@@ -2471,10 +2485,10 @@ func (self *SHost) SyncHostVMs(ctx context.Context, userCred mcclient.TokenCrede
 	}
 
 	for i := 0; i < len(commondb); i += 1 {
-		skip, key := skipFunc(commonext[i])
+		skip, key := IsNeedSkipSync(commonext[i])
 		if skip {
-			log.Infof("skip server %s(%s) sync for delete with system tag key: %s", commonext[i].GetName(), commonext[i].GetGlobalId(), key)
-			err := commondb[i].syncRemoveCloudVM(ctx, userCred)
+			log.Infof("delete server %s(%s) with system tag key: %s", commonext[i].GetName(), commonext[i].GetGlobalId(), key)
+			err := commondb[i].purge(ctx, userCred)
 			if err != nil {
 				syncResult.DeleteError(err)
 				continue
@@ -2497,7 +2511,7 @@ func (self *SHost) SyncHostVMs(ctx context.Context, userCred mcclient.TokenCrede
 	}
 
 	for i := 0; i < len(added); i += 1 {
-		skip, key := skipFunc(added[i])
+		skip, key := IsNeedSkipSync(added[i])
 		if skip {
 			log.Infof("skip server %s(%s) sync with system tag key: %s", added[i].GetName(), added[i].GetGlobalId(), key)
 			continue
@@ -4183,6 +4197,15 @@ func (self *SHost) PerformReserveCpus(
 	}
 
 	err = self.SetMetadata(ctx, api.HOSTMETA_RESERVED_CPUS_INFO, input, userCred)
+	if err != nil {
+		return nil, err
+	}
+	if self.CpuReserved < cs.Size() {
+		_, err = db.Update(self, func() error {
+			self.CpuReserved = cs.Size()
+			return nil
+		})
+	}
 	return nil, err
 }
 
@@ -5383,8 +5406,12 @@ func (self *SHost) EsxiRequest(ctx context.Context, method httputils.THttpMethod
 	return self.doAgentRequest(api.AgentTypeEsxi, ctx, method, url, headers, body)
 }
 
+func (self *SHost) GetAgent(at api.TAgentType) *SBaremetalagent {
+	return BaremetalagentManager.GetAgent(at, self.ZoneId)
+}
+
 func (self *SHost) isAgentReady(agentType api.TAgentType) bool {
-	agent := BaremetalagentManager.GetAgent(agentType, self.ZoneId)
+	agent := self.GetAgent(agentType)
 	if agent == nil {
 		log.Errorf("%s ready: false", agentType)
 		return false
@@ -5603,7 +5630,7 @@ func (host *SHost) OnHostDown(ctx context.Context, userCred mcclient.TokenCreden
 	hostHealthChecker.UnwatchHost(ctx, host.GetHostnameByName())
 
 	if host.HostStatus == api.HOST_OFFLINE && !host.EnableHealthCheck &&
-		host.autoMigrateOnHostShutdown(ctx) {
+		!host.autoMigrateOnHostShutdown(ctx) {
 		// hostagent requested offline, and not enable auto migrate on host shutdown
 		log.Infof("host not need auto migrate on host shutdown")
 		return

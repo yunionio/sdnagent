@@ -79,6 +79,7 @@ const (
 	ACT_SAVE_IMAGE                   = "save_image"
 	ACT_SET_AUTO_RENEW               = "set_auto_renew"
 	ACT_MIGRATE                      = "migrate"
+	ACT_MIGRATING                    = "migrating"
 	ACT_EIP_ASSOCIATE                = "eip_associate"
 	ACT_EIP_DISSOCIATE               = "eip_dissociate"
 	ACT_EIP_CONVERT                  = "eip_convert"
@@ -230,6 +231,7 @@ const (
 
 	ACT_ENCRYPTION = "encrypt"
 
-	ACT_CONSOLE = "console"
-	ACT_WEBSSH  = "webssh"
+	ACT_CONSOLE           = "console"
+	ACT_WEBSSH            = "webssh"
+	ACT_SET_USER_PASSWORD = "set_user_password"
 )

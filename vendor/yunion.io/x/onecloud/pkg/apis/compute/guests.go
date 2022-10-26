@@ -16,7 +16,6 @@ package compute
 
 import (
 	"fmt"
-	"strings"
 	"time"
 
 	"yunion.io/x/jsonutils"
@@ -248,6 +247,7 @@ type ServerDetails struct {
 
 func (self ServerDetails) GetMetricTags() map[string]string {
 	ret := map[string]string{
+		"id":                  self.Id,
 		"res_type":            "guest",
 		"is_vm":               "true",
 		"paltform":            self.Hypervisor,
@@ -263,19 +263,15 @@ func (self ServerDetails) GetMetricTags() map[string]string {
 		"cloudregion":         self.Cloudregion,
 		"cloudregion_id":      self.CloudregionId,
 		"region_ext_id":       self.RegionExtId,
-		"tenant":              self.Tenant,
-		"tenant_id":           self.TenantId,
+		"tenant":              self.Project,
+		"tenant_id":           self.ProjectId,
 		"brand":               self.Brand,
 		"vm_scaling_group_id": self.ScalingGroupId,
 		"domain_id":           self.DomainId,
-		"project_domain":      self.TenantId,
+		"project_domain":      self.ProjectDomain,
 		"account":             self.Account,
 		"account_id":          self.AccountId,
-	}
-	for k, v := range self.Metadata {
-		if strings.HasPrefix(k, apis.USER_TAG_PREFIX) {
-			ret[k] = v
-		}
+		"external_id":         self.ExternalId,
 	}
 	return ret
 }
@@ -439,6 +435,12 @@ type GuestLiveMigrateInput struct {
 	SkipKernelCheck *bool `json:"skip_kernel_check"`
 	// 是否启用 tls
 	EnableTLS *bool `json:"enable_tls"`
+
+	// 迁移带宽限制
+	MaxBandwidthMb *int64 `json:"max_bandwidth_mb"`
+	// 快速完成，内存同步一定周期后调整 downtime
+	QuicklyFinish         *bool `json:"quickly_finish"`
+	KeepDestGuestOnFailed *bool `json:"keep_dest_guest_on_failed"`
 }
 
 type GuestSetSecgroupInput struct {
@@ -618,6 +620,7 @@ type ServerMigrateForecastInput struct {
 	LiveMigrate     bool   `json:"live_migrate"`
 	SkipCpuCheck    bool   `json:"skip_cpu_check"`
 	SkipKernelCheck bool   `json:"skip_kernel_check"`
+	IsRescueMode    bool   `json:"is_rescue_mode"`
 }
 
 type ServerResizeDiskInput struct {
@@ -662,6 +665,8 @@ type ServerDeployInput struct {
 
 	// swagger: ignore
 	DeployConfigs []*DeployConfig `json:"deploy_configs"`
+	// swagger: ignore
+	DeployTelegraf bool `json:"deploy_telegraf"`
 }
 
 type ServerUserDataInput struct {
@@ -776,7 +781,7 @@ type GuestJsonDesc struct {
 	UserData       string            `json:"user_data"`
 	PendingDeleted bool              `json:"pending_deleted"`
 
-	ScallingGroupId string `json:"scalling_group_id"`
+	ScalingGroupId string `json:"scaling_group_id"`
 
 	// baremetal
 	DiskConfig  jsonutils.JSONObject    `json:"disk_config"`
@@ -885,7 +890,35 @@ type ServerGetCPUSetCoresResp struct {
 	HostUsedCores []int `json:"host_used_cores"`
 }
 
+type ServerMonitorInput struct {
+	COMMAND string
+	QMP     bool
+}
+
 type ServerQemuInfo struct {
 	Version string `json:"version"`
 	Cmdline string `json:"cmdline"`
+}
+
+type ServerQgaSetPasswordInput struct {
+	Username string
+	Password string
+}
+
+type ServerQgaCommandInput struct {
+	Command string
+}
+
+type ServerSetPasswordInput struct {
+	Username string
+	Password string
+
+	// deploy params
+	ResetPassword bool
+	AutoStart     bool
+}
+
+type ServerSetLiveMigrateParamsInput struct {
+	MaxBandwidthMB  *int64
+	DowntimeLimitMS *int64
 }

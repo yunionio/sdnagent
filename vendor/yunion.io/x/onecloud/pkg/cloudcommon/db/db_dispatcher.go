@@ -1684,6 +1684,7 @@ func updateItem(manager IModelManager, item IModel, ctx context.Context, userCre
 	if len(diff) > 0 {
 		OpsLog.LogEvent(item, ACT_UPDATE, diff, userCred)
 		logclient.AddActionLogWithContext(ctx, item, logclient.ACT_UPDATE, diff, userCred, true)
+		CallUpdateNotifyHook(ctx, userCred, item)
 	}
 
 	item.PostUpdate(ctx, userCred, query, data)

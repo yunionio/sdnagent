@@ -32,6 +32,7 @@ import (
 	"yunion.io/x/pkg/errors"
 	"yunion.io/x/pkg/tristate"
 	"yunion.io/x/pkg/util/fileutils"
+	"yunion.io/x/pkg/util/osprofile"
 	"yunion.io/x/pkg/util/regutils"
 	"yunion.io/x/pkg/util/sets"
 	"yunion.io/x/pkg/utils"
@@ -71,7 +72,7 @@ import (
 
 func (self *SGuest) GetDetailsVnc(ctx context.Context, userCred mcclient.TokenCredential, input *cloudprovider.ServerVncInput) (*cloudprovider.ServerVncOutput, error) {
 	ret := &cloudprovider.ServerVncOutput{}
-	if utils.IsInStringArray(self.Status, []string{api.VM_RUNNING, api.VM_BLOCK_STREAM}) {
+	if utils.IsInStringArray(self.Status, []string{api.VM_RUNNING, api.VM_BLOCK_STREAM, api.VM_MIGRATING}) {
 		host, err := self.GetHost()
 		if err != nil {
 			return nil, httperrors.NewInternalServerError(errors.Wrapf(err, "GetHost").Error())
@@ -115,14 +116,13 @@ func (self *SGuest) PerformMonitor(
 	ctx context.Context,
 	userCred mcclient.TokenCredential,
 	query jsonutils.JSONObject,
-	data jsonutils.JSONObject,
+	input *api.ServerMonitorInput,
 ) (jsonutils.JSONObject, error) {
 	if utils.IsInStringArray(self.Status, []string{api.VM_RUNNING, api.VM_BLOCK_STREAM, api.VM_MIGRATING}) {
-		cmd, err := data.GetString("command")
-		if err != nil {
+		if input.COMMAND == "" {
 			return nil, httperrors.NewMissingParameterError("command")
 		}
-		return self.SendMonitorCommand(ctx, userCred, cmd)
+		return self.SendMonitorCommand(ctx, userCred, input)
 	}
 	return nil, httperrors.NewInvalidStatusError("Cannot send command in status %s", self.Status)
 }
@@ -435,7 +435,8 @@ func (self *SGuest) PerformMigrateForecast(ctx context.Context, userCred mcclien
 		input.PreferHostId = lmInput.PreferHost
 	} else {
 		mInput = &api.GuestMigrateInput{
-			PreferHost: input.PreferHostId,
+			PreferHost:   input.PreferHostId,
+			IsRescueMode: input.IsRescueMode,
 		}
 		if err := self.validateMigrate(ctx, userCred, mInput, nil); err != nil {
 			return nil, err
@@ -526,10 +527,18 @@ func (self *SGuest) PerformLiveMigrate(ctx context.Context, userCred mcclient.To
 	if input.EnableTLS == nil {
 		input.EnableTLS = &options.Options.EnableTlsMigration
 	}
-	return nil, self.StartGuestLiveMigrateTask(ctx, userCred, self.Status, input.PreferHost, input.SkipCpuCheck, input.SkipKernelCheck, input.EnableTLS, "")
+	return nil, self.StartGuestLiveMigrateTask(ctx, userCred,
+		self.Status, input.PreferHost, input.SkipCpuCheck,
+		input.SkipKernelCheck, input.EnableTLS, input.QuicklyFinish, input.MaxBandwidthMb, input.KeepDestGuestOnFailed, "",
+	)
 }
 
-func (self *SGuest) StartGuestLiveMigrateTask(ctx context.Context, userCred mcclient.TokenCredential, guestStatus, preferHostId string, skipCpuCheck *bool, skipKernelCheck *bool, enableTLS *bool, parentTaskId string) error {
+func (self *SGuest) StartGuestLiveMigrateTask(
+	ctx context.Context, userCred mcclient.TokenCredential,
+	guestStatus, preferHostId string,
+	skipCpuCheck, skipKernelCheck, enableTLS, quicklyFinish *bool,
+	maxBandwidthMb *int64, keepDestGuestOnFailed *bool, parentTaskId string,
+) error {
 	self.SetStatus(userCred, api.VM_START_MIGRATE, "")
 	data := jsonutils.NewDict()
 	if len(preferHostId) > 0 {
@@ -544,6 +553,16 @@ func (self *SGuest) StartGuestLiveMigrateTask(ctx context.Context, userCred mccl
 	if enableTLS != nil {
 		data.Set("enable_tls", jsonutils.NewBool(*enableTLS))
 	}
+	if quicklyFinish != nil {
+		data.Set("quickly_finish", jsonutils.NewBool(*quicklyFinish))
+	}
+	if maxBandwidthMb != nil {
+		data.Set("max_bandwidth_mb", jsonutils.NewInt(*maxBandwidthMb))
+	}
+	if keepDestGuestOnFailed != nil {
+		data.Set("keep_dest_guest_on_failed", jsonutils.NewBool(*keepDestGuestOnFailed))
+	}
+
 	data.Set("guest_status", jsonutils.NewString(guestStatus))
 	dedicateMigrateTask := "GuestLiveMigrateTask"
 	if self.GetHypervisor() != api.HYPERVISOR_KVM {
@@ -556,6 +575,48 @@ func (self *SGuest) StartGuestLiveMigrateTask(ctx context.Context, userCred mccl
 		task.ScheduleRun(nil)
 	}
 	return nil
+}
+
+func (self *SGuest) PerformSetLiveMigrateParams(
+	ctx context.Context, userCred mcclient.TokenCredential, query jsonutils.JSONObject, input api.ServerSetLiveMigrateParamsInput,
+) (jsonutils.JSONObject, error) {
+	if self.Status != api.VM_LIVE_MIGRATING {
+		return nil, httperrors.NewServerStatusError("cannot set migrate params in status %s", self.Status)
+	}
+	if input.MaxBandwidthMB == nil && input.DowntimeLimitMS == nil {
+		return nil, httperrors.NewInputParameterError("empty input")
+	}
+
+	arguments := map[string]interface{}{}
+	if input.MaxBandwidthMB != nil {
+		arguments["max-bandwidth"] = *input.MaxBandwidthMB * 1024 * 1024
+	}
+	if input.DowntimeLimitMS != nil {
+		arguments["downtime-limit"] = *input.DowntimeLimitMS
+	}
+	cmd := map[string]interface{}{
+		"execute":   "migrate-set-parameters",
+		"arguments": arguments,
+	}
+	log.Infof("set live migrate params input: %s", jsonutils.Marshal(cmd).String())
+	monitorInput := &api.ServerMonitorInput{
+		COMMAND: jsonutils.Marshal(cmd).String(),
+		QMP:     true,
+	}
+	return self.SendMonitorCommand(ctx, userCred, monitorInput)
+}
+
+func (self *SGuest) PerformCancelLiveMigrate(
+	ctx context.Context, userCred mcclient.TokenCredential, query jsonutils.JSONObject, data jsonutils.JSONObject,
+) (jsonutils.JSONObject, error) {
+	if self.Status != api.VM_LIVE_MIGRATING {
+		return nil, httperrors.NewServerStatusError("cannot set migrate params in status %s", self.Status)
+	}
+	monitorInput := &api.ServerMonitorInput{
+		COMMAND: "migrate_cancel",
+		QMP:     false,
+	}
+	return self.SendMonitorCommand(ctx, userCred, monitorInput)
 }
 
 func (self *SGuest) PerformClone(ctx context.Context, userCred mcclient.TokenCredential, query jsonutils.JSONObject, data jsonutils.JSONObject) (jsonutils.JSONObject, error) {
@@ -628,6 +689,33 @@ func (self *SGuest) PerformClone(ctx context.Context, userCred mcclient.TokenCre
 	}
 	task.ScheduleRun(nil)
 	return nil, nil
+}
+
+func (self *SGuest) PerformSetPassword(ctx context.Context, userCred mcclient.TokenCredential, query jsonutils.JSONObject, input api.ServerSetPasswordInput) (jsonutils.JSONObject, error) {
+	if self.Hypervisor == api.HYPERVISOR_KVM && self.Status == api.VM_RUNNING {
+		inputQga := &api.ServerQgaSetPasswordInput{
+			Username: input.Username,
+			Password: input.Password,
+		}
+		if inputQga.Username == "" {
+			if self.OsType == osprofile.OS_TYPE_WINDOWS {
+				inputQga.Username = api.VM_DEFAULT_WINDOWS_LOGIN_USER
+			} else {
+				inputQga.Username = api.VM_DEFAULT_LINUX_LOGIN_USER
+			}
+		}
+		if inputQga.Password == "" && input.ResetPassword {
+			inputQga.Password = seclib2.RandomPassword2(12)
+		}
+		return self.PerformQgaSetPassword(ctx, userCred, query, inputQga)
+	} else {
+		inputDeploy := api.ServerDeployInput{
+			Password:      input.Password,
+			ResetPassword: input.ResetPassword,
+			AutoStart:     input.AutoStart,
+		}
+		return self.PerformDeploy(ctx, userCred, query, inputDeploy)
+	}
 }
 
 func (self *SGuest) GetDetailsCreateParams(ctx context.Context, userCred mcclient.TokenCredential, query jsonutils.JSONObject) (jsonutils.JSONObject, error) {
@@ -2927,7 +3015,7 @@ func (self *SGuest) PerformSendkeys(ctx context.Context, userCred mcclient.Token
 	if err == nil {
 		cmd = fmt.Sprintf("%s %d", cmd, duration)
 	}
-	_, err = self.SendMonitorCommand(ctx, userCred, cmd)
+	_, err = self.SendMonitorCommand(ctx, userCred, &api.ServerMonitorInput{COMMAND: cmd})
 	return nil, err
 }
 
@@ -2962,13 +3050,14 @@ func (self *SGuest) IsLegalKey(key string) bool {
 	return true
 }
 
-func (self *SGuest) SendMonitorCommand(ctx context.Context, userCred mcclient.TokenCredential, cmd string) (jsonutils.JSONObject, error) {
+func (self *SGuest) SendMonitorCommand(ctx context.Context, userCred mcclient.TokenCredential, cmd *api.ServerMonitorInput) (jsonutils.JSONObject, error) {
 	host, _ := self.GetHost()
 	url := fmt.Sprintf("%s/servers/%s/monitor", host.ManagerUri, self.Id)
 	header := http.Header{}
 	header.Add("X-Auth-Token", userCred.GetTokenString())
 	body := jsonutils.NewDict()
-	body.Add(jsonutils.NewString(cmd), "cmd")
+	body.Add(jsonutils.NewString(cmd.COMMAND), "cmd")
+	body.Add(jsonutils.NewBool(cmd.QMP), "qmp")
 	_, res, err := httputils.JSONRequest(httputils.GetDefaultClient(), ctx, "POST", url, header, body, false)
 	if err != nil {
 		return nil, err
@@ -4613,6 +4702,8 @@ func (manager *SGuestManager) PerformBatchMigrate(ctx context.Context, userCred 
 			SkipCpuCheck:    params.SkipCpuCheck,
 			SkipKernelCheck: params.SkipKernelCheck,
 			EnableTLS:       params.EnableTLS,
+			MaxBandwidthMb:  params.MaxBandwidthMb,
+			QuciklyFinish:   params.QuciklyFinish,
 		}
 		guests[i].SetStatus(userCred, api.VM_START_MIGRATE, "batch migrate")
 		if _, ok := hostGuests[guests[i].HostId]; ok {

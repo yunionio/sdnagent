@@ -16,7 +16,6 @@ package compute
 
 import (
 	"strconv"
-	"strings"
 
 	"yunion.io/x/jsonutils"
 
@@ -152,16 +151,13 @@ type StorageDetails struct {
 
 func (self StorageDetails) GetMetricTags() map[string]string {
 	ret := map[string]string{
+		"id":             self.Id,
 		"storage_id":     self.Id,
 		"storage_name":   self.Name,
 		"brand":          self.Brand,
 		"domain_id":      self.DomainId,
 		"project_domain": self.ProjectDomain,
-	}
-	for k, v := range self.Metadata {
-		if strings.HasPrefix(k, apis.USER_TAG_PREFIX) {
-			ret[k] = v
-		}
+		"external_id":    self.ExternalId,
 	}
 	return ret
 }
