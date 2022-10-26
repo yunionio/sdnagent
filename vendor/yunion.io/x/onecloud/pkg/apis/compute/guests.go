@@ -73,6 +73,7 @@ type ServerListInput struct {
 	// enum: asc,desc
 	OrderByDisk string `json:"order_by_disk"`
 
+	OrderByIp string `json:"order_by_ip"`
 	// 根据ip查找机器
 	IpAddr string `json:"ip_addr"`
 
@@ -397,13 +398,13 @@ type GuestSetSecgroupInput struct {
 	// 实例必须处于运行,休眠或者关机状态
 	//
 	//
-	// | 平台		 | 最多绑定安全组数量	|
-	// |-------------|-------------------	|
-	// | Azure       | 1					|
-	// | VMware      | 不支持安全组			|
-	// | Baremetal   | 不支持安全组			|
-	// | ZStack	     | 1					|
-	// | 其他	     | 5					|
+	// | 平台         | 最多绑定安全组数量    |
+	// |-------------|-------------------    |
+	// | Azure       | 1                    |
+	// | VMware      | 不支持安全组            |
+	// | Baremetal   | 不支持安全组            |
+	// | ZStack         | 1                    |
+	// | 其他         | 5                    |
 	SecgroupIds []string `json:"secgroup_ids"`
 }
 
@@ -432,13 +433,13 @@ type GuestAddSecgroupInput struct {
 	// 实例必须处于运行,休眠或者关机状态
 	//
 	//
-	// | 平台		 | 最多绑定安全组数量	|
-	// |-------------|-------------------	|
-	// | Azure       | 1					|
-	// | VMware      | 不支持安全组			|
-	// | Baremetal   | 不支持安全组			|
-	// | ZStack	     | 1					|
-	// | 其他	     | 5					|
+	// | 平台        | 最多绑定安全组数量    |
+	// |-------------|-------------------    |
+	// | Azure       | 1                    |
+	// | VMware      | 不支持安全组            |
+	// | Baremetal   | 不支持安全组            |
+	// | ZStack      | 1                    |
+	// | 其他        | 5                    |
 	SecgroupIds []string `json:"secgroup_ids"`
 }
 
@@ -716,7 +717,7 @@ type GuestJsonDesc struct {
 	UserData       string            `json:"user_data"`
 	PendingDeleted bool              `json:"pending_deleted"`
 
-	ScallingGroupId string `json:"scalling_group_id"`
+	ScalingGroupId string `json:"scaling_group_id"`
 
 	// baremetal
 	DiskConfig  jsonutils.JSONObject    `json:"disk_config"`

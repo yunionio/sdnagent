@@ -183,7 +183,7 @@ type HostDetails struct {
 	// CPU超售比
 	CpuCommitBound float32 `json:"cpu_commit_bound"`
 	// 内存超售比
-	MemCommitBound float32 `json:"mem_commint_bound"`
+	MemCommitBound float32 `json:"mem_commit_bound"`
 	// 存储大小
 	Storage int64 `json:"storage"`
 	// 已使用存储大小
@@ -204,8 +204,9 @@ type HostDetails struct {
 	CanPrepare        bool                `json:"can_prepare"`
 	PrepareFailReason string              `json:"prepare_fail_reason"`
 	// 允许开启宿主机健康检查
-	AllowHealthCheck      bool `json:"allow_health_check"`
-	AutoMigrateOnHostDown bool `json:"auto_migrate_on_host_down"`
+	AllowHealthCheck          bool `json:"allow_health_check"`
+	AutoMigrateOnHostDown     bool `json:"auto_migrate_on_host_down"`
+	AutoMigrateOnHostShutdown bool `json:"auto_migrate_on_host_shutdown"`
 
 	// reserved resource for isolated device
 	ReservedResourceForGpu IsolatedDeviceReservedResourceInput `json:"reserved_resource_for_gpu"`
@@ -449,4 +450,9 @@ type HostUpdateInput struct {
 type HostOfflineInput struct {
 	UpdateHealthStatus *bool `json:"update_health_status"`
 	Reason             string
+}
+
+type HostAutoMigrateInput struct {
+	AutoMigrateOnHostDown     string `json:"auto_migrate_on_host_down"`
+	AutoMigrateOnHostShutdown string `json:"auto_migrate_on_host_shutdown"`
 }

@@ -19,6 +19,7 @@ import (
 	"database/sql"
 	"fmt"
 	"math/rand"
+	"strings"
 	"time"
 
 	"yunion.io/x/jsonutils"
@@ -512,7 +513,7 @@ func (self *SCachedimage) syncWithCloudImage(ctx context.Context, userCred mccli
 		if image.GetPublicScope() == rbacutils.ScopeSystem {
 			self.IsPublic = true
 		}
-		self.UEFI = tristate.NewFromBool(image.UEFI())
+		self.UEFI = tristate.NewFromBool(cloudprovider.IsUEFI(image))
 		sImage := cloudprovider.CloudImage2Image(image)
 		self.Info = jsonutils.Marshal(&sImage)
 		self.LastSync = time.Now().UTC()
@@ -529,7 +530,7 @@ func (manager *SCachedimageManager) newFromCloudImage(ctx context.Context, userC
 	cachedImage.SetModelManager(manager, &cachedImage)
 
 	cachedImage.Size = image.GetSizeByte()
-	cachedImage.UEFI = tristate.NewFromBool(image.UEFI())
+	cachedImage.UEFI = tristate.NewFromBool(cloudprovider.IsUEFI(image))
 	sImage := cloudprovider.CloudImage2Image(image)
 	cachedImage.Info = jsonutils.Marshal(&sImage)
 	cachedImage.LastSync = time.Now().UTC()
@@ -832,8 +833,11 @@ func (manager *SCachedimageManager) AutoCleanImageCaches(ctx context.Context, us
 					caches[i].Delete(ctx, userCred)
 					continue
 				}
+				deleteMark := "-deleted@"
 				db.Update(&caches[i], func() error {
-					caches[i].Name = fmt.Sprintf("%s-deleted@%s", caches[i].Name, timeutils.ShortDate(time.Now()))
+					if !strings.Contains(caches[i].Name, deleteMark) {
+						caches[i].Name = fmt.Sprintf("%s%s%s", caches[i].Name, deleteMark, timeutils.ShortDate(time.Now()))
+					}
 					return nil
 				})
 			}
