@@ -194,6 +194,8 @@ type ServerDetails struct {
 	DiskCount int `json:"disk_count"`
 	// 是否支持ISO启动
 	CdromSupport bool `json:"cdrom_support"`
+	//是否支持Floppy启动
+	FloppySupport bool `json:"floppy_support"`
 
 	// 磁盘大小
 	// example:30720
@@ -236,13 +238,66 @@ type ServerDetails struct {
 	IsGpu bool `json:"is_gpu"`
 
 	// Cdrom信息
-	Cdrom string `json:"cdrom,allowempty"`
+	Cdrom []Cdrom `json:"cdrom"`
+
+	//Floppy信息
+	Floppy []Floppy `json:"floppy"`
 
 	// 主机在伸缩组中的状态
 	ScalingStatus string `json:"scaling_status"`
 
 	// 伸缩组id
 	ScalingGroupId string `json:"scaling_group_id"`
+}
+
+type Floppy struct {
+	Ordinal int    `json:"ordinal"`
+	Detail  string `json:"detail"`
+}
+
+type Cdrom struct {
+	Ordinal int    `json:"ordinal"`
+	Detail  string `json:"detail"`
+}
+
+func (self ServerDetails) GetMetricTags() map[string]string {
+	ret := map[string]string{
+		"id":                  self.Id,
+		"res_type":            "guest",
+		"is_vm":               "true",
+		"paltform":            self.Hypervisor,
+		"host":                self.Host,
+		"host_id":             self.HostId,
+		"vm_id":               self.Id,
+		"vm_name":             self.Name,
+		"zone":                self.Zone,
+		"zone_id":             self.ZoneId,
+		"zone_ext_id":         self.ZoneExtId,
+		"os_type":             self.OsType,
+		"status":              self.Status,
+		"cloudregion":         self.Cloudregion,
+		"cloudregion_id":      self.CloudregionId,
+		"region_ext_id":       self.RegionExtId,
+		"tenant":              self.Project,
+		"tenant_id":           self.ProjectId,
+		"brand":               self.Brand,
+		"vm_scaling_group_id": self.ScalingGroupId,
+		"domain_id":           self.DomainId,
+		"project_domain":      self.ProjectDomain,
+		"account":             self.Account,
+		"account_id":          self.AccountId,
+		"external_id":         self.ExternalId,
+	}
+	return ret
+}
+
+func (self ServerDetails) GetMetricPairs() map[string]string {
+	ret := map[string]string{
+		"vcpu_count": fmt.Sprintf("%d", self.VcpuCount),
+		"vmem_size":  fmt.Sprintf("%d", self.VmemSize),
+		"disk":       fmt.Sprintf("%d", self.DiskSizeMb),
+	}
+	return ret
 }
 
 // GuestDiskInfo describe the information of disk on the guest.
@@ -395,6 +450,12 @@ type GuestLiveMigrateInput struct {
 	SkipKernelCheck *bool `json:"skip_kernel_check"`
 	// 是否启用 tls
 	EnableTLS *bool `json:"enable_tls"`
+
+	// 迁移带宽限制
+	MaxBandwidthMb *int64 `json:"max_bandwidth_mb"`
+	// 快速完成，内存同步一定周期后调整 downtime
+	QuicklyFinish         *bool `json:"quickly_finish"`
+	KeepDestGuestOnFailed *bool `json:"keep_dest_guest_on_failed"`
 }
 
 type GuestSetSecgroupInput struct {
@@ -575,6 +636,7 @@ type ServerMigrateForecastInput struct {
 	SkipCpuCheck    bool   `json:"skip_cpu_check"`
 	SkipKernelCheck bool   `json:"skip_kernel_check"`
 	ConvertToKvm    bool   `json:"convert_to_kvm"`
+	IsRescueMode    bool   `json:"is_rescue_mode"`
 }
 
 type ServerResizeDiskInput struct {
@@ -619,6 +681,8 @@ type ServerDeployInput struct {
 
 	// swagger: ignore
 	DeployConfigs []*DeployConfig `json:"deploy_configs"`
+	// swagger: ignore
+	DeployTelegraf bool `json:"deploy_telegraf"`
 }
 
 type ServerUserDataInput struct {
@@ -704,7 +768,10 @@ type GuestJsonDesc struct {
 	Nics  []*GuestnetworkJsonDesc `json:"nics"`
 	Disks []*GuestdiskJsonDesc    `json:"disks"`
 
-	Cdrom *GuestcdromJsonDesc `json:"cdrom"`
+	Cdrom  *GuestcdromJsonDesc   `json:"cdrom"`
+	Cdroms []*GuestcdromJsonDesc `json:"cdroms"`
+
+	Floppys []*GuestfloppyJsonDesc `json:"floppys"`
 
 	Tenant        string `json:"tenant"`
 	TenantId      string `json:"tenant_id"`
@@ -733,7 +800,7 @@ type GuestJsonDesc struct {
 	UserData       string            `json:"user_data"`
 	PendingDeleted bool              `json:"pending_deleted"`
 
-	ScallingGroupId string `json:"scalling_group_id"`
+	ScalingGroupId string `json:"scaling_group_id"`
 
 	// baremetal
 	DiskConfig  jsonutils.JSONObject    `json:"disk_config"`
@@ -850,4 +917,37 @@ type ServerMonitorInput struct {
 type ServerQemuInfo struct {
 	Version string `json:"version"`
 	Cmdline string `json:"cmdline"`
+}
+
+type ServerQgaSetPasswordInput struct {
+	Username string
+	Password string
+}
+
+type ServerQgaCommandInput struct {
+	Command string
+}
+
+type ServerSetPasswordInput struct {
+	Username string
+	Password string
+
+	// deploy params
+	ResetPassword bool
+	AutoStart     bool
+}
+
+type ServerInsertVfdInput struct {
+	FloppyOrdinal int64  `json:"floppy_ordinal"`
+	ImageId       string `json:"image_id"`
+}
+
+type ServerEjectVfdInput struct {
+	FloppyOrdinal int64  `json:"floppy_ordinal"`
+	ImageId       string `json:"image_id"`
+}
+
+type ServerSetLiveMigrateParamsInput struct {
+	MaxBandwidthMB  *int64
+	DowntimeLimitMS *int64
 }

@@ -222,12 +222,29 @@ func (manager *SGuestManager) FetchCustomizeColumns(
 		gcds := fetchGuestCdroms(guestIds)
 		if gcds != nil {
 			for i := range rows {
-				if gcd, ok := gcds[guestIds[i]]; ok {
-					rows[i].Cdrom = gcd.GetDetails()
+				for _, gcd := range gcds[guestIds[i]] {
+					if details := gcd.GetDetails(); len(details) > 0 {
+						t := api.Cdrom{Ordinal: gcd.Ordinal, Detail: details}
+						rows[i].Cdrom = append(rows[i].Cdrom, t)
+					}
 				}
 			}
 		}
 	}
+	if len(fields) == 0 || fields.Contains("floppy") {
+		gfloppys := fetchGuestFloppys(guestIds)
+		if gfloppys != nil {
+			for i := range rows {
+				for _, gfl := range gfloppys[guestIds[i]] {
+					if details := gfl.GetDetails(); len(details) > 0 {
+						t := api.Floppy{Ordinal: gfl.Ordinal, Detail: details}
+						rows[i].Floppy = append(rows[i].Floppy, t)
+					}
+				}
+			}
+		}
+	}
+
 	if len(fields) == 0 || fields.Contains("scaling_group") {
 		sggs := fetchScalingGroupGuest(guestIds...)
 		if sggs != nil && len(sggs) != 0 {
@@ -691,16 +708,30 @@ func fetchGuestIsolatedDevices(guestIds []string) map[string][]api.SIsolatedDevi
 	return ret
 }
 
-func fetchGuestCdroms(guestIds []string) map[string]SGuestcdrom {
+func fetchGuestCdroms(guestIds []string) map[string][]SGuestcdrom {
 	q := GuestcdromManager.Query().In("id", guestIds)
 	gcds := make([]SGuestcdrom, 0)
 	err := q.All(&gcds)
 	if err != nil {
 		return nil
 	}
-	ret := make(map[string]SGuestcdrom)
+	ret := make(map[string][]SGuestcdrom)
 	for i := range gcds {
-		ret[gcds[i].Id] = gcds[i]
+		ret[gcds[i].Id] = append(ret[gcds[i].Id], gcds[i])
+	}
+	return ret
+}
+
+func fetchGuestFloppys(guestIds []string) map[string][]SGuestfloppy {
+	q := GuestFloppyManager.Query().In("id", guestIds)
+	gfls := make([]SGuestfloppy, 0)
+	err := q.All(&gfls)
+	if err != nil {
+		return nil
+	}
+	ret := make(map[string][]SGuestfloppy)
+	for i := range gfls {
+		ret[gfls[i].Id] = append(ret[gfls[i].Id], gfls[i])
 	}
 	return ret
 }

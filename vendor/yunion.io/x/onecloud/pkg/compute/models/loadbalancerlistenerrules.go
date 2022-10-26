@@ -724,24 +724,26 @@ func (lbr *SLoadbalancerListenerRule) constructFieldsFromCloudListenerRule(userC
 	}
 
 	if groupId := extRule.GetBackendGroupId(); len(groupId) > 0 {
-		if utils.IsInStringArray(lbr.GetProviderName(), []string{api.CLOUD_PROVIDER_HUAWEI, api.CLOUD_PROVIDER_HCSO}) {
+		if utils.IsInStringArray(lbr.GetProviderName(), []string{api.CLOUD_PROVIDER_HUAWEI, api.CLOUD_PROVIDER_HCSO, api.CLOUD_PROVIDER_HCS}) {
 			group, err := db.FetchByExternalId(HuaweiCachedLbbgManager, groupId)
 			if err != nil {
 				if err == sql.ErrNoRows {
 					lbr.BackendGroupId = ""
 				}
 				log.Errorf("Fetch huawei loadbalancer backendgroup by external id %s failed: %s", groupId, err)
+			} else {
+				lbr.BackendGroupId = group.(*SHuaweiCachedLbbg).BackendGroupId
 			}
 
-			lbr.BackendGroupId = group.(*SHuaweiCachedLbbg).BackendGroupId
 		} else if lbr.GetProviderName() == api.CLOUD_PROVIDER_AWS {
 			if len(groupId) > 0 {
 				group, err := db.FetchByExternalId(AwsCachedLbbgManager, groupId)
 				if err != nil {
 					log.Errorf("Fetch aws loadbalancer backendgroup by external id %s failed: %s", groupId, err)
+				} else {
+					lbr.BackendGroupId = group.(*SAwsCachedLbbg).BackendGroupId
 				}
 
-				lbr.BackendGroupId = group.(*SAwsCachedLbbg).BackendGroupId
 			}
 		} else if lbr.GetProviderName() == api.CLOUD_PROVIDER_QCLOUD {
 			group, err := db.FetchByExternalId(QcloudCachedLbbgManager, groupId)
@@ -750,9 +752,10 @@ func (lbr *SLoadbalancerListenerRule) constructFieldsFromCloudListenerRule(userC
 					lbr.BackendGroupId = ""
 				}
 				log.Errorf("Fetch qcloud loadbalancer backendgroup by external id %s failed: %s", groupId, err)
+			} else {
+				lbr.BackendGroupId = group.(*SQcloudCachedLbbg).BackendGroupId
 			}
 
-			lbr.BackendGroupId = group.(*SQcloudCachedLbbg).BackendGroupId
 		} else if backendgroup, err := db.FetchByExternalId(LoadbalancerBackendGroupManager, groupId); err == nil {
 			lbr.BackendGroupId = backendgroup.GetId()
 		}
@@ -766,7 +769,7 @@ func (lbr *SLoadbalancerListenerRule) updateCachedLoadbalancerBackendGroupAssoci
 	}
 
 	switch lbr.GetProviderName() {
-	case api.CLOUD_PROVIDER_HUAWEI, api.CLOUD_PROVIDER_HCSO:
+	case api.CLOUD_PROVIDER_HUAWEI, api.CLOUD_PROVIDER_HCSO, api.CLOUD_PROVIDER_HCS:
 		_group, err := db.FetchByExternalId(HuaweiCachedLbbgManager, exteralLbbgId)
 		if err != nil {
 			if err == sql.ErrNoRows {

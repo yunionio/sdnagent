@@ -38,6 +38,7 @@ import (
 	"yunion.io/x/onecloud/pkg/apis"
 	billing_api "yunion.io/x/onecloud/pkg/apis/billing"
 	api "yunion.io/x/onecloud/pkg/apis/compute"
+	apiidentity "yunion.io/x/onecloud/pkg/apis/identity"
 	imageapi "yunion.io/x/onecloud/pkg/apis/image"
 	schedapi "yunion.io/x/onecloud/pkg/apis/scheduler"
 	"yunion.io/x/onecloud/pkg/cloudcommon/cmdline"
@@ -52,6 +53,7 @@ import (
 	"yunion.io/x/onecloud/pkg/cloudprovider"
 	"yunion.io/x/onecloud/pkg/compute/options"
 	"yunion.io/x/onecloud/pkg/compute/sshkeys"
+	devtool_utils "yunion.io/x/onecloud/pkg/devtool/utils"
 	"yunion.io/x/onecloud/pkg/httperrors"
 	"yunion.io/x/onecloud/pkg/mcclient"
 	"yunion.io/x/onecloud/pkg/mcclient/auth"
@@ -99,6 +101,7 @@ func init() {
 	GuestManager.SetVirtualObject(GuestManager)
 	GuestManager.SetAlias("guest", "guests")
 	GuestManager.NameRequireAscii = false
+	notifyclient.AddNotifyDBHookResources(GuestManager.KeywordPlural(), GuestManager.AliasPlural())
 }
 
 type SGuest struct {
@@ -170,6 +173,10 @@ type SGuest struct {
 	InternetMaxBandwidthOut int `nullable:"true" list:"user" create:"optional"`
 	// 磁盘吞吐量
 	Throughput int `nullable:"true" list:"user" create:"optional"`
+
+	QgaStatus string `width:"36" charset:"ascii" nullable:"false" default:"unknown" list:"user" create:"optional"`
+	// power_states limit in [on, off, unknown]
+	PowerStates string `width:"36" charset:"ascii" nullable:"false" default:"unknown" list:"user" create:"optional"`
 }
 
 func (manager *SGuestManager) GetPropertyStatistics(ctx context.Context, userCred mcclient.TokenCredential, query jsonutils.JSONObject) (*apis.StatusStatistic, error) {
@@ -2219,6 +2226,7 @@ func (self *SGuest) moreExtraInfo(
 	}
 
 	out.CdromSupport, _ = self.GetDriver().IsSupportCdrom(self)
+	out.FloppySupport, _ = self.GetDriver().IsSupportFloppy(self)
 
 	return out
 }
@@ -2328,18 +2336,19 @@ func (self *SGuest) getNetworksDetails() string {
 }
 
 func (self *SGuest) GetCdrom() *SGuestcdrom {
-	return self.getCdrom(false)
+	return self.getCdrom(false, 0)
 }
 
-func (self *SGuest) getCdrom(create bool) *SGuestcdrom {
+func (self *SGuest) getCdrom(create bool, ordinal int64) *SGuestcdrom {
 	cdrom := SGuestcdrom{}
 	cdrom.SetModelManager(GuestcdromManager, &cdrom)
 
-	err := GuestcdromManager.Query().Equals("id", self.Id).First(&cdrom)
+	err := GuestcdromManager.Query().Equals("id", self.Id).Equals("ordinal", ordinal).First(&cdrom)
 	if err != nil {
 		if err == sql.ErrNoRows {
 			if create {
 				cdrom.Id = self.Id
+				cdrom.Ordinal = int(ordinal)
 				err = GuestcdromManager.TableSpec().Insert(context.TODO(), &cdrom)
 				if err != nil {
 					log.Errorf("insert cdrom fail %s", err)
@@ -2355,6 +2364,54 @@ func (self *SGuest) getCdrom(create bool) *SGuestcdrom {
 		}
 	} else {
 		return &cdrom
+	}
+}
+
+func (self *SGuest) getCdroms() ([]SGuestcdrom, error) {
+	cdroms := make([]SGuestcdrom, 0)
+	q := GuestcdromManager.Query().Equals("id", self.Id)
+	err := db.FetchModelObjects(GuestcdromManager, q, &cdroms)
+	if err != nil {
+		return nil, errors.Wrapf(err, "db.FetchModelObjects")
+	}
+	return cdroms, nil
+}
+
+func (self *SGuest) getFloppys() ([]SGuestfloppy, error) {
+	floppys := make([]SGuestfloppy, 0)
+	q := GuestFloppyManager.Query().Equals("id", self.Id)
+	err := db.FetchModelObjects(GuestFloppyManager, q, &floppys)
+	if err != nil {
+		return nil, errors.Wrapf(err, "db.FetchModelObjects")
+	}
+	return floppys, nil
+}
+
+func (self *SGuest) getFloppy(create bool, ordinal int64) *SGuestfloppy {
+	floppy := SGuestfloppy{}
+	floppy.SetModelManager(GuestFloppyManager, &floppy)
+
+	err := GuestFloppyManager.Query().Equals("id", self.Id).Equals("ordinal", ordinal).First(&floppy)
+	if err != nil {
+		if err == sql.ErrNoRows {
+			if create {
+				floppy.Id = self.Id
+				floppy.Ordinal = int(ordinal)
+				err = GuestFloppyManager.TableSpec().Insert(context.TODO(), &floppy)
+				if err != nil {
+					log.Errorf("insert cdrom fail %s", err)
+					return nil
+				}
+				return &floppy
+			} else {
+				return nil
+			}
+		} else {
+			log.Errorf("getFloppy query fail %s", err)
+			return nil
+		}
+	} else {
+		return &floppy
 	}
 }
 
@@ -2534,7 +2591,7 @@ func (self *SGuest) getAdminSecgroupName() string {
 	return ""
 }
 
-//获取多个安全组规则，优先级降序排序
+// 获取多个安全组规则，优先级降序排序
 func (self *SGuest) getSecurityGroupsRules() string {
 	secgroups, _ := self.GetSecgroups()
 	secgroupids := []string{}
@@ -2616,6 +2673,9 @@ func (self *SGuest) syncRemoveCloudVM(ctx context.Context, userCred mcclient.Tok
 	if err != nil {
 		return err
 	}
+	if len(self.ExternalId) == 0 {
+		return self.purge(ctx, userCred)
+	}
 	iVM, err := iregion.GetIVMById(self.ExternalId)
 	if err == nil { //漂移归位
 		if hostId := iVM.GetIHostId(); len(hostId) > 0 {
@@ -2636,7 +2696,7 @@ func (self *SGuest) syncRemoveCloudVM(ctx context.Context, userCred mcclient.Tok
 			}
 		}
 	} else if errors.Cause(err) != cloudprovider.ErrNotFound {
-		return err
+		return errors.Wrap(err, "GetIVMById")
 	}
 
 	if options.SyncPurgeRemovedResources.Contains(self.Keyword()) {
@@ -2689,6 +2749,32 @@ func (guest *SGuest) SyncAllWithCloudVM(ctx context.Context, userCred mcclient.T
 	return nil
 }
 
+func (g *SGuest) SyncOsInfo(ctx context.Context, userCred mcclient.TokenCredential, extVM cloudprovider.IOSInfo) error {
+	// save os info
+	osinfo := map[string]interface{}{}
+	for k, v := range map[string]string{
+		"os_full_name":    extVM.GetFullOsName(),
+		"os_name":         string(extVM.GetOsType()),
+		"os_arch":         extVM.GetOsArch(),
+		"os_type":         string(extVM.GetOsType()),
+		"os_distribution": extVM.GetOsDist(),
+		"os_version":      extVM.GetOsVersion(),
+		"os_language":     extVM.GetOsLang(),
+	} {
+		if len(v) == 0 {
+			continue
+		}
+		osinfo[k] = v
+	}
+	if len(osinfo) > 0 {
+		err := g.SetAllMetadata(ctx, osinfo, userCred)
+		if err != nil {
+			return errors.Wrap(err, "SetAllMetadata")
+		}
+	}
+	return nil
+}
+
 func (self *SGuest) syncWithCloudVM(ctx context.Context, userCred mcclient.TokenCredential, provider cloudprovider.ICloudProvider, host *SHost, extVM cloudprovider.ICloudVM, syncOwnerId mcclient.IIdentityProvider, syncStatus bool) error {
 	recycle := false
 
@@ -2714,9 +2800,15 @@ func (self *SGuest) syncWithCloudVM(ctx context.Context, userCred mcclient.Token
 		self.BootOrder = extVM.GetBootOrder()
 		self.Vga = extVM.GetVga()
 		self.Vdi = extVM.GetVdi()
-		self.OsArch = extVM.GetOSArch()
-		self.OsType = string(extVM.GetOsType())
-		self.Bios = extVM.GetBios()
+		if len(self.OsArch) == 0 {
+			self.OsArch = extVM.GetOsArch()
+		}
+		if len(self.OsType) == 0 {
+			self.OsType = string(extVM.GetOsType())
+		}
+		if len(self.Bios) == 0 {
+			self.Bios = string(extVM.GetBios())
+		}
 		self.Machine = extVM.GetMachine()
 		if !recycle {
 			self.HostId = host.Id
@@ -2778,6 +2870,8 @@ func (self *SGuest) syncWithCloudVM(ctx context.Context, userCred mcclient.Token
 		})
 	}
 
+	self.SyncOsInfo(ctx, userCred, extVM)
+
 	syncVirtualResourceMetadata(ctx, userCred, self, extVM)
 	SyncCloudProject(userCred, self, syncOwnerId, extVM, host.ManagerId)
 
@@ -2803,9 +2897,9 @@ func (manager *SGuestManager) newCloudVM(ctx context.Context, userCred mcclient.
 	guest.BootOrder = extVM.GetBootOrder()
 	guest.Vga = extVM.GetVga()
 	guest.Vdi = extVM.GetVdi()
-	guest.OsArch = extVM.GetOSArch()
+	guest.OsArch = extVM.GetOsArch()
 	guest.OsType = string(extVM.GetOsType())
-	guest.Bios = extVM.GetBios()
+	guest.Bios = string(extVM.GetBios())
 	guest.Machine = extVM.GetMachine()
 	guest.Hypervisor = extVM.GetHypervisor()
 	guest.Hostname = extVM.GetHostname()
@@ -2878,6 +2972,8 @@ func (manager *SGuestManager) newCloudVM(ctx context.Context, userCred mcclient.
 	if err != nil {
 		return nil, errors.Wrapf(err, "Insert")
 	}
+
+	guest.SyncOsInfo(ctx, userCred, extVM)
 
 	syncVirtualResourceMetadata(ctx, userCred, &guest, extVM)
 	SyncCloudProject(userCred, &guest, syncOwnerId, extVM, host.ManagerId)
@@ -2978,7 +3074,7 @@ func (self *SGuest) GetOSProfile() osprofile.SOSProfile {
 
 // Summary of network address allocation strategy
 //
-// IpAddr when specified must be part of the network
+// # IpAddr when specified must be part of the network
 //
 // Use IpAddr without checking if it's already allocated when UseDesignatedIP
 // is true.  See b31bc7fa ("feature: 1. baremetal server reuse host ip...")
@@ -4080,8 +4176,8 @@ func (self *SGuest) DetachAllNetworks(ctx context.Context, userCred mcclient.Tok
 	return GuestnetworkManager.DeleteGuestNics(ctx, userCred, gns, false)
 }
 
-func (self *SGuest) EjectIso(userCred mcclient.TokenCredential) bool {
-	cdrom := self.getCdrom(false)
+func (self *SGuest) EjectIso(cdromOrdinal int64, userCred mcclient.TokenCredential) bool {
+	cdrom := self.getCdrom(false, cdromOrdinal)
 	if cdrom != nil && len(cdrom.ImageId) > 0 {
 		imageId := cdrom.ImageId
 		if cdrom.ejectIso() {
@@ -4090,6 +4186,48 @@ func (self *SGuest) EjectIso(userCred mcclient.TokenCredential) bool {
 		}
 	}
 	return false
+}
+
+func (self *SGuest) EjectAllIso(userCred mcclient.TokenCredential) bool {
+	cdroms, _ := self.getCdroms()
+	for _, cdrom := range cdroms {
+		if len(cdrom.ImageId) > 0 {
+			imageId := cdrom.ImageId
+			if cdrom.ejectIso() {
+				db.OpsLog.LogEvent(self, db.ACT_ISO_DETACH, imageId, userCred)
+			} else {
+				return false
+			}
+		}
+	}
+	return true
+}
+
+func (self *SGuest) EjectVfd(floppyOrdinal int64, userCred mcclient.TokenCredential) bool {
+	floppy := self.getFloppy(false, floppyOrdinal)
+	if floppy != nil && len(floppy.ImageId) > 0 {
+		imageId := floppy.ImageId
+		if floppy.ejectVfd() {
+			db.OpsLog.LogEvent(self, db.ACT_VFD_DETACH, imageId, userCred)
+			return true
+		}
+	}
+	return false
+}
+
+func (self *SGuest) EjectAllVfd(userCred mcclient.TokenCredential) bool {
+	floppys, _ := self.getFloppys()
+	for _, floppy := range floppys {
+		if len(floppy.ImageId) > 0 {
+			imageId := floppy.ImageId
+			if floppy.ejectVfd() {
+				db.OpsLog.LogEvent(self, db.ACT_ISO_DETACH, imageId, userCred)
+			} else {
+				return false
+			}
+		}
+	}
+	return true
 }
 
 func (self *SGuest) Delete(ctx context.Context, userCred mcclient.TokenCredential) error {
@@ -4265,7 +4403,38 @@ func (self *SGuest) GetDeployConfigOnHost(ctx context.Context, userCred mcclient
 
 	config.Add(jsonutils.NewString(onFinish), "on_finish")
 
+	if jsonutils.QueryBoolean(params, "deploy_telegraf", false) {
+		s := auth.GetAdminSessionWithPublic(nil, consts.GetRegion())
+		influxdbUrl, err := s.GetServiceURL("influxdb", apiidentity.EndpointInterfacePublic, "")
+		if err != nil {
+			return nil, errors.Wrap(err, "get influxdb url")
+		}
+		config.Add(jsonutils.JSONTrue, "deploy_telegraf")
+		serverDetails, err := self.getDetails(ctx, userCred)
+		if err != nil {
+			return nil, errors.Wrap(err, "get details")
+		}
+		telegrafConf, err := devtool_utils.GenerateTelegrafConf(
+			serverDetails, influxdbUrl, self.OsType, self.Hypervisor)
+		if err != nil {
+			return nil, errors.Wrap(err, "get telegraf conf")
+		}
+		config.Add(jsonutils.NewString(telegrafConf), "telegraf_conf")
+	}
+
 	return config, nil
+}
+
+func (self *SGuest) getDetails(ctx context.Context, userCred mcclient.TokenCredential) (*api.ServerDetails, error) {
+	res := GuestManager.FetchCustomizeColumns(ctx, userCred, jsonutils.NewDict(), []interface{}{self}, nil, false)
+	jsonDict := jsonutils.Marshal(res[0]).(*jsonutils.JSONDict)
+	jsonDict.Update(jsonutils.Marshal(self).(*jsonutils.JSONDict))
+	serverDetails := new(api.ServerDetails)
+	err := jsonDict.Unmarshal(serverDetails)
+	if err != nil {
+		return nil, err
+	}
+	return serverDetails, nil
 }
 
 func (self *SGuest) getVga() string {
@@ -4382,10 +4551,20 @@ func (self *SGuest) GetJsonDescAtHypervisor(ctx context.Context, host *SHost) *a
 		desc.Disks = append(desc.Disks, diskDesc)
 	}
 
-	// cdrom
-	cdrom := self.getCdrom(false)
-	if cdrom != nil {
-		desc.Cdrom = cdrom.getJsonDesc()
+	cdroms, _ := self.getCdroms()
+	for _, cdrom := range cdroms {
+		cdromDesc := cdrom.getJsonDesc()
+		desc.Cdroms = append(desc.Cdroms, cdromDesc)
+	}
+	if len(desc.Cdroms) > 0 {
+		desc.Cdrom = desc.Cdroms[0]
+	}
+
+	//floppy
+	floppys, _ := self.getFloppys()
+	for _, floppy := range floppys {
+		floppyDesc := floppy.getJsonDesc()
+		desc.Floppys = append(desc.Floppys, floppyDesc)
 	}
 
 	// tenant
@@ -4437,7 +4616,7 @@ func (self *SGuest) GetJsonDescAtHypervisor(ctx context.Context, host *SHost) *a
 	// add scaling group
 	sggs, err := ScalingGroupGuestManager.Fetch("", self.Id)
 	if err == nil && len(sggs) > 0 {
-		desc.ScallingGroupId = sggs[0].ScalingGroupId
+		desc.ScalingGroupId = sggs[0].ScalingGroupId
 	}
 
 	return desc
@@ -4738,13 +4917,14 @@ func (self *SGuest) saveOsType(userCred mcclient.TokenCredential, osType string)
 }
 
 type sDeployInfo struct {
-	Os       string
-	Account  string
-	Key      string
-	Distro   string
-	Version  string
-	Arch     string
-	Language string
+	Os               string
+	Account          string
+	Key              string
+	Distro           string
+	Version          string
+	Arch             string
+	Language         string
+	TelegrafDeployed bool
 }
 
 func (self *SGuest) SaveDeployInfo(ctx context.Context, userCred mcclient.TokenCredential, data jsonutils.JSONObject) {
@@ -4780,6 +4960,9 @@ func (self *SGuest) SaveDeployInfo(ctx context.Context, userCred mcclient.TokenC
 	}
 	if len(deployInfo.Language) > 0 {
 		info["os_language"] = deployInfo.Language
+	}
+	if deployInfo.TelegrafDeployed {
+		info["telegraf_deployed"] = true
 	}
 	self.SetAllMetadata(ctx, info, userCred)
 	self.saveOldPassword(ctx, userCred)
@@ -5588,7 +5771,7 @@ func (self *SGuest) toCreateInput() *api.ServerCreateInput {
 	r := new(api.ServerCreateInput)
 	r.VmemSize = self.VmemSize
 	r.VcpuCount = int(self.VcpuCount)
-	if guestCdrom := self.getCdrom(false); guestCdrom != nil {
+	if guestCdrom := self.getCdrom(false, 0); guestCdrom != nil {
 		r.Cdrom = guestCdrom.ImageId
 	}
 	r.Vga = self.Vga

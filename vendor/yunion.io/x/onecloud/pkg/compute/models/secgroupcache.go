@@ -615,7 +615,7 @@ func (self *SSecurityGroupCache) StartSecurityGroupCacheDeleteTask(ctx context.C
 }
 
 func (manager *SSecurityGroupCacheManager) InitializeData() error {
-	providerIds := CloudproviderManager.Query("id").In("provider", []string{api.CLOUD_PROVIDER_HUAWEI, api.CLOUD_PROVIDER_HCSO, api.CLOUD_PROVIDER_CTYUN, api.CLOUD_PROVIDER_QCLOUD}).SubQuery()
+	providerIds := CloudproviderManager.Query("id").In("provider", []string{api.CLOUD_PROVIDER_HUAWEI, api.CLOUD_PROVIDER_HCSO, api.CLOUD_PROVIDER_HCS, api.CLOUD_PROVIDER_CTYUN, api.CLOUD_PROVIDER_QCLOUD}).SubQuery()
 
 	deprecatedSecgroups := []SSecurityGroupCache{}
 	q := manager.Query().In("manager_id", providerIds).NotEquals("vpc_id", api.NORMAL_VPC_ID)
@@ -771,18 +771,32 @@ func (self *SSecurityGroupCache) CreateISecurityGroup(ctx context.Context) (clou
 }
 
 func (self *SSecurityGroupCache) GetSecuritRuleSet(ctx context.Context) (cloudprovider.SecurityRuleSet, []SSecurityGroupCache, error) {
-	ruleSet := cloudprovider.SecurityRuleSet{}
 	secgroup, err := self.GetSecgroup()
 	if err != nil {
-		return ruleSet, nil, errors.Wrapf(err, "GetSecgroup")
+		return nil, nil, errors.Wrapf(err, "GetSecgroup")
 	}
 	rules, err := secgroup.getSecurityRules()
 	if err != nil {
-		return ruleSet, nil, errors.Wrapf(err, "getSecurityRules")
+		return nil, nil, errors.Wrapf(err, "getSecurityRules")
 	}
+	return self.convertRules(ctx, rules)
+}
 
+func (self *SSecurityGroupCache) GetOldSecuritRuleSet(ctx context.Context) (cloudprovider.SecurityRuleSet, []SSecurityGroupCache, error) {
+	secgroup, err := self.GetSecgroup()
+	if err != nil {
+		return nil, nil, errors.Wrapf(err, "GetSecgroup")
+	}
+	rules, err := secgroup.GetOldRules()
+	if err != nil {
+		return nil, nil, errors.Wrapf(err, "GetOldRules")
+	}
+	return self.convertRules(ctx, rules)
+}
+
+func (self *SSecurityGroupCache) convertRules(ctx context.Context, rules []SSecurityGroupRule) (cloudprovider.SecurityRuleSet, []SSecurityGroupCache, error) {
+	ruleSet := cloudprovider.SecurityRuleSet{}
 	caches := []SSecurityGroupCache{}
-
 	driver := GetRegionDriver(self.GetProviderName())
 	for i := range rules {
 		if !driver.IsSupportPeerSecgroup() && len(rules[i].PeerSecgroupId) > 0 {
@@ -835,11 +849,11 @@ func (self *SSecurityGroupCache) SyncRules(ctx context.Context, skipSyncRule boo
 	if err != nil {
 		return err
 	}
-	iSecgroup, isNew, err := self.GetOrCreateISecurityGroup(ctx)
+	iSecgroup, err := self.GetISecurityGroup(ctx)
 	if err != nil {
-		return errors.Wrapf(err, "GetOrCreateISecurityGroup")
+		return errors.Wrapf(err, "GetISecurityGroup")
 	}
-	if !isNew && skipSyncRule {
+	if skipSyncRule {
 		return nil
 	}
 

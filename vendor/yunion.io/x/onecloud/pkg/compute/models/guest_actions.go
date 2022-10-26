@@ -32,6 +32,7 @@ import (
 	"yunion.io/x/pkg/errors"
 	"yunion.io/x/pkg/tristate"
 	"yunion.io/x/pkg/util/fileutils"
+	"yunion.io/x/pkg/util/osprofile"
 	"yunion.io/x/pkg/util/regutils"
 	"yunion.io/x/pkg/util/sets"
 	"yunion.io/x/pkg/utils"
@@ -71,7 +72,7 @@ import (
 
 func (self *SGuest) GetDetailsVnc(ctx context.Context, userCred mcclient.TokenCredential, input *cloudprovider.ServerVncInput) (*cloudprovider.ServerVncOutput, error) {
 	ret := &cloudprovider.ServerVncOutput{}
-	if utils.IsInStringArray(self.Status, []string{api.VM_RUNNING, api.VM_BLOCK_STREAM}) {
+	if utils.IsInStringArray(self.Status, []string{api.VM_RUNNING, api.VM_BLOCK_STREAM, api.VM_MIGRATING}) {
 		host, err := self.GetHost()
 		if err != nil {
 			return nil, httperrors.NewInternalServerError(errors.Wrapf(err, "GetHost").Error())
@@ -460,7 +461,8 @@ func (self *SGuest) PerformMigrateForecast(ctx context.Context, userCred mcclien
 			input.PreferHostId = lmInput.PreferHost
 		} else {
 			mInput = &api.GuestMigrateInput{
-				PreferHost: input.PreferHostId,
+				PreferHost:   input.PreferHostId,
+				IsRescueMode: input.IsRescueMode,
 			}
 			if err := self.validateMigrate(ctx, userCred, mInput, nil); err != nil {
 				return nil, err
@@ -506,6 +508,7 @@ func (self *SGuest) GetSchedMigrateParams(
 		if host != nil {
 			schedDesc.TargetHostKernel, _ = host.SysInfo.GetString("kernel_version")
 			schedDesc.SkipKernelCheck = &input.SkipKernelCheck
+			schedDesc.HostMemPageSizeKB = host.PageSizeKB
 		}
 	}
 	schedDesc.ReuseNetwork = true
@@ -556,10 +559,18 @@ func (self *SGuest) PerformLiveMigrate(ctx context.Context, userCred mcclient.To
 	if input.EnableTLS == nil {
 		input.EnableTLS = &options.Options.EnableTlsMigration
 	}
-	return nil, self.StartGuestLiveMigrateTask(ctx, userCred, self.Status, input.PreferHost, input.SkipCpuCheck, input.SkipKernelCheck, input.EnableTLS, "")
+	return nil, self.StartGuestLiveMigrateTask(ctx, userCred,
+		self.Status, input.PreferHost, input.SkipCpuCheck,
+		input.SkipKernelCheck, input.EnableTLS, input.QuicklyFinish, input.MaxBandwidthMb, input.KeepDestGuestOnFailed, "",
+	)
 }
 
-func (self *SGuest) StartGuestLiveMigrateTask(ctx context.Context, userCred mcclient.TokenCredential, guestStatus, preferHostId string, skipCpuCheck *bool, skipKernelCheck *bool, enableTLS *bool, parentTaskId string) error {
+func (self *SGuest) StartGuestLiveMigrateTask(
+	ctx context.Context, userCred mcclient.TokenCredential,
+	guestStatus, preferHostId string,
+	skipCpuCheck, skipKernelCheck, enableTLS, quicklyFinish *bool,
+	maxBandwidthMb *int64, keepDestGuestOnFailed *bool, parentTaskId string,
+) error {
 	self.SetStatus(userCred, api.VM_START_MIGRATE, "")
 	data := jsonutils.NewDict()
 	if len(preferHostId) > 0 {
@@ -574,6 +585,16 @@ func (self *SGuest) StartGuestLiveMigrateTask(ctx context.Context, userCred mccl
 	if enableTLS != nil {
 		data.Set("enable_tls", jsonutils.NewBool(*enableTLS))
 	}
+	if quicklyFinish != nil {
+		data.Set("quickly_finish", jsonutils.NewBool(*quicklyFinish))
+	}
+	if maxBandwidthMb != nil {
+		data.Set("max_bandwidth_mb", jsonutils.NewInt(*maxBandwidthMb))
+	}
+	if keepDestGuestOnFailed != nil {
+		data.Set("keep_dest_guest_on_failed", jsonutils.NewBool(*keepDestGuestOnFailed))
+	}
+
 	data.Set("guest_status", jsonutils.NewString(guestStatus))
 	dedicateMigrateTask := "GuestLiveMigrateTask"
 	if self.GetHypervisor() != api.HYPERVISOR_KVM {
@@ -586,6 +607,48 @@ func (self *SGuest) StartGuestLiveMigrateTask(ctx context.Context, userCred mccl
 		task.ScheduleRun(nil)
 	}
 	return nil
+}
+
+func (self *SGuest) PerformSetLiveMigrateParams(
+	ctx context.Context, userCred mcclient.TokenCredential, query jsonutils.JSONObject, input api.ServerSetLiveMigrateParamsInput,
+) (jsonutils.JSONObject, error) {
+	if self.Status != api.VM_LIVE_MIGRATING {
+		return nil, httperrors.NewServerStatusError("cannot set migrate params in status %s", self.Status)
+	}
+	if input.MaxBandwidthMB == nil && input.DowntimeLimitMS == nil {
+		return nil, httperrors.NewInputParameterError("empty input")
+	}
+
+	arguments := map[string]interface{}{}
+	if input.MaxBandwidthMB != nil {
+		arguments["max-bandwidth"] = *input.MaxBandwidthMB * 1024 * 1024
+	}
+	if input.DowntimeLimitMS != nil {
+		arguments["downtime-limit"] = *input.DowntimeLimitMS
+	}
+	cmd := map[string]interface{}{
+		"execute":   "migrate-set-parameters",
+		"arguments": arguments,
+	}
+	log.Infof("set live migrate params input: %s", jsonutils.Marshal(cmd).String())
+	monitorInput := &api.ServerMonitorInput{
+		COMMAND: jsonutils.Marshal(cmd).String(),
+		QMP:     true,
+	}
+	return self.SendMonitorCommand(ctx, userCred, monitorInput)
+}
+
+func (self *SGuest) PerformCancelLiveMigrate(
+	ctx context.Context, userCred mcclient.TokenCredential, query jsonutils.JSONObject, data jsonutils.JSONObject,
+) (jsonutils.JSONObject, error) {
+	if self.Status != api.VM_LIVE_MIGRATING {
+		return nil, httperrors.NewServerStatusError("cannot set migrate params in status %s", self.Status)
+	}
+	monitorInput := &api.ServerMonitorInput{
+		COMMAND: "migrate_cancel",
+		QMP:     false,
+	}
+	return self.SendMonitorCommand(ctx, userCred, monitorInput)
 }
 
 func (self *SGuest) PerformClone(ctx context.Context, userCred mcclient.TokenCredential, query jsonutils.JSONObject, data jsonutils.JSONObject) (jsonutils.JSONObject, error) {
@@ -658,6 +721,33 @@ func (self *SGuest) PerformClone(ctx context.Context, userCred mcclient.TokenCre
 	}
 	task.ScheduleRun(nil)
 	return nil, nil
+}
+
+func (self *SGuest) PerformSetPassword(ctx context.Context, userCred mcclient.TokenCredential, query jsonutils.JSONObject, input api.ServerSetPasswordInput) (jsonutils.JSONObject, error) {
+	if self.Hypervisor == api.HYPERVISOR_KVM && self.Status == api.VM_RUNNING {
+		inputQga := &api.ServerQgaSetPasswordInput{
+			Username: input.Username,
+			Password: input.Password,
+		}
+		if inputQga.Username == "" {
+			if self.OsType == osprofile.OS_TYPE_WINDOWS {
+				inputQga.Username = api.VM_DEFAULT_WINDOWS_LOGIN_USER
+			} else {
+				inputQga.Username = api.VM_DEFAULT_LINUX_LOGIN_USER
+			}
+		}
+		if inputQga.Password == "" && input.ResetPassword {
+			inputQga.Password = seclib2.RandomPassword2(12)
+		}
+		return self.PerformQgaSetPassword(ctx, userCred, query, inputQga)
+	} else {
+		inputDeploy := api.ServerDeployInput{
+			Password:      input.Password,
+			ResetPassword: input.ResetPassword,
+			AutoStart:     input.AutoStart,
+		}
+		return self.PerformDeploy(ctx, userCred, query, inputDeploy)
+	}
 }
 
 func (self *SGuest) GetDetailsCreateParams(ctx context.Context, userCred mcclient.TokenCredential, query jsonutils.JSONObject) (jsonutils.JSONObject, error) {
@@ -1078,18 +1168,18 @@ func (self *SGuest) StartGuestStopTask(ctx context.Context, userCred mcclient.To
 	return self.GetDriver().StartGuestStopTask(self, ctx, userCred, params, parentTaskId)
 }
 
-func (self *SGuest) insertIso(imageId string) bool {
-	cdrom := self.getCdrom(true)
+func (self *SGuest) insertIso(imageId string, cdromOrdinal int64) bool {
+	cdrom := self.getCdrom(true, cdromOrdinal)
 	return cdrom.insertIso(imageId)
 }
 
-func (self *SGuest) InsertIsoSucc(imageId string, path string, size int64, name string) bool {
-	cdrom := self.getCdrom(false)
+func (self *SGuest) InsertIsoSucc(cdromOrdinal int64, imageId string, path string, size int64, name string) bool {
+	cdrom := self.getCdrom(false, cdromOrdinal)
 	return cdrom.insertIsoSucc(imageId, path, size, name)
 }
 
-func (self *SGuest) GetDetailsIso(userCred mcclient.TokenCredential) jsonutils.JSONObject {
-	cdrom := self.getCdrom(false)
+func (self *SGuest) GetDetailsIso(cdromOrdinal int64, userCred mcclient.TokenCredential) jsonutils.JSONObject {
+	cdrom := self.getCdrom(false, cdromOrdinal)
 	desc := jsonutils.NewDict()
 	if len(cdrom.ImageId) > 0 {
 		desc.Set("image_id", jsonutils.NewString(cdrom.ImageId))
@@ -1107,7 +1197,11 @@ func (self *SGuest) PerformInsertiso(ctx context.Context, userCred mcclient.Toke
 	if !utils.IsInStringArray(self.Hypervisor, []string{api.HYPERVISOR_KVM, api.HYPERVISOR_BAREMETAL}) {
 		return nil, httperrors.NewNotAcceptableError("Not allow for hypervisor %s", self.Hypervisor)
 	}
-	cdrom := self.getCdrom(false)
+	cdromOrdinal, _ := data.Int("cdrom_ordinal")
+	if cdromOrdinal < 0 {
+		return nil, httperrors.NewServerStatusError("invalid cdrom_ordinal: %d", cdromOrdinal)
+	}
+	cdrom := self.getCdrom(false, cdromOrdinal)
 	if cdrom != nil && len(cdrom.ImageId) > 0 {
 		return nil, httperrors.NewBadRequestError("CD-ROM not empty, please eject first")
 	}
@@ -1119,7 +1213,7 @@ func (self *SGuest) PerformInsertiso(ctx context.Context, userCred mcclient.Toke
 	}
 
 	if utils.IsInStringArray(self.Status, []string{api.VM_RUNNING, api.VM_READY}) {
-		err = self.StartInsertIsoTask(ctx, image.Id, false, self.HostId, userCred, "")
+		err = self.StartInsertIsoTask(ctx, cdromOrdinal, image.Id, false, self.HostId, userCred, "")
 		return nil, err
 	} else {
 		return nil, httperrors.NewServerStatusError("Insert ISO not allowed in status %s", self.Status)
@@ -1130,20 +1224,26 @@ func (self *SGuest) PerformEjectiso(ctx context.Context, userCred mcclient.Token
 	if !utils.IsInStringArray(self.Hypervisor, []string{api.HYPERVISOR_KVM, api.HYPERVISOR_BAREMETAL}) {
 		return nil, httperrors.NewNotAcceptableError("Not allow for hypervisor %s", self.Hypervisor)
 	}
-	cdrom := self.getCdrom(false)
+	cdromOrdinal, _ := data.Int("cdrom_ordinal")
+	if cdromOrdinal < 0 {
+		return nil, httperrors.NewServerStatusError("invalid cdrom_ordinal: %d", cdromOrdinal)
+	}
+	cdrom := self.getCdrom(false, cdromOrdinal)
 	if cdrom == nil || len(cdrom.ImageId) == 0 {
 		return nil, httperrors.NewBadRequestError("No ISO to eject")
 	}
 	if utils.IsInStringArray(self.Status, []string{api.VM_RUNNING, api.VM_READY}) {
-		err := self.StartEjectisoTask(ctx, userCred, "")
+		err := self.StartEjectisoTask(ctx, cdromOrdinal, userCred, "")
 		return nil, err
 	} else {
 		return nil, httperrors.NewServerStatusError("Eject ISO not allowed in status %s", self.Status)
 	}
 }
 
-func (self *SGuest) StartEjectisoTask(ctx context.Context, userCred mcclient.TokenCredential, parentTaskId string) error {
-	task, err := taskman.TaskManager.NewTask(ctx, "GuestEjectISOTask", self, userCred, nil, parentTaskId, "", nil)
+func (self *SGuest) StartEjectisoTask(ctx context.Context, cdromOrdinal int64, userCred mcclient.TokenCredential, parentTaskId string) error {
+	data := jsonutils.NewDict()
+	data.Add(jsonutils.NewInt(cdromOrdinal), "cdrom_ordinal")
+	task, err := taskman.TaskManager.NewTask(ctx, "GuestEjectISOTask", self, userCred, data, parentTaskId, "", nil)
 	if err != nil {
 		return err
 	}
@@ -1151,11 +1251,12 @@ func (self *SGuest) StartEjectisoTask(ctx context.Context, userCred mcclient.Tok
 	return nil
 }
 
-func (self *SGuest) StartInsertIsoTask(ctx context.Context, imageId string, boot bool, hostId string, userCred mcclient.TokenCredential, parentTaskId string) error {
-	self.insertIso(imageId)
+func (self *SGuest) StartInsertIsoTask(ctx context.Context, cdromOrdinal int64, imageId string, boot bool, hostId string, userCred mcclient.TokenCredential, parentTaskId string) error {
+	self.insertIso(imageId, cdromOrdinal)
 
 	data := jsonutils.NewDict()
 	data.Add(jsonutils.NewString(imageId), "image_id")
+	data.Add(jsonutils.NewInt(cdromOrdinal), "cdrom_ordinal")
 	data.Add(jsonutils.NewString(hostId), "host_id")
 	if boot {
 		data.Add(jsonutils.JSONTrue, "boot")
@@ -1163,6 +1264,105 @@ func (self *SGuest) StartInsertIsoTask(ctx context.Context, imageId string, boot
 	taskName := "GuestInsertIsoTask"
 	if self.BackupHostId != "" {
 		taskName = "HaGuestInsertIsoTask"
+	}
+	task, err := taskman.TaskManager.NewTask(ctx, taskName, self, userCred, data, parentTaskId, "", nil)
+	if err != nil {
+		return err
+	}
+	task.ScheduleRun(nil)
+	return nil
+}
+
+func (self *SGuest) insertVfd(imageId string, floppyOrdinal int64) bool {
+	floppy := self.getFloppy(true, floppyOrdinal)
+	return floppy.insertVfd(imageId)
+}
+
+func (self *SGuest) InsertVfdSucc(floppyOrdinal int64, imageId string, path string, size int64, name string) bool {
+	floppy := self.getFloppy(true, floppyOrdinal)
+	return floppy.insertVfdSucc(imageId, path, size, name)
+}
+
+func (self *SGuest) GetDetailsVfd(floppyOrdinal int64, userCred mcclient.TokenCredential) jsonutils.JSONObject {
+	floppy := self.getFloppy(false, floppyOrdinal)
+	desc := jsonutils.NewDict()
+	if len(floppy.ImageId) > 0 {
+		desc.Set("image_id", jsonutils.NewString(floppy.ImageId))
+		desc.Set("status", jsonutils.NewString("inserting"))
+	}
+	if len(floppy.Path) > 0 {
+		desc.Set("name", jsonutils.NewString(floppy.Name))
+		desc.Set("size", jsonutils.NewInt(int64(floppy.Size)))
+		desc.Set("status", jsonutils.NewString("ready"))
+	}
+	return desc
+}
+
+func (self *SGuest) PerformInsertvfd(ctx context.Context, userCred mcclient.TokenCredential, query jsonutils.JSONObject, data api.ServerInsertVfdInput) (jsonutils.JSONObject, error) {
+	if !utils.IsInStringArray(self.Hypervisor, []string{api.HYPERVISOR_KVM, api.HYPERVISOR_BAREMETAL}) {
+		return nil, httperrors.NewNotAcceptableError("Not allow for hypervisor %s", self.Hypervisor)
+	}
+	if data.FloppyOrdinal < 0 {
+		return nil, httperrors.NewServerStatusError("invalid floppy_ordinal: %d", data.FloppyOrdinal)
+	}
+	floppy := self.getFloppy(false, data.FloppyOrdinal)
+	if floppy != nil && len(floppy.ImageId) > 0 {
+		return nil, httperrors.NewBadRequestError("Floppy not empty, please eject first")
+	}
+	image, err := parseIsoInfo(ctx, userCred, data.ImageId)
+	if err != nil {
+		log.Errorln(err)
+		return nil, err
+	}
+
+	if utils.IsInStringArray(self.Status, []string{api.VM_RUNNING, api.VM_READY}) {
+		err = self.StartInsertVfdTask(ctx, data.FloppyOrdinal, image.Id, false, self.HostId, userCred, "")
+		return nil, err
+	} else {
+		return nil, httperrors.NewServerStatusError("Insert ISO not allowed in status %s", self.Status)
+	}
+}
+
+func (self *SGuest) PerformEjectvfd(ctx context.Context, userCred mcclient.TokenCredential, query jsonutils.JSONObject, data api.ServerEjectVfdInput) (jsonutils.JSONObject, error) {
+	if !utils.IsInStringArray(self.Hypervisor, []string{api.HYPERVISOR_KVM, api.HYPERVISOR_BAREMETAL}) {
+		return nil, httperrors.NewNotAcceptableError("Not allow for hypervisor %s", self.Hypervisor)
+	}
+	if data.FloppyOrdinal < 0 {
+		return nil, httperrors.NewServerStatusError("invalid floppy_ordinal: %d", data.FloppyOrdinal)
+	}
+	floppy := self.getFloppy(false, data.FloppyOrdinal)
+	if floppy == nil || len(floppy.ImageId) == 0 {
+		return nil, httperrors.NewBadRequestError("No VFD to eject")
+	}
+	if utils.IsInStringArray(self.Status, []string{api.VM_RUNNING, api.VM_READY}) {
+		err := self.StartEjectvfdTask(ctx, userCred, "")
+		return nil, err
+	} else {
+		return nil, httperrors.NewServerStatusError("Eject ISO not allowed in status %s", self.Status)
+	}
+}
+
+func (self *SGuest) StartEjectvfdTask(ctx context.Context, userCred mcclient.TokenCredential, parentTaskId string) error {
+	task, err := taskman.TaskManager.NewTask(ctx, "GuestEjectVFDTask", self, userCred, nil, parentTaskId, "", nil)
+	if err != nil {
+		return err
+	}
+	task.ScheduleRun(nil)
+	return nil
+}
+
+func (self *SGuest) StartInsertVfdTask(ctx context.Context, floppyOrdinal int64, imageId string, boot bool, hostId string, userCred mcclient.TokenCredential, parentTaskId string) error {
+	self.insertVfd(imageId, floppyOrdinal)
+
+	data := jsonutils.NewDict()
+	data.Add(jsonutils.NewString(imageId), "image_id")
+	data.Add(jsonutils.NewString(hostId), "host_id")
+	if boot {
+		data.Add(jsonutils.JSONTrue, "boot")
+	}
+	taskName := "GuestInsertVfdTask"
+	if self.BackupHostId != "" {
+		taskName = "HaGuestInsertVfdTask"
 	}
 	task, err := taskman.TaskManager.NewTask(ctx, taskName, self, userCred, data, parentTaskId, "", nil)
 	if err != nil {
@@ -2065,7 +2265,6 @@ func (self *SGuest) attachIsolatedDevice(ctx context.Context, userCred mcclient.
 		return fmt.Errorf("Isolated device already attached to another guest: %s", dev.GuestId)
 	}
 	if dev.HostId !=
-
 		self.HostId {
 		return fmt.Errorf("Isolated device and guest are not located in the same host")
 	}
@@ -2862,7 +3061,33 @@ func (self *SGuest) isNotRunningStatus(status string) bool {
 	return false
 }
 
+func (self *SGuest) SetStatus(userCred mcclient.TokenCredential, status, reason string) error {
+	if utils.IsInStringArray(status, api.VM_RUNNING_STATUS) {
+		if err := self.SetPowerStates(api.VM_POWER_STATES_ON); err != nil {
+			return err
+		}
+	}
+
+	return self.SVirtualResourceBase.SetStatus(userCred, status, reason)
+}
+
+func (self *SGuest) SetPowerStates(powerStates string) error {
+	if self.PowerStates == powerStates {
+		return nil
+	}
+	_, err := db.Update(self, func() error {
+		self.PowerStates = powerStates
+		return nil
+	})
+	return errors.Wrap(err, "Update power states")
+}
+
 func (self *SGuest) PerformStatus(ctx context.Context, userCred mcclient.TokenCredential, query jsonutils.JSONObject, input apis.PerformStatusInput) (jsonutils.JSONObject, error) {
+	if input.PowerStates != "" {
+		if err := self.SetPowerStates(input.PowerStates); err != nil {
+			return nil, errors.Wrap(err, "set power states")
+		}
+	}
 	preStatus := self.Status
 
 	if len(self.BackupHostId) == 0 && input.Status == api.VM_RUNNING && input.BlockJobsCount > 0 {
@@ -4570,9 +4795,17 @@ func (self *SGuest) validateForBatchMigrate(ctx context.Context, rescueMode bool
 		return guest, httperrors.NewBadRequestError("guest %s status %s can't migrate", guest.Name, guest.Status)
 	}
 	if guest.Status == api.VM_RUNNING {
-		cdrom := guest.getCdrom(false)
-		if cdrom != nil && len(cdrom.ImageId) > 0 {
-			return guest, httperrors.NewBadRequestError("cannot migrate with cdrom")
+		cdroms, _ := guest.getCdroms()
+		for _, cdrom := range cdroms {
+			if len(cdrom.ImageId) > 0 {
+				return guest, httperrors.NewBadRequestError("cannot migrate with cdrom")
+			}
+		}
+		floppys, _ := guest.getFloppys()
+		for _, floppy := range floppys {
+			if len(floppy.ImageId) > 0 {
+				return guest, httperrors.NewBadRequestError("cannot migrate with floppy")
+			}
 		}
 	} else if guest.Status == api.VM_UNKNOWN {
 		if guest.getDefaultStorageType() == api.STORAGE_LOCAL {
@@ -4644,6 +4877,8 @@ func (manager *SGuestManager) PerformBatchMigrate(ctx context.Context, userCred 
 			SkipCpuCheck:    params.SkipCpuCheck,
 			SkipKernelCheck: params.SkipKernelCheck,
 			EnableTLS:       params.EnableTLS,
+			MaxBandwidthMb:  params.MaxBandwidthMb,
+			QuciklyFinish:   params.QuciklyFinish,
 		}
 		guests[i].SetStatus(userCred, api.VM_START_MIGRATE, "batch migrate")
 		if _, ok := hostGuests[guests[i].HostId]; ok {

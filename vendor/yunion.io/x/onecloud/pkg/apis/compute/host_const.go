@@ -30,6 +30,7 @@ const (
 	HOST_TYPE_AZURE          = "azure"
 	HOST_TYPE_HUAWEI         = "huawei"
 	HOST_TYPE_HCSO           = "hcso"
+	HOST_TYPE_HCS            = "hcs"
 	HOST_TYPE_OPENSTACK      = "openstack"
 	HOST_TYPE_UCLOUD         = "ucloud"
 	HOST_TYPE_ZSTACK         = "zstack"
@@ -41,6 +42,8 @@ const (
 	HOST_TYPE_NUTANIX        = "nutanix"
 	HOST_TYPE_BINGO_CLOUD    = "bingocloud"
 	HOST_TYPE_INCLOUD_SPHERE = "incloudsphere"
+	HOST_TYPE_PROXMOX        = "proxmox"
+	HOST_TYPE_REMOTEFILE     = "remotefile"
 
 	HOST_TYPE_DEFAULT = HOST_TYPE_HYPERVISOR
 
@@ -116,6 +119,7 @@ var HOST_TYPES = []string{
 	HOST_TYPE_QCLOUD,
 	HOST_TYPE_HUAWEI,
 	HOST_TYPE_HCSO,
+	HOST_TYPE_HCS,
 	HOST_TYPE_OPENSTACK,
 	HOST_TYPE_UCLOUD,
 	HOST_TYPE_ZSTACK,
@@ -126,6 +130,8 @@ var HOST_TYPES = []string{
 	HOST_TYPE_NUTANIX,
 	HOST_TYPE_BINGO_CLOUD,
 	HOST_TYPE_INCLOUD_SPHERE,
+	HOST_TYPE_PROXMOX,
+	HOST_TYPE_REMOTEFILE,
 }
 
 var NIC_TYPES = []string{NIC_TYPE_IPMI, NIC_TYPE_ADMIN}

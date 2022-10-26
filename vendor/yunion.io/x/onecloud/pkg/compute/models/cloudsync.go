@@ -1130,6 +1130,33 @@ func syncNATSkus(ctx context.Context, userCred mcclient.TokenCredential, syncRes
 	}
 }
 
+func syncCacheSkus(ctx context.Context, userCred mcclient.TokenCredential, syncResults SSyncResultSet, provider *SCloudprovider, localRegion *SCloudregion, remoteRegion cloudprovider.ICloudRegion, syncRange *SSyncRange) {
+	skus, err := func() ([]cloudprovider.ICloudElasticcacheSku, error) {
+		defer syncResults.AddRequestCost(ElasticcacheSkuManager)()
+		return remoteRegion.GetIElasticcacheSkus()
+	}()
+	if err != nil {
+		if errors.Cause(err) == cloudprovider.ErrNotImplemented {
+			return
+		}
+		msg := fmt.Sprintf("GetIElasticcacheSkus for region %s failed %s", remoteRegion.GetName(), err)
+		log.Errorf(msg)
+		return
+	}
+	result := func() compare.SyncResult {
+		defer syncResults.AddSqlCost(ElasticcacheSkuManager)()
+		return localRegion.SyncPrivateCloudCacheSkus(ctx, userCred, skus)
+	}()
+
+	syncResults.Add(NasSkuManager, result)
+
+	msg := result.Result()
+	log.Infof("SyncRedisSkus for region %s result: %s", localRegion.Name, msg)
+	if result.IsError() {
+		return
+	}
+}
+
 func syncDBInstanceResource(ctx context.Context, userCred mcclient.TokenCredential, syncResults SSyncResultSet, localInstance *SDBInstance, remoteInstance cloudprovider.ICloudDBInstance) {
 	err := syncDBInstanceNetwork(ctx, userCred, syncResults, localInstance, remoteInstance)
 	if err != nil {
@@ -1767,6 +1794,9 @@ func syncPublicCloudProviderInfo(
 		if cloudprovider.IsSupportNAT(driver) && syncRange.NeedSyncResource(cloudprovider.CLOUD_CAPABILITY_NAT) {
 			syncNATSkus(ctx, userCred, syncResults, provider, localRegion, remoteRegion, syncRange)
 		}
+		if cloudprovider.IsSupportElasticCache(driver) && syncRange.NeedSyncResource(cloudprovider.CLOUD_CAPABILITY_CACHE) {
+			syncCacheSkus(ctx, userCred, syncResults, provider, localRegion, remoteRegion, syncRange)
+		}
 	}
 
 	// no need to lock public cloud region as cloud region for public cloud is readonly
@@ -1880,6 +1910,15 @@ func syncPublicCloudProviderInfo(
 				log.Infof("syncCloudImages result: %s", msg)
 			}
 		}
+	}
+
+	if cloudprovider.IsSupportModelartsPool(driver) && syncRange.NeedSyncResource(cloudprovider.CLOUD_CAPABILITY_MODELARTES) {
+		syncModelartsPoolSkus(ctx, userCred, syncResults, provider, localRegion, remoteRegion)
+		syncModelartsPools(ctx, userCred, syncResults, provider, localRegion, remoteRegion)
+	}
+
+	if cloudprovider.IsSupportMiscResources(driver) && syncRange.NeedSyncResource(cloudprovider.CLOUD_CAPABILITY_MISC) {
+		syncMiscResources(ctx, userCred, syncResults, provider, localRegion, remoteRegion)
 	}
 
 	return nil
@@ -2339,5 +2378,41 @@ func syncTablestore(ctx context.Context, userCred mcclient.TokenCredential, sync
 	if result.IsError() {
 		return result.AllError()
 	}
+	return nil
+}
+
+func syncModelartsPools(ctx context.Context, userCred mcclient.TokenCredential, syncResults SSyncResultSet, provider *SCloudprovider, localRegion *SCloudregion, remoteRegion cloudprovider.ICloudRegion) error {
+	ipools, err := remoteRegion.GetIModelartsPools()
+	if err != nil {
+		msg := fmt.Sprintf("GetIModelartsPools for provider %s failed %s", err, ipools)
+		log.Errorf(msg)
+		return err
+	}
+	result := localRegion.SyncModelartsPools(ctx, userCred, provider, ipools)
+	log.Infof("SyncModelartsPools for region %s result: %s", provider.GetName(), result.Result())
+	return nil
+}
+
+func syncModelartsPoolSkus(ctx context.Context, userCred mcclient.TokenCredential, syncResults SSyncResultSet, provider *SCloudprovider, localRegion *SCloudregion, remoteRegion cloudprovider.ICloudRegion) error {
+	ipools, err := remoteRegion.GetIModelartsPoolSku()
+	if err != nil {
+		msg := fmt.Sprintf("GetIModelartsPoolSku for provider %s failed %s", err, ipools)
+		log.Errorf(msg)
+		return err
+	}
+	result := localRegion.SyncModelartsPoolSkus(ctx, userCred, provider, ipools)
+	log.Infof("SyncModelartsPoolSkus for region %s result: %s", provider.GetName(), result.Result())
+	return nil
+}
+
+func syncMiscResources(ctx context.Context, userCred mcclient.TokenCredential, syncResults SSyncResultSet, provider *SCloudprovider, localRegion *SCloudregion, remoteRegion cloudprovider.ICloudRegion) error {
+	exts, err := remoteRegion.GetIMiscResources()
+	if err != nil {
+		msg := fmt.Sprintf("GetIMiscResources for provider %s failed %v", provider.Name, err)
+		log.Errorf(msg)
+		return err
+	}
+	result := localRegion.SyncMiscResources(ctx, userCred, provider, exts)
+	log.Infof("SyncMiscResources for provider %s result: %s", provider.GetName(), result.Result())
 	return nil
 }

@@ -127,7 +127,8 @@ func (guest *SGuest) purge(ctx context.Context, userCred mcclient.TokenCredentia
 	guest.RevokeAllSecgroups(ctx, userCred)
 	guest.LeaveAllGroups(ctx, userCred)
 	guest.DetachAllNetworks(ctx, userCred)
-	guest.EjectIso(userCred)
+	guest.EjectAllIso(userCred)
+	guest.EjectAllVfd(userCred)
 	guest.DeleteEip(ctx, userCred)
 	guest.purgeInstanceSnapshots(ctx, userCred)
 	guest.DeleteAllDisksInDB(ctx, userCred)
@@ -556,7 +557,7 @@ func (lbbg *SLoadbalancerBackendGroup) purgeCachedlbbg(ctx context.Context, user
 	switch lbbg.GetProviderName() {
 	case api.CLOUD_PROVIDER_AWS:
 		return lbbg.purgeAwsCachedlbbg(ctx, userCred)
-	case api.CLOUD_PROVIDER_HUAWEI, api.CLOUD_PROVIDER_HCSO:
+	case api.CLOUD_PROVIDER_HUAWEI, api.CLOUD_PROVIDER_HCSO, api.CLOUD_PROVIDER_HCS:
 		return lbbg.purgeHuaweiCachedlbbg(ctx, userCred)
 	}
 
@@ -1234,6 +1235,20 @@ func (self *SCloudregion) purgeSkus(ctx context.Context, userCred mcclient.Token
 	return nil
 }
 
+func (self *SCloudregion) purgeMiscResources(ctx context.Context, userCred mcclient.TokenCredential) error {
+	misc, err := self.GetMiscResources()
+	if err != nil {
+		return errors.Wrapf(err, "GetServerSkus")
+	}
+	for i := range misc {
+		err = misc[i].RealDelete(ctx, userCred)
+		if err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
 func (region *SCloudregion) purgeZones(ctx context.Context, userCred mcclient.TokenCredential) error {
 	zones, err := region.GetZones()
 	if err != nil {
@@ -1260,6 +1275,11 @@ func (region *SCloudregion) purge(ctx context.Context, userCred mcclient.TokenCr
 	err = region.purgeZones(ctx, userCred)
 	if err != nil {
 		return err
+	}
+
+	err = region.purgeMiscResources(ctx, userCred)
+	if err != nil {
+		return errors.Wrapf(err, "purgeMiscResources")
 	}
 
 	err = region.ValidateDeleteCondition(ctx, nil)
@@ -2145,6 +2165,42 @@ func (manager *STablestoreManager) purgeAll(ctx context.Context, userCred mcclie
 		err := tablestores[i].RealDelete(ctx, userCred)
 		if err != nil {
 			return errors.Wrapf(err, "real delete %s", tablestores[i].Id)
+		}
+	}
+	return nil
+}
+
+func (manager *SModelartsPoolManager) purgeAll(ctx context.Context, userCred mcclient.TokenCredential, providerId string) error {
+	ess := []SModelartsPool{}
+	err := fetchByManagerId(manager, providerId, &ess)
+	if err != nil {
+		return errors.Wrapf(err, "fetchByManagerId")
+	}
+	for i := range ess {
+		lockman.LockObject(ctx, &ess[i])
+		defer lockman.ReleaseObject(ctx, &ess[i])
+
+		err := ess[i].RealDelete(ctx, userCred)
+		if err != nil {
+			return errors.Wrapf(err, "modelarts pool delete")
+		}
+	}
+	return nil
+}
+
+func (manager *SModelartsPoolSkuManager) purgeAll(ctx context.Context, userCred mcclient.TokenCredential, providerId string) error {
+	poolSku := []SModelartsPoolSku{}
+	err := fetchByManagerId(manager, providerId, &poolSku)
+	if err != nil {
+		return errors.Wrapf(err, "fetchByManagerId")
+	}
+	for i := range poolSku {
+		lockman.LockObject(ctx, &poolSku[i])
+		defer lockman.ReleaseObject(ctx, &poolSku[i])
+
+		err := poolSku[i].Delete(ctx, userCred)
+		if err != nil {
+			return errors.Wrapf(err, "modelarts pool delete")
 		}
 	}
 	return nil

@@ -31,6 +31,9 @@ type SHostBaseOptions struct {
 	HostCpuPassthrough bool `default:"true" help:"if it is true, set qemu cpu type as -cpu host, otherwise, qemu64. default is true"`
 
 	DefaultQemuVersion string `help:"Default qemu version" default:"4.2.0"`
+
+	CdromCount  int `help:"cdrom count" default:"1"`
+	FloppyCount int `help:"floppy count" default:"1"`
 }
 
 type SHostOptions struct {
@@ -83,7 +86,7 @@ type SHostOptions struct {
 	BlockIoScheduler string `help:"Block IO scheduler, deadline or cfq" default:"deadline"`
 	EnableKsm        bool   `help:"Enable Kernel Same Page Merging"`
 	HugepagesOption  string `help:"Hugepages option: disable|native|transparent" default:"transparent"`
-	EnableQmpMonitor bool   `help:"Enable qmp monitor" default:"true"`
+	HugepageSizeMb   int    `help:"hugepage size mb default 1G" default:"1024"`
 
 	PrivatePrefixes []string `help:"IPv4 private prefixes"`
 	LocalImagePath  []string `help:"Local image storage paths"`
@@ -185,8 +188,9 @@ type SHostOptions struct {
 
 	BinaryMemcleanPath string `help:"execute binary memclean path" default:"/opt/yunion/bin/memclean"`
 
-	MaxHotplugVCpuCount int `help:"maximal possible vCPU count that the platform kvm supports"`
-	PcieRootPortCount   int `help:"pcie root port count" default:"2"`
+	MaxHotplugVCpuCount int  `help:"maximal possible vCPU count that the platform kvm supports"`
+	PcieRootPortCount   int  `help:"pcie root port count" default:"2"`
+	EnableQemuDebugLog  bool `help:"enable qemu debug logs" default:"false"`
 }
 
 var (
