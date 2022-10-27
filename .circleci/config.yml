@@ -5,9 +5,9 @@ version: 2
 jobs:
   build:
     docker:
-      - image: circleci/golang:1.14
+      - image: yunion/centos-build:go-1.18.3-0
 
-    working_directory: /go/src/yunion.io/x/sdnagent
+    working_directory: /root/go/src/yunion.io/x/sdnagent
     steps:
       - checkout
       - run:
