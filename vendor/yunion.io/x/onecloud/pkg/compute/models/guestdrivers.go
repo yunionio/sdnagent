@@ -19,12 +19,12 @@ import (
 	"fmt"
 	"time"
 
+	"yunion.io/x/cloudmux/pkg/cloudprovider"
 	"yunion.io/x/jsonutils"
 
 	api "yunion.io/x/onecloud/pkg/apis/compute"
 	"yunion.io/x/onecloud/pkg/cloudcommon/db/quotas"
 	"yunion.io/x/onecloud/pkg/cloudcommon/db/taskman"
-	"yunion.io/x/onecloud/pkg/cloudprovider"
 	guestdriver_types "yunion.io/x/onecloud/pkg/compute/guestdrivers/types"
 	"yunion.io/x/onecloud/pkg/mcclient"
 	"yunion.io/x/onecloud/pkg/util/billing"
@@ -230,6 +230,8 @@ type IGuestDriver interface {
 	QgaRequestGuestPing(ctx context.Context, task taskman.ITask, host *SHost, guest *SGuest) error
 	QgaRequestSetUserPassword(ctx context.Context, task taskman.ITask, host *SHost, guest *SGuest, input *api.ServerQgaSetPasswordInput) error
 	RequestQgaCommand(ctx context.Context, userCred mcclient.TokenCredential, body jsonutils.JSONObject, host *SHost, guest *SGuest) (jsonutils.JSONObject, error)
+
+	FetchMonitorUrl(ctx context.Context, guest *SGuest) string
 }
 
 var guestDrivers map[string]IGuestDriver
