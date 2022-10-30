@@ -41,7 +41,7 @@ github.com/davecgh/go-spew/spew
 # github.com/digitalocean/go-openvswitch v0.0.0-20190515160856-1141932ed5cf => github.com/yousong/go-openvswitch v0.0.0-20200422025222-6b2d502be872
 ## explicit
 github.com/digitalocean/go-openvswitch/ovs
-# github.com/fatih/color v1.10.0
+# github.com/fatih/color v1.13.0
 ## explicit; go 1.13
 github.com/fatih/color
 # github.com/fsnotify/fsnotify v1.4.9
@@ -149,13 +149,13 @@ github.com/json-iterator/go
 # github.com/leodido/go-urn v1.2.0
 ## explicit; go 1.13
 github.com/leodido/go-urn
-# github.com/ma314smith/signedxml v0.0.0-20200410192636-c342a2d0ae60
+# github.com/ma314smith/signedxml v0.0.0-20210628192057-abc5b481ae1c
 ## explicit
 github.com/ma314smith/signedxml
 # github.com/magiconair/properties v1.8.0
 ## explicit
 github.com/magiconair/properties
-# github.com/mattn/go-colorable v0.1.8
+# github.com/mattn/go-colorable v0.1.9
 ## explicit; go 1.13
 github.com/mattn/go-colorable
 # github.com/mattn/go-isatty v0.0.14
@@ -229,16 +229,16 @@ github.com/texttheater/golang-levenshtein/levenshtein
 # github.com/tjfoc/gmsm v1.4.1
 ## explicit; go 1.14
 github.com/tjfoc/gmsm/sm4
-# github.com/tredoe/osutil v0.0.0-20161130133508-7d3ee1afa71c
-## explicit
+# github.com/tredoe/osutil v1.0.6
+## explicit; go 1.16
 github.com/tredoe/osutil/user/crypt
 github.com/tredoe/osutil/user/crypt/common
 github.com/tredoe/osutil/user/crypt/sha512_crypt
 # github.com/ugorji/go/codec v1.1.7
 ## explicit
 github.com/ugorji/go/codec
-# github.com/vishvananda/netlink v1.0.0
-## explicit
+# github.com/vishvananda/netlink v1.1.0
+## explicit; go 1.12
 github.com/vishvananda/netlink
 github.com/vishvananda/netlink/nl
 # github.com/vishvananda/netns v0.0.0-20211101163701-50045581ed74
@@ -376,7 +376,7 @@ golang.org/x/text/secure/bidirule
 golang.org/x/text/transform
 golang.org/x/text/unicode/bidi
 golang.org/x/text/unicode/norm
-# golang.org/x/time v0.0.0-20191024005414-555d28b269f0
+# golang.org/x/time v0.0.0-20210220033141-f8bda1e9f3ba
 ## explicit
 golang.org/x/time/rate
 # google.golang.org/appengine v1.6.6
@@ -646,6 +646,15 @@ sigs.k8s.io/structured-merge-diff/v4/value
 # sigs.k8s.io/yaml v1.2.0
 ## explicit; go 1.12
 sigs.k8s.io/yaml
+# yunion.io/x/cloudmux v0.3.10-0-alpha.0
+## explicit; go 1.18
+yunion.io/x/cloudmux/pkg/apis
+yunion.io/x/cloudmux/pkg/apis/billing
+yunion.io/x/cloudmux/pkg/apis/compute
+yunion.io/x/cloudmux/pkg/cloudprovider
+yunion.io/x/cloudmux/pkg/multicloud
+yunion.io/x/cloudmux/pkg/multicloud/esxi
+yunion.io/x/cloudmux/pkg/multicloud/esxi/vcenter
 # yunion.io/x/executor v0.0.0-20211018100936-39a2cd966656
 ## explicit; go 1.12
 yunion.io/x/executor/apis
@@ -657,7 +666,7 @@ yunion.io/x/jsonutils
 ## explicit; go 1.12
 yunion.io/x/log
 yunion.io/x/log/hooks
-# yunion.io/x/onecloud v0.0.0-20221025181038-9dea6d2a7d03
+# yunion.io/x/onecloud v0.3.10-0-alpha.1.0.20221029103101-fa96a1943b24
 ## explicit; go 1.18
 yunion.io/x/onecloud/cmd/climc/shell
 yunion.io/x/onecloud/locales
@@ -702,7 +711,6 @@ yunion.io/x/onecloud/pkg/cloudcommon/types
 yunion.io/x/onecloud/pkg/cloudcommon/userdata
 yunion.io/x/onecloud/pkg/cloudcommon/validators
 yunion.io/x/onecloud/pkg/cloudcommon/workmanager
-yunion.io/x/onecloud/pkg/cloudprovider
 yunion.io/x/onecloud/pkg/compute/baremetal
 yunion.io/x/onecloud/pkg/compute/guestdrivers/types
 yunion.io/x/onecloud/pkg/compute/models
@@ -744,9 +752,6 @@ yunion.io/x/onecloud/pkg/mcclient/options
 yunion.io/x/onecloud/pkg/mcclient/utils
 yunion.io/x/onecloud/pkg/monitor/options
 yunion.io/x/onecloud/pkg/monitor/tsdb
-yunion.io/x/onecloud/pkg/multicloud
-yunion.io/x/onecloud/pkg/multicloud/esxi
-yunion.io/x/onecloud/pkg/multicloud/esxi/vcenter
 yunion.io/x/onecloud/pkg/proxy
 yunion.io/x/onecloud/pkg/util/ansible
 yunion.io/x/onecloud/pkg/util/atexit
@@ -758,7 +763,6 @@ yunion.io/x/onecloud/pkg/util/choices
 yunion.io/x/onecloud/pkg/util/cloudinit
 yunion.io/x/onecloud/pkg/util/conditionparser
 yunion.io/x/onecloud/pkg/util/ctx
-yunion.io/x/onecloud/pkg/util/encode
 yunion.io/x/onecloud/pkg/util/excelutils
 yunion.io/x/onecloud/pkg/util/fileutils2
 yunion.io/x/onecloud/pkg/util/hashcache
