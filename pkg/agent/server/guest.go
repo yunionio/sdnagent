@@ -31,7 +31,7 @@ import (
 var (
 	errNotRunning   = fmt.Errorf("not running")
 	errPortNotReady = fmt.Errorf("port not ready") // no port is ready
-	errSlaveMachine = fmt.Errorf("slave machine")
+	errVolatileHost = fmt.Errorf("volatile host")
 )
 
 type Guest struct {
@@ -147,8 +147,8 @@ func (g *Guest) refresh(ctx context.Context) (err error) {
 	if err != nil {
 		return
 	}
-	if g.IsSlave() {
-		err = errSlaveMachine
+	if g.IsVolatileHost() {
+		err = errVolatileHost
 		setPending = false
 		return
 	}
@@ -240,7 +240,7 @@ func (g *Guest) UpdateSettings(ctx context.Context) {
 		if g.HostId != "" {
 			g.watcher.agent.HostId(g.HostId)
 		}
-	case errNotRunning, errPortNotReady, errSlaveMachine:
+	case errNotRunning, errPortNotReady, errVolatileHost:
 		g.ClearSettings(ctx)
 	}
 }
