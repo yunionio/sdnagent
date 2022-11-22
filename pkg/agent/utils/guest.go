@@ -37,6 +37,7 @@ type guestDesc struct {
 	IsMaster bool   `json:"is_master"`
 	IsSlave  bool   `json:"is_slave"`
 	HostId   string `json:"host_id"`
+	IsVolatileHost bool `json:"is_volatile_host"`
 
 	SrcIpCheck  bool `json:"src_ip_check"`
 	SrcMacCheck bool `json:"src_mac_check"`
@@ -154,6 +155,7 @@ type Guest struct {
 	srcMacCheck bool
 
 	isSlave bool
+	isVolatileHost bool
 }
 
 func (g *Guest) IsVM() bool {
@@ -195,8 +197,8 @@ func (g *Guest) Running() bool {
 	return false
 }
 
-func (g *Guest) IsSlave() bool {
-	return g.isSlave
+func (g *Guest) IsVolatileHost() bool {
+	return  g.isVolatileHost || g.isSlave
 }
 
 func (g *Guest) GetJSONObjectDesc() (*desc.SGuestDesc, error) {
@@ -242,6 +244,7 @@ func (g *Guest) LoadDesc() error {
 			g.NICs = append(g.NICs[:i], g.NICs[i+1:]...)
 		}
 	}
+	g.isVolatileHost = desc.IsVolatileHost
 	if !desc.IsMaster && desc.IsSlave {
 		g.isSlave = true
 	} else {
