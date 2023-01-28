@@ -24,6 +24,8 @@ import (
 	"yunion.io/x/jsonutils"
 	"yunion.io/x/log"
 	"yunion.io/x/pkg/errors"
+	"yunion.io/x/pkg/util/printutils"
+	"yunion.io/x/pkg/util/rbacscope"
 	"yunion.io/x/pkg/util/stringutils"
 	"yunion.io/x/pkg/utils"
 	"yunion.io/x/sqlchemy"
@@ -35,8 +37,6 @@ import (
 	"yunion.io/x/onecloud/pkg/cloudcommon/policy"
 	"yunion.io/x/onecloud/pkg/httperrors"
 	"yunion.io/x/onecloud/pkg/mcclient"
-	"yunion.io/x/onecloud/pkg/mcclient/modulebase"
-	"yunion.io/x/onecloud/pkg/util/rbacutils"
 )
 
 const (
@@ -223,7 +223,7 @@ func (manager *SMetadataManager) GetPropertyTagValuePairs(
 	ctx context.Context,
 	userCred mcclient.TokenCredential,
 	input apis.MetaGetPropertyTagValuePairsInput,
-) (*modulebase.ListResult, error) {
+) (*printutils.ListResult, error) {
 	q, err := manager.fetchKeyValueQuery(ctx, userCred, input)
 	if err != nil {
 		return nil, errors.Wrap(err, "fetchKeyValueQuery")
@@ -235,7 +235,7 @@ func (manager *SMetadataManager) GetPropertyTagValuePairs(
 	}
 
 	if totalCnt == 0 {
-		emptyList := modulebase.ListResult{Data: []jsonutils.JSONObject{}}
+		emptyList := printutils.ListResult{Data: []jsonutils.JSONObject{}}
 		return &emptyList, nil
 	}
 
@@ -268,7 +268,7 @@ func (manager *SMetadataManager) GetPropertyTagValuePairs(
 	if err != nil {
 		return nil, errors.Wrap(err, "metadataQuery2List")
 	}
-	emptyList := modulebase.ListResult{
+	emptyList := printutils.ListResult{
 		Data:   data,
 		Total:  totalCnt,
 		Limit:  int(limit),
@@ -287,61 +287,51 @@ func (manager *SMetadataManager) metaDataQuery2List(ctx context.Context, q *sqlc
 	if err != nil {
 		return nil, errors.Wrap(err, "Query.All")
 	}
-	// ciMap := map[string]string{}
 
 	ret := make([]jsonutils.JSONObject, len(metadatas))
+	keys := []string{}
 	for i := range metadatas {
-		/* if k, ok := ciMap[strings.ToLower(metadatas[i].Key)]; !ok {
-			ciMap[strings.ToLower(metadatas[i].Key)] = metadatas[i].Key
-		} else {
-			metadatas[i].Key = k
-		}*/
-		if input.Details != nil && *input.Details {
-			ret[i], err = manager.getKeyValueObjectCount(ctx, userCred, input, metadatas[i].Key, metadatas[i].Value, metadatas[i].Count)
-			if err != nil {
-				return nil, errors.Wrap(err, "getKeyValueObjectCount")
-			}
-		} else {
-			ret[i] = jsonutils.Marshal(metadatas[i])
+		if !utils.IsInStringArray(metadatas[i].Key, keys) {
+			keys = append(keys, metadatas[i].Key)
 		}
+		ret[i] = jsonutils.Marshal(metadatas[i])
 	}
 
-	return ret, nil
-}
-
-func (manager *SMetadataManager) getKeyValueObjectCount(ctx context.Context, userCred mcclient.TokenCredential, input apis.MetadataListInput, key string, value string, count int64) (jsonutils.JSONObject, error) {
-	metadatas := manager.Query().SubQuery()
-	q := metadatas.Query(metadatas.Field("obj_type"), sqlchemy.COUNT("obj_count"))
-	q, err := manager.ListItemFilter(ctx, q, userCred, input)
+	if input.Details == nil || !*input.Details {
+		return ret, nil
+	}
+	mQ, err := manager.ListItemFilter(ctx, manager.Query(), userCred, input)
 	if err != nil {
 		return nil, errors.Wrap(err, "ListItemFilter")
 	}
-	q = q.Equals("key", key)
-	if len(value) > 0 {
-		q = q.Equals("value", value)
-	} else {
-		q = q.IsNullOrEmpty("value")
-	}
-	q = q.GroupBy("key", "value", "obj_type")
-
-	objectCount := make([]struct {
-		ObjType  string
-		ObjCount int64
-	}, 0)
-	err = q.All(&objectCount)
+	metas := []SMetadata{}
+	err = mQ.In("key", keys).All(&metas)
 	if err != nil {
-		return nil, errors.Wrap(err, "query.All")
+		return ret, errors.Wrapf(err, "q.All")
+	}
+	count := map[string]map[string]map[string]int64{}
+	for i := range metas {
+		meta := metas[i]
+		_, ok := count[meta.Key]
+		if !ok {
+			count[meta.Key] = map[string]map[string]int64{}
+		}
+		_, ok = count[meta.Key][meta.Value]
+		if !ok {
+			count[meta.Key][meta.Value] = map[string]int64{}
+		}
+		k := fmt.Sprintf("%s_count", meta.ObjType)
+		_, ok = count[meta.Key][meta.Value][k]
+		if !ok {
+			count[meta.Key][meta.Value][k] = 0
+		}
+		count[meta.Key][meta.Value][k] += 1
+	}
+	for i, meta := range metadatas {
+		jsonutils.Update(ret[i], count[meta.Key][meta.Value])
 	}
 
-	data := jsonutils.NewDict()
-	data.Add(jsonutils.NewString(key), "key")
-	data.Add(jsonutils.NewString(value), "value")
-	data.Add(jsonutils.NewInt(count), "count")
-	for _, oc := range objectCount {
-		data.Add(jsonutils.NewInt(oc.ObjCount), fmt.Sprintf("%s_count", oc.ObjType))
-	}
-
-	return data, nil
+	return ret, nil
 }
 
 func (manager *SMetadataManager) metadataBaseFilter(q *sqlchemy.SQuery, input apis.MetadataBaseFilterInput) *sqlchemy.SQuery {
@@ -393,35 +383,37 @@ func (manager *SMetadataManager) ListItemFilter(ctx context.Context, q *sqlchemy
 		))
 	}
 
-	resources := input.Resources
-	if len(resources) == 0 {
-		for resource := range globalTables {
-			resources = append(resources, resource)
+	if !(input.Scope == string(rbacscope.ScopeSystem) && userCred.HasSystemAdminPrivilege()) {
+		resources := input.Resources
+		if len(resources) == 0 {
+			for resource := range globalTables {
+				resources = append(resources, resource)
+			}
 		}
-	}
-	conditions := []sqlchemy.ICondition{}
-	for _, resource := range resources {
-		man, ok := globalTables[resource]
-		if !ok {
-			return nil, httperrors.NewNotFoundError("Not support resource %s tag filter", resource)
+		conditions := []sqlchemy.ICondition{}
+		for _, resource := range resources {
+			man, ok := globalTables[resource]
+			if !ok {
+				return nil, httperrors.NewNotFoundError("Not support resource %s tag filter", resource)
+			}
+			if !man.IsStandaloneManager() {
+				continue
+			}
+			sq := man.Query("id")
+			query := jsonutils.Marshal(input)
+			ownerId, queryScope, err, _ := FetchCheckQueryOwnerScope(ctx, userCred, query, man, policy.PolicyActionList, true)
+			if err != nil {
+				log.Warningf("FetchCheckQueryOwnerScope.%s error: %v", man.Keyword(), err)
+				continue
+			}
+			sq = man.FilterByOwner(sq, ownerId, queryScope)
+			sq = man.FilterBySystemAttributes(sq, userCred, query, queryScope)
+			sq = man.FilterByHiddenSystemAttributes(sq, userCred, query, queryScope)
+			conditions = append(conditions, sqlchemy.In(q.Field("obj_id"), sq))
 		}
-		if !man.IsStandaloneManager() {
-			continue
+		if len(conditions) > 0 {
+			q = q.Filter(sqlchemy.OR(conditions...))
 		}
-		sq := man.Query("id")
-		query := jsonutils.Marshal(input)
-		ownerId, queryScope, err, _ := FetchCheckQueryOwnerScope(ctx, userCred, query, man, policy.PolicyActionList, true)
-		if err != nil {
-			log.Warningf("FetchCheckQueryOwnerScope.%s error: %v", man.Keyword(), err)
-			continue
-		}
-		sq = man.FilterByOwner(sq, ownerId, queryScope)
-		sq = man.FilterBySystemAttributes(sq, userCred, query, queryScope)
-		sq = man.FilterByHiddenSystemAttributes(sq, userCred, query, queryScope)
-		conditions = append(conditions, sqlchemy.In(q.Field("obj_id"), sq))
-	}
-	if len(conditions) > 0 {
-		q = q.Filter(sqlchemy.OR(conditions...))
 	}
 
 	/*for args, prefix := range map[string]string{"sys_meta": SYS_TAG_PREFIX, "cloud_meta": CLOUD_TAG_PREFIX, "user_meta": USER_TAG_PREFIX} {
@@ -440,7 +432,7 @@ func (manager *SMetadataManager) ListItemFilter(ctx context.Context, q *sqlchemy
 }
 
 func (manager *SMetadataManager) GetStringValue(ctx context.Context, model IModel, key string, userCred mcclient.TokenCredential) string {
-	if strings.HasPrefix(key, SYSTEM_ADMIN_PREFIX) && (userCred == nil || !IsAllowGetSpec(ctx, rbacutils.ScopeSystem, userCred, model, "metadata")) {
+	if strings.HasPrefix(key, SYSTEM_ADMIN_PREFIX) && (userCred == nil || !IsAllowGetSpec(ctx, rbacscope.ScopeSystem, userCred, model, "metadata")) {
 		return ""
 	}
 	idStr := GetModelIdstr(model)
@@ -453,7 +445,7 @@ func (manager *SMetadataManager) GetStringValue(ctx context.Context, model IMode
 }
 
 func (manager *SMetadataManager) GetJsonValue(ctx context.Context, model IModel, key string, userCred mcclient.TokenCredential) jsonutils.JSONObject {
-	if strings.HasPrefix(key, SYSTEM_ADMIN_PREFIX) && (userCred == nil || !IsAllowGetSpec(ctx, rbacutils.ScopeSystem, userCred, model, "metadata")) {
+	if strings.HasPrefix(key, SYSTEM_ADMIN_PREFIX) && (userCred == nil || !IsAllowGetSpec(ctx, rbacscope.ScopeSystem, userCred, model, "metadata")) {
 		return nil
 	}
 	idStr := GetModelIdstr(model)
@@ -653,7 +645,7 @@ func (manager *SMetadataManager) GetAll(ctx context.Context, obj IModel, keys []
 	}
 	ret := make(map[string]string)
 	for k, v := range meta {
-		if strings.HasPrefix(k, SYSTEM_ADMIN_PREFIX) && (userCred == nil || !IsAllowGetSpec(ctx, rbacutils.ScopeSystem, userCred, obj, "metadata")) {
+		if strings.HasPrefix(k, SYSTEM_ADMIN_PREFIX) && (userCred == nil || !IsAllowGetSpec(ctx, rbacscope.ScopeSystem, userCred, obj, "metadata")) {
 			continue
 		}
 		ret[k] = v

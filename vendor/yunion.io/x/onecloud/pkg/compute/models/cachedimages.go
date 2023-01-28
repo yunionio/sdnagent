@@ -27,6 +27,8 @@ import (
 	"yunion.io/x/log"
 	"yunion.io/x/pkg/errors"
 	"yunion.io/x/pkg/tristate"
+	"yunion.io/x/pkg/util/httputils"
+	"yunion.io/x/pkg/util/rbacscope"
 	"yunion.io/x/pkg/util/timeutils"
 	"yunion.io/x/sqlchemy"
 
@@ -38,8 +40,6 @@ import (
 	"yunion.io/x/onecloud/pkg/mcclient"
 	"yunion.io/x/onecloud/pkg/mcclient/auth"
 	"yunion.io/x/onecloud/pkg/mcclient/modules/image"
-	"yunion.io/x/onecloud/pkg/util/httputils"
-	"yunion.io/x/onecloud/pkg/util/rbacutils"
 	"yunion.io/x/onecloud/pkg/util/stringutils2"
 )
 
@@ -548,17 +548,19 @@ func (self *SCachedimage) canDeleteLastCache() bool {
 
 func (self *SCachedimage) syncWithCloudImage(ctx context.Context, userCred mcclient.TokenCredential, ownerId mcclient.IIdentityProvider, image cloudprovider.ICloudImage, managerId string) error {
 	diff, err := db.UpdateWithLock(ctx, self, func() error {
-		newName, err := db.GenerateAlterName(self, image.GetName())
-		if err != nil {
-			return errors.Wrap(err, "GenerateAlterName")
+		if options.Options.EnableSyncName {
+			newName, err := db.GenerateAlterName(self, image.GetName())
+			if err != nil {
+				return errors.Wrap(err, "GenerateAlterName")
+			}
+			self.Name = newName
 		}
-		self.Name = newName
 		self.Size = image.GetSizeByte()
 		self.ExternalId = image.GetGlobalId()
 		self.ImageType = string(image.GetImageType())
 		self.PublicScope = string(image.GetPublicScope())
 		self.Status = image.GetStatus()
-		if image.GetPublicScope() == rbacutils.ScopeSystem {
+		if image.GetPublicScope() == rbacscope.ScopeSystem {
 			self.IsPublic = true
 		}
 		self.UEFI = tristate.NewFromBool(cloudprovider.IsUEFI(image))
@@ -569,7 +571,7 @@ func (self *SCachedimage) syncWithCloudImage(ctx context.Context, userCred mccli
 	})
 	db.OpsLog.LogSyncUpdate(self, diff, userCred)
 
-	SyncCloudProject(userCred, self, ownerId, image, managerId)
+	SyncCloudProject(ctx, userCred, self, ownerId, image, managerId)
 	return err
 }
 
@@ -587,7 +589,7 @@ func (manager *SCachedimageManager) newFromCloudImage(ctx context.Context, userC
 	cachedImage.Status = image.GetStatus()
 	cachedImage.PublicScope = string(image.GetPublicScope())
 	switch image.GetPublicScope() {
-	case rbacutils.ScopeNone:
+	case rbacscope.ScopeNone:
 	default:
 		cachedImage.IsPublic = true
 	}
@@ -607,7 +609,7 @@ func (manager *SCachedimageManager) newFromCloudImage(ctx context.Context, userC
 		return nil, err
 	}
 
-	SyncCloudProject(userCred, &cachedImage, ownerId, image, managerId)
+	SyncCloudProject(ctx, userCred, &cachedImage, ownerId, image, managerId)
 
 	return &cachedImage, nil
 }
@@ -908,7 +910,7 @@ func (manager *SCachedimageManager) InitializeData() error {
 	for i := range images {
 		_, err := db.Update(&images[i], func() error {
 			images[i].IsPublic = true
-			images[i].PublicScope = string(rbacutils.ScopeSystem)
+			images[i].PublicScope = string(rbacscope.ScopeSystem)
 			images[i].ProjectId = "system"
 			if len(images[i].ExternalId) > 0 {
 				images[i].Status = api.CACHED_IMAGE_STATUS_ACTIVE

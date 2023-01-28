@@ -178,7 +178,8 @@ const (
 
 	ACT_FLUSH_INSTANCE = "flush_instance"
 
-	ACT_UPDATE_STATUS = "update_status"
+	ACT_UPDATE_STATUS              = "update_status"
+	ACT_UPDATE_BACKUP_GUEST_STATUS = "update_backup_guest_status"
 
 	ACT_UPDATE_PASSWORD = "update_password"
 
@@ -235,4 +236,8 @@ const (
 	ACT_CONSOLE           = "console"
 	ACT_WEBSSH            = "webssh"
 	ACT_SET_USER_PASSWORD = "set_user_password"
+
+	ACT_PANIC = "panic"
+
+	ACT_IP_MAC_BIND = "ip_mac_bind"
 )

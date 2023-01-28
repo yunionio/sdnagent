@@ -32,32 +32,28 @@ import (
 	"yunion.io/x/jsonutils"
 	"yunion.io/x/log"
 	"yunion.io/x/pkg/errors"
+	"yunion.io/x/pkg/util/billing"
+	"yunion.io/x/pkg/util/imagetools"
 	"yunion.io/x/pkg/util/netutils"
 	"yunion.io/x/pkg/util/reflectutils"
 	"yunion.io/x/pkg/util/regutils"
+	"yunion.io/x/pkg/util/version"
 	"yunion.io/x/pkg/utils"
 
 	billing_api "yunion.io/x/cloudmux/pkg/apis/billing"
 	api "yunion.io/x/cloudmux/pkg/apis/compute"
-	"yunion.io/x/onecloud/pkg/cloudcommon/db/lockman"
-	cloudtypes "yunion.io/x/onecloud/pkg/cloudcommon/types"
 	"yunion.io/x/cloudmux/pkg/cloudprovider"
-	"yunion.io/x/onecloud/pkg/httperrors"
 	"yunion.io/x/cloudmux/pkg/multicloud"
-	"yunion.io/x/onecloud/pkg/util/billing"
-	"yunion.io/x/onecloud/pkg/util/imagetools"
-	"yunion.io/x/onecloud/pkg/util/netutils2"
-	"yunion.io/x/onecloud/pkg/util/version"
 )
 
 var (
-	vmSummaryProps = []string{"summary.runtime.powerState", "summary.config.uuid", "summary.config.memorySizeMB", "summary.config.numCpu"}
+	vmSummaryProps = []string{"summary.runtime.powerState", "summary.config.uuid", "summary.config.memorySizeMB", "summary.config.numCpu", "summary.customValue"}
 	// vmConfigProps   = []string{"config.template", "config.alternateGuestName", "config.hardware", "config.guestId", "config.guestFullName", "config.firmware", "config.version", "config.createDate"}
 	vmGuestProps    = []string{"guest.net", "guest.guestState", "guest.toolsStatus", "guest.toolsRunningStatus", "guest.toolsVersion"}
 	vmLayoutExProps = []string{"layoutEx.file"}
 )
 
-var VIRTUAL_MACHINE_PROPS = []string{"name", "parent", "resourcePool", "snapshot", "config"}
+var VIRTUAL_MACHINE_PROPS = []string{"name", "parent", "resourcePool", "snapshot", "config", "availableField", "datastore"}
 
 func init() {
 	VIRTUAL_MACHINE_PROPS = append(VIRTUAL_MACHINE_PROPS, vmSummaryProps...)
@@ -112,6 +108,33 @@ func NewVirtualMachine(manager *SESXiClient, vm *mo.VirtualMachine, dc *SDatacen
 
 func (self *SVirtualMachine) GetSecurityGroupIds() ([]string, error) {
 	return []string{}, cloudprovider.ErrNotSupported
+}
+
+func (self *SVirtualMachine) GetTags() (map[string]string, error) {
+	ret := map[int32]string{}
+	for _, val := range self.object.Entity().ExtensibleManagedObject.AvailableField {
+		ret[val.Key] = val.Name
+	}
+	result := map[string]string{}
+	vm := self.getVirtualMachine()
+	for _, val := range vm.Summary.CustomValue {
+		value := struct {
+			Key   int32
+			Value string
+		}{}
+		jsonutils.Update(&value, val)
+		_, ok := ret[value.Key]
+		if ok {
+			result[ret[value.Key]] = value.Value
+		}
+	}
+	for _, key := range ret {
+		_, ok := result[key]
+		if !ok {
+			result[key] = ""
+		}
+	}
+	return result, nil
 }
 
 func (self *SVirtualMachine) GetSysTags() map[string]string {
@@ -201,7 +224,7 @@ func (self *SVirtualMachine) RebuildRoot(ctx context.Context, desc *cloudprovide
 
 func (self *SVirtualMachine) DoRebuildRoot(ctx context.Context, imagePath string, uuid string) error {
 	if len(self.vdisks) == 0 {
-		return errors.ErrNotFound
+		return errors.Wrapf(errors.ErrNotFound, "empty vdisks")
 	}
 	return self.rebuildDisk(ctx, &self.vdisks[0], imagePath)
 }
@@ -438,11 +461,8 @@ func (self *SVirtualMachine) StartVM(ctx context.Context) error {
 func (self *SVirtualMachine) startVM(ctx context.Context) error {
 	ihost := self.GetIHost()
 	if ihost == nil {
-		return errors.Wrap(httperrors.ErrInvalidStatus, "no valid host")
+		return errors.Wrap(cloudprovider.ErrInvalidStatus, "no valid host")
 	}
-
-	lockman.LockRawObject(ctx, "host", ihost.GetGlobalId())
-	defer lockman.ReleaseRawObject(ctx, "host", ihost.GetGlobalId())
 
 	err := self.makeNicsStartConnected(ctx)
 	if err != nil {
@@ -603,14 +623,12 @@ func (self *SVirtualMachine) doDetachDisk(ctx context.Context, vdisk *SVirtualDi
 
 	task, err := vm.Reconfigure(ctx, spec)
 	if err != nil {
-		log.Errorf("vm.Reconfigure fail %s", err)
-		return err
+		return errors.Wrapf(err, "Reconfigure remove disk %s", vdisk.GetName())
 	}
 
 	err = task.Wait(ctx)
 	if err != nil {
-		log.Errorf("task.Wait(ctx) fail %s", err)
-		return err
+		return errors.Wrapf(err, "wait remove disk %s task", vdisk.GetName())
 	}
 
 	if !remove {
@@ -1033,17 +1051,17 @@ func (self *SVirtualMachine) createDriverAndDisk(ctx context.Context, ds *SDatas
 		}, true)
 }
 
-func (self *SVirtualMachine) copyRootDisk(ctx context.Context, imagePath string) (string, error) {
+func (self *SVirtualMachine) getDatastoreAndRootImagePath() (string, *SDatastore, error) {
 	layoutEx := self.getLayoutEx()
 	if layoutEx == nil || len(layoutEx.File) == 0 {
-		return "", fmt.Errorf("invalid LayoutEx")
+		return "", nil, fmt.Errorf("invalid LayoutEx")
 	}
 	file := layoutEx.File[0].Name
 	// find stroage
 	host := self.GetIHost()
 	storages, err := host.GetIStorages()
 	if err != nil {
-		return "", errors.Wrap(err, "host.GetIStorages")
+		return "", nil, errors.Wrap(err, "host.GetIStorages")
 	}
 	var datastore *SDatastore
 	for i := range storages {
@@ -1054,17 +1072,31 @@ func (self *SVirtualMachine) copyRootDisk(ctx context.Context, imagePath string)
 		}
 	}
 	if datastore == nil {
-		return "", fmt.Errorf("can't find storage associated with vm %q", self.GetName())
+		return "", nil, fmt.Errorf("can't find storage associated with vm %q", self.GetName())
 	}
 	path := datastore.cleanPath(file)
 	vmDir := strings.Split(path, "/")[0]
 	// TODO find a non-conflicting path
-	newImagePath := datastore.getPathString(fmt.Sprintf("%s/%s.vmdk", vmDir, vmDir))
+	return datastore.getPathString(fmt.Sprintf("%s/%s.vmdk", vmDir, vmDir)), datastore, nil
+}
 
+func (self *SVirtualMachine) GetRootImagePath() (string, error) {
+	path, _, err := self.getDatastoreAndRootImagePath()
+	if err != nil {
+		return "", err
+	}
+	return path, nil
+}
+
+func (self *SVirtualMachine) CopyRootDisk(ctx context.Context, imagePath string) (string, error) {
+	newImagePath, datastore, err := self.getDatastoreAndRootImagePath()
+	if err != nil {
+		return "", errors.Wrapf(err, "GetRootImagePath")
+	}
 	fm := datastore.getDatastoreObj().NewFileManager(datastore.datacenter.getObjectDatacenter(), true)
 	err = fm.Copy(ctx, imagePath, newImagePath)
 	if err != nil {
-		return "", errors.Wrap(err, "unable to copy system disk")
+		return "", errors.Wrapf(err, "unable to copy system disk %s -> %s", imagePath, newImagePath)
 	}
 	return newImagePath, nil
 }
@@ -1074,7 +1106,7 @@ func (self *SVirtualMachine) createDiskWithDeviceChange(ctx context.Context, dev
 	// copy disk
 	if len(config.ImagePath) > 0 {
 		config.IsRoot = true
-		config.ImagePath, err = self.copyRootDisk(ctx, config.ImagePath)
+		config.ImagePath, err = self.CopyRootDisk(ctx, config.ImagePath)
 		if err != nil {
 			return errors.Wrap(err, "unable to copyRootDisk")
 		}
@@ -1190,6 +1222,44 @@ func (self *SVirtualMachine) GetToolsVersion() string {
 	return self.getVirtualMachine().Guest.ToolsVersion
 }
 
+type SServerNic struct {
+	Name      string `json:"name"`
+	Index     int    `json:"index"`
+	Bridge    string `json:"bridge"`
+	Domain    string `json:"domain"`
+	Ip        string `json:"ip"`
+	Vlan      int    `json:"vlan"`
+	Driver    string `json:"driver"`
+	Masklen   int    `json:"masklen"`
+	Virtual   bool   `json:"virtual"`
+	Manual    bool   `json:"manual"`
+	WireId    string `json:"wire_id"`
+	NetId     string `json:"net_id"`
+	Mac       string `json:"mac"`
+	BandWidth int    `json:"bw"`
+	Mtu       int    `json:"mtu,omitempty"`
+	Dns       string `json:"dns"`
+	Ntp       string `json:"ntp"`
+	Net       string `json:"net"`
+	Interface string `json:"interface"`
+	Gateway   string `json:"gateway"`
+	Ifname    string `json:"ifname"`
+	NicType   string `json:"nic_type,omitempty"`
+	LinkUp    bool   `json:"link_up,omitempty"`
+	TeamWith  string `json:"team_with,omitempty"`
+
+	TeamingMaster *SServerNic   `json:"-"`
+	TeamingSlaves []*SServerNic `json:"-"`
+}
+
+func (nicdesc SServerNic) getNicDns() []string {
+	dnslist := []string{}
+	if len(nicdesc.Dns) > 0 {
+		dnslist = append(dnslist, nicdesc.Dns)
+	}
+	return dnslist
+}
+
 func (self *SVirtualMachine) DoCustomize(ctx context.Context, params jsonutils.JSONObject) error {
 	spec := new(types.CustomizationSpec)
 
@@ -1201,24 +1271,22 @@ func (self *SVirtualMachine) DoCustomize(ctx context.Context, params jsonutils.J
 	ipSettings.DnsSuffixList = []string{domain}
 
 	// deal nics
-	nics, _ := params.GetArray("nics")
-	serverNics := make([]cloudtypes.SServerNic, len(nics))
-	for i := range nics {
-		var nicType cloudtypes.SServerNic
-		nics[i].Unmarshal(&nicType)
-		serverNics[i] = nicType
+	serverNics := make([]SServerNic, 0)
+	err := params.Unmarshal(&serverNics, "nics")
+	if err != nil {
+		return errors.Wrap(err, "Unmarshal nics")
 	}
 
 	// find dnsServerList
 	for i := range serverNics {
-		dnsList := netutils2.GetNicDns(&serverNics[i])
+		dnsList := serverNics[i].getNicDns()
 		if len(dnsList) != 0 {
 			ipSettings.DnsServerList = dnsList
 		}
 	}
 	spec.GlobalIPSettings = *ipSettings
 
-	maps := make([]types.CustomizationAdapterMapping, 0, len(nics))
+	maps := make([]types.CustomizationAdapterMapping, 0, len(serverNics))
 	for _, nic := range serverNics {
 		conf := types.CustomizationAdapterMapping{}
 		conf.MacAddress = nic.Mac
@@ -1237,13 +1305,13 @@ func (self *SVirtualMachine) DoCustomize(ctx context.Context, params jsonutils.J
 		if maskLen == 0 {
 			maskLen = 24
 		}
-		mask := netutils2.Netlen2Mask(maskLen)
+		mask := netutils.Netlen2Mask(maskLen)
 		conf.Adapter.SubnetMask = mask
 
 		if len(nic.Gateway) != 0 {
 			conf.Adapter.Gateway = []string{nic.Gateway}
 		}
-		dnsList := netutils2.GetNicDns(&nic)
+		dnsList := nic.getNicDns()
 		if len(dnsList) != 0 {
 			conf.Adapter.DnsServerList = dnsList
 			dns := nic.Domain
@@ -1392,23 +1460,28 @@ func (self *SVirtualMachine) relocate(hostId string) error {
 	if err != nil {
 		return errors.Wrap(err, "self.manager.GetIHostById(hostId)")
 	}
-	targetHs = ihost.(*SHost).object.(*mo.HostSystem)
+	host := ihost.(*SHost)
+	targetHs = host.object.(*mo.HostSystem)
 	if len(targetHs.Datastore) < 1 {
 		return errors.Wrap(fmt.Errorf("target host has no datastore"), "relocate")
 	}
+	rp, err := host.GetResourcePool()
+	if err != nil {
+		return errors.Wrapf(err, "GetResourcePool")
+	}
+	pool := rp.Reference()
 	ctx := self.manager.context
 	config := types.VirtualMachineRelocateSpec{}
+	config.Pool = &pool
 	hrs := targetHs.Reference()
 	config.Host = &hrs
 	config.Datastore = &targetHs.Datastore[0]
 	task, err := self.getVmObj().Relocate(ctx, config, types.VirtualMachineMovePriorityDefaultPriority)
 	if err != nil {
-		log.Errorf("vm.Migrate %s", err)
-		return errors.Wrap(err, "SVirtualMachine Migrate")
+		return errors.Wrap(err, "Relocate")
 	}
 	err = task.Wait(ctx)
 	if err != nil {
-		log.Errorf("task.Wait %s", err)
 		return errors.Wrap(err, "task.wait")
 	}
 	return nil
@@ -1531,4 +1604,33 @@ func (self *SVirtualMachine) ResetToInstanceSnapshot(ctx context.Context, idStr 
 		return errors.Wrap(err, "RevertToSnapshot_Task")
 	}
 	return object.NewTask(self.manager.client.Client, res.Returnval).Wait(ctx)
+}
+
+func (vm *SVirtualMachine) GetDatastores() ([]*SDatastore, error) {
+	dsList := make([]*SDatastore, 0)
+	dss := vm.getVirtualMachine().Datastore
+	for i := range dss {
+		var moStore mo.Datastore
+		err := vm.manager.reference2Object(dss[i].Reference(), DATASTORE_PROPS, &moStore)
+		if err != nil {
+			log.Errorf("datastore reference2Object %s", err)
+			return nil, errors.Wrap(err, "reference2Object")
+		}
+		ds := NewDatastore(vm.manager, &moStore, vm.datacenter)
+		dsList = append(dsList, ds)
+	}
+	return dsList, nil
+}
+
+func (vm *SVirtualMachine) GetDatastoreNames() []string {
+	dss, err := vm.GetDatastores()
+	if err != nil {
+		log.Errorf("GetDatastores fail %s", err)
+		return nil
+	}
+	names := make([]string, 0, len(dss))
+	for i := range dss {
+		names = append(names, dss[i].GetName())
+	}
+	return names
 }

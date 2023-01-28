@@ -37,6 +37,11 @@ type SGuestCpu struct {
 	// CpuCacheMode string
 }
 
+type CpuPin struct {
+	Vcpus string
+	Pcpus string
+}
+
 type SMemObject struct {
 	*Object
 	SizeMB int64
@@ -67,6 +72,7 @@ type SGuestMem struct {
 type SGuestHardwareDesc struct {
 	Cpu     int64
 	CpuDesc *SGuestCpu `json:",omitempty"`
+	VcpuPin []CpuPin   `json:",omitempty"`
 	// Clock   *SGuestClock `json:",omitempty"`
 
 	Mem     int64
@@ -95,7 +101,6 @@ type SGuestHardwareDesc struct {
 	Floppys         []*SGuestFloppy         `json:",omitempty"`
 	Disks           []*SGuestDisk           `json:",omitempty"`
 	Nics            []*SGuestNetwork        `json:",omitempty"`
-	NicsStandby     []*SGuestNetwork        `json:",omitempty"`
 	IsolatedDevices []*SGuestIsolatedDevice `json:",omitempty"`
 
 	// Random Number Generator Device
@@ -168,9 +173,10 @@ type SGuestDisk struct {
 // -drive id=MacDVD,if=none,snapshot=on,file=%s
 
 type SGuestCdrom struct {
-	Id      string
-	Path    string
-	Ordinal int64
+	Id        string
+	Path      string
+	Ordinal   int64
+	BootIndex *int8
 
 	Ide          *IDEDevice        `json:",omitempty"`
 	Scsi         *SCSIDevice       `json:",omitempty"`
@@ -294,6 +300,8 @@ type SGuestVirtioSerial struct {
 
 type SGuestVirtioScsi struct {
 	*PCIDevice
+
+	NumQueues *uint8 `json:"num_queues"`
 }
 
 type SGuestPvScsi struct {
@@ -319,9 +327,14 @@ type SGuestControlDesc struct {
 	IsMaster bool
 	IsSlave  bool
 
+	// is volatile host meaning guest not running on this host right now
+	IsVolatileHost bool
+
 	ScalingGroupId     string
 	SecurityRules      string
 	AdminSecurityRules string
+	SrcIpCheck         bool
+	SrcMacCheck        bool
 
 	EncryptKeyId string
 }

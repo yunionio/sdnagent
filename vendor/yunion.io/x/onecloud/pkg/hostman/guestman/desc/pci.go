@@ -96,6 +96,31 @@ func (d *PCIDevice) MultiFunction() string {
 	}
 }
 
+func OptionsToString(options map[string]string) string {
+	var cmd string
+	for key, value := range options {
+		if value != "" {
+			cmd += fmt.Sprintf(",%s=%s", key, value)
+		} else {
+			cmd += fmt.Sprintf(",%s", key)
+		}
+	}
+	return cmd
+}
+
+func (d *PCIDevice) OptionsStr() string {
+	cmd := ""
+	if d.PCIAddr != nil {
+		cmd += fmt.Sprintf("bus=%s,addr=%s", d.BusStr(), d.SlotFunc())
+		if d.Multi != nil {
+			cmd += fmt.Sprintf(",%s", d.MultiFunction())
+		}
+	}
+
+	cmd += OptionsToString(d.Options)
+	return cmd
+}
+
 // pvscsi or virtio-scsi-pci
 type SCSIAddr struct {
 	// The LUN identifies the specific logical unit
@@ -295,6 +320,14 @@ func NewPCIDevice(controller PCI_CONTROLLER_TYPE, deviceType, id string) *PCIDev
 		Id:         id,
 		Controller: controller,
 		DevType:    deviceType,
+	}
+}
+
+func NewVfioDevice(controller PCI_CONTROLLER_TYPE, deviceType, id, hostAddr string, hasXVga bool) *VFIODevice {
+	return &VFIODevice{
+		PCIDevice: NewPCIDevice(controller, deviceType, id),
+		HostAddr:  hostAddr,
+		XVga:      hasXVga,
 	}
 }
 

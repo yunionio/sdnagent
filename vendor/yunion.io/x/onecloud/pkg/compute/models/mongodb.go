@@ -23,7 +23,9 @@ import (
 	"yunion.io/x/jsonutils"
 	"yunion.io/x/log"
 	"yunion.io/x/pkg/errors"
+	"yunion.io/x/pkg/util/billing"
 	"yunion.io/x/pkg/util/compare"
+	"yunion.io/x/pkg/util/rbacscope"
 	"yunion.io/x/sqlchemy"
 
 	"yunion.io/x/onecloud/pkg/apis"
@@ -34,9 +36,9 @@ import (
 	"yunion.io/x/onecloud/pkg/cloudcommon/db/quotas"
 	"yunion.io/x/onecloud/pkg/cloudcommon/db/taskman"
 	"yunion.io/x/onecloud/pkg/cloudcommon/notifyclient"
+	"yunion.io/x/onecloud/pkg/compute/options"
 	"yunion.io/x/onecloud/pkg/httperrors"
 	"yunion.io/x/onecloud/pkg/mcclient"
-	"yunion.io/x/onecloud/pkg/util/billing"
 	"yunion.io/x/onecloud/pkg/util/rbacutils"
 	"yunion.io/x/onecloud/pkg/util/stringutils2"
 )
@@ -489,7 +491,13 @@ func (self *SMongoDB) SyncAllWithCloudMongoDB(ctx context.Context, userCred mccl
 
 func (self *SMongoDB) SyncWithCloudMongoDB(ctx context.Context, userCred mcclient.TokenCredential, ext cloudprovider.ICloudMongoDB) error {
 	diff, err := db.UpdateWithLock(ctx, self, func() error {
-		self.ExternalId = ext.GetGlobalId()
+		if options.Options.EnableSyncName {
+			newName, _ := db.GenerateAlterName(self, ext.GetName())
+			if len(newName) > 0 {
+				self.Name = newName
+			}
+		}
+
 		self.IpAddr = ext.GetIpAddr()
 		self.VcpuCount = ext.GetVcpuCount()
 		self.VmemSizeMb = ext.GetVmemSizeMb()
@@ -554,7 +562,7 @@ func (self *SMongoDB) SyncWithCloudMongoDB(ctx context.Context, userCred mcclien
 	}
 	syncVirtualResourceMetadata(ctx, userCred, self, ext)
 	if provider := self.GetCloudprovider(); provider != nil {
-		SyncCloudProject(userCred, self, provider.GetOwnerId(), ext, provider.Id)
+		SyncCloudProject(ctx, userCred, self, provider.GetOwnerId(), ext, provider.Id)
 	}
 	db.OpsLog.LogSyncUpdate(self, diff, userCred)
 	return nil
@@ -649,7 +657,7 @@ func (self *SCloudregion) newFromCloudMongoDB(ctx context.Context, userCred mccl
 	})
 
 	syncVirtualResourceMetadata(ctx, userCred, &ins, ext)
-	SyncCloudProject(userCred, &ins, provider.GetOwnerId(), ext, provider.Id)
+	SyncCloudProject(ctx, userCred, &ins, provider.GetOwnerId(), ext, provider.Id)
 	db.OpsLog.LogEvent(&ins, db.ACT_CREATE, ins.GetShortDesc(ctx), userCred)
 
 	return &ins, nil
@@ -662,7 +670,7 @@ type SMongoDBCountStat struct {
 }
 
 func (man *SMongoDBManager) TotalCount(
-	scope rbacutils.TRbacScope,
+	scope rbacscope.TRbacScope,
 	ownerId mcclient.IIdentityProvider,
 	rangeObjs []db.IStandaloneModel,
 	providers []string, brands []string, cloudEnv string,
@@ -689,7 +697,7 @@ func (man *SMongoDBManager) TotalCount(
 func (self *SMongoDB) GetQuotaKeys() quotas.IQuotaKeys {
 	region, _ := self.GetRegion()
 	return fetchRegionalQuotaKeys(
-		rbacutils.ScopeProject,
+		rbacscope.ScopeProject,
 		self.GetOwnerId(),
 		region,
 		self.GetCloudprovider(),

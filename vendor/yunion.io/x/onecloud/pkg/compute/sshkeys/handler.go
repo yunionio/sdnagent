@@ -21,8 +21,9 @@ import (
 	"net/http"
 
 	"yunion.io/x/jsonutils"
+	"yunion.io/x/pkg/appctx"
+	"yunion.io/x/pkg/util/rbacscope"
 
-	"yunion.io/x/onecloud/pkg/appctx"
 	"yunion.io/x/onecloud/pkg/appsrv"
 	"yunion.io/x/onecloud/pkg/cloudcommon/consts"
 	"yunion.io/x/onecloud/pkg/cloudcommon/db"
@@ -30,7 +31,6 @@ import (
 	"yunion.io/x/onecloud/pkg/httperrors"
 	"yunion.io/x/onecloud/pkg/mcclient"
 	"yunion.io/x/onecloud/pkg/mcclient/auth"
-	"yunion.io/x/onecloud/pkg/util/rbacutils"
 )
 
 func AddSshKeysHandler(prefix string, app *appsrv.Application) {
@@ -41,7 +41,7 @@ func AddSshKeysHandler(prefix string, app *appsrv.Application) {
 func adminSshKeysHandler(ctx context.Context, w http.ResponseWriter, r *http.Request) {
 	publicOnly := false
 	userCred := auth.FetchUserCredential(ctx, policy.FilterPolicyCredential)
-	if !userCred.IsAllow(rbacutils.ScopeDomain, consts.GetServiceType(), "sshkeypairs", policy.PolicyActionGet).Result.IsAllow() {
+	if !userCred.IsAllow(rbacscope.ScopeDomain, consts.GetServiceType(), "sshkeypairs", policy.PolicyActionGet).Result.IsAllow() {
 		publicOnly = true
 	}
 	params := appctx.AppContextParams(ctx)
@@ -50,7 +50,9 @@ func adminSshKeysHandler(ctx context.Context, w http.ResponseWriter, r *http.Req
 		httperrors.InputParameterError(ctx, w, "empty project_id/tenant_id")
 		return
 	}
-	tenant, err := db.TenantCacheManager.FetchTenantByIdOrName(ctx, projectId)
+	params, query, _ := appsrv.FetchEnv(ctx, w, r)
+	domainId, _ := jsonutils.GetAnyString2(query, db.DomainFetchKeys)
+	tenant, err := db.TenantCacheManager.FetchTenantByIdOrNameInDomain(ctx, projectId, domainId)
 	if err != nil {
 		if err == sql.ErrNoRows {
 			httperrors.ResourceNotFoundError(ctx, w, "tenant/project %s not found", projectId)
@@ -60,11 +62,7 @@ func adminSshKeysHandler(ctx context.Context, w http.ResponseWriter, r *http.Req
 			return
 		}
 	}
-	query, err := jsonutils.ParseQueryString(r.URL.RawQuery)
-	if err != nil {
-		httperrors.GeneralServerError(ctx, w, err)
-		return
-	}
+
 	isAdmin := jsonutils.QueryBoolean(query, "admin", false)
 
 	sendSshKey(ctx, w, userCred, tenant.Id, isAdmin, publicOnly)
@@ -85,7 +83,7 @@ func sshKeysHandler(ctx context.Context, w http.ResponseWriter, r *http.Request)
 func sendSshKey(ctx context.Context, w http.ResponseWriter, userCred mcclient.TokenCredential, projectId string, isAdmin bool, publicOnly bool) {
 	var privKey, pubKey string
 
-	if isAdmin && userCred.IsAllow(rbacutils.ScopeSystem, consts.GetServiceType(), "sshkeypairs", policy.PolicyActionGet).Result.IsAllow() {
+	if isAdmin && userCred.IsAllow(rbacscope.ScopeSystem, consts.GetServiceType(), "sshkeypairs", policy.PolicyActionGet).Result.IsAllow() {
 		privKey, pubKey, _ = GetSshAdminKeypair(ctx)
 	} else {
 		privKey, pubKey, _ = GetSshProjectKeypair(ctx, projectId)

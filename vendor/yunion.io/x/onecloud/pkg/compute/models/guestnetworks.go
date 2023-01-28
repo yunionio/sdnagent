@@ -25,6 +25,8 @@ import (
 	"yunion.io/x/log"
 	"yunion.io/x/pkg/errors"
 	"yunion.io/x/pkg/util/netutils"
+	randutil "yunion.io/x/pkg/util/rand"
+	"yunion.io/x/pkg/util/rbacscope"
 	"yunion.io/x/pkg/util/regutils"
 	"yunion.io/x/sqlchemy"
 
@@ -34,8 +36,6 @@ import (
 	"yunion.io/x/onecloud/pkg/compute/options"
 	"yunion.io/x/onecloud/pkg/httperrors"
 	"yunion.io/x/onecloud/pkg/mcclient"
-	randutil "yunion.io/x/onecloud/pkg/util/rand"
-	"yunion.io/x/onecloud/pkg/util/rbacutils"
 	"yunion.io/x/onecloud/pkg/util/stringutils2"
 )
 
@@ -270,7 +270,7 @@ func (manager *SGuestnetworkManager) newGuestNetwork(
 	gn.Index = index
 	gn.Virtual = virtual
 	if len(driver) == 0 {
-		driver = "virtio"
+		driver = api.NETWORK_DRIVER_VIRTIO
 	}
 	gn.Driver = driver
 	gn.NumQueues = numQueues
@@ -287,16 +287,6 @@ func (manager *SGuestnetworkManager) newGuestNetwork(
 	}
 
 	provider := vpc.GetProviderName()
-
-	macAddr, err := manager.GenerateMac(mac)
-	if err != nil {
-		return nil, err
-	}
-	if len(macAddr) == 0 {
-		log.Errorf("Mac address generate fails")
-		return nil, fmt.Errorf("mac address generate fails")
-	}
-	gn.MacAddr = macAddr
 	if !virtual {
 		if len(address) > 0 && reUseAddr {
 			ipAddr, err := netutils.NewIPV4Addr(address)
@@ -332,6 +322,21 @@ func (manager *SGuestnetworkManager) newGuestNetwork(
 			}
 		}
 	}
+	var err error
+	if ipBindMac := NetworkIpMacManager.GetMacFromIp(network.Id, gn.IpAddr); ipBindMac != "" {
+		gn.MacAddr = ipBindMac
+	} else {
+		gn.MacAddr, err = manager.GenerateMac(mac)
+		if err != nil {
+			return nil, err
+		}
+	}
+
+	if len(gn.MacAddr) == 0 {
+		log.Errorf("Mac address generate fails")
+		return nil, fmt.Errorf("mac address generate fails")
+	}
+
 	ifname, err = gn.checkOrAllocateIfname(network, ifname)
 	if err != nil {
 		return nil, err
@@ -574,7 +579,7 @@ func (self *SGuestnetwork) getJsonDesc() *api.GuestnetworkJsonDesc {
 	desc.TeamWith = self.TeamWith
 
 	guest := self.getGuest()
-	if guest.GetHypervisor() != api.HYPERVISOR_KVM {
+	if guest.GetHypervisor() != api.HYPERVISOR_KVM || self.Driver == api.NETWORK_DRIVER_VFIO {
 		manual := true
 		desc.Manual = &manual
 	}
@@ -639,6 +644,10 @@ func (manager *SGuestnetworkManager) DeleteGuestNics(ctx context.Context, userCr
 			return errors.Wrapf(httperrors.ErrInvalidStatus, "eip associate with %s", gn.IpAddr)
 		}
 		guest := gn.GetGuest()
+		dev, err := guest.GetIsolatedDeviceByNetworkIndex(gn.Index)
+		if err != nil {
+			return errors.Wrap(err, "GetIsolatedDeviceByNetworkIndex")
+		}
 		net := gn.GetNetwork()
 		if regutils.MatchIP4Addr(gn.IpAddr) || regutils.MatchIP6Addr(gn.Ip6Addr) {
 			net.updateDnsRecord(&gn, false)
@@ -647,13 +656,18 @@ func (manager *SGuestnetworkManager) DeleteGuestNics(ctx context.Context, userCr
 				// netman.get_manager().netmap_remove_node(gn.ip_addr)
 			}
 		}
-		// ??
-		// gn.Delete(ctx, userCred)
-		err := gn.Delete(ctx, userCred)
+		err = gn.Delete(ctx, userCred)
 		if err != nil {
 			log.Errorf("%s", err)
 		}
 		gn.LogDetachEvent(ctx, userCred, guest, net)
+		if dev != nil {
+			err = guest.detachIsolateDevice(ctx, userCred, dev)
+			if err != nil {
+				return err
+			}
+		}
+
 		if reserve && regutils.MatchIP4Addr(gn.IpAddr) {
 			ReservedipManager.ReserveIP(userCred, net, gn.IpAddr, "Delete to reserve")
 		}
@@ -697,7 +711,7 @@ func (self *SGuestnetwork) Detach(ctx context.Context, userCred mcclient.TokenCr
 }
 
 func totalGuestNicCount(
-	scope rbacutils.TRbacScope,
+	scope rbacscope.TRbacScope,
 	ownerId mcclient.IIdentityProvider,
 	rangeObjs []db.IStandaloneModel,
 	includeSystem bool,
@@ -719,11 +733,11 @@ func totalGuestNicCount(
 	q = RangeObjectsFilter(q, rangeObjs, nil, hosts.Field("zone_id"), hosts.Field("manager_id"), hosts.Field("id"), nil)
 
 	switch scope {
-	case rbacutils.ScopeSystem:
+	case rbacscope.ScopeSystem:
 		// do nothing
-	case rbacutils.ScopeDomain:
+	case rbacscope.ScopeDomain:
 		q = q.Filter(sqlchemy.Equals(guests.Field("domain_id"), ownerId.GetProjectDomainId()))
-	case rbacutils.ScopeProject:
+	case rbacscope.ScopeProject:
 		q = q.Filter(sqlchemy.Equals(guests.Field("tenant_id"), ownerId.GetProjectId()))
 	}
 

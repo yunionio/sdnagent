@@ -28,6 +28,7 @@ import (
 	"yunion.io/x/pkg/tristate"
 	"yunion.io/x/pkg/util/compare"
 	"yunion.io/x/pkg/util/netutils"
+	"yunion.io/x/pkg/util/rbacscope"
 	"yunion.io/x/pkg/utils"
 	"yunion.io/x/sqlchemy"
 
@@ -43,7 +44,6 @@ import (
 	"yunion.io/x/onecloud/pkg/compute/options"
 	"yunion.io/x/onecloud/pkg/httperrors"
 	"yunion.io/x/onecloud/pkg/mcclient"
-	"yunion.io/x/onecloud/pkg/util/rbacutils"
 	"yunion.io/x/onecloud/pkg/util/stringutils2"
 )
 
@@ -523,8 +523,12 @@ func (self *SVpc) syncRemoveCloudVpc(ctx context.Context, userCred mcclient.Toke
 
 func (self *SVpc) SyncWithCloudVpc(ctx context.Context, userCred mcclient.TokenCredential, extVPC cloudprovider.ICloudVpc, provider *SCloudprovider) error {
 	diff, err := db.UpdateWithLock(ctx, self, func() error {
-		extVPC.Refresh()
-		// self.Name = extVPC.GetName()
+		if options.Options.EnableSyncName {
+			newName, _ := db.GenerateAlterName(self, extVPC.GetName())
+			if len(newName) > 0 {
+				self.Name = newName
+			}
+		}
 		self.Status = extVPC.GetStatus()
 		self.CidrBlock = extVPC.GetCidrBlock()
 		self.IsDefault = extVPC.GetIsDefault()
@@ -660,7 +664,7 @@ func (manager *SVpcManager) InitializeData() error {
 			defVpc.Status = api.VPC_STATUS_AVAILABLE
 			defVpc.IsDefault = true
 			defVpc.IsPublic = true
-			defVpc.PublicScope = string(rbacutils.ScopeSystem)
+			defVpc.PublicScope = string(rbacscope.ScopeSystem)
 			err = manager.TableSpec().Insert(context.TODO(), &defVpc)
 			if err != nil {
 				log.Errorf("Insert default vpc fail: %s", err)
@@ -671,7 +675,7 @@ func (manager *SVpcManager) InitializeData() error {
 		}
 	} else {
 		vpc := vpcObj.(*SVpc)
-		if vpc.Status != api.VPC_STATUS_AVAILABLE || (vpc.PublicScope == string(rbacutils.ScopeSystem) && !vpc.IsPublic) {
+		if vpc.Status != api.VPC_STATUS_AVAILABLE || (vpc.PublicScope == string(rbacscope.ScopeSystem) && !vpc.IsPublic) {
 			_, err = db.Update(vpc, func() error {
 				vpc.Status = api.VPC_STATUS_AVAILABLE
 				vpc.IsPublic = true
@@ -1039,6 +1043,10 @@ func (manager *SVpcManager) ListItemFilter(
 		return nil, errors.Wrap(err, "SGlobalVpcResourceBaseManager.ListItemFilter")
 	}
 
+	if len(query.ExternalAccessMode) > 0 {
+		q = q.Equals("external_access_mode", query.ExternalAccessMode)
+	}
+
 	if len(query.DnsZoneId) > 0 {
 		dnsZone, err := DnsZoneManager.FetchByIdOrName(userCred, query.DnsZoneId)
 		if err != nil {
@@ -1315,7 +1323,7 @@ func GetVpcQuotaKeysFromCreateInput(owner mcclient.IIdentityProvider, input api.
 	if len(input.CloudproviderId) > 0 {
 		provider = CloudproviderManager.FetchCloudproviderById(input.CloudproviderId)
 	}
-	regionKeys := fetchRegionalQuotaKeys(rbacutils.ScopeDomain, ownerId, region, provider)
+	regionKeys := fetchRegionalQuotaKeys(rbacscope.ScopeDomain, ownerId, region, provider)
 	keys := quotas.SDomainRegionalCloudResourceKeys{}
 	keys.SBaseDomainQuotaKeys = regionKeys.SBaseDomainQuotaKeys
 	keys.SRegionalBaseKeys = regionKeys.SRegionalBaseKeys
@@ -1327,7 +1335,7 @@ func (vpc *SVpc) GetQuotaKeys() quotas.SDomainRegionalCloudResourceKeys {
 	region, _ := vpc.GetRegion()
 	manager := vpc.GetCloudprovider()
 	ownerId := vpc.GetOwnerId()
-	regionKeys := fetchRegionalQuotaKeys(rbacutils.ScopeDomain, ownerId, region, manager)
+	regionKeys := fetchRegionalQuotaKeys(rbacscope.ScopeDomain, ownerId, region, manager)
 	keys := quotas.SDomainRegionalCloudResourceKeys{}
 	keys.SBaseDomainQuotaKeys = regionKeys.SBaseDomainQuotaKeys
 	keys.SRegionalBaseKeys = regionKeys.SRegionalBaseKeys
@@ -1349,7 +1357,7 @@ func (vpc *SVpc) GetUsages() []db.IUsage {
 
 func (manager *SVpcManager) totalCount(
 	ownerId mcclient.IIdentityProvider,
-	scope rbacutils.TRbacScope,
+	scope rbacscope.TRbacScope,
 	rangeObjs []db.IStandaloneModel,
 	providers []string,
 	brands []string,
@@ -1357,7 +1365,7 @@ func (manager *SVpcManager) totalCount(
 ) int {
 	q := VpcManager.Query()
 
-	if scope != rbacutils.ScopeSystem && ownerId != nil {
+	if scope != rbacscope.ScopeSystem && ownerId != nil {
 		q = q.Equals("domain_id", ownerId.GetProjectDomainId())
 	}
 	q = CloudProviderFilter(q, q.Field("manager_id"), providers, brands, cloudEnv)
@@ -1451,7 +1459,7 @@ func (manager *SVpcManager) ListItemExportKeys(ctx context.Context,
 }
 
 func (vpc *SVpc) PerformPublic(ctx context.Context, userCred mcclient.TokenCredential, query jsonutils.JSONObject, input apis.PerformPublicDomainInput) (jsonutils.JSONObject, error) {
-	if vpc.Id == api.DEFAULT_VPC_ID && rbacutils.String2ScopeDefault(input.Scope, rbacutils.ScopeSystem) != rbacutils.ScopeSystem {
+	if vpc.Id == api.DEFAULT_VPC_ID && rbacscope.String2ScopeDefault(input.Scope, rbacscope.ScopeSystem) != rbacscope.ScopeSystem {
 		return nil, httperrors.NewForbiddenError("For default vpc, only system level sharing can be set")
 	}
 	_, err := vpc.SEnabledStatusInfrasResourceBase.PerformPublic(ctx, userCred, query, input)
@@ -1500,7 +1508,7 @@ func (vpc *SVpc) PerformPrivate(ctx context.Context, userCred mcclient.TokenCred
 	wires, _ := vpc.GetWires()
 	for i := range wires {
 		if wires[i].DomainId == vpc.DomainId {
-			nets, _ := wires[i].getNetworks(nil, rbacutils.ScopeNone)
+			nets, _ := wires[i].getNetworks(nil, rbacscope.ScopeNone)
 			for j := range nets {
 				if nets[j].DomainId != vpc.DomainId {
 					emptyNets = false
@@ -1517,14 +1525,14 @@ func (vpc *SVpc) PerformPrivate(ctx context.Context, userCred mcclient.TokenCred
 	}
 	if emptyNets {
 		for i := range wires {
-			nets, _ := wires[i].getNetworks(nil, rbacutils.ScopeNone)
+			nets, _ := wires[i].getNetworks(nil, rbacscope.ScopeNone)
 			netfail := false
 			for j := range nets {
-				if nets[j].IsPublic && nets[j].GetPublicScope().HigherEqual(rbacutils.ScopeDomain) {
+				if nets[j].IsPublic && nets[j].GetPublicScope().HigherEqual(rbacscope.ScopeDomain) {
 					var err error
 					if consts.GetNonDefaultDomainProjects() {
 						netinput := apis.PerformPublicProjectInput{}
-						netinput.Scope = string(rbacutils.ScopeDomain)
+						netinput.Scope = string(rbacscope.ScopeDomain)
 						_, err = nets[j].PerformPublic(ctx, userCred, nil, netinput)
 					} else {
 						_, err = nets[j].PerformPrivate(ctx, userCred, nil, input)
@@ -1786,7 +1794,7 @@ func (self *SVpc) GetDetailsTopology(ctx context.Context, userCred mcclient.Toke
 			}
 			wire.Hosts = append(wire.Hosts, host)
 		}
-		networks, err := wires[i].GetNetworks(nil, rbacutils.ScopeSystem)
+		networks, err := wires[i].GetNetworks(nil, rbacscope.ScopeSystem)
 		if err != nil {
 			return nil, errors.Wrapf(err, "GetNetworks")
 		}
@@ -1804,7 +1812,7 @@ func (self *SVpc) GetDetailsTopology(ctx context.Context, userCred mcclient.Toke
 
 			netAddrs := make([]api.SNetworkUsedAddress, 0)
 
-			q := networks[j].getUsedAddressQuery(userCred, rbacutils.ScopeSystem, false)
+			q := networks[j].getUsedAddressQuery(userCred, rbacscope.ScopeSystem, false)
 			err = q.All(&netAddrs)
 			if err != nil {
 				return nil, errors.Wrapf(err, "q.All")

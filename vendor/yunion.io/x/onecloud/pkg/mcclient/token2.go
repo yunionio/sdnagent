@@ -21,6 +21,7 @@ import (
 	"time"
 
 	"yunion.io/x/jsonutils"
+	"yunion.io/x/pkg/util/rbacscope"
 
 	api "yunion.io/x/onecloud/pkg/apis/identity"
 	"yunion.io/x/onecloud/pkg/util/rbacutils"
@@ -207,7 +208,7 @@ func (this *TokenCredentialV2) HasSystemAdminPrivilege() bool {
 	return this.IsAdmin() && this.GetTenantName() == "system"
 }
 
-func (this *TokenCredentialV2) IsAllow(scope rbacutils.TRbacScope, service string, resource string, action string, extra ...string) rbacutils.SPolicyResult {
+func (this *TokenCredentialV2) IsAllow(scope rbacscope.TRbacScope, service string, resource string, action string, extra ...string) rbacutils.SPolicyResult {
 	if this.isAllow(scope, service, resource, action, extra...) {
 		return rbacutils.PolicyAllow
 	} else {
@@ -215,8 +216,8 @@ func (this *TokenCredentialV2) IsAllow(scope rbacutils.TRbacScope, service strin
 	}
 }
 
-func (this *TokenCredentialV2) isAllow(scope rbacutils.TRbacScope, service string, resource string, action string, extra ...string) bool {
-	if scope == rbacutils.ScopeSystem || scope == rbacutils.ScopeDomain {
+func (this *TokenCredentialV2) isAllow(scope rbacscope.TRbacScope, service string, resource string, action string, extra ...string) bool {
+	if scope == rbacscope.ScopeSystem || scope == rbacscope.ScopeDomain {
 		return this.HasSystemAdminPrivilege()
 	} else {
 		return true
@@ -227,12 +228,12 @@ func (this *TokenCredentialV2) Len() int {
 	return this.ServiceCatalog.Len()
 }
 
-func (this *TokenCredentialV2) GetServiceURL(service, region, zone, endpointType string) (string, error) {
-	return this.ServiceCatalog.GetServiceURL(service, region, zone, endpointType)
+func (this *TokenCredentialV2) getServiceURL(service, region, zone, endpointType string) (string, error) {
+	return this.ServiceCatalog.getServiceURL(service, region, zone, endpointType)
 }
 
-func (this *TokenCredentialV2) GetServiceURLs(service, region, zone, endpointType string) ([]string, error) {
-	return this.ServiceCatalog.GetServiceURLs(service, region, zone, endpointType)
+func (this *TokenCredentialV2) getServiceURLs(service, region, zone, endpointType string) ([]string, error) {
+	return this.ServiceCatalog.getServiceURLs(service, region, zone, endpointType)
 }
 
 func (this *TokenCredentialV2) GetInternalServices(region string) []string {
@@ -335,7 +336,7 @@ func (catalog KeystoneServiceCatalogV2) Len() int {
 	return len(catalog)
 }
 
-func (catalog KeystoneServiceCatalogV2) GetServiceURL(service, region, zone, endpointType string) (string, error) {
+func (catalog KeystoneServiceCatalogV2) getServiceURL(service, region, zone, endpointType string) (string, error) {
 	ep, err := catalog.getServiceEndpoint(service, region, zone)
 	if err != nil {
 		return "", err
@@ -343,8 +344,8 @@ func (catalog KeystoneServiceCatalogV2) GetServiceURL(service, region, zone, end
 	return ep.getURL(endpointType), nil
 }
 
-func (catalog KeystoneServiceCatalogV2) GetServiceURLs(service, region, zone, endpointType string) ([]string, error) {
-	url, err := catalog.GetServiceURL(service, region, zone, endpointType)
+func (catalog KeystoneServiceCatalogV2) getServiceURLs(service, region, zone, endpointType string) ([]string, error) {
+	url, err := catalog.getServiceURL(service, region, zone, endpointType)
 	if err != nil {
 		return nil, err
 	}

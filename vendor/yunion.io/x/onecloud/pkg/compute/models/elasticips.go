@@ -26,6 +26,8 @@ import (
 	"yunion.io/x/pkg/errors"
 	"yunion.io/x/pkg/tristate"
 	"yunion.io/x/pkg/util/compare"
+	"yunion.io/x/pkg/util/pinyinutils"
+	"yunion.io/x/pkg/util/rbacscope"
 	"yunion.io/x/pkg/utils"
 	"yunion.io/x/sqlchemy"
 
@@ -39,9 +41,9 @@ import (
 	"yunion.io/x/onecloud/pkg/cloudcommon/notifyclient"
 	"yunion.io/x/onecloud/pkg/cloudcommon/policy"
 	"yunion.io/x/onecloud/pkg/cloudcommon/validators"
+	"yunion.io/x/onecloud/pkg/compute/options"
 	"yunion.io/x/onecloud/pkg/httperrors"
 	"yunion.io/x/onecloud/pkg/mcclient"
-	"yunion.io/x/onecloud/pkg/util/pinyinutils"
 	"yunion.io/x/onecloud/pkg/util/rbacutils"
 	"yunion.io/x/onecloud/pkg/util/stringutils2"
 )
@@ -155,7 +157,8 @@ func (manager *SElasticipManager) ListItemFilter(
 				return nil, httperrors.NewGeneralError(err)
 			}
 			guest := serverObj.(*SGuest)
-			if guest.Hypervisor == api.HYPERVISOR_KVM || (utils.IsInStringArray(guest.Hypervisor, api.PRIVATE_CLOUD_HYPERVISORS) && guest.Hypervisor != api.HYPERVISOR_HCSO) {
+			if guest.Hypervisor == api.HYPERVISOR_KVM || (utils.IsInStringArray(guest.Hypervisor, api.PRIVATE_CLOUD_HYPERVISORS) &&
+				guest.Hypervisor != api.HYPERVISOR_HCSO && guest.Hypervisor != api.HYPERVISOR_HCS) {
 				zone, _ := guest.getZone()
 				networks := NetworkManager.Query().SubQuery()
 				wires := WireManager.Query().SubQuery()
@@ -507,6 +510,12 @@ func (self *SElasticip) SyncInstanceWithCloudEip(ctx context.Context, userCred m
 
 func (self *SElasticip) SyncWithCloudEip(ctx context.Context, userCred mcclient.TokenCredential, provider *SCloudprovider, ext cloudprovider.ICloudEIP, syncOwnerId mcclient.IIdentityProvider) error {
 	diff, err := db.UpdateWithLock(ctx, self, func() error {
+		if options.Options.EnableSyncName {
+			newName, _ := db.GenerateAlterName(self, ext.GetName())
+			if len(newName) > 0 {
+				self.Name = newName
+			}
+		}
 		if bandwidth := ext.GetBandwidth(); bandwidth != 0 {
 			self.Bandwidth = bandwidth
 		}
@@ -558,7 +567,7 @@ func (self *SElasticip) SyncWithCloudEip(ctx context.Context, userCred mcclient.
 	if res := self.GetAssociateResource(); res != nil && len(res.GetOwnerId().GetProjectId()) > 0 {
 		self.SyncCloudProjectId(userCred, res.GetOwnerId())
 	} else {
-		SyncCloudProject(userCred, self, syncOwnerId, ext, self.ManagerId)
+		SyncCloudProject(ctx, userCred, self, syncOwnerId, ext, self.ManagerId)
 	}
 
 	return nil
@@ -623,7 +632,7 @@ func (manager *SElasticipManager) newFromCloudEip(ctx context.Context, userCred 
 	if res := eip.GetAssociateResource(); res != nil {
 		eip.SyncCloudProjectId(userCred, res.GetOwnerId())
 	} else {
-		SyncCloudProject(userCred, &eip, syncOwnerId, extEip, eip.ManagerId)
+		SyncCloudProject(ctx, userCred, &eip, syncOwnerId, extEip, eip.ManagerId)
 	}
 
 	db.OpsLog.LogEvent(&eip, db.ACT_CREATE, eip.GetShortDesc(ctx), userCred)
@@ -904,12 +913,8 @@ func (self *SElasticip) AssociateNatGateway(ctx context.Context, userCred mcclie
 	if nat.Deleted {
 		return fmt.Errorf("nat gateway is deleted")
 	}
-	if len(self.AssociateType) > 0 && len(self.AssociateId) > 0 {
-		if self.AssociateType == api.EIP_ASSOCIATE_TYPE_NAT_GATEWAY && self.AssociateId == nat.Id {
-			return nil
-		} else {
-			return fmt.Errorf("Eip has been associated!!")
-		}
+	if len(self.AssociateId) > 0 && self.AssociateType == api.EIP_ASSOCIATE_TYPE_NAT_GATEWAY && self.AssociateId == nat.Id {
+		return nil
 	}
 	_, err := db.Update(self, func() error {
 		self.AssociateType = api.EIP_ASSOCIATE_TYPE_NAT_GATEWAY
@@ -995,7 +1000,7 @@ func (manager *SElasticipManager) ValidateCreateData(ctx context.Context, userCr
 
 	//避免参数重名后还有pending.eip残留
 	eipPendingUsage := &SRegionQuota{Eip: 1}
-	quotaKeys := fetchRegionalQuotaKeys(rbacutils.ScopeProject, ownerId, region, provider)
+	quotaKeys := fetchRegionalQuotaKeys(rbacscope.ScopeProject, ownerId, region, provider)
 	eipPendingUsage.SetKeys(quotaKeys)
 	if err = quotas.CheckSetPendingQuota(ctx, userCred, eipPendingUsage); err != nil {
 		return input, err
@@ -1010,7 +1015,7 @@ func (eip *SElasticip) GetQuotaKeys() (quotas.IQuotaKeys, error) {
 		return nil, errors.Wrapf(err, "eip.GetRegion")
 	}
 	return fetchRegionalQuotaKeys(
-		rbacutils.ScopeProject,
+		rbacscope.ScopeProject,
 		eip.GetOwnerId(),
 		region,
 		eip.GetCloudprovider(),
@@ -1662,7 +1667,7 @@ func (manager *SElasticipManager) NewEipForVMOnHost(ctx context.Context, userCre
 
 	eipPendingUsage := &SRegionQuota{Eip: 1}
 	keys := fetchRegionalQuotaKeys(
-		rbacutils.ScopeProject,
+		rbacscope.ScopeProject,
 		ownerId,
 		region,
 		provider,
@@ -1771,22 +1776,22 @@ func (manager *SElasticipManager) usageQByRanges(q *sqlchemy.SQuery, rangeObjs [
 	return RangeObjectsFilter(q, rangeObjs, q.Field("cloudregion_id"), nil, q.Field("manager_id"), nil, nil)
 }
 
-func (manager *SElasticipManager) usageQ(scope rbacutils.TRbacScope, ownerId mcclient.IIdentityProvider, q *sqlchemy.SQuery, rangeObjs []db.IStandaloneModel, providers []string, brands []string, cloudEnv string, policyResult rbacutils.SPolicyResult) *sqlchemy.SQuery {
+func (manager *SElasticipManager) usageQ(scope rbacscope.TRbacScope, ownerId mcclient.IIdentityProvider, q *sqlchemy.SQuery, rangeObjs []db.IStandaloneModel, providers []string, brands []string, cloudEnv string, policyResult rbacutils.SPolicyResult) *sqlchemy.SQuery {
 	q = manager.usageQByRanges(q, rangeObjs)
 	q = manager.usageQByCloudEnv(q, providers, brands, cloudEnv)
 	switch scope {
-	case rbacutils.ScopeSystem:
+	case rbacscope.ScopeSystem:
 		// do nothing
-	case rbacutils.ScopeDomain:
+	case rbacscope.ScopeDomain:
 		q = q.Equals("domain_id", ownerId.GetProjectDomainId())
-	case rbacutils.ScopeProject:
+	case rbacscope.ScopeProject:
 		q = q.Equals("tenant_id", ownerId.GetProjectId())
 	}
 	q = db.ObjectIdQueryWithPolicyResult(q, manager, policyResult)
 	return q
 }
 
-func (manager *SElasticipManager) TotalCount(scope rbacutils.TRbacScope, ownerId mcclient.IIdentityProvider, rangeObjs []db.IStandaloneModel, providers []string, brands []string, cloudEnv string, policyResult rbacutils.SPolicyResult) EipUsage {
+func (manager *SElasticipManager) TotalCount(scope rbacscope.TRbacScope, ownerId mcclient.IIdentityProvider, rangeObjs []db.IStandaloneModel, providers []string, brands []string, cloudEnv string, policyResult rbacutils.SPolicyResult) EipUsage {
 	usage := EipUsage{}
 	q1sq := manager.Query().SubQuery()
 	q1 := q1sq.Query(
