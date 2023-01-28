@@ -21,15 +21,8 @@ import (
 
 	"yunion.io/x/jsonutils"
 	"yunion.io/x/pkg/errors"
+	"yunion.io/x/pkg/util/httputils"
 	"yunion.io/x/pkg/utils"
-
-	"yunion.io/x/onecloud/pkg/httperrors"
-	"yunion.io/x/onecloud/pkg/mcclient"
-	"yunion.io/x/onecloud/pkg/util/httputils"
-)
-
-const (
-	ErrNoSuchProvder = errors.Error("no such provider")
 )
 
 type SCloudaccountCredential struct {
@@ -176,6 +169,11 @@ type ProviderConfig struct {
 	ProxyFunc     httputils.TransportProxyFunc
 	Debug         bool
 
+	// 仅用来检测cloudpods是否纳管自身环境(system项目id)
+	AdminProjectId string
+
+	AliyunResourceGroupIds []string
+
 	UpdatePermission func(service, permission string)
 }
 
@@ -202,8 +200,8 @@ type ICloudProviderFactory interface {
 	GetName() string
 
 	ValidateChangeBandwidth(instanceId string, bandwidth int64) error
-	ValidateCreateCloudaccountData(ctx context.Context, userCred mcclient.TokenCredential, input SCloudaccountCredential) (SCloudaccount, error)
-	ValidateUpdateCloudaccountCredential(ctx context.Context, userCred mcclient.TokenCredential, input SCloudaccountCredential, cloudaccount string) (SCloudaccount, error)
+	ValidateCreateCloudaccountData(ctx context.Context, input SCloudaccountCredential) (SCloudaccount, error)
+	ValidateUpdateCloudaccountCredential(ctx context.Context, input SCloudaccountCredential, cloudaccount string) (SCloudaccount, error)
 	GetSupportedBrands() []string
 
 	IsPublicCloud() bool
@@ -739,7 +737,7 @@ func (factory *baseProviderFactory) IsSupportSAMLAuth() bool {
 }
 
 func (factory *baseProviderFactory) GetProvider(providerId, providerName, url, username, password string) (ICloudProvider, error) {
-	return nil, httperrors.NewNotImplementedError("Not Implemented GetProvider")
+	return nil, errors.Wrapf(ErrNotImplemented, "GetProvider")
 }
 
 func (factory *baseProviderFactory) IsOnPremise() bool {
@@ -960,4 +958,5 @@ type ICloudModelartsPoolSku interface {
 	GetGpuType() string
 	GetNpuSize() int
 	GetNpuType() string
+	GetProcessorType() string
 }

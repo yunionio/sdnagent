@@ -70,7 +70,8 @@ type SGuestdisk struct {
 
 	Mountpoint string `width:"256" charset:"utf8" nullable:"true" get:"user"` // Column(VARCHAR(256, charset='utf8'), nullable=True)
 
-	Index int8 `nullable:"false" default:"0" list:"user" update:"user"` // Column(TINYINT(4), nullable=False, default=0)
+	Index     int8 `nullable:"false" default:"0" list:"user" update:"user"` // Column(TINYINT(4), nullable=False, default=0)
+	BootIndex int8 `nullable:"false" default:"-1" list:"user" update:"user"`
 }
 
 func (manager *SGuestdiskManager) GetSlaveFieldName() string {
@@ -174,8 +175,12 @@ func (self *SGuestdisk) GetDisk() *SDisk {
 
 func (self *SGuestdisk) GetJsonDescAtHost(ctx context.Context, host *SHost) *api.GuestdiskJsonDesc {
 	disk := self.GetDisk()
+	return self.GetDiskJsonDescAtHost(ctx, host, disk)
+}
+
+func (self *SGuestdisk) GetDiskJsonDescAtHost(ctx context.Context, host *SHost, disk *SDisk) *api.GuestdiskJsonDesc {
 	desc := &api.GuestdiskJsonDesc{
-		DiskId:    self.DiskId,
+		DiskId:    disk.Id,
 		Driver:    self.Driver,
 		CacheMode: self.CacheMode,
 		AioMode:   self.AioMode,
@@ -184,9 +189,9 @@ func (self *SGuestdisk) GetJsonDescAtHost(ctx context.Context, host *SHost) *api
 		Size:      disk.DiskSize,
 	}
 	desc.TemplateId = disk.GetTemplateId()
+	storage, _ := disk.GetStorage()
+	desc.StorageType = storage.StorageType
 	if len(desc.TemplateId) > 0 {
-		storage, _ := disk.GetStorage()
-		desc.StorageType = storage.StorageType
 		storagecacheimg := StoragecachedimageManager.GetStoragecachedimage(storage.StoragecacheId, desc.TemplateId)
 		if storagecacheimg != nil {
 			desc.ImagePath = storagecacheimg.Path
@@ -205,6 +210,8 @@ func (self *SGuestdisk) GetJsonDescAtHost(ctx context.Context, host *SHost) *api
 	}
 	desc.Format = disk.DiskFormat
 	desc.Index = self.Index
+	bootIndex := self.BootIndex
+	desc.BootIndex = &bootIndex
 
 	if len(disk.SnapshotId) > 0 {
 		needMerge := disk.GetMetadata(ctx, "merge_snapshot", nil)
@@ -259,6 +266,14 @@ func (self *SGuestdisk) ToDiskConfig() *api.DiskConfig {
 	conf.Index = int(self.Index)
 	conf.Mountpoint = self.Mountpoint
 	return conf
+}
+
+func (self *SGuestdisk) SetBootIndex(bootIndex int8) error {
+	_, err := db.Update(self, func() error {
+		self.BootIndex = bootIndex
+		return nil
+	})
+	return err
 }
 
 func (manager *SGuestdiskManager) ListItemFilter(

@@ -25,6 +25,7 @@ import (
 	"yunion.io/x/log"
 	"yunion.io/x/pkg/errors"
 	"yunion.io/x/pkg/util/compare"
+	"yunion.io/x/pkg/util/rbacscope"
 	"yunion.io/x/pkg/util/timeutils"
 	"yunion.io/x/pkg/utils"
 	"yunion.io/x/sqlchemy"
@@ -848,14 +849,14 @@ func (self *SSnapshotManager) DeleteDiskSnapshots(ctx context.Context, userCred 
 	return nil
 }
 
-func TotalSnapshotCount(scope rbacutils.TRbacScope, ownerId mcclient.IIdentityProvider, rangeObjs []db.IStandaloneModel, providers []string, brands []string, cloudEnv string, policyResult rbacutils.SPolicyResult) (int, error) {
+func TotalSnapshotCount(scope rbacscope.TRbacScope, ownerId mcclient.IIdentityProvider, rangeObjs []db.IStandaloneModel, providers []string, brands []string, cloudEnv string, policyResult rbacutils.SPolicyResult) (int, error) {
 	q := SnapshotManager.Query()
 
 	switch scope {
-	case rbacutils.ScopeSystem:
-	case rbacutils.ScopeDomain:
+	case rbacscope.ScopeSystem:
+	case rbacscope.ScopeDomain:
 		q = q.Equals("domain_id", ownerId.GetProjectDomainId())
-	case rbacutils.ScopeProject:
+	case rbacscope.ScopeProject:
 		q = q.Equals("tenant_id", ownerId.GetProjectId())
 	}
 
@@ -884,7 +885,12 @@ func (self *SSnapshot) syncRemoveCloudSnapshot(ctx context.Context, userCred mcc
 // Only sync snapshot status
 func (self *SSnapshot) SyncWithCloudSnapshot(ctx context.Context, userCred mcclient.TokenCredential, ext cloudprovider.ICloudSnapshot, syncOwnerId mcclient.IIdentityProvider, region *SCloudregion) error {
 	diff, err := db.UpdateWithLock(ctx, self, func() error {
-		// self.Name = ext.GetName()
+		if options.Options.EnableSyncName {
+			newName, _ := db.GenerateAlterName(self, ext.GetName())
+			if len(newName) > 0 {
+				self.Name = newName
+			}
+		}
 		self.Status = ext.GetStatus()
 		self.DiskType = ext.GetDiskType()
 		self.Size = int(ext.GetSizeMb())
@@ -905,7 +911,7 @@ func (self *SSnapshot) SyncWithCloudSnapshot(ctx context.Context, userCred mccli
 	if disk != nil {
 		self.SyncCloudProjectId(userCred, disk.GetOwnerId())
 	} else {
-		SyncCloudProject(userCred, self, syncOwnerId, ext, self.GetCloudprovider().Id)
+		SyncCloudProject(ctx, userCred, self, syncOwnerId, ext, self.GetCloudprovider().Id)
 	}
 
 	return nil
@@ -958,7 +964,7 @@ func (manager *SSnapshotManager) newFromCloudSnapshot(ctx context.Context, userC
 	if localDisk != nil {
 		snapshot.SyncCloudProjectId(userCred, localDisk.GetOwnerId())
 	} else {
-		SyncCloudProject(userCred, &snapshot, syncOwnerId, extSnapshot, snapshot.ManagerId)
+		SyncCloudProject(ctx, userCred, &snapshot, syncOwnerId, extSnapshot, snapshot.ManagerId)
 	}
 
 	db.OpsLog.LogEvent(&snapshot, db.ACT_CREATE, snapshot.GetShortDesc(ctx), userCred)
@@ -1105,7 +1111,7 @@ func (manager *SSnapshotManager) StartSnapshotCleanupTask(
 func (self *SSnapshot) GetQuotaKeys() quotas.IQuotaKeys {
 	region, _ := self.GetRegion()
 	return fetchRegionalQuotaKeys(
-		rbacutils.ScopeProject,
+		rbacscope.ScopeProject,
 		self.GetOwnerId(),
 		region,
 		self.GetCloudprovider(),

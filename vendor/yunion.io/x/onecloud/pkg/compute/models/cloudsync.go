@@ -32,6 +32,7 @@ import (
 	"yunion.io/x/onecloud/pkg/mcclient"
 	"yunion.io/x/onecloud/pkg/mcclient/auth"
 	"yunion.io/x/onecloud/pkg/mcclient/modules/scheduler"
+	"yunion.io/x/onecloud/pkg/util/logclient"
 )
 
 type SSyncableBaseResource struct {
@@ -905,12 +906,14 @@ func syncHostVMs(ctx context.Context, userCred mcclient.TokenCredential, syncRes
 	msg := result.Result()
 	notes := fmt.Sprintf("SyncHostVMs for host %s result: %s", localHost.Name, msg)
 	log.Infof(notes)
-	if result.IsError() {
+	/*if result.IsError() {
 		return
-	}
+	}*/
 
 	// db.OpsLog.LogEvent(provider, db.ACT_SYNC_HOST_COMPLETE, msg, userCred)
-	// logclient.AddActionLog(provider, getAction(task.Params), notes, task.UserCred, true)
+	if result.IsError() {
+		logclient.AddSimpleActionLog(provider, logclient.ACT_CLOUD_SYNC, notes, userCred, false)
+	}
 	for i := 0; i < len(syncVMPairs); i += 1 {
 		if !syncVMPairs[i].IsNew && !syncRange.DeepSync {
 			continue
@@ -2135,7 +2138,7 @@ func (manager *SCloudproviderregionManager) initAllRecords() {
 	}
 }
 
-func SyncCloudProject(userCred mcclient.TokenCredential, model db.IVirtualModel, syncOwnerId mcclient.IIdentityProvider, extModel cloudprovider.IVirtualResource, managerId string) {
+func SyncCloudProject(ctx context.Context, userCred mcclient.TokenCredential, model db.IVirtualModel, syncOwnerId mcclient.IIdentityProvider, extModel cloudprovider.IVirtualResource, managerId string) {
 	newOwnerId, err := func() (mcclient.IIdentityProvider, error) {
 		_manager, err := CloudproviderManager.FetchById(managerId)
 		if err != nil {
@@ -2153,7 +2156,7 @@ func SyncCloudProject(userCred mcclient.TokenCredential, model db.IVirtualModel,
 		if err != nil {
 			return nil, errors.Wrapf(err, "GetCloudaccount")
 		}
-		if rm != nil && rm.Enabled.Bool() {
+		if rm != nil && rm.Enabled.Bool() && rm.IsNeedResourceSync() {
 			extTags, err := extModel.GetTags()
 			if err != nil {
 				return nil, errors.Wrapf(err, "extModel.GetTags")
@@ -2163,7 +2166,7 @@ func SyncCloudProject(userCred mcclient.TokenCredential, model db.IVirtualModel,
 					domainId, projectId, newProj, isMatch := rule.IsMatchTags(extTags)
 					if isMatch {
 						if len(newProj) > 0 {
-							domainId, projectId, err = account.getOrCreateTenant(context.TODO(), newProj, "", "", "auto create from tag")
+							domainId, projectId, err = account.getOrCreateTenant(ctx, newProj, "", "", "auto create from tag")
 							if err != nil {
 								return nil, errors.Wrapf(err, "getOrCreateTenant(%s)", newProj)
 							}

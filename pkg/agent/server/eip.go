@@ -79,9 +79,9 @@ func (man *eipMan) Start(ctx context.Context) {
 	{
 		modelSets := agentmodels.NewModelSets()
 		apiOpts := &apihelper.Options{
-			CommonOptions: man.agent.hostConfig.CommonOptions,
-			SyncInterval:  5,
-			ListBatchSize: 1024,
+			CommonOptions:       man.agent.hostConfig.CommonOptions,
+			SyncIntervalSeconds: 5,
+			ListBatchSize:       1024,
 		}
 		var err error
 		apih, err = apihelper.NewAPIHelper(apiOpts, modelSets)
@@ -89,7 +89,7 @@ func (man *eipMan) Start(ctx context.Context) {
 			panic("apihellper: %s" + err.Error())
 		}
 		wg.Add(1)
-		go apih.Start(ctx)
+		go apih.Start(ctx, nil, "")
 	}
 
 	var mss *agentmodels.ModelSets

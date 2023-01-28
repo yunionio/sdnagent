@@ -58,7 +58,7 @@ type ServerListInput struct {
 	// 列出管理安全组为指定安全组的主机
 	AdminSecgroup string `json:"admin_security"`
 	// 列出Hypervisor为指定值的主机
-	// enum: kvm,esxi,baremetal,aliyun,azure,aws,huawei,ucloud,zstack,openstack,google,ctyun"`
+	// enum: kvm,esxi,baremetal,aliyun,azure,aws,huawei,ucloud,zstack,openstack,google,ctyun,cloudpods,ecloud,jdcloud,remotefile`
 	Hypervisor []string `json:"hypervisor"`
 	// 列出绑定了弹性IP（EIP）的主机
 	WithEip *bool `json:"with_eip"`
@@ -184,6 +184,8 @@ type ServerDetails struct {
 	BackupHostName string `json:"backup_host_name"`
 	// 备份主机所在宿主机状态
 	BackupHostStatus string `json:"backup_host_status"`
+	// 主备机同步状态
+	BackupGuestSyncStatus string `json:"backup_guest_sync_status"`
 
 	// 是否可以回收
 	CanRecycle bool `json:"can_recycle"`
@@ -259,8 +261,9 @@ type Floppy struct {
 }
 
 type Cdrom struct {
-	Ordinal int    `json:"ordinal"`
-	Detail  string `json:"detail"`
+	Ordinal   int    `json:"ordinal"`
+	Detail    string `json:"detail"`
+	BootIndex int8   `json:"boot_index"`
 }
 
 func (self ServerDetails) GetMetricTags() map[string]string {
@@ -310,6 +313,7 @@ type GuestDiskInfo struct {
 	FsFormat    string `json:"fs,omitempty"`
 	DiskType    string `json:"disk_type"`
 	Index       int8   `json:"index"`
+	BootIndex   int8   `json:"boot_index"`
 	SizeMb      int    `json:"size"`
 	DiskFormat  string `json:"disk_format"`
 	Driver      string `json:"driver"`
@@ -439,14 +443,18 @@ type GuestSyncFixNicsInput struct {
 }
 
 type GuestMigrateInput struct {
-	PreferHost   string `json:"prefer_host"`
+	// swagger: ignore
+	PreferHost   string `json:"prefer_host" yunion-deprecated-by:"prefer_host_id"`
+	PreferHostId string `json:"prefer_host_id"`
 	AutoStart    bool   `json:"auto_start"`
 	IsRescueMode bool   `json:"rescue_mode"`
 }
 
 type GuestLiveMigrateInput struct {
+	// swagger: ignore
+	PreferHost string `json:"prefer_host" yunion-deprecated-by:"prefer_host_id"`
 	// 指定期望的迁移目标宿主机
-	PreferHost string `json:"prefer_host"`
+	PreferHostId string `json:"prefer_host_id"`
 	// 是否跳过CPU检查，默认要做CPU检查
 	SkipCpuCheck *bool `json:"skip_cpu_check"`
 	// 是否跳过kernel检查
@@ -694,6 +702,8 @@ type ServerUserDataInput struct {
 
 type ServerAttachDiskInput struct {
 	DiskId string `json:"disk_id"`
+
+	BootIndex *int8 `json:"boot_index"`
 }
 
 type ServerDetachDiskInput struct {
@@ -726,6 +736,8 @@ type ServerChangeConfigInput struct {
 type ServerUpdateInput struct {
 	apis.VirtualResourceBaseUpdateInput
 
+	HostnameInput
+
 	// 删除保护开关
 	DisableDelete *bool `json:"disable_delete"`
 	// 启动顺序
@@ -747,22 +759,23 @@ type ServerUpdateInput struct {
 }
 
 type GuestJsonDesc struct {
-	Name        string `json:"name"`
-	Hostname    string `json:"hostname"`
-	Description string `json:"description"`
-	UUID        string `json:"uuid"`
-	Mem         int    `json:"mem"`
-	Cpu         int    `json:"cpu"`
-	Vga         string `json:"vga"`
-	Vdi         string `json:"vdi"`
-	Machine     string `json:"machine"`
-	Bios        string `json:"bios"`
-	BootOrder   string `json:"boot_order"`
-	SrcIpCheck  bool   `json:"src_ip_check"`
-	SrcMacCheck bool   `json:"src_mac_check"`
-	IsMaster    *bool  `json:"is_master"`
-	IsSlave     *bool  `json:"is_slave"`
-	HostId      string `json:"host_id"`
+	Name           string `json:"name"`
+	Hostname       string `json:"hostname"`
+	Description    string `json:"description"`
+	UUID           string `json:"uuid"`
+	Mem            int    `json:"mem"`
+	Cpu            int    `json:"cpu"`
+	Vga            string `json:"vga"`
+	Vdi            string `json:"vdi"`
+	Machine        string `json:"machine"`
+	Bios           string `json:"bios"`
+	BootOrder      string `json:"boot_order"`
+	SrcIpCheck     bool   `json:"src_ip_check"`
+	SrcMacCheck    bool   `json:"src_mac_check"`
+	IsMaster       *bool  `json:"is_master"`
+	IsSlave        *bool  `json:"is_slave"`
+	IsVolatileHost bool   `json:"is_volatile_host"`
+	HostId         string `json:"host_id"`
 
 	IsolatedDevices []*IsolatedDeviceJsonDesc `json:"isolated_devices"`
 
@@ -820,6 +833,13 @@ type GuestJsonDesc struct {
 	IsDaemon bool `json:"is_daemon"`
 }
 
+type ServerSetBootIndexInput struct {
+	// key index, value boot_index
+	Disks map[string]int8 `json:"disks"`
+	// key ordinal, value boot_index
+	Cdroms map[string]int8 `json:"cdroms"`
+}
+
 type ServerChangeDiskStorageInput struct {
 	DiskId          string `json:"disk_id"`
 	TargetStorageId string `json:"target_storage_id"`
@@ -828,10 +848,11 @@ type ServerChangeDiskStorageInput struct {
 
 type ServerChangeDiskStorageInternalInput struct {
 	ServerChangeDiskStorageInput
-	StorageId    string `json:"storage_id"`
-	TargetDiskId string `json:"target_disk_id"`
-	DiskFormat   string `json:"disk_format"`
-	GuestRunning bool   `josn:"guest_running"`
+	StorageId      string             `json:"storage_id"`
+	TargetDiskId   string             `json:"target_disk_id"`
+	DiskFormat     string             `json:"disk_format"`
+	GuestRunning   bool               `josn:"guest_running"`
+	TargetDiskDesc *GuestdiskJsonDesc `json:"target_disk_desc"`
 }
 
 type ServerSetExtraOptionInput struct {

@@ -22,6 +22,8 @@ import (
 
 	"yunion.io/x/jsonutils"
 	"yunion.io/x/pkg/errors"
+	"yunion.io/x/pkg/gotypes"
+	"yunion.io/x/pkg/util/rbacscope"
 	"yunion.io/x/sqlchemy"
 
 	"yunion.io/x/onecloud/pkg/cloudcommon/consts"
@@ -188,7 +190,14 @@ func fetchItemByName(manager IModelManager, ctx context.Context, userCred mcclie
 		return nil, err
 	}
 	if count > 0 {
-		q = manager.FilterByOwner(q, userCred, manager.NamespaceScope())
+		if gotypes.IsNil(query) {
+			query = jsonutils.NewDict()
+		}
+		ownerId, _, err, _ := FetchCheckQueryOwnerScope(ctx, userCred, query, manager, rbacutils.ActionGet, true)
+		if err != nil {
+			return nil, httperrors.NewGeneralError(err)
+		}
+		q = manager.FilterByOwner(q, ownerId, manager.NamespaceScope())
 		q = manager.FilterBySystemAttributes(q, nil, nil, manager.ResourceScope())
 		count, err = q.CountWithError()
 		if err != nil {
@@ -227,7 +236,10 @@ func fetchItem(manager IModelManager, ctx context.Context, userCred mcclient.Tok
 }
 
 func FetchUserInfo(ctx context.Context, data jsonutils.JSONObject) (mcclient.IIdentityProvider, error) {
-	userStr, key := jsonutils.GetAnyString2(data, []string{"user", "user_id"})
+	userStr, key := jsonutils.GetAnyString2(data, []string{
+		"user_id",
+		"user",
+	})
 	if len(userStr) > 0 {
 		data.(*jsonutils.JSONDict).Remove(key)
 		u, err := DefaultUserFetcher(ctx, userStr)
@@ -248,11 +260,27 @@ func FetchUserInfo(ctx context.Context, data jsonutils.JSONObject) (mcclient.IId
 	return FetchProjectInfo(ctx, data)
 }
 
+var (
+	ProjectFetchKeys = []string{
+		"project_id",
+		"tenant_id",
+		"project",
+		"tenant",
+	}
+	DomainFetchKeys = []string{
+		"project_domain_id",
+		"domain_id",
+		"project_domain",
+		"domain",
+	}
+)
+
 func FetchProjectInfo(ctx context.Context, data jsonutils.JSONObject) (mcclient.IIdentityProvider, error) {
-	tenantId, key := jsonutils.GetAnyString2(data, []string{"project", "project_id", "tenant", "tenant_id"})
+	tenantId, key := jsonutils.GetAnyString2(data, ProjectFetchKeys)
 	if len(tenantId) > 0 {
 		data.(*jsonutils.JSONDict).Remove(key)
-		t, err := DefaultProjectFetcher(ctx, tenantId)
+		domainId, _ := jsonutils.GetAnyString2(data, DomainFetchKeys)
+		t, err := DefaultProjectFetcher(ctx, tenantId, domainId)
 		if err != nil {
 			if err == sql.ErrNoRows {
 				return nil, httperrors.NewResourceNotFoundError2("project", tenantId)
@@ -274,7 +302,7 @@ func FetchProjectInfo(ctx context.Context, data jsonutils.JSONObject) (mcclient.
 }
 
 func FetchDomainInfo(ctx context.Context, data jsonutils.JSONObject) (mcclient.IIdentityProvider, error) {
-	domainId, key := jsonutils.GetAnyString2(data, []string{"domain_id", "project_domain", "project_domain_id"})
+	domainId, key := jsonutils.GetAnyString2(data, DomainFetchKeys)
 	if len(domainId) > 0 {
 		data.(*jsonutils.JSONDict).Remove(key)
 		domain, err := DefaultDomainFetcher(ctx, domainId)
@@ -297,21 +325,21 @@ func (m *sUsageManager) KeywordPlural() string {
 	return "usages"
 }
 
-func (m *sUsageManager) ResourceScope() rbacutils.TRbacScope {
-	return rbacutils.ScopeProject
+func (m *sUsageManager) ResourceScope() rbacscope.TRbacScope {
+	return rbacscope.ScopeProject
 }
 
 func (m *sUsageManager) FetchOwnerId(ctx context.Context, data jsonutils.JSONObject) (mcclient.IIdentityProvider, error) {
 	return FetchProjectInfo(ctx, data)
 }
 
-func FetchUsageOwnerScope(ctx context.Context, userCred mcclient.TokenCredential, data jsonutils.JSONObject) (mcclient.IIdentityProvider, rbacutils.TRbacScope, error, rbacutils.SPolicyResult) {
+func FetchUsageOwnerScope(ctx context.Context, userCred mcclient.TokenCredential, data jsonutils.JSONObject) (mcclient.IIdentityProvider, rbacscope.TRbacScope, error, rbacutils.SPolicyResult) {
 	return FetchCheckQueryOwnerScope(ctx, userCred, data, &sUsageManager{}, policy.PolicyActionGet, true)
 }
 
 type IScopedResourceManager interface {
 	KeywordPlural() string
-	ResourceScope() rbacutils.TRbacScope
+	ResourceScope() rbacscope.TRbacScope
 	FetchOwnerId(ctx context.Context, data jsonutils.JSONObject) (mcclient.IIdentityProvider, error)
 }
 
@@ -322,12 +350,12 @@ func FetchCheckQueryOwnerScope(
 	manager IScopedResourceManager,
 	action string,
 	doCheckRbac bool,
-) (mcclient.IIdentityProvider, rbacutils.TRbacScope, error, rbacutils.SPolicyResult) {
-	var scope rbacutils.TRbacScope
+) (mcclient.IIdentityProvider, rbacscope.TRbacScope, error, rbacutils.SPolicyResult) {
+	var scope rbacscope.TRbacScope
 
-	var allowScope rbacutils.TRbacScope
-	var requireScope rbacutils.TRbacScope
-	var queryScope rbacutils.TRbacScope
+	var allowScope rbacscope.TRbacScope
+	var requireScope rbacscope.TRbacScope
+	var queryScope rbacscope.TRbacScope
 	var policyTagFilters rbacutils.SPolicyResult
 
 	resScope := manager.ResourceScope()
@@ -340,40 +368,40 @@ func FetchCheckQueryOwnerScope(
 	}
 	if ownerId != nil {
 		switch resScope {
-		case rbacutils.ScopeProject, rbacutils.ScopeDomain:
+		case rbacscope.ScopeProject, rbacscope.ScopeDomain:
 			if len(ownerId.GetProjectId()) > 0 {
-				queryScope = rbacutils.ScopeProject
+				queryScope = rbacscope.ScopeProject
 				if ownerId.GetProjectId() == userCred.GetProjectId() {
-					requireScope = rbacutils.ScopeProject
+					requireScope = rbacscope.ScopeProject
 				} else if ownerId.GetProjectDomainId() == userCred.GetProjectDomainId() {
-					requireScope = rbacutils.ScopeDomain
+					requireScope = rbacscope.ScopeDomain
 				} else {
-					requireScope = rbacutils.ScopeSystem
+					requireScope = rbacscope.ScopeSystem
 				}
 			} else if len(ownerId.GetProjectDomainId()) > 0 {
-				queryScope = rbacutils.ScopeDomain
+				queryScope = rbacscope.ScopeDomain
 				if ownerId.GetProjectDomainId() == userCred.GetProjectDomainId() {
-					requireScope = rbacutils.ScopeDomain
+					requireScope = rbacscope.ScopeDomain
 				} else {
-					requireScope = rbacutils.ScopeSystem
+					requireScope = rbacscope.ScopeSystem
 				}
 			}
-		case rbacutils.ScopeUser:
-			queryScope = rbacutils.ScopeUser
+		case rbacscope.ScopeUser:
+			queryScope = rbacscope.ScopeUser
 			if ownerId.GetUserId() == userCred.GetUserId() {
-				requireScope = rbacutils.ScopeUser
+				requireScope = rbacscope.ScopeUser
 			} else {
-				requireScope = rbacutils.ScopeSystem
+				requireScope = rbacscope.ScopeSystem
 			}
 		}
 	} else {
 		ownerId = userCred
 		reqScopeStr, _ := data.GetString("scope")
 		if len(reqScopeStr) > 0 {
-			queryScope = rbacutils.String2Scope(reqScopeStr)
+			queryScope = rbacscope.String2Scope(reqScopeStr)
 		} else if data.Contains("admin") {
 			isAdmin := jsonutils.QueryBoolean(data, "admin", false)
-			if isAdmin && allowScope.HigherThan(rbacutils.ScopeProject) {
+			if isAdmin && allowScope.HigherThan(rbacscope.ScopeProject) {
 				queryScope = allowScope
 			}
 		} else if action == policy.PolicyActionGet {

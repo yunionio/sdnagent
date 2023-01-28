@@ -25,15 +25,10 @@ import (
 	"github.com/vmware/govmomi/vim25/types"
 
 	"yunion.io/x/log"
-	"yunion.io/x/pkg/errors"
 
-	"yunion.io/x/cloudmux/pkg/apis/compute"
 	api "yunion.io/x/cloudmux/pkg/apis/compute"
 	"yunion.io/x/cloudmux/pkg/cloudprovider"
-	deployapi "yunion.io/x/onecloud/pkg/hostman/hostdeployer/apis"
-	"yunion.io/x/onecloud/pkg/hostman/hostdeployer/deployclient"
 	"yunion.io/x/cloudmux/pkg/multicloud"
-	"yunion.io/x/cloudmux/pkg/multicloud/esxi/vcenter"
 )
 
 var driverMap = map[string]string{
@@ -369,6 +364,14 @@ func (disk *SVirtualDisk) GetIStorage() (cloudprovider.ICloudStorage, error) {
 	return istorage, nil
 }
 
+func (disk *SVirtualDisk) GetIStorageId() string {
+	storage, err := disk.GetIStorage()
+	if err != nil {
+		return ""
+	}
+	return storage.GetGlobalId()
+}
+
 func (disk *SVirtualDisk) GetIsAutoDelete() bool {
 	return true
 }
@@ -475,6 +478,7 @@ func (disk *SVirtualDisk) Resize(ctx context.Context, newSizeMb int64) error {
 	return err
 }
 
+/*
 func (disk *SVirtualDisk) ResizePartition(ctx context.Context, accessInfo vcenter.SVCenterAccessInfo) error {
 	diskPath := disk.GetFilename()
 	vmref := disk.vm.GetMoid()
@@ -498,6 +502,7 @@ func (disk *SVirtualDisk) ResizePartition(ctx context.Context, accessInfo vcente
 	}
 	return nil
 }
+*/
 
 func (disk *SVirtualDisk) Reset(ctx context.Context, snapshotId string) (string, error) {
 	return "", cloudprovider.ErrNotImplemented

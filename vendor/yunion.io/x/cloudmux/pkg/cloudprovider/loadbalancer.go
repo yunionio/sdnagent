@@ -14,21 +14,22 @@
 
 package cloudprovider
 
-import "yunion.io/x/onecloud/pkg/util/billing"
+import "yunion.io/x/pkg/util/billing"
 
-type SLoadbalancer struct {
+type SLoadbalancerCreateOptions struct {
 	Name             string
-	ZoneID           string
-	SlaveZoneID      string
-	VpcID            string
-	NetworkIDs       []string
-	EipID            string // eip id
+	Desc             string
+	ZoneId           string
+	SlaveZoneId      string
+	VpcId            string
+	NetworkIds       []string
+	EipId            string // eip id
 	Address          string
 	AddressType      string
 	LoadbalancerSpec string
 	ChargeType       string
 	EgressMbps       int
-	billingCycle     *billing.SBillingCycle
+	BillingCycle     *billing.SBillingCycle
 	ProjectId        string
 	Tags             map[string]string
 }
