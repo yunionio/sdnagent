@@ -24,6 +24,7 @@ import (
 	"yunion.io/x/pkg/errors"
 
 	api "yunion.io/x/onecloud/pkg/apis/compute"
+	"yunion.io/x/onecloud/pkg/hostman/guestman/desc"
 	"yunion.io/x/onecloud/pkg/httperrors"
 	"yunion.io/x/onecloud/pkg/mcclient"
 	modules "yunion.io/x/onecloud/pkg/mcclient/modules/compute"
@@ -64,11 +65,12 @@ type IDevice interface {
 	GetHostId() string
 	SetHostId(hId string)
 	GetGuestId() string
+	GetWireId() string
 	GetVendorDeviceId() string
 	GetAddr() string
 	GetDeviceType() string
 	GetModelName() string
-	CustomProbe() error
+	CustomProbe(idx int) error
 	SetDeviceInfo(info CloudDeviceInfo)
 	SetDetectedOnHost(isDetected bool)
 	DetectByAddr() error
@@ -79,16 +81,21 @@ type IDevice interface {
 	GetIOMMUGroupRestAddrs() []string
 	GetVGACmd() string
 	GetCPUCmd() string
+	GetQemuId() string
 
-	GetHotPlugOptions() ([]*HotPlugOption, error)
-	GetHotUnplugOptions() ([]*HotUnplugOption, error)
+	// sriov nic
+	GetPfName() string
+	GetVirtfn() int
+
+	GetHotPlugOptions(isolatedDev *desc.SGuestIsolatedDevice) ([]*HotPlugOption, error)
+	GetHotUnplugOptions(isolatedDev *desc.SGuestIsolatedDevice) ([]*HotUnplugOption, error)
 }
 
 type IsolatedDeviceManager interface {
 	GetDevices() []IDevice
 	GetDeviceByIdent(vendorDevId string, addr string) IDevice
 	GetDeviceByAddr(addr string) IDevice
-	ProbePCIDevices(skipGPUs, skipUSBs bool) error
+	ProbePCIDevices(skipGPUs, skipUSBs, skipSRIOVNics bool, nics [][2]string) error
 	StartDetachTask()
 	BatchCustomProbe() error
 	AppendDetachedDevice(dev *CloudDeviceInfo)
@@ -115,7 +122,7 @@ func (man *isolatedDeviceManager) GetDevices() []IDevice {
 	return man.devices
 }
 
-func (man *isolatedDeviceManager) ProbePCIDevices(skipGPUs, skipUSBs bool) error {
+func (man *isolatedDeviceManager) ProbePCIDevices(skipGPUs, skipUSBs, skipSRIOVNics bool, nics [][2]string) error {
 	man.devices = make([]IDevice, 0)
 	if !skipGPUs {
 		gpus, err := getPassthroughGPUS()
@@ -139,6 +146,18 @@ func (man *isolatedDeviceManager) ProbePCIDevices(skipGPUs, skipUSBs bool) error
 		for idx, usb := range usbs {
 			man.devices = append(man.devices, usb)
 			log.Infof("Add USB device: %d => %#v", idx, usb)
+		}
+	}
+
+	if !skipSRIOVNics {
+		nics, err := getSRIOVNics(nics)
+		if err != nil {
+			log.Errorf("getSRIOVNics: %v", err)
+			return nil
+		}
+		for idx, nic := range nics {
+			man.devices = append(man.devices, nic)
+			log.Infof("Add sriov nic: %d => %#v", idx, nic)
 		}
 	}
 
@@ -177,8 +196,8 @@ func (man *isolatedDeviceManager) GetDeviceByAddr(addr string) IDevice {
 }
 
 func (man *isolatedDeviceManager) BatchCustomProbe() error {
-	for _, dev := range man.devices {
-		if err := dev.CustomProbe(); err != nil {
+	for i, dev := range man.devices {
+		if err := dev.CustomProbe(i); err != nil {
 			return err
 		}
 	}
@@ -248,6 +267,10 @@ func (dev *sBaseDevice) String() string {
 	return dev.dev.String()
 }
 
+func (dev *sBaseDevice) GetWireId() string {
+	return ""
+}
+
 func (dev *sBaseDevice) SetDeviceInfo(info CloudDeviceInfo) {
 	if len(info.Id) != 0 {
 		dev.cloudId = info.Id
@@ -296,8 +319,20 @@ func (dev *sBaseDevice) GetDeviceType() string {
 	return dev.devType
 }
 
+func (dev *sBaseDevice) GetPfName() string {
+	return ""
+}
+
+func (dev *sBaseDevice) GetVirtfn() int {
+	return -1
+}
+
 func (dev *sBaseDevice) GetModelName() string {
-	return dev.dev.ModelName
+	if dev.dev.ModelName != "" {
+		return dev.dev.ModelName
+	} else {
+		return dev.dev.DeviceName
+	}
 }
 
 func (dev *sBaseDevice) GetGuestId() string {
@@ -324,6 +359,9 @@ func GetApiResourceData(dev IDevice) *jsonutils.JSONDict {
 	}
 	if len(dev.GetGuestId()) != 0 {
 		data["guest_id"] = dev.GetGuestId()
+	}
+	if len(dev.GetWireId()) != 0 {
+		data["wire_id"] = dev.GetWireId()
 	}
 	return jsonutils.Marshal(data).(*jsonutils.JSONDict)
 }
@@ -365,22 +403,34 @@ func (dev *sBaseDevice) DetectByAddr() error {
 	return nil
 }
 
-func ParseOutput(output []byte) []string {
+func ParseOutput(output []byte, doTrim bool) []string {
 	lines := make([]string, 0)
 	for _, line := range strings.Split(string(output), "\n") {
-		lines = append(lines, strings.TrimSpace(line))
+		if doTrim {
+			lines = append(lines, strings.TrimSpace(line))
+		} else {
+			lines = append(lines, line)
+		}
 	}
 	return lines
 }
 
-func bashOutput(cmd string) ([]string, error) {
+func bashCmdOutput(cmd string, doTrim bool) ([]string, error) {
 	args := []string{"-c", cmd}
 	output, err := procutils.NewRemoteCommandAsFarAsPossible("bash", args...).Output()
 	if err != nil {
 		return nil, err
 	} else {
-		return ParseOutput(output), nil
+		return ParseOutput(output, doTrim), nil
 	}
+}
+
+func bashOutput(cmd string) ([]string, error) {
+	return bashCmdOutput(cmd, true)
+}
+
+func bashRawOutput(cmd string) ([]string, error) {
+	return bashCmdOutput(cmd, false)
 }
 
 type QemuParams struct {

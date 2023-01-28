@@ -23,6 +23,7 @@ import (
 	"yunion.io/x/jsonutils"
 	"yunion.io/x/log"
 	"yunion.io/x/pkg/errors"
+	"yunion.io/x/pkg/util/rbacscope"
 	"yunion.io/x/pkg/util/regutils"
 	"yunion.io/x/pkg/util/secrules"
 	"yunion.io/x/pkg/util/stringutils"
@@ -35,7 +36,6 @@ import (
 	"yunion.io/x/onecloud/pkg/httperrors"
 	"yunion.io/x/onecloud/pkg/mcclient"
 	"yunion.io/x/onecloud/pkg/util/logclient"
-	"yunion.io/x/onecloud/pkg/util/rbacutils"
 	"yunion.io/x/onecloud/pkg/util/stringutils2"
 )
 
@@ -108,7 +108,7 @@ func (manager *SSecurityGroupRuleManager) FetchOwnerId(ctx context.Context, data
 	return db.FetchProjectInfo(ctx, data)
 }
 
-func (manager *SSecurityGroupRuleManager) FilterByOwner(q *sqlchemy.SQuery, userCred mcclient.IIdentityProvider, scope rbacutils.TRbacScope) *sqlchemy.SQuery {
+func (manager *SSecurityGroupRuleManager) FilterByOwner(q *sqlchemy.SQuery, userCred mcclient.IIdentityProvider, scope rbacscope.TRbacScope) *sqlchemy.SQuery {
 	sq := SecurityGroupManager.Query("id")
 	sq = db.SharableManagerFilterByOwner(SecurityGroupManager, sq, userCred, scope)
 	return q.In("secgroup_id", sq.SubQuery())
@@ -335,6 +335,17 @@ func (self *SSecurityGroupRule) ValidateUpdateData(ctx context.Context, userCred
 		if input.PeerSecgroupId == self.Id {
 			return input, httperrors.NewInputParameterError("peer_secgroup_id can not point to secgroup self")
 		}
+		// verify whether cache support peer secgroup
+		sg := self.GetSecGroup()
+		caches, err := sg.GetSecurityGroupCaches()
+		if err != nil {
+			return input, errors.Wrap(err, "sg.GetSecurityGroupCaches")
+		}
+		for _, c := range caches {
+			if !c.IsSupportPeerSecgroup() {
+				return input, errors.Wrapf(httperrors.ErrConflict, "the security group has been assigned to a provider not support peer security group")
+			}
+		}
 	}
 
 	err := input.Check()
@@ -519,8 +530,8 @@ func (self *SSecurityGroupRule) GetOwnerId() mcclient.IIdentityProvider {
 	return nil
 }
 
-func (manager *SSecurityGroupRuleManager) ResourceScope() rbacutils.TRbacScope {
-	return rbacutils.ScopeProject
+func (manager *SSecurityGroupRuleManager) ResourceScope() rbacscope.TRbacScope {
+	return rbacscope.ScopeProject
 }
 
 func (manager *SSecurityGroupRuleManager) ListItemExportKeys(ctx context.Context,

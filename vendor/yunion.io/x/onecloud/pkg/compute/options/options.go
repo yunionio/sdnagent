@@ -141,9 +141,9 @@ type ComputeOptions struct {
 	DefaultSyncIntervalSeconds   int `help:"minimal synchronization interval, default 15 minutes" default:"900"`
 	MaxCloudAccountErrorCount    int `help:"maximal consecutive error count allow for a cloud account" default:"5"`
 
-	NameSyncResources []string `help:"resources that need synchronization of name"`
+	EnableSyncName bool `help:"enable name sync" default:"true"`
 
-	SyncPurgeRemovedResources []string `help:"resources that shoud be purged immediately if found removed" default:"server"`
+	EnableSyncPurge bool `help:"resources that shoud be purged immediately if found removed" default:"true"`
 
 	DisconnectedCloudAccountRetryProbeIntervalHours int `help:"interval to wait to probe status of a disconnected cloud account" default:"2"`
 
@@ -190,7 +190,7 @@ type ComputeOptions struct {
 	SkipServerBySysTagKeys  string `help:"skip server,disk sync and create with system tags" default:"acs:autoscaling:scalingGroupId"`
 	SkipServerByUserTagKeys string `help:"skip server,disk sync and create with user tags" default:""`
 
-	EnableAwsMonitorAgent bool `help:"enable aws monitor agent" default:"true"`
+	EnableMonitorAgent bool `help:"enable public cloud vm monitor agent" default:"false"`
 
 	EnableTlsMigration bool `help:"Enable TLS migration" default:"false"`
 

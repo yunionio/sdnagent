@@ -27,8 +27,11 @@ import (
 	"yunion.io/x/log"
 	"yunion.io/x/pkg/errors"
 	"yunion.io/x/pkg/tristate"
+	"yunion.io/x/pkg/util/billing"
+	bc "yunion.io/x/pkg/util/billing"
 	"yunion.io/x/pkg/util/compare"
 	"yunion.io/x/pkg/util/netutils"
+	"yunion.io/x/pkg/util/rbacscope"
 	"yunion.io/x/pkg/utils"
 	"yunion.io/x/sqlchemy"
 
@@ -45,8 +48,6 @@ import (
 	"yunion.io/x/onecloud/pkg/compute/options"
 	"yunion.io/x/onecloud/pkg/httperrors"
 	"yunion.io/x/onecloud/pkg/mcclient"
-	"yunion.io/x/onecloud/pkg/util/billing"
-	bc "yunion.io/x/onecloud/pkg/util/billing"
 	"yunion.io/x/onecloud/pkg/util/choices"
 	"yunion.io/x/onecloud/pkg/util/logclient"
 	"yunion.io/x/onecloud/pkg/util/rbacutils"
@@ -174,15 +175,15 @@ func elasticcacheSubResourceFetchOwnerId(ctx context.Context, data jsonutils.JSO
 }
 
 // elastic cache 子资源获取owner query
-func elasticcacheSubResourceFetchOwner(q *sqlchemy.SQuery, userCred mcclient.IIdentityProvider, scope rbacutils.TRbacScope) *sqlchemy.SQuery {
+func elasticcacheSubResourceFetchOwner(q *sqlchemy.SQuery, userCred mcclient.IIdentityProvider, scope rbacscope.TRbacScope) *sqlchemy.SQuery {
 	if userCred != nil {
 		var subq *sqlchemy.SSubQuery
 
 		q1 := ElasticcacheManager.Query()
 		switch scope {
-		case rbacutils.ScopeProject:
+		case rbacscope.ScopeProject:
 			subq = q1.Equals("tenant_id", userCred.GetProjectId()).SubQuery()
-		case rbacutils.ScopeDomain:
+		case rbacscope.ScopeDomain:
 			subq = q1.Equals("domain_id", userCred.GetProjectDomainId()).SubQuery()
 		}
 
@@ -586,6 +587,13 @@ func (self *SElasticcache) syncRemoveCloudElasticcache(ctx context.Context, user
 
 func (self *SElasticcache) SyncWithCloudElasticcache(ctx context.Context, userCred mcclient.TokenCredential, provider *SCloudprovider, extInstance cloudprovider.ICloudElasticcache) error {
 	diff, err := db.UpdateWithLock(ctx, self, func() error {
+		if options.Options.EnableSyncName {
+			newName, _ := db.GenerateAlterName(self, extInstance.GetName())
+			if len(newName) > 0 {
+				self.Name = newName
+			}
+		}
+
 		self.Status = extInstance.GetStatus()
 		self.InstanceType = extInstance.GetInstanceType()
 		self.CapacityMB = extInstance.GetCapacityMB()
@@ -630,7 +638,7 @@ func (self *SElasticcache) SyncWithCloudElasticcache(ctx context.Context, userCr
 	if err != nil {
 		return errors.Wrapf(err, "syncWithCloudElasticcache.Update")
 	}
-	SyncCloudProject(userCred, self, provider.GetOwnerId(), extInstance, provider.Id)
+	SyncCloudProject(ctx, userCred, self, provider.GetOwnerId(), extInstance, provider.Id)
 	syncVirtualResourceMetadata(ctx, userCred, self, extInstance)
 	db.OpsLog.LogSyncUpdate(self, diff, userCred)
 	if len(diff) > 0 {
@@ -757,7 +765,7 @@ func (manager *SElasticcacheManager) newFromCloudElasticcache(ctx context.Contex
 		return nil, errors.Wrapf(err, "newFromCloudElasticcache.Insert")
 	}
 
-	SyncCloudProject(userCred, &instance, provider.GetOwnerId(), extInstance, provider.Id)
+	SyncCloudProject(ctx, userCred, &instance, provider.GetOwnerId(), extInstance, provider.Id)
 	syncVirtualResourceMetadata(ctx, userCred, &instance, extInstance)
 	db.OpsLog.LogEvent(&instance, db.ACT_CREATE, instance.GetShortDesc(ctx), userCred)
 
@@ -894,7 +902,7 @@ func (manager *SElasticcacheManager) validateCreateData(ctx context.Context, use
 	}
 
 	cachePendingUsage := &SRegionQuota{Cache: 1}
-	quotaKeys := fetchRegionalQuotaKeys(rbacutils.ScopeProject, ownerId, region, provider)
+	quotaKeys := fetchRegionalQuotaKeys(rbacscope.ScopeProject, ownerId, region, provider)
 	cachePendingUsage.SetKeys(quotaKeys)
 	if err = quotas.CheckSetPendingQuota(ctx, userCred, cachePendingUsage); err != nil {
 		return nil, errors.Wrap(err, "quotas.CheckSetPendingQuota")
@@ -1450,7 +1458,7 @@ func (self *SElasticcache) DeleteSubResources(ctx context.Context, userCred mccl
 }
 
 func (man *SElasticcacheManager) TotalCount(
-	scope rbacutils.TRbacScope,
+	scope rbacscope.TRbacScope,
 	ownerId mcclient.IIdentityProvider,
 	rangeObjs []db.IStandaloneModel,
 	providers []string, brands []string, cloudEnv string,
@@ -1469,7 +1477,7 @@ func (man *SElasticcacheManager) TotalCount(
 func (cache *SElasticcache) GetQuotaKeys() quotas.IQuotaKeys {
 	region, _ := cache.GetRegion()
 	return fetchRegionalQuotaKeys(
-		rbacutils.ScopeProject,
+		rbacscope.ScopeProject,
 		cache.GetOwnerId(),
 		region,
 		cache.GetCloudprovider(),

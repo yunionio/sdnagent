@@ -36,7 +36,9 @@ import (
 	"yunion.io/x/pkg/tristate"
 	"yunion.io/x/pkg/util/compare"
 	"yunion.io/x/pkg/util/fileutils"
+	"yunion.io/x/pkg/util/httputils"
 	"yunion.io/x/pkg/util/netutils"
+	"yunion.io/x/pkg/util/rbacscope"
 	"yunion.io/x/pkg/util/regutils"
 	"yunion.io/x/pkg/util/sets"
 	"yunion.io/x/pkg/utils"
@@ -61,7 +63,6 @@ import (
 	"yunion.io/x/onecloud/pkg/mcclient/auth"
 	"yunion.io/x/onecloud/pkg/mcclient/modules/scheduler"
 	"yunion.io/x/onecloud/pkg/util/cgrouputils/cpuset"
-	"yunion.io/x/onecloud/pkg/util/httputils"
 	"yunion.io/x/onecloud/pkg/util/k8s/tokens"
 	"yunion.io/x/onecloud/pkg/util/logclient"
 	"yunion.io/x/onecloud/pkg/util/rbacutils"
@@ -780,9 +781,8 @@ func (self *SHost) Delete(ctx context.Context, userCred mcclient.TokenCredential
 func (self *SHost) CustomizeDelete(ctx context.Context, userCred mcclient.TokenCredential, query jsonutils.JSONObject, data jsonutils.JSONObject) error {
 	if self.IsBaremetal {
 		return self.StartDeleteBaremetalTask(ctx, userCred, "")
-	} else {
-		return self.RealDelete(ctx, userCred)
 	}
+	return self.RealDelete(ctx, userCred)
 }
 
 func (self *SHost) StartDeleteBaremetalTask(ctx context.Context, userCred mcclient.TokenCredential, parentTaskId string) error {
@@ -844,7 +844,23 @@ func (self *SHost) RealDelete(ctx context.Context, userCred mcclient.TokenCreden
 			store.Delete(ctx, userCred)
 		}
 	}
+	backends, err := self.GetLoadbalancerBackends()
+	if err != nil {
+		return errors.Wrapf(err, "GetLoadbalancerBackends")
+	}
+	for i := range backends {
+		err := backends[i].RealDelete(ctx, userCred)
+		if err != nil {
+			return errors.Wrapf(err, "backend real delete %s", backends[i].Id)
+		}
+	}
 	return self.SEnabledStatusInfrasResourceBase.Delete(ctx, userCred)
+}
+
+func (self *SHost) GetLoadbalancerBackends() ([]SLoadbalancerBackend, error) {
+	q := LoadbalancerBackendManager.Query().Equals("backend_id", self.Id)
+	ret := []SLoadbalancerBackend{}
+	return ret, db.FetchModelObjects(LoadbalancerBackendManager, q, &ret)
 }
 
 func (self *SHost) GetHoststoragesQuery() *sqlchemy.SQuery {
@@ -2135,7 +2151,7 @@ func (manager *SHostManager) NewFromCloudHost(ctx context.Context, userCred mccl
 	host.Version = extHost.GetVersion()
 
 	host.IsPublic = false
-	host.PublicScope = string(rbacutils.ScopeNone)
+	host.PublicScope = string(rbacscope.ScopeNone)
 
 	var err = func() error {
 		lockman.LockRawObject(ctx, manager.Keyword(), "name")
@@ -2477,8 +2493,9 @@ func (self *SHost) SyncHostVMs(ctx context.Context, userCred mcclient.TokenCrede
 	commondb := make([]SGuest, 0)
 	commonext := make([]cloudprovider.ICloudVM, 0)
 	added := make([]cloudprovider.ICloudVM, 0)
+	duplicated := make(map[string][]cloudprovider.ICloudVM)
 
-	err = compare.CompareSets(dbVMs, vms, &removed, &commondb, &commonext, &added)
+	err = compare.CompareSets2(dbVMs, vms, &removed, &commondb, &commonext, &added, &duplicated)
 	if err != nil {
 		syncResult.Error(err)
 		return nil, syncResult
@@ -2581,13 +2598,21 @@ func (self *SHost) SyncHostVMs(ctx context.Context, userCred mcclient.TokenCrede
 		}
 	}
 
+	if len(duplicated) > 0 {
+		errs := make([]error, 0)
+		for k, vms := range duplicated {
+			errs = append(errs, errors.Wrapf(errors.ErrDuplicateId, "Duplicate Id %s (%d)", k, len(vms)))
+		}
+		syncResult.AddError(errors.NewAggregate(errs))
+	}
+
 	return syncVMPairs, syncResult
 }
 
 func (self *SHost) getNetworkOfIPOnHost(ipAddr string) (*SNetwork, error) {
 	netInterfaces := self.GetNetInterfaces()
 	for _, netInterface := range netInterfaces {
-		network, err := netInterface.GetCandidateNetworkForIp(nil, rbacutils.ScopeNone, ipAddr)
+		network, err := netInterface.GetCandidateNetworkForIp(nil, rbacscope.ScopeNone, ipAddr)
 		if err == nil && network != nil {
 			return network, nil
 		}
@@ -2709,7 +2734,7 @@ func (manager *SHostManager) FetchHostByHostname(hostname string) *SHost {
 
 func (manager *SHostManager) totalCountQ(
 	userCred mcclient.IIdentityProvider,
-	scope rbacutils.TRbacScope,
+	scope rbacscope.TRbacScope,
 	rangeObjs []db.IStandaloneModel,
 	hostStatus, status string,
 	hostTypes []string,
@@ -2728,7 +2753,7 @@ func (manager *SHostManager) totalCountQ(
 		hosts.Field("cpu_cmtbound"),
 		hosts.Field("storage_size"),
 	)
-	if scope != rbacutils.ScopeSystem && userCred != nil {
+	if scope != rbacscope.ScopeSystem && userCred != nil {
 		q = q.Filter(sqlchemy.Equals(hosts.Field("domain_id"), userCred.GetProjectDomainId()))
 	}
 	if len(status) > 0 {
@@ -2881,7 +2906,7 @@ func (manager *SHostManager) calculateCount(q *sqlchemy.SQuery) HostsCountStat {
 
 func (manager *SHostManager) TotalCount(
 	userCred mcclient.IIdentityProvider,
-	scope rbacutils.TRbacScope,
+	scope rbacscope.TRbacScope,
 	rangeObjs []db.IStandaloneModel,
 	hostStatus, status string,
 	hostTypes []string,
@@ -2915,9 +2940,21 @@ func (self *SHost) GetIHost(ctx context.Context) (cloudprovider.ICloudHost, erro
 }
 
 func (self *SHost) GetIHostAndProvider(ctx context.Context) (cloudprovider.ICloudHost, cloudprovider.ICloudProvider, error) {
+	iregion, provider, err := self.GetIRegionAndProvider(ctx)
+	if err != nil {
+		return nil, nil, errors.Wrapf(err, "GetIRegionAndProvider")
+	}
+	ihost, err := iregion.GetIHostById(self.ExternalId)
+	if err != nil {
+		return nil, nil, errors.Wrapf(err, "iregion.GetIHostById(%s)", self.ExternalId)
+	}
+	return ihost, provider, nil
+}
+
+func (self *SHost) GetIRegionAndProvider(ctx context.Context) (cloudprovider.ICloudRegion, cloudprovider.ICloudProvider, error) {
 	provider, err := self.GetDriver(ctx)
 	if err != nil {
-		return nil, nil, fmt.Errorf("No cloudprovider for host: %s", err)
+		return nil, nil, errors.Wrapf(err, "GetDriver")
 	}
 	var iregion cloudprovider.ICloudRegion
 	if provider.GetFactory().IsOnPremise() {
@@ -2935,27 +2972,12 @@ func (self *SHost) GetIHostAndProvider(ctx context.Context) (cloudprovider.IClou
 			return nil, nil, errors.Wrapf(err, "provider.GetIRegionById(%s)", region.ExternalId)
 		}
 	}
-	ihost, err := iregion.GetIHostById(self.ExternalId)
-	if err != nil {
-		return nil, nil, errors.Wrapf(err, "iregion.GetIHostById(%s)", self.ExternalId)
-	}
-	return ihost, provider, nil
+	return iregion, provider, nil
 }
 
 func (self *SHost) GetIRegion(ctx context.Context) (cloudprovider.ICloudRegion, error) {
-	provider, err := self.GetDriver(ctx)
-	if err != nil {
-		return nil, errors.Wrapf(err, "GetDriver")
-	}
-	region, err := self.GetRegion()
-	if err != nil {
-		return nil, errors.Wrapf(err, "GetRegion")
-	}
-	iregion, err := provider.GetIRegionById(region.ExternalId)
-	if err != nil {
-		return nil, errors.Wrapf(err, "GetIRegionById(%s)", region.ExternalId)
-	}
-	return iregion, nil
+	region, _, err := self.GetIRegionAndProvider(ctx)
+	return region, err
 }
 
 func (self *SHost) getDiskConfig() jsonutils.JSONObject {
@@ -3524,7 +3546,7 @@ func (manager *SHostManager) ValidateCreateData(
 		input.ZoneId = zoneObj.GetId()
 		// data.Set("zone_id", jsonutils.NewString(zoneObj.GetId()))
 	}
-	if !noProbe {
+	if !noProbe || input.NoBMC {
 		var accessNet *SNetwork
 		accessIpAddr := input.AccessIp // tString("access_ip")
 		if len(accessIpAddr) > 0 {
@@ -3651,6 +3673,13 @@ func (manager *SHostManager) ValidateCreateData(
 }
 
 func (self *SHost) ValidateUpdateData(ctx context.Context, userCred mcclient.TokenCredential, query jsonutils.JSONObject, input api.HostUpdateInput) (api.HostUpdateInput, error) {
+	// validate Hostname
+	if len(input.Hostname) > 0 {
+		if !regutils.MatchDomainName(input.Hostname) {
+			return input, httperrors.NewInputParameterError("hostname should be a legal domain name")
+		}
+	}
+
 	var err error
 	input.HostAccessAttributes, err = HostManager.inputUniquenessCheck(input.HostAccessAttributes, self.ZoneId, self.Id)
 	if err != nil {
@@ -3973,7 +4002,6 @@ func (self *SHost) StartSyncstatus(ctx context.Context, userCred mcclient.TokenC
 }
 
 func (self *SHost) PerformOffline(ctx context.Context, userCred mcclient.TokenCredential, query jsonutils.JSONObject, input *api.HostOfflineInput) (jsonutils.JSONObject, error) {
-	log.Errorf("input %v", *input.UpdateHealthStatus)
 	if self.HostStatus != api.HOST_OFFLINE {
 		_, err := self.SaveUpdates(func() error {
 			self.HostStatus = api.HOST_OFFLINE
@@ -5489,6 +5517,10 @@ func (self *SHost) MarkGuestUnknown(userCred mcclient.TokenCredential) {
 	for _, guest := range guests {
 		guest.SetStatus(userCred, api.VM_UNKNOWN, "host offline")
 	}
+	guests2 := self.GetGuestsBackupOnThisHost()
+	for _, guest := range guests2 {
+		guest.SetBackupGuestStatus(userCred, api.VM_UNKNOWN, "host offline")
+	}
 }
 
 func (manager *SHostManager) PingDetectionTask(ctx context.Context, userCred mcclient.TokenCredential, isStart bool) {
@@ -5694,12 +5726,7 @@ func (host *SHost) OnHostDown(ctx context.Context, userCred mcclient.TokenCreden
 func (host *SHost) switchWithBackup(ctx context.Context, userCred mcclient.TokenCredential) {
 	guests := host.GetGuestsMasterOnThisHost()
 	for i := 0; i < len(guests); i++ {
-		if guests[i].isInReconcile(userCred) {
-			log.Warningf("guest %s is in reconcile", guests[i].GetName())
-			continue
-		}
 		data := jsonutils.NewDict()
-		data.Set("purge_backup", jsonutils.JSONTrue)
 		_, err := guests[i].PerformSwitchToBackup(ctx, userCred, nil, data)
 		if err != nil {
 			db.OpsLog.LogEvent(
@@ -5708,29 +5735,6 @@ func (host *SHost) switchWithBackup(ctx context.Context, userCred mcclient.Token
 			logclient.AddSimpleActionLog(
 				&guests[i], logclient.ACT_SWITCH_TO_BACKUP,
 				fmt.Sprintf("PerformSwitchToBackup on host down: %s", err), userCred, false,
-			)
-		} else {
-			guests[i].SetMetadata(ctx, "origin_status", guests[i].Status, userCred)
-		}
-	}
-
-	guests2 := host.GetGuestsBackupOnThisHost()
-	for i := 0; i < len(guests2); i++ {
-		if guests2[i].isInReconcile(userCred) {
-			log.Warningf("guest %s is in reconcile", guests2[i].GetName())
-			continue
-		}
-		data := jsonutils.NewDict()
-		data.Set("purge", jsonutils.JSONTrue)
-		data.Set("create", jsonutils.JSONTrue)
-		_, err := guests2[i].PerformDeleteBackup(ctx, userCred, nil, data)
-		if err != nil {
-			db.OpsLog.LogEvent(
-				&guests2[i], db.ACT_DELETE_BACKUP_FAILED, fmt.Sprintf("PerformDeleteBackup on host down: %s", err), userCred,
-			)
-			logclient.AddSimpleActionLog(
-				&guests2[i], logclient.ACT_DELETE_BACKUP,
-				fmt.Sprintf("PerformDeleteBackup on host down: %s", err), userCred, false,
 			)
 		}
 	}
@@ -6069,7 +6073,7 @@ func GetHostQuotaKeysFromCreateInput(owner mcclient.IIdentityProvider, input api
 	if len(input.ZoneId) > 0 {
 		zone = ZoneManager.FetchZoneById(input.ZoneId)
 	}
-	zoneKeys := fetchZonalQuotaKeys(rbacutils.ScopeDomain, ownerId, zone, nil)
+	zoneKeys := fetchZonalQuotaKeys(rbacscope.ScopeDomain, ownerId, zone, nil)
 	keys := quotas.SDomainRegionalCloudResourceKeys{}
 	keys.SBaseDomainQuotaKeys = zoneKeys.SBaseDomainQuotaKeys
 	keys.SRegionalBaseKeys = zoneKeys.SRegionalBaseKeys
@@ -6080,7 +6084,7 @@ func (model *SHost) GetQuotaKeys() quotas.SDomainRegionalCloudResourceKeys {
 	zone, _ := model.GetZone()
 	manager := model.GetCloudprovider()
 	ownerId := model.GetOwnerId()
-	zoneKeys := fetchZonalQuotaKeys(rbacutils.ScopeDomain, ownerId, zone, manager)
+	zoneKeys := fetchZonalQuotaKeys(rbacscope.ScopeDomain, ownerId, zone, manager)
 	keys := quotas.SDomainRegionalCloudResourceKeys{}
 	keys.SBaseDomainQuotaKeys = zoneKeys.SBaseDomainQuotaKeys
 	keys.SRegionalBaseKeys = zoneKeys.SRegionalBaseKeys
@@ -6218,8 +6222,8 @@ func (host *SHost) IsAssignable(ctx context.Context, userCred mcclient.TokenCred
 		return nil
 	} else if db.IsDomainAllowPerform(ctx, userCred, host, "assign-host") &&
 		(userCred.GetProjectDomainId() == host.DomainId ||
-			host.PublicScope == string(rbacutils.ScopeSystem) ||
-			(host.PublicScope == string(rbacutils.ScopeDomain) && utils.IsInStringArray(userCred.GetProjectDomainId(), host.GetSharedDomains()))) {
+			host.PublicScope == string(rbacscope.ScopeSystem) ||
+			(host.PublicScope == string(rbacscope.ScopeDomain) && utils.IsInStringArray(userCred.GetProjectDomainId(), host.GetSharedDomains()))) {
 		return nil
 	} else {
 		return httperrors.NewNotSufficientPrivilegeError("Only system admin can assign host")

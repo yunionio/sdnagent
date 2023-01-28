@@ -28,7 +28,11 @@ import (
 	"yunion.io/x/log"
 	"yunion.io/x/pkg/errors"
 	"yunion.io/x/pkg/tristate"
+	"yunion.io/x/pkg/util/billing"
 	"yunion.io/x/pkg/util/compare"
+	"yunion.io/x/pkg/util/pinyinutils"
+	"yunion.io/x/pkg/util/rand"
+	"yunion.io/x/pkg/util/rbacscope"
 	"yunion.io/x/pkg/util/sets"
 	"yunion.io/x/pkg/utils"
 	"yunion.io/x/sqlchemy"
@@ -48,10 +52,6 @@ import (
 	"yunion.io/x/onecloud/pkg/mcclient"
 	"yunion.io/x/onecloud/pkg/mcclient/auth"
 	"yunion.io/x/onecloud/pkg/mcclient/modules/image"
-	"yunion.io/x/onecloud/pkg/util/billing"
-	"yunion.io/x/onecloud/pkg/util/pinyinutils"
-	"yunion.io/x/onecloud/pkg/util/rand"
-	"yunion.io/x/onecloud/pkg/util/rbacutils"
 	"yunion.io/x/onecloud/pkg/util/stringutils2"
 )
 
@@ -463,7 +463,7 @@ func diskCreateInput2ComputeQuotaKeys(input api.DiskCreateInput, ownerId mcclien
 	// input.Hypervisor must be set
 	brand := guessBrandForHypervisor(input.Hypervisor)
 	keys := GetDriver(input.Hypervisor).GetComputeQuotaKeys(
-		rbacutils.ScopeProject,
+		rbacscope.ScopeProject,
 		ownerId,
 		brand,
 	)
@@ -536,7 +536,7 @@ func (manager *SDiskManager) ValidateCreateData(ctx context.Context, userCred mc
 
 		zone, _ := storage.getZone()
 		quotaKey = fetchComputeQuotaKeys(
-			rbacutils.ScopeProject,
+			rbacscope.ScopeProject,
 			ownerId,
 			zone,
 			provider,
@@ -680,6 +680,7 @@ func (disk *SDisk) SetStorageByHost(hostId string, diskConfig *api.DiskConfig, s
 	}
 	_, err = db.Update(disk, func() error {
 		disk.StorageId = storage.Id
+		disk.IsSsd = (storage.MediumType == api.DISK_TYPE_SSD)
 		return nil
 	})
 	return err
@@ -695,7 +696,7 @@ func getDiskResourceRequirements(ctx context.Context, userCred mcclient.TokenCre
 		storage := storageObj.(*SStorage)
 		zone, _ := storage.getZone()
 		quotaKey = fetchComputeQuotaKeys(
-			rbacutils.ScopeProject,
+			rbacscope.ScopeProject,
 			ownerId,
 			zone,
 			storage.GetCloudprovider(),
@@ -1011,7 +1012,7 @@ func (disk *SDisk) GetQuotaKeys() (quotas.IQuotaKeys, error) {
 		return nil, errors.Wrap(httperrors.ErrInvalidStatus, "no valid zone")
 	}
 	return fetchComputeQuotaKeys(
-		rbacutils.ScopeProject,
+		rbacscope.ScopeProject,
 		disk.GetOwnerId(),
 		zone,
 		provider,
@@ -1034,13 +1035,17 @@ func (disk *SDisk) doResize(ctx context.Context, userCred mcclient.TokenCredenti
 	if storage == nil {
 		return httperrors.NewInternalServerError("disk has no valid storage")
 	}
+	var guestdriver IGuestDriver
 	if host, _ := storage.GetMasterHost(); host != nil {
 		if err := host.GetHostDriver().ValidateDiskSize(storage, sizeMb>>10); err != nil {
 			return httperrors.NewInputParameterError("%v", err)
 		}
+		guestdriver = GetDriver(api.HOSTTYPE_HYPERVISOR[host.HostType])
 	}
-	if int64(addDisk) > storage.GetFreeCapacity() && !storage.IsEmulated {
-		return httperrors.NewOutOfResourceError("Not enough free space")
+	if guestdriver == nil || guestdriver.DoScheduleStorageFilter() {
+		if int64(addDisk) > storage.GetFreeCapacity() && !storage.IsEmulated {
+			return httperrors.NewOutOfResourceError("Not enough free space")
+		}
 	}
 	if guest != nil {
 		if err := guest.ValidateResizeDisk(disk, storage); err != nil {
@@ -1402,6 +1407,13 @@ func (self *SDisk) GetFsFormat() string {
 	return self.FsFormat
 }
 
+func (self *SDisk) GetCacheImageFormat() string {
+	if self.DiskFormat == "raw" {
+		return "qcow2"
+	}
+	return self.DiskFormat
+}
+
 func (manager *SDiskManager) getDisksByStorage(storage *SStorage) ([]SDisk, error) {
 	disks := make([]SDisk, 0)
 	q := manager.Query().Equals("storage_id", storage.Id)
@@ -1640,7 +1652,13 @@ func (self *SDisk) syncWithCloudDisk(ctx context.Context, userCred mcclient.Toke
 	}
 
 	diff, err := db.UpdateWithLock(ctx, self, func() error {
-		// self.Name = extDisk.GetName()
+		if options.Options.EnableSyncName {
+			newName, _ := db.GenerateAlterName(self, extDisk.GetName())
+			if len(newName) > 0 {
+				self.Name = newName
+			}
+		}
+
 		self.Status = extDisk.GetStatus()
 		self.DiskFormat = extDisk.GetDiskFormat()
 		self.DiskSize = extDisk.GetDiskSizeMB()
@@ -1714,7 +1732,7 @@ func (self *SDisk) syncWithCloudDisk(ctx context.Context, userCred mcclient.Toke
 	syncVirtualResourceMetadata(ctx, userCred, self, extDisk)
 
 	if len(guests) == 0 {
-		SyncCloudProject(userCred, self, syncOwnerId, extDisk, storage.ManagerId)
+		SyncCloudProject(ctx, userCred, self, syncOwnerId, extDisk, storage.ManagerId)
 	} else {
 		self.SyncCloudProjectId(userCred, guests[0].GetOwnerId())
 	}
@@ -1789,7 +1807,7 @@ func (manager *SDiskManager) newFromCloudDisk(ctx context.Context, userCred mccl
 
 	syncVirtualResourceMetadata(ctx, userCred, &disk, extDisk)
 
-	SyncCloudProject(userCred, &disk, syncOwnerId, extDisk, storage.ManagerId)
+	SyncCloudProject(ctx, userCred, &disk, syncOwnerId, extDisk, storage.ManagerId)
 
 	db.OpsLog.LogEvent(&disk, db.ACT_CREATE, disk.GetShortDesc(ctx), userCred)
 
@@ -1802,7 +1820,7 @@ func (manager *SDiskManager) newFromCloudDisk(ctx context.Context, userCred mccl
 }
 
 func totalDiskSize(
-	scope rbacutils.TRbacScope,
+	scope rbacscope.TRbacScope,
 	ownerId mcclient.IIdentityProvider,
 	active tristate.TriState,
 	ready tristate.TriState,
@@ -1836,11 +1854,11 @@ func totalDiskSize(
 	}
 
 	switch scope {
-	case rbacutils.ScopeSystem:
+	case rbacscope.ScopeSystem:
 		// do nothing
-	case rbacutils.ScopeDomain:
+	case rbacscope.ScopeDomain:
 		q = q.Filter(sqlchemy.Equals(disks.Field("domain_id"), ownerId.GetProjectDomainId()))
-	case rbacutils.ScopeProject:
+	case rbacscope.ScopeProject:
 		q = q.Filter(sqlchemy.Equals(disks.Field("tenant_id"), ownerId.GetProjectId()))
 	}
 
@@ -2553,6 +2571,10 @@ func (self *SDisk) GetShortDesc(ctx context.Context) *jsonutils.JSONDict {
 
 	if len(self.ExternalId) > 0 {
 		desc.Add(jsonutils.NewString(self.ExternalId), "externalId")
+	}
+
+	if self.IsSsd {
+		desc.Add(jsonutils.JSONTrue, "is_ssd")
 	}
 
 	fs := self.GetFsFormat()

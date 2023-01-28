@@ -21,9 +21,12 @@ import (
 
 	"yunion.io/x/jsonutils"
 	"yunion.io/x/log"
+	"yunion.io/x/pkg/appctx"
 
-	"yunion.io/x/onecloud/pkg/appctx"
+	"yunion.io/x/onecloud/pkg/apis"
+	hostapi "yunion.io/x/onecloud/pkg/apis/host"
 	"yunion.io/x/onecloud/pkg/appsrv"
+	"yunion.io/x/onecloud/pkg/cloudcommon/consts"
 	"yunion.io/x/onecloud/pkg/cloudcommon/workmanager"
 	"yunion.io/x/onecloud/pkg/hostman/hostinfo/hostbridge"
 	"yunion.io/x/onecloud/pkg/hostman/hostutils/kubelet"
@@ -34,16 +37,18 @@ import (
 	"yunion.io/x/onecloud/pkg/mcclient/auth"
 	modules "yunion.io/x/onecloud/pkg/mcclient/modules/compute"
 	"yunion.io/x/onecloud/pkg/mcclient/modules/k8s"
+	"yunion.io/x/onecloud/pkg/util/cgrouputils/cpuset"
 )
 
 type IHost interface {
 	GetZoneId() string
 	GetHostId() string
-	GetMediumType() string
 	GetMasterIp() string
 	GetCpuArchitecture() string
 	GetKernelVersion() string
 	IsAarch64() bool
+	GetHostTopology() *hostapi.HostTopology
+	GetReservedCpusInfo() *cpuset.CPUSet
 
 	IsHugepagesEnabled() bool
 	HugepageSizeKb() int
@@ -63,15 +68,15 @@ type IHost interface {
 }
 
 func GetComputeSession(ctx context.Context) *mcclient.ClientSession {
-	return auth.GetAdminSessionWithInternal(ctx, options.HostOptions.Region)
+	return auth.GetAdminSession(ctx, consts.GetRegion())
 }
 
 func GetK8sSession(ctx context.Context) *mcclient.ClientSession {
-	return auth.GetAdminSessionWithInternal(ctx, options.HostOptions.Region)
+	return auth.GetAdminSession(ctx, consts.GetRegion())
 }
 
-func GetImageSession(ctx context.Context, zone string) *mcclient.ClientSession {
-	return auth.AdminSessionWithInternal(ctx, options.HostOptions.Region, "")
+func GetImageSession(ctx context.Context) *mcclient.ClientSession {
+	return auth.AdminSession(ctx, consts.GetRegion(), consts.GetZone(), "")
 }
 
 func TaskFailed(ctx context.Context, reason string) {
@@ -142,14 +147,8 @@ func RemoteStoragecacheCacheImage(ctx context.Context, storagecacheId, imageId, 
 		storagecacheId, imageId, query, params)
 }
 
-func UpdateServerStatus(ctx context.Context, sid, status, powerStates, reason string) (jsonutils.JSONObject, error) {
-	var stats = jsonutils.NewDict()
-	stats.Set("status", jsonutils.NewString(status))
-	stats.Set("power_states", jsonutils.NewString(powerStates))
-	if len(reason) > 0 {
-		stats.Set("reason", jsonutils.NewString(reason))
-	}
-	return modules.Servers.PerformAction(GetComputeSession(ctx), sid, "status", stats)
+func UpdateServerStatus(ctx context.Context, sid string, statusInput *apis.PerformStatusInput) (jsonutils.JSONObject, error) {
+	return modules.Servers.PerformAction(GetComputeSession(ctx), sid, "status", jsonutils.Marshal(statusInput))
 }
 
 func UpdateServerProgress(ctx context.Context, sid string, progress, progressMbps float64) (jsonutils.JSONObject, error) {

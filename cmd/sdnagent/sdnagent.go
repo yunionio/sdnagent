@@ -22,6 +22,7 @@ import (
 	"syscall"
 
 	"yunion.io/x/log"
+	"yunion.io/x/pkg/appctx"
 	"yunion.io/x/pkg/errors"
 
 	"yunion.io/x/sdnagent/pkg/agent/server"
@@ -56,6 +57,7 @@ func main() {
 		hc  *utils.HostConfig
 		err error
 	)
+	ctx = context.WithValue(ctx, appctx.APP_CONTEXT_KEY_APPNAME, "sdnagent")
 	if hc, err = utils.NewHostConfig(); err != nil {
 		log.Errorln(errors.Wrap(err, "host config"))
 	} else if err = hc.Auth(ctx); err != nil {

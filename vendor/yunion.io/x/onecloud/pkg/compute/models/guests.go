@@ -28,9 +28,12 @@ import (
 	"yunion.io/x/log"
 	"yunion.io/x/pkg/errors"
 	"yunion.io/x/pkg/tristate"
+	"yunion.io/x/pkg/util/billing"
 	"yunion.io/x/pkg/util/compare"
 	"yunion.io/x/pkg/util/netutils"
 	"yunion.io/x/pkg/util/osprofile"
+	"yunion.io/x/pkg/util/pinyinutils"
+	"yunion.io/x/pkg/util/rbacscope"
 	"yunion.io/x/pkg/util/regutils"
 	"yunion.io/x/pkg/util/timeutils"
 	"yunion.io/x/pkg/utils"
@@ -57,10 +60,9 @@ import (
 	"yunion.io/x/onecloud/pkg/mcclient"
 	"yunion.io/x/onecloud/pkg/mcclient/auth"
 	"yunion.io/x/onecloud/pkg/mcclient/modules/image"
-	"yunion.io/x/onecloud/pkg/util/billing"
+	"yunion.io/x/onecloud/pkg/util/bitmap"
 	"yunion.io/x/onecloud/pkg/util/logclient"
 	"yunion.io/x/onecloud/pkg/util/netutils2"
-	"yunion.io/x/onecloud/pkg/util/pinyinutils"
 	"yunion.io/x/onecloud/pkg/util/rbacutils"
 	"yunion.io/x/onecloud/pkg/util/seclib2"
 	"yunion.io/x/onecloud/pkg/util/stringutils2"
@@ -134,7 +136,8 @@ type SGuest struct {
 	KeypairId string `width:"36" charset:"ascii" nullable:"true" list:"user" create:"optional"`
 
 	// 备份机所在宿主机Id
-	BackupHostId string `width:"36" charset:"ascii" nullable:"true" list:"user" get:"user"`
+	BackupHostId      string `width:"36" charset:"ascii" nullable:"true" list:"user" get:"user"`
+	BackupGuestStatus string `width:"36" charset:"ascii" nullable:"false" default:"init" list:"user" create:"optional" json:"backup_guest_status"`
 
 	// 迁移或克隆的速度
 	ProgressMbps float64 `nullable:"false" default:"0" list:"user" create:"optional" update:"user" log:"skip"`
@@ -329,7 +332,7 @@ func (manager *SGuestManager) ListItemFilter(
 		isAdmin := false
 		// admin := (query.VirtualResourceListInput.Admin != nil && *query.VirtualResourceListInput.Admin)
 		allowScope, _ := policy.PolicyManager.AllowScope(userCred, consts.GetServiceType(), manager.KeywordPlural(), policy.PolicyActionList)
-		if allowScope == rbacutils.ScopeSystem || allowScope == rbacutils.ScopeDomain {
+		if allowScope == rbacscope.ScopeSystem || allowScope == rbacscope.ScopeDomain {
 			isAdmin = true
 		}
 
@@ -949,6 +952,20 @@ func (guest *SGuest) GetVpc() (*SVpc, error) {
 	return vpc, nil
 }
 
+func (guest *SGuest) IsOneCloudVpcNetwork() (bool, error) {
+	gns, err := guest.GetNetworks("")
+	if err != nil {
+		return false, errors.Wrap(err, "GetNetworks")
+	}
+	for _, gn := range gns {
+		n := gn.GetNetwork()
+		if n != nil && n.isOneCloudVpcNetwork() {
+			return true, nil
+		}
+	}
+	return false, nil
+}
+
 func (guest *SGuest) GetNetworks(netId string) ([]SGuestnetwork, error) {
 	guestnics := make([]SGuestnetwork, 0)
 	q := guest.GetNetworksQuery(netId).Asc("index")
@@ -1136,6 +1153,13 @@ func (self *SGuest) ValidateUpdateData(ctx context.Context, userCred mcclient.To
 		return input, httperrors.NewInputParameterError("name is too short")
 	}
 
+	// validate Hostname
+	if len(input.Hostname) > 0 {
+		if !regutils.MatchDomainName(input.Hostname) {
+			return input, httperrors.NewInputParameterError("hostname should be a legal domain name")
+		}
+	}
+
 	var err error
 	input, err = self.GetDriver().ValidateUpdateData(ctx, self, userCred, input)
 	if err != nil {
@@ -1153,7 +1177,7 @@ func serverCreateInput2ComputeQuotaKeys(input api.ServerCreateInput, ownerId mcc
 	// input.Hypervisor must be set
 	brand := guessBrandForHypervisor(input.Hypervisor)
 	keys := GetDriver(input.Hypervisor).GetComputeQuotaKeys(
-		rbacutils.ScopeProject,
+		rbacscope.ScopeProject,
 		ownerId,
 		brand,
 	)
@@ -1364,6 +1388,20 @@ func (manager *SGuestManager) validateCreateData(
 			input.Cdrom = image.Id
 			if len(imgProperties) == 0 {
 				imgProperties = image.Properties
+			}
+		}
+
+		// check boot indexes
+		bm := bitmap.NewBitMap(128)
+		if input.CdromBootIndex != nil && *input.CdromBootIndex >= 0 {
+			bm.Set(int64(*input.CdromBootIndex))
+		}
+		for i := 0; i < len(input.Disks); i++ {
+			if input.Disks[i].BootIndex != nil && *input.Disks[i].BootIndex >= 0 {
+				if bm.Has(int64(*input.Disks[i].BootIndex)) {
+					return nil, httperrors.NewInputParameterError("duplicate boot index %d", *input.Disks[i].BootIndex)
+				}
+				bm.Set(int64(*input.Disks[i].BootIndex))
 			}
 		}
 
@@ -1610,6 +1648,22 @@ func (manager *SGuestManager) validateCreateData(
 		if len(netConfig.Driver) == 0 {
 			netConfig.Driver = osProf.NetDriver
 		}
+		if netConfig.SriovDevice != nil {
+			if input.Backup {
+				return nil, httperrors.NewBadRequestError("Cannot create backup with isolated device")
+			}
+			devConfig, err := IsolatedDeviceManager.parseDeviceInfo(userCred, netConfig.SriovDevice)
+			if err != nil {
+				return nil, httperrors.NewInputParameterError("parse isolated device description error %s", err)
+			}
+			err = IsolatedDeviceManager.isValidNicDeviceinfo(devConfig)
+			if err != nil {
+				return nil, err
+			}
+			netConfig.SriovDevice = devConfig
+			netConfig.Driver = api.NETWORK_DRIVER_VFIO
+		}
+
 		netConfig.Project = ownerId.GetProjectId()
 		netConfig.Domain = ownerId.GetProjectDomainId()
 		input.Networks[idx] = netConfig
@@ -1976,6 +2030,9 @@ func getGuestResourceRequirements(
 			iNicCnt += 1
 			iBw += netConfig.BwLimit
 		}
+		if netConfig.SriovDevice != nil {
+			devCount += 1
+		}
 	}
 	if hasBackup {
 		vcpuCount = vcpuCount * 2
@@ -2209,6 +2266,7 @@ func (self *SGuest) moreExtraInfo(
 		if len(fields) == 0 || fields.Contains("backup_host_status") {
 			out.BackupHostStatus = backupHost.HostStatus
 		}
+		out.BackupGuestSyncStatus = self.GetGuestBackupMirrorJobStatus(ctx, userCred)
 	}
 
 	if len(fields) == 0 || fields.Contains("can_recycle") {
@@ -2692,6 +2750,8 @@ func (self *SGuest) syncRemoveCloudVM(ctx context.Context, userCred mcclient.Tok
 				_, err = db.Update(self, func() error {
 					self.HostId = host.GetId()
 					self.Status = iVM.GetStatus()
+					self.PowerStates = iVM.GetPowerStates()
+					self.inferPowerStates()
 					return nil
 				})
 				return err
@@ -2701,7 +2761,7 @@ func (self *SGuest) syncRemoveCloudVM(ctx context.Context, userCred mcclient.Tok
 		return errors.Wrap(err, "GetIVMById")
 	}
 
-	if options.SyncPurgeRemovedResources.Contains(self.Keyword()) {
+	if options.Options.EnableSyncPurge {
 		log.Debugf("purge removed resource %s", self.Name)
 		err := self.purge(ctx, userCred)
 		if err != nil {
@@ -2785,24 +2845,27 @@ func (self *SGuest) syncWithCloudVM(ctx context.Context, userCred mcclient.Token
 	}
 
 	diff, err := db.UpdateWithLock(ctx, self, func() error {
-		if options.NameSyncResources.Contains(self.Keyword()) && !recycle {
+		if options.Options.EnableSyncName && !recycle {
 			newName, _ := db.GenerateAlterName(self, extVM.GetName())
 			if len(newName) > 0 && newName != self.Name {
 				self.Name = newName
 			}
 		}
-		if extVM.GetName() != extVM.GetHostname() {
-			self.Hostname = extVM.GetHostname()
+		hostname := pinyinutils.Text2Pinyin(extVM.GetHostname())
+		if extVM.GetName() != hostname {
+			self.Hostname = hostname
 		}
 		if !self.IsFailureStatus() && syncStatus {
 			self.Status = extVM.GetStatus()
+			self.PowerStates = extVM.GetPowerStates()
+			self.inferPowerStates()
 		}
 
 		self.VcpuCount = extVM.GetVcpuCount()
 		self.BootOrder = extVM.GetBootOrder()
 		self.Vga = extVM.GetVga()
 		self.Vdi = extVM.GetVdi()
-		if len(self.OsArch) == 0 {
+		if len(extVM.GetOsArch()) > 0 {
 			self.OsArch = extVM.GetOsArch()
 		}
 		if len(self.OsType) == 0 {
@@ -2875,7 +2938,7 @@ func (self *SGuest) syncWithCloudVM(ctx context.Context, userCred mcclient.Token
 	self.SyncOsInfo(ctx, userCred, extVM)
 
 	syncVirtualResourceMetadata(ctx, userCred, self, extVM)
-	SyncCloudProject(userCred, self, syncOwnerId, extVM, host.ManagerId)
+	SyncCloudProject(ctx, userCred, self, syncOwnerId, extVM, host.ManagerId)
 
 	if provider.GetFactory().IsSupportPrepaidResources() && recycle {
 		vhost, _ := self.GetHost()
@@ -2894,6 +2957,8 @@ func (manager *SGuestManager) newCloudVM(ctx context.Context, userCred mcclient.
 	guest.SetModelManager(manager, &guest)
 
 	guest.Status = extVM.GetStatus()
+	guest.PowerStates = extVM.GetPowerStates()
+	guest.inferPowerStates()
 	guest.ExternalId = extVM.GetGlobalId()
 	guest.VcpuCount = extVM.GetVcpuCount()
 	guest.BootOrder = extVM.GetBootOrder()
@@ -2904,7 +2969,7 @@ func (manager *SGuestManager) newCloudVM(ctx context.Context, userCred mcclient.
 	guest.Bios = string(extVM.GetBios())
 	guest.Machine = extVM.GetMachine()
 	guest.Hypervisor = extVM.GetHypervisor()
-	guest.Hostname = extVM.GetHostname()
+	guest.Hostname = pinyinutils.Text2Pinyin(extVM.GetHostname())
 	guest.InternetMaxBandwidthOut = extVM.GetInternetMaxBandwidthOut()
 	guest.Throughput = extVM.GetThroughput()
 
@@ -2959,7 +3024,7 @@ func (manager *SGuestManager) newCloudVM(ctx context.Context, userCred mcclient.
 		lockman.LockRawObject(ctx, manager.Keyword(), "name")
 		defer lockman.ReleaseRawObject(ctx, manager.Keyword(), "name")
 
-		if options.NameSyncResources.Contains(manager.Keyword()) {
+		if options.Options.EnableSyncName {
 			guest.Name = extVM.GetName()
 		} else {
 			newName, err := db.GenerateName(ctx, manager, syncOwnerId, extVM.GetName())
@@ -2978,9 +3043,13 @@ func (manager *SGuestManager) newCloudVM(ctx context.Context, userCred mcclient.
 	guest.SyncOsInfo(ctx, userCred, extVM)
 
 	syncVirtualResourceMetadata(ctx, userCred, &guest, extVM)
-	SyncCloudProject(userCred, &guest, syncOwnerId, extVM, host.ManagerId)
+	SyncCloudProject(ctx, userCred, &guest, syncOwnerId, extVM, host.ManagerId)
 
 	db.OpsLog.LogEvent(&guest, db.ACT_CREATE, guest.GetShortDesc(ctx), userCred)
+
+	if guest.Status == api.VM_RUNNING {
+		db.OpsLog.LogEvent(&guest, db.ACT_START, guest.GetShortDesc(ctx), userCred)
+	}
 
 	notifyclient.EventNotify(ctx, userCred, notifyclient.SEventNotifyParam{
 		Obj:    &guest,
@@ -3002,7 +3071,7 @@ func (manager *SGuestManager) newCloudVM(ctx context.Context, userCred mcclient.
 }
 
 func (manager *SGuestManager) TotalCount(
-	scope rbacutils.TRbacScope,
+	scope rbacscope.TRbacScope,
 	ownerId mcclient.IIdentityProvider,
 	rangeObjs []db.IStandaloneModel,
 	status []string, hypervisors []string,
@@ -3334,7 +3403,7 @@ func (self *SGuest) SyncVMNics(ctx context.Context, userCred mcclient.TokenCrede
 		ExtFunc: "GetMAC",
 		ExtSet:  vnics,
 	}
-	err = compare.CompareSetsFunc(set, &removed, &commondb, &commonext, &added)
+	err = compare.CompareSetsFunc(set, &removed, &commondb, &commonext, &added, nil)
 	if err != nil {
 		result.Error(errors.Wrapf(err, "compare.CompareSets"))
 		return result
@@ -3380,9 +3449,14 @@ func (self *SGuest) SyncVMNics(ctx context.Context, userCred mcclient.TokenCrede
 		result.Update()
 	}
 
+	syncIps := make([]string, 0)
 	for i := 0; i < len(added); i += 1 {
 		localNet, err := getCloudNicNetwork(ctx, added[i], host, ipList, i)
 		if err != nil {
+			log.Errorf("SyncVMNics getCloudNicNetwork add fail: %s", err)
+			if ip := added[i].GetIP(); len(ip) > 0 {
+				syncIps = append(syncIps, ip)
+			}
 			result.AddError(err)
 			continue
 		}
@@ -3422,6 +3496,12 @@ func (self *SGuest) SyncVMNics(ctx context.Context, userCred mcclient.TokenCrede
 				result.AddError(err)
 			}
 		}
+	}
+
+	if len(syncIps) > 0 {
+		self.SetMetadata(ctx, "sync_ips", strings.Join(syncIps, ","), userCred)
+	} else {
+		self.SetMetadata(ctx, "sync_ips", "None", userCred)
 	}
 
 	return result
@@ -3464,11 +3544,11 @@ func (self *SGuest) getDiskIndex() int8 {
 	return int8(max + 1)
 }
 
-func (self *SGuest) AttachDisk(ctx context.Context, disk *SDisk, userCred mcclient.TokenCredential, driver string, cache string, mountpoint string) error {
-	return self.attach2Disk(ctx, disk, userCred, driver, cache, mountpoint)
+func (self *SGuest) AttachDisk(ctx context.Context, disk *SDisk, userCred mcclient.TokenCredential, driver string, cache string, mountpoint string, bootIndex *int8) error {
+	return self.attach2Disk(ctx, disk, userCred, driver, cache, mountpoint, bootIndex)
 }
 
-func (self *SGuest) attach2Disk(ctx context.Context, disk *SDisk, userCred mcclient.TokenCredential, driver string, cache string, mountpoint string) error {
+func (self *SGuest) attach2Disk(ctx context.Context, disk *SDisk, userCred mcclient.TokenCredential, driver string, cache string, mountpoint string, bootIndex *int8) error {
 	attached, err := self.isAttach2Disk(disk)
 	if err != nil {
 		return errors.Wrap(err, "isAttach2Disk")
@@ -3502,6 +3582,11 @@ func (self *SGuest) attach2Disk(ctx context.Context, disk *SDisk, userCred mccli
 	defer lockman.ReleaseObject(ctx, self)
 
 	guestdisk.Index = self.getDiskIndex()
+	if bootIndex != nil {
+		guestdisk.BootIndex = *bootIndex
+	} else {
+		guestdisk.BootIndex = -1
+	}
 	err = guestdisk.DoSave(ctx, driver, cache, mountpoint)
 	if err == nil {
 		db.OpsLog.LogAttachEvent(ctx, self, disk, userCred, nil)
@@ -3554,7 +3639,7 @@ func (self *SGuest) SyncVMDisks(ctx context.Context, userCred mcclient.TokenCred
 			continue
 		}
 		disk.SyncCloudProjectId(userCred, self.GetOwnerId())
-		err = self.attach2Disk(ctx, disk, userCred, added[i].GetDriver(), added[i].GetCacheMode(), added[i].GetMountpoint())
+		err = self.attach2Disk(ctx, disk, userCred, added[i].GetDriver(), added[i].GetCacheMode(), added[i].GetMountpoint(), nil)
 		if err != nil {
 			result.AddError(err)
 			continue
@@ -3628,7 +3713,7 @@ type SGuestCountStat struct {
 }
 
 func usageTotalGuestResouceCount(
-	scope rbacutils.TRbacScope,
+	scope rbacscope.TRbacScope,
 	ownerId mcclient.IIdentityProvider,
 	rangeObjs []db.IStandaloneModel,
 	status []string,
@@ -3663,7 +3748,7 @@ func usageTotalGuestResouceCount(
 }
 
 func _guestResourceCountQuery(
-	scope rbacutils.TRbacScope,
+	scope rbacscope.TRbacScope,
 	ownerId mcclient.IIdentityProvider,
 	rangeObjs []db.IStandaloneModel,
 	status []string,
@@ -3711,10 +3796,10 @@ func _guestResourceCountQuery(
 	}
 
 	switch scope {
-	case rbacutils.ScopeSystem:
-	case rbacutils.ScopeDomain:
+	case rbacscope.ScopeSystem:
+	case rbacscope.ScopeDomain:
 		gq = gq.Filter(sqlchemy.Equals(gq.Field("domain_id"), ownerId.GetProjectDomainId()))
-	case rbacutils.ScopeProject:
+	case rbacscope.ScopeProject:
 		gq = gq.Filter(sqlchemy.Equals(gq.Field("tenant_id"), ownerId.GetProjectId()))
 	}
 
@@ -3779,7 +3864,7 @@ func (self *SGuest) CreateNetworksOnHost(
 	userCred mcclient.TokenCredential,
 	host *SHost,
 	netArray []*api.NetworkConfig,
-	pendingUsage quotas.IQuota,
+	pendingUsage, pendingUsageZone quotas.IQuota,
 	candidateNets []*schedapi.CandidateNet,
 ) error {
 	if len(netArray) == 0 {
@@ -3807,10 +3892,20 @@ func (self *SGuest) CreateNetworksOnHost(
 			}
 			netConfig.NumQueues = numQueues
 		}
-		_, err = self.attach2NetworkDesc(ctx, userCred, host, netConfig, pendingUsage, networkIds)
+		gns, err := self.attach2NetworkDesc(ctx, userCred, host, netConfig, pendingUsage, networkIds)
 		if err != nil {
 			return errors.Wrap(err, "self.attach2NetworkDesc")
 		}
+		net := gns[0].GetNetwork()
+		if netConfig.SriovDevice != nil {
+			netConfig.SriovDevice.NetworkIndex = &gns[0].Index
+			netConfig.SriovDevice.WireId = net.WireId
+			err = self.createIsolatedDeviceOnHost(ctx, userCred, host, netConfig.SriovDevice, pendingUsageZone)
+			if err != nil {
+				return errors.Wrap(err, "self.createIsolatedDeviceOnHost")
+			}
+		}
+
 	}
 	return nil
 }
@@ -3864,8 +3959,29 @@ func (self *SGuest) attach2NamedNetworkDesc(ctx context.Context, userCred mcclie
 	}
 	if net != nil {
 		if len(nicConfs) == 0 {
-			return nil, fmt.Errorf("no avaialble network interface?")
+			return nil, fmt.Errorf("no available network interface?")
 		}
+		var sriovWires []string
+		if netConfig.SriovDevice != nil {
+			if netConfig.SriovDevice.Id != "" {
+				idev, err := IsolatedDeviceManager.FetchById(netConfig.SriovDevice.Id)
+				if err != nil {
+					return nil, errors.Wrap(err, "fetch isolated device")
+				}
+				dev, _ := idev.(*SIsolatedDevice)
+				sriovWires = []string{dev.WireId}
+			} else {
+				wires, err := IsolatedDeviceManager.FindUnusedNicWiresByModel(netConfig.SriovDevice.Model)
+				if err != nil {
+					return nil, errors.Wrap(err, "FindUnusedNicWiresByModel")
+				}
+				sriovWires = wires
+			}
+			if !utils.IsInStringArray(net.WireId, sriovWires) {
+				return nil, fmt.Errorf("no available sriov nic for wire %s", net.WireId)
+			}
+		}
+
 		gn, err := self.Attach2Network(ctx, userCred, Attach2NetworkArgs{
 			Network:             net,
 			PendingUsage:        pendingUsage,
@@ -4045,7 +4161,7 @@ func (self *SGuest) createDiskOnHost(
 		db.OpsLog.LogEvent(disk, db.ACT_UPDATE, diff, userCred)
 	}
 	if autoAttach {
-		err = self.attach2Disk(ctx, disk, userCred, diskConfig.Driver, diskConfig.Cache, diskConfig.Mountpoint)
+		err = self.attach2Disk(ctx, disk, userCred, diskConfig.Driver, diskConfig.Cache, diskConfig.Mountpoint, diskConfig.BootIndex)
 	}
 	err = self.InheritTo(ctx, disk)
 	if err != nil {
@@ -4056,6 +4172,9 @@ func (self *SGuest) createDiskOnHost(
 
 func (self *SGuest) CreateIsolatedDeviceOnHost(ctx context.Context, userCred mcclient.TokenCredential, host *SHost, devs []*api.IsolatedDeviceConfig, pendingUsage quotas.IQuota) error {
 	for _, devConfig := range devs {
+		if devConfig.DevType == api.NIC_TYPE {
+			continue
+		}
 		err := self.createIsolatedDeviceOnHost(ctx, userCred, host, devConfig, pendingUsage)
 		if err != nil {
 			return err
@@ -4250,10 +4369,26 @@ func (self *SGuest) CleanTapRecords(ctx context.Context, userCred mcclient.Token
 	return nil
 }
 
+func (self *SGuest) GetLoadbalancerBackends() ([]SLoadbalancerBackend, error) {
+	q := LoadbalancerBackendManager.Query().Equals("backend_id", self.Id)
+	ret := []SLoadbalancerBackend{}
+	return ret, db.FetchModelObjects(LoadbalancerBackendManager, q, &ret)
+}
+
 func (self *SGuest) RealDelete(ctx context.Context, userCred mcclient.TokenCredential) error {
 	err := self.CleanTapRecords(ctx, userCred)
 	if err != nil {
 		return errors.Wrap(err, "CleanTapRecords")
+	}
+	backends, err := self.GetLoadbalancerBackends()
+	if err != nil {
+		return errors.Wrapf(err, "GetLoadbalancerBackends")
+	}
+	for i := range backends {
+		err := backends[i].RealDelete(ctx, userCred)
+		if err != nil {
+			return errors.Wrapf(err, "backend real delete %s", backends[i].Id)
+		}
 	}
 	return self.SVirtualResourceBase.Delete(ctx, userCred)
 }
@@ -4435,6 +4570,31 @@ func (self *SGuest) getDetails(ctx context.Context, userCred mcclient.TokenCrede
 	return serverDetails, nil
 }
 
+func (self *SGuest) isBootIndexDuplicated(bootIndex int8) (bool, error) {
+	if bootIndex < 0 {
+		return false, nil
+	}
+	cdroms, err := self.getCdroms()
+	if err != nil {
+		return true, err
+	}
+	for i := 0; i < len(cdroms); i++ {
+		if cdroms[i].BootIndex == bootIndex {
+			return true, nil
+		}
+	}
+	gd, err := self.GetGuestDisks()
+	if err != nil {
+		return true, err
+	}
+	for i := 0; i < len(gd); i++ {
+		if gd[i].BootIndex == bootIndex {
+			return true, nil
+		}
+	}
+	return false, nil
+}
+
 func (self *SGuest) getVga() string {
 	if utils.IsInStringArray(self.Vga, []string{"cirrus", "vmware", "qxl", "virtio", "std"}) {
 		return self.Vga
@@ -4481,6 +4641,22 @@ func (self *SGuest) GetIsolatedDevices() ([]SIsolatedDevice, error) {
 	return devs, nil
 }
 
+func (self *SGuest) GetIsolatedDeviceByNetworkIndex(index int8) (*SIsolatedDevice, error) {
+	dev := SIsolatedDevice{}
+	q := IsolatedDeviceManager.Query().Equals("guest_id", self.Id).Equals("network_index", index)
+	if cnt, err := q.CountWithError(); err != nil {
+		return nil, err
+	} else if cnt == 0 {
+		return nil, nil
+	}
+	err := q.First(&dev)
+	if err != nil {
+		return nil, err
+	}
+	dev.SetModelManager(IsolatedDeviceManager, &dev)
+	return &dev, nil
+}
+
 func (self *SGuest) GetJsonDescAtHypervisor(ctx context.Context, host *SHost) *api.GuestJsonDesc {
 	desc := &api.GuestJsonDesc{
 		Name:        self.Name,
@@ -4511,6 +4687,10 @@ func (self *SGuest) GetJsonDescAtHypervisor(ctx context.Context, host *SHost) *a
 			isSlave := true
 			desc.IsSlave = &isSlave
 		}
+	}
+
+	if self.HostId != host.Id {
+		desc.IsVolatileHost = true
 	}
 
 	// isolated devices
@@ -4824,6 +5004,8 @@ func (self *SGuest) GetShortDesc(ctx context.Context) *jsonutils.JSONDict {
 	desc := self.SVirtualResourceBase.GetShortDesc(ctx)
 	desc.Set("mem", jsonutils.NewInt(int64(self.VmemSize)))
 	desc.Set("cpu", jsonutils.NewInt(int64(self.VcpuCount)))
+
+	desc.Set("status", jsonutils.NewString(self.Status))
 
 	address := jsonutils.NewString(strings.Join(self.GetRealIPs(), ","))
 	desc.Set("ip_addr", address)
@@ -5197,115 +5379,6 @@ func (manager *SGuestManager) DeleteExpiredPostpaidServers(ctx context.Context, 
 		}
 		guests[i].StartDeleteGuestTask(ctx, userCred, "", opts)
 	}
-}
-
-func (self *SGuestManager) ReconcileBackupGuests(ctx context.Context, userCred mcclient.TokenCredential, isStart bool) {
-	self.switchBackupGuests(ctx, userCred)
-	self.createBackupGuests(ctx, userCred)
-}
-
-func (self *SGuestManager) switchBackupGuests(ctx context.Context, userCred mcclient.TokenCredential) {
-	q := self.Query()
-	metaDataQuery := db.Metadata.Query().Startswith("id", "server::").
-		Equals("key", "switch_backup").IsNotEmpty("value").GroupBy("id")
-	metaDataQuery.AppendField(sqlchemy.SubStr("guest_id", metaDataQuery.Field("id"), len("server::")+1, 0))
-	subQ := metaDataQuery.SubQuery()
-	q = q.Join(subQ, sqlchemy.Equals(q.Field("id"), subQ.Field("guest_id")))
-
-	guests := make([]SGuest, 0)
-	err := db.FetchModelObjects(GuestManager, q, &guests)
-	if err != nil {
-		log.Errorf("ReconcileBackupGuests failed fetch guests %s", err)
-		return
-	}
-	log.Debugf("Guests count %d need reconcile with switch backup", len(guests))
-	for i := 0; i < len(guests); i++ {
-		val := guests[i].GetMetadataJson(ctx, "switch_backup", userCred)
-		t, err := val.GetTime()
-		if err != nil {
-			log.Errorf("failed get time from metadata switch_backup %s", err)
-			continue
-		}
-		if time.Now().After(t) {
-			data := jsonutils.NewDict()
-			data.Set("purge_backup", jsonutils.JSONTrue)
-			_, err := guests[i].PerformSwitchToBackup(ctx, userCred, nil, data)
-			if err != nil {
-				db.OpsLog.LogEvent(
-					&guests[i], db.ACT_SWITCH_FAILED, fmt.Sprintf("switchBackupGuests on reconcile_backup: %s", err), userCred,
-				)
-				logclient.AddSimpleActionLog(
-					&guests[i], logclient.ACT_SWITCH_TO_BACKUP,
-					fmt.Sprintf("switchBackupGuests on reconcile_backup: %s", err), userCred, false,
-				)
-			}
-		}
-	}
-}
-
-func (self *SGuestManager) createBackupGuests(ctx context.Context, userCred mcclient.TokenCredential) {
-	q := self.Query()
-	metaDataQuery := db.Metadata.Query().Startswith("id", "server::").
-		Equals("key", "create_backup").IsNotEmpty("value").GroupBy("id")
-	metaDataQuery.AppendField(sqlchemy.SubStr("guest_id", metaDataQuery.Field("id"), len("server::")+1, 0))
-	subQ := metaDataQuery.SubQuery()
-	q = q.Join(subQ, sqlchemy.Equals(q.Field("id"), subQ.Field("guest_id")))
-
-	guests := make([]SGuest, 0)
-	err := db.FetchModelObjects(GuestManager, q, &guests)
-	if err != nil {
-		log.Errorf("ReconcileBackupGuests failed fetch guests %s", err)
-		return
-	}
-	log.Infof("Guests count %d need reconcile with create bakcup", len(guests))
-	for i := 0; i < len(guests); i++ {
-		val := guests[i].GetMetadataJson(ctx, "create_backup", userCred)
-		t, err := val.GetTime()
-		if err != nil {
-			log.Errorf("failed get time from metadata create_backup %s", err)
-			continue
-		}
-		if time.Now().After(t) {
-			if len(guests[i].BackupHostId) > 0 {
-				data := jsonutils.NewDict()
-				data.Set("purge", jsonutils.JSONTrue)
-				data.Set("create", jsonutils.JSONTrue)
-				_, err := guests[i].PerformDeleteBackup(ctx, userCred, nil, data)
-				if err != nil {
-					db.OpsLog.LogEvent(
-						&guests[i], db.ACT_DELETE_BACKUP_FAILED,
-						fmt.Sprintf("PerformDeleteBackup on ReconcileBackupGuests: %s", err), userCred,
-					)
-					logclient.AddSimpleActionLog(
-						&guests[i], logclient.ACT_DELETE_BACKUP,
-						fmt.Sprintf("PerformDeleteBackup on ReconcileBackupGuests: %s", err), userCred, false,
-					)
-				}
-			} else {
-				params := jsonutils.NewDict()
-				params.Set("reconcile_backup", jsonutils.JSONTrue)
-				if _, err := guests[i].StartGuestCreateBackupTask(ctx, userCred, "", params); err != nil {
-					db.OpsLog.LogEvent(
-						&guests[i], db.ACT_CREATE_BACKUP_FAILED,
-						fmt.Sprintf("StartGuestCreateBackupTask on ReconcileBackupGuests: %s", err), userCred,
-					)
-					logclient.AddSimpleActionLog(
-						&guests[i], logclient.ACT_CREATE_BACKUP,
-						fmt.Sprintf("StartGuestCreateBackupTask on ReconcileBackupGuests: %s", err), userCred, false,
-					)
-				}
-			}
-		}
-	}
-}
-
-func (self *SGuest) isInReconcile(userCred mcclient.TokenCredential) bool {
-	switchBackup := self.GetMetadata(context.Background(), "switch_backup", userCred)
-	createBackup := self.GetMetadata(context.Background(), "create_backup", userCred)
-	if len(switchBackup) > 0 || len(createBackup) > 0 {
-		return true
-	}
-	return false
 }
 
 func (self *SGuest) IsEipAssociable() error {
@@ -6079,7 +6152,7 @@ func (guest *SGuest) GetRegionalQuotaKeys() (quotas.IQuotaKeys, error) {
 	if region == nil {
 		return nil, errors.Wrap(httperrors.ErrInvalidStatus, "no valid region")
 	}
-	return fetchRegionalQuotaKeys(rbacutils.ScopeProject, guest.GetOwnerId(), region, provider), nil
+	return fetchRegionalQuotaKeys(rbacscope.ScopeProject, guest.GetOwnerId(), region, provider), nil
 }
 
 func (guest *SGuest) GetQuotaKeys() (quotas.IQuotaKeys, error) {
@@ -6100,7 +6173,7 @@ func (guest *SGuest) GetQuotaKeys() (quotas.IQuotaKeys, error) {
 		hypervisor = ""
 	}
 	return fetchComputeQuotaKeys(
-		rbacutils.ScopeProject,
+		rbacscope.ScopeProject,
 		guest.GetOwnerId(),
 		zone,
 		provider,
@@ -6166,4 +6239,155 @@ func (guest *SGuest) OnMetadataUpdated(ctx context.Context, userCred mcclient.To
 	if err != nil {
 		log.Errorf("StartRemoteUpdateTask fail: %s", err)
 	}
+}
+
+func (self *SGuest) GetAddress() (string, error) {
+	gns, err := self.GetNetworks("")
+	if err != nil {
+		return "", errors.Wrapf(err, "GetNetworks")
+	}
+	for _, gn := range gns {
+		if !gn.IsExit() {
+			return gn.IpAddr, nil
+		}
+	}
+	return "", errors.Wrapf(cloudprovider.ErrNotFound, "guest %s address", self.Name)
+}
+
+func (guest *SGuest) inferPowerStates() {
+	if len(guest.PowerStates) == 0 {
+		switch guest.Status {
+		case api.VM_READY:
+			guest.PowerStates = api.VM_POWER_STATES_OFF
+		case api.VM_UNKNOWN:
+			guest.PowerStates = api.VM_POWER_STATES_UNKNOWN
+		case api.VM_INIT:
+			guest.PowerStates = api.VM_POWER_STATES_ON
+		case api.VM_SCHEDULE:
+			guest.PowerStates = api.VM_POWER_STATES_ON
+		case api.VM_SCHEDULE_FAILED:
+			guest.PowerStates = api.VM_POWER_STATES_ON
+		case api.VM_CREATE_NETWORK:
+			guest.PowerStates = api.VM_POWER_STATES_ON
+		case api.VM_NETWORK_FAILED:
+			guest.PowerStates = api.VM_POWER_STATES_ON
+		case api.VM_DEVICE_FAILED:
+			guest.PowerStates = api.VM_POWER_STATES_UNKNOWN
+		case api.VM_CREATE_FAILED:
+			guest.PowerStates = api.VM_POWER_STATES_OFF
+		case api.VM_CREATE_DISK:
+			guest.PowerStates = api.VM_POWER_STATES_OFF
+		case api.VM_DISK_FAILED:
+			guest.PowerStates = api.VM_POWER_STATES_OFF
+		case api.VM_IMAGE_CACHING:
+			guest.PowerStates = api.VM_POWER_STATES_ON
+		case api.VM_START_DEPLOY:
+			guest.PowerStates = api.VM_POWER_STATES_ON
+		case api.VM_DEPLOYING:
+			guest.PowerStates = api.VM_POWER_STATES_OFF
+		case api.VM_START_START:
+			guest.PowerStates = api.VM_POWER_STATES_ON
+		case api.VM_STARTING:
+			guest.PowerStates = api.VM_POWER_STATES_ON
+		case api.VM_START_FAILED:
+			guest.PowerStates = api.VM_POWER_STATES_OFF
+		case api.VM_RUNNING:
+			guest.PowerStates = api.VM_POWER_STATES_ON
+		case api.VM_START_STOP:
+			guest.PowerStates = api.VM_POWER_STATES_ON
+		case api.VM_STOPPING:
+			guest.PowerStates = api.VM_POWER_STATES_ON
+		case api.VM_STOP_FAILED:
+			guest.PowerStates = api.VM_POWER_STATES_ON
+		case api.VM_RENEWING:
+			guest.PowerStates = api.VM_POWER_STATES_ON
+		case api.VM_RENEW_FAILED:
+			guest.PowerStates = api.VM_POWER_STATES_ON
+		case api.VM_ATTACH_DISK:
+			guest.PowerStates = api.VM_POWER_STATES_UNKNOWN
+		case api.VM_DETACH_DISK:
+			guest.PowerStates = api.VM_POWER_STATES_UNKNOWN
+		default:
+			guest.PowerStates = api.VM_POWER_STATES_UNKNOWN
+		}
+	}
+}
+
+func (guest *SGuest) HasBackupGuest() bool {
+	return guest.BackupHostId != ""
+}
+
+func (guest *SGuest) SetGuestBackupMirrorJobInProgress(ctx context.Context, userCred mcclient.TokenCredential) error {
+	return guest.SetMetadata(ctx, api.MIRROR_JOB, api.MIRROR_JOB_INPROGRESS, userCred)
+}
+
+func (guest *SGuest) SetGuestBackupMirrorJobNotReady(ctx context.Context, userCred mcclient.TokenCredential) error {
+	return guest.SetMetadata(ctx, api.MIRROR_JOB, "", userCred)
+}
+
+func (guest *SGuest) TrySetGuestBackupMirrorJobReady(ctx context.Context, userCred mcclient.TokenCredential) error {
+	if guest.IsGuestBackupMirrorJobFailed(ctx, userCred) {
+		// can't update guest backup mirror job status from failed to ready
+		return nil
+	}
+	return guest.SetMetadata(ctx, api.MIRROR_JOB, api.MIRROR_JOB_READY, userCred)
+}
+
+func (guest *SGuest) SetGuestBackupMirrorJobFailed(ctx context.Context, userCred mcclient.TokenCredential) error {
+	return guest.SetMetadata(ctx, api.MIRROR_JOB, api.MIRROR_JOB_FAILED, userCred)
+}
+
+func (guest *SGuest) IsGuestBackupMirrorJobFailed(ctx context.Context, userCred mcclient.TokenCredential) bool {
+	return guest.GetMetadata(ctx, api.MIRROR_JOB, userCred) == api.MIRROR_JOB_FAILED
+}
+
+func (guest *SGuest) IsGuestBackupMirrorJobReady(ctx context.Context, userCred mcclient.TokenCredential) bool {
+	return guest.GetMetadata(ctx, api.MIRROR_JOB, userCred) == api.MIRROR_JOB_READY
+}
+
+func (guest *SGuest) GetGuestBackupMirrorJobStatus(ctx context.Context, userCred mcclient.TokenCredential) string {
+	return guest.GetMetadata(ctx, api.MIRROR_JOB, userCred)
+}
+
+func (guest *SGuest) ResetGuestQuorumChildIndex(ctx context.Context, userCred mcclient.TokenCredential) error {
+	return guest.SetMetadata(ctx, api.QUORUM_CHILD_INDEX, "", userCred)
+}
+
+type SGuestTotalCount struct {
+	apis.TotalCountBase
+	CpuCount  int
+	MemMb     int
+	DiskMb    int64
+	DiskCount int
+}
+
+func (manager *SGuestManager) CustomizedTotalCount(ctx context.Context, userCred mcclient.TokenCredential, query jsonutils.JSONObject, totalQ *sqlchemy.SQuery) (int, jsonutils.JSONObject, error) {
+	results := SGuestTotalCount{}
+
+	totalQ = totalQ.AppendField(sqlchemy.SUM("cpu_count", totalQ.Field("vcpu_count")))
+	totalQ = totalQ.AppendField(sqlchemy.SUM("mem_mb", totalQ.Field("vmem_size")))
+
+	err := totalQ.First(&results)
+	if err != nil {
+		return -1, nil, errors.Wrap(err, "SGuestManager query total")
+	}
+
+	log.Debugf("CustomizedTotalCount %s", jsonutils.Marshal(results))
+
+	diskQ := DiskManager.Query()
+	diskGuestQ := GuestdiskManager.Query().SubQuery()
+	diskQ = diskQ.Join(diskGuestQ, sqlchemy.Equals(diskQ.Field("id"), diskGuestQ.Field("disk_id")))
+	totalSQ := totalQ.ResetFields().SubQuery()
+	diskQ = diskQ.Join(totalSQ, sqlchemy.Equals(diskGuestQ.Field("guest_id"), totalSQ.Field("id")))
+	diskQ = diskQ.AppendField(sqlchemy.COUNT("disk_count"))
+	diskQ = diskQ.AppendField(sqlchemy.SUM("disk_mb", diskQ.Field("disk_size")))
+
+	err = diskQ.First(&results)
+	if err != nil {
+		return -1, nil, errors.Wrap(err, "SGuestManager query total_disk")
+	}
+
+	log.Debugf("CustomizedTotalCount %s", jsonutils.Marshal(results))
+
+	return results.Count, jsonutils.Marshal(results), nil
 }

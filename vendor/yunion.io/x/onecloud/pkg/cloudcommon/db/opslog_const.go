@@ -34,11 +34,12 @@ const (
 	ACT_SYNC_UPDATE = "sync_update"
 	ACT_SYNC_CREATE = "sync_create"
 
-	ACT_START_CREATE_BACKUP  = "start_create_backup"
-	ACT_CREATE_BACKUP        = "create_backup"
-	ACT_CREATE_BACKUP_FAILED = "create_backup_failed"
-	ACT_DELETE_BACKUP        = "delete_backup"
-	ACT_DELETE_BACKUP_FAILED = "delete_backup_failed"
+	ACT_START_CREATE_BACKUP        = "start_create_backup"
+	ACT_CREATE_BACKUP              = "create_backup"
+	ACT_CREATE_BACKUP_FAILED       = "create_backup_failed"
+	ACT_DELETE_BACKUP              = "delete_backup"
+	ACT_DELETE_BACKUP_FAILED       = "delete_backup_failed"
+	ACT_UPDATE_BACKUP_GUEST_STATUS = "update_backup_guest_status"
 
 	ACT_UPDATE_STATUS       = "updatestatus"
 	ACT_STARTING            = "starting"
@@ -74,8 +75,9 @@ const (
 	ACT_VM_CONVERTING   = "vm_converting"
 	ACT_VM_CONVERT_FAIL = "vm_convert_fail"
 
-	ACT_SPLIT = "net_split"
-	ACT_MERGE = "net_merge"
+	ACT_SPLIT       = "net_split"
+	ACT_MERGE       = "net_merge"
+	ACT_IP_MAC_BIND = "ip_mac_bind"
 
 	ACT_SAVING            = "saving"
 	ACT_SAVE              = "save"

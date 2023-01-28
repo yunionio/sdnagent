@@ -23,6 +23,7 @@ import (
 	"yunion.io/x/jsonutils"
 	"yunion.io/x/log"
 	"yunion.io/x/pkg/errors"
+	"yunion.io/x/pkg/util/rbacscope"
 	"yunion.io/x/pkg/utils"
 	"yunion.io/x/sqlchemy"
 
@@ -89,6 +90,10 @@ type SIsolatedDevice struct {
 
 	// 云主机Id
 	GuestId string `width:"36" charset:"ascii" nullable:"true" index:"true" list:"domain"`
+	// guest network index
+	NetworkIndex int8 `nullable:"true" default:"-1" list:"user" update:"user"`
+	// Nic wire id
+	WireId string `width:"36" charset:"ascii" nullable:"true" index:"true" list:"domain" update:"domain" create:"domain_optional"`
 
 	// # pci address of `Bus:Device.Function` format, or usb bus address of `bus.addr`
 	Addr string `width:"16" charset:"ascii" nullable:"true" list:"domain" update:"domain" create:"domain_optional"`
@@ -410,6 +415,7 @@ func (manager *SIsolatedDeviceManager) parseDeviceInfo(userCred mcclient.TokenCr
 		devConfig.Model = dev.Model
 		devConfig.DevType = dev.DevType
 		devConfig.Vendor = dev.getVendor()
+		devConfig.WireId = dev.WireId
 		if dev.IsGPU() && len(devType) > 0 {
 			if !utils.IsInStringArray(devType, VALID_GPU_TYPES) {
 				return nil, fmt.Errorf("%s not valid for GPU device", devType)
@@ -436,6 +442,23 @@ func (manager *SIsolatedDeviceManager) isValidDeviceinfo(config *api.IsolatedDev
 	return nil
 }
 
+func (manager *SIsolatedDeviceManager) isValidNicDeviceinfo(config *api.IsolatedDeviceConfig) error {
+	if len(config.Id) > 0 {
+		devObj, err := manager.FetchById(config.Id)
+		if err != nil {
+			return httperrors.NewResourceNotFoundError("IsolatedDevice %s not found", config.Id)
+		}
+		dev := devObj.(*SIsolatedDevice)
+		if len(dev.GuestId) > 0 {
+			return httperrors.NewConflictError("Isolated device already attached to another guest: %s", dev.GuestId)
+		}
+		if dev.DevType != api.NIC_TYPE {
+			return httperrors.NewBadRequestError("IsolatedDevice is not device type %s", api.NIC_TYPE)
+		}
+	}
+	return nil
+}
+
 func (manager *SIsolatedDeviceManager) attachHostDeviceToGuestByDesc(ctx context.Context, guest *SGuest, host *SHost, devConfig *api.IsolatedDeviceConfig, userCred mcclient.TokenCredential) error {
 	if len(devConfig.Id) > 0 {
 		return manager.attachSpecificDeviceToGuest(ctx, guest, devConfig, userCred)
@@ -453,19 +476,20 @@ func (manager *SIsolatedDeviceManager) attachSpecificDeviceToGuest(ctx context.C
 	if len(devConfig.DevType) > 0 && devConfig.DevType != dev.DevType {
 		dev.DevType = devConfig.DevType
 	}
-	return guest.attachIsolatedDevice(ctx, userCred, dev)
+	return guest.attachIsolatedDevice(ctx, userCred, dev, devConfig.NetworkIndex)
 }
 
 func (manager *SIsolatedDeviceManager) attachHostDeviceToGuestByModel(ctx context.Context, guest *SGuest, host *SHost, devConfig *api.IsolatedDeviceConfig, userCred mcclient.TokenCredential) error {
 	if len(devConfig.Model) == 0 {
 		return fmt.Errorf("Not found model from info: %#v", devConfig)
 	}
-	devs, err := manager.findHostUnusedByModel(devConfig.Model, host.Id)
+	// if dev type is not nic, wire is empty string
+	devs, err := manager.findHostUnusedByModelAndWire(devConfig.Model, host.Id, devConfig.WireId)
 	if err != nil || len(devs) == 0 {
-		return fmt.Errorf("Can't found %s model on host", host.Id)
+		return fmt.Errorf("Can't found model %s on host %s", devConfig.Model, host.Id)
 	}
 	selectedDev := devs[0]
-	return guest.attachIsolatedDevice(ctx, userCred, &selectedDev)
+	return guest.attachIsolatedDevice(ctx, userCred, &selectedDev, devConfig.NetworkIndex)
 }
 
 func (manager *SIsolatedDeviceManager) findUnusedQuery() *sqlchemy.SQuery {
@@ -494,6 +518,24 @@ func (manager *SIsolatedDeviceManager) FindUnusedByModels(models []string) ([]SI
 	return devs, nil
 }
 
+func (manager *SIsolatedDeviceManager) FindUnusedNicWiresByModel(modelName string) ([]string, error) {
+	q := manager.Query().IsNullOrEmpty("guest_id").Equals("dev_type", api.NIC_TYPE)
+	if len(modelName) > 0 {
+		q = q.Equals("model", modelName)
+	}
+	q = q.GroupBy("wire_id")
+	devs := make([]SIsolatedDevice, 0)
+	err := q.All(&devs)
+	if err != nil {
+		return nil, err
+	}
+	wires := make([]string, len(devs))
+	for i := 0; i < len(devs); i++ {
+		wires[i] = devs[i].WireId
+	}
+	return wires, err
+}
+
 func (manager *SIsolatedDeviceManager) FindUnusedGpusOnHost(hostId string) ([]SIsolatedDevice, error) {
 	devs := make([]SIsolatedDevice, 0)
 	q := manager.UnusedGpuQuery()
@@ -505,10 +547,10 @@ func (manager *SIsolatedDeviceManager) FindUnusedGpusOnHost(hostId string) ([]SI
 	return devs, nil
 }
 
-func (manager *SIsolatedDeviceManager) findHostUnusedByModel(model string, hostId string) ([]SIsolatedDevice, error) {
+func (manager *SIsolatedDeviceManager) findHostUnusedByModelAndWire(model, hostId, wireId string) ([]SIsolatedDevice, error) {
 	devs := make([]SIsolatedDevice, 0)
 	q := manager.findUnusedQuery()
-	q = q.Equals("model", model).Equals("host_id", hostId)
+	q = q.Equals("model", model).Equals("host_id", hostId).Equals("wire_id", wireId)
 	err := db.FetchModelObjects(manager, q, &devs)
 	if err != nil {
 		return nil, err
@@ -524,6 +566,7 @@ func (manager *SIsolatedDeviceManager) ReleaseDevicesOfGuest(ctx context.Context
 	for _, dev := range devs {
 		_, err := db.Update(&dev, func() error {
 			dev.GuestId = ""
+			dev.NetworkIndex = -1
 			return nil
 		})
 		if err != nil {
@@ -536,14 +579,14 @@ func (manager *SIsolatedDeviceManager) ReleaseDevicesOfGuest(ctx context.Context
 }
 
 func (manager *SIsolatedDeviceManager) totalCountQ(
-	scope rbacutils.TRbacScope, ownerId mcclient.IIdentityProvider, devType []string, hostTypes []string,
+	scope rbacscope.TRbacScope, ownerId mcclient.IIdentityProvider, devType []string, hostTypes []string,
 	resourceTypes []string,
 	providers []string, brands []string, cloudEnv string,
 	rangeObjs []db.IStandaloneModel,
 	policyResult rbacutils.SPolicyResult,
 ) *sqlchemy.SQuery {
 	hq := HostManager.Query()
-	if scope == rbacutils.ScopeDomain {
+	if scope == rbacscope.ScopeDomain {
 		hq = hq.Filter(sqlchemy.Equals(hq.Field("domain_id"), ownerId.GetProjectDomainId()))
 	}
 	hq = db.ObjectIdQueryWithPolicyResult(hq, HostManager, policyResult)
@@ -563,7 +606,7 @@ type IsolatedDeviceCountStat struct {
 }
 
 func (manager *SIsolatedDeviceManager) totalCount(
-	scope rbacutils.TRbacScope,
+	scope rbacscope.TRbacScope,
 	ownerId mcclient.IIdentityProvider,
 	devType,
 	hostTypes []string,
@@ -589,7 +632,7 @@ func (manager *SIsolatedDeviceManager) totalCount(
 }
 
 func (manager *SIsolatedDeviceManager) TotalCount(
-	scope rbacutils.TRbacScope,
+	scope rbacscope.TRbacScope,
 	ownerId mcclient.IIdentityProvider,
 	hostType []string,
 	resourceTypes []string,
@@ -627,6 +670,7 @@ func (self *SIsolatedDevice) getDesc() *api.IsolatedDeviceJsonDesc {
 		Addr:           self.Addr,
 		VendorDeviceId: self.VendorDeviceId,
 		Vendor:         self.getVendor(),
+		NetworkIndex:   self.NetworkIndex,
 	}
 }
 
@@ -813,22 +857,22 @@ func (manager *SIsolatedDeviceManager) FilterByUniqValues(q *sqlchemy.SQuery, va
 	return q
 }
 
-func (manager *SIsolatedDeviceManager) NamespaceScope() rbacutils.TRbacScope {
+func (manager *SIsolatedDeviceManager) NamespaceScope() rbacscope.TRbacScope {
 	if consts.IsDomainizedNamespace() {
-		return rbacutils.ScopeDomain
+		return rbacscope.ScopeDomain
 	} else {
-		return rbacutils.ScopeSystem
+		return rbacscope.ScopeSystem
 	}
 }
 
-func (manager *SIsolatedDeviceManager) ResourceScope() rbacutils.TRbacScope {
-	return rbacutils.ScopeDomain
+func (manager *SIsolatedDeviceManager) ResourceScope() rbacscope.TRbacScope {
+	return rbacscope.ScopeDomain
 }
 
-func (manager *SIsolatedDeviceManager) FilterByOwner(q *sqlchemy.SQuery, owner mcclient.IIdentityProvider, scope rbacutils.TRbacScope) *sqlchemy.SQuery {
+func (manager *SIsolatedDeviceManager) FilterByOwner(q *sqlchemy.SQuery, owner mcclient.IIdentityProvider, scope rbacscope.TRbacScope) *sqlchemy.SQuery {
 	if owner != nil {
 		switch scope {
-		case rbacutils.ScopeProject, rbacutils.ScopeDomain:
+		case rbacscope.ScopeProject, rbacscope.ScopeDomain:
 			hostsQ := HostManager.Query("id")
 			hostsQ = HostManager.FilterByOwner(hostsQ, owner, scope)
 			hosts := hostsQ.SubQuery()
@@ -848,4 +892,12 @@ func (model *SIsolatedDevice) GetOwnerId() mcclient.IIdentityProvider {
 		return host.GetOwnerId()
 	}
 	return nil
+}
+
+func (model *SIsolatedDevice) SetNetworkIndex(idx int8) error {
+	_, err := db.Update(model, func() error {
+		model.NetworkIndex = idx
+		return nil
+	})
+	return err
 }

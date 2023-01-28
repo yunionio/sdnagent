@@ -16,10 +16,12 @@ package appsrv
 
 import (
 	"bufio"
+	"bytes"
 	"context"
 	"crypto/sha1"
 	"encoding/base64"
 	"fmt"
+	"io/ioutil"
 	"math/rand"
 	"net"
 	"net/http"
@@ -32,16 +34,16 @@ import (
 
 	"yunion.io/x/jsonutils"
 	"yunion.io/x/log"
+	"yunion.io/x/pkg/appctx"
+	"yunion.io/x/pkg/errors"
 	"yunion.io/x/pkg/trace"
+	"yunion.io/x/pkg/util/httputils"
 	"yunion.io/x/pkg/util/signalutils"
 	"yunion.io/x/pkg/utils"
 
-	"yunion.io/x/onecloud/pkg/appctx"
 	"yunion.io/x/onecloud/pkg/httperrors"
-	"yunion.io/x/onecloud/pkg/i18n"
 	"yunion.io/x/onecloud/pkg/proxy"
 	"yunion.io/x/onecloud/pkg/util/ctx"
-	"yunion.io/x/onecloud/pkg/util/httputils"
 )
 
 type Application struct {
@@ -67,6 +69,8 @@ type Application struct {
 	idleConnsClosed chan struct{}
 	httpServer      *http.Server
 	slaveHttpServer *http.Server
+
+	exception func(method, path string, body jsonutils.JSONObject, err error)
 
 	isTLS bool
 }
@@ -119,6 +123,11 @@ func NewApplication(name string, connMax int, db bool) *Application {
 	return &app
 }
 
+func (self *Application) OnException(exception func(method, path string, body jsonutils.JSONObject, err error)) *Application {
+	self.exception = exception
+	return self
+}
+
 func SplitPath(path string) []string {
 	ret := make([]string, 0)
 	for _, seg := range strings.Split(path, "/") {
@@ -150,9 +159,24 @@ func (app *Application) getRoot(method string) *RadixNode {
 }
 
 func (app *Application) AddReverseProxyHandler(prefix string, ef *proxy.SEndpointFactory, m proxy.RequestManipulator) {
+	app.AddReverseProxyHandlerWithCallbackConfig(prefix, ef, m,
+		func(method string, hi *SHandlerInfo) *SHandlerInfo {
+			return hi
+		},
+	)
+}
+
+func (app *Application) AddReverseProxyHandlerWithCallbackConfig(prefix string, ef *proxy.SEndpointFactory, m proxy.RequestManipulator, confCb func(string, *SHandlerInfo) *SHandlerInfo) {
 	handler := proxy.NewHTTPReverseProxy(ef, m).ServeHTTP
 	for _, method := range []string{"GET", "HEAD", "POST", "PUT", "DELETE", "PATCH", "OPTIONS"} {
-		app.AddHandler(method, prefix, handler)
+		hi := &SHandlerInfo{}
+		hi = confCb(method, hi)
+		if hi != nil {
+			hi.SetMethod(method)
+			hi.SetPath(prefix)
+			hi.SetHandler(handler)
+			app.AddHandler3(hi)
+		}
 	}
 }
 
@@ -180,6 +204,12 @@ func (app *Application) AddHandler3(hi *SHandlerInfo) *SHandlerInfo {
 type loggingResponseWriter struct {
 	http.ResponseWriter
 	status int
+	data   []byte
+}
+
+func (lrw *loggingResponseWriter) Write(data []byte) (int, error) {
+	lrw.data = data
+	return lrw.ResponseWriter.Write(data)
 }
 
 func (lrw *loggingResponseWriter) Hijack() (rwc net.Conn, buf *bufio.ReadWriter, err error) {
@@ -213,7 +243,7 @@ func (app *Application) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	// log.Printf("defaultHandler %s %s", r.Method, r.URL.Path)
 	rid := genRequestId(w, r)
 	w.Header().Set("X-Request-Host-Id", app.hostId)
-	lrw := &loggingResponseWriter{w, http.StatusOK}
+	lrw := &loggingResponseWriter{ResponseWriter: w, status: http.StatusOK, data: []byte{}}
 	start := time.Now()
 	hi, params := app.defaultHandle(lrw, r, rid)
 	if hi == nil {
@@ -226,6 +256,9 @@ func (app *Application) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		counter = &hi.counter4XX
 	} else {
 		counter = &hi.counter5XX
+		if app.exception != nil {
+			app.exception(r.Method, r.URL.String(), params.Body, errors.Errorf(string(lrw.data)))
+		}
 	}
 	duration := float64(time.Since(start).Nanoseconds()) / 1000000
 	counter.hit += 1
@@ -349,7 +382,7 @@ func (app *Application) defaultHandle(w http.ResponseWriter, r *http.Request, ri
 			if task.cancel != nil {
 				defer task.cancel()
 			}
-			task.ctx = i18n.WithRequestLang(task.ctx, r)
+			task.ctx = appctx.WithRequestLang(task.ctx, r)
 			session := hand.workerMan
 			if session == nil {
 				if r.Method == "GET" || r.Method == "HEAD" {
@@ -361,6 +394,11 @@ func (app *Application) defaultHandle(w http.ResponseWriter, r *http.Request, ri
 			task.appParams = hand.GetAppParams(params, segs)
 			task.appParams.Request = r
 			task.appParams.Response = w
+			if r.Body != nil && r.ContentLength > 0 && getContentType(r) == ContentTypeJson {
+				data, _ := ioutil.ReadAll(r.Body)
+				task.appParams.Body, _ = jsonutils.Parse(data)
+				r.Body = ioutil.NopCloser(bytes.NewBuffer(data))
+			}
 			session.Run(
 				task,
 				currentWorker,
@@ -382,11 +420,11 @@ func (app *Application) defaultHandle(w http.ResponseWriter, r *http.Request, ri
 			task.fw.closeChannels()
 			return hand, task.appParams
 		} else {
-			ctx := i18n.WithRequestLang(context.TODO(), r)
+			ctx := appctx.WithRequestLang(context.TODO(), r)
 			httperrors.InternalServerError(ctx, w, "Invalid handler %s", r.URL)
 		}
 	} else if !isCors {
-		ctx := i18n.WithRequestLang(context.TODO(), r)
+		ctx := appctx.WithRequestLang(context.TODO(), r)
 		httperrors.NotFoundError(ctx, w, "Handler not found")
 	}
 	return nil, nil
@@ -405,6 +443,7 @@ func (app *Application) addDefaultHandlers() {
 	app.AddDefaultHandler("POST", "/ping", PingHandler, "ping")
 	app.AddDefaultHandler("GET", "/ping", PingHandler, "ping")
 	app.AddDefaultHandler("GET", "/worker_stats", WorkerStatsHandler, "worker_stats")
+	app.AddDefaultHandler("GET", "/process_stats", ProcessStatsHandler, "process_stats")
 }
 
 func timeoutHandle(h http.Handler) http.HandlerFunc {

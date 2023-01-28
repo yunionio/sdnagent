@@ -24,6 +24,8 @@ import (
 	"yunion.io/x/log"
 	"yunion.io/x/pkg/errors"
 	"yunion.io/x/pkg/util/compare"
+	"yunion.io/x/pkg/util/rand"
+	"yunion.io/x/pkg/util/rbacscope"
 	"yunion.io/x/sqlchemy"
 
 	"yunion.io/x/onecloud/pkg/apis"
@@ -32,10 +34,9 @@ import (
 	"yunion.io/x/onecloud/pkg/cloudcommon/db/lockman"
 	"yunion.io/x/onecloud/pkg/cloudcommon/db/taskman"
 	"yunion.io/x/onecloud/pkg/cloudcommon/notifyclient"
+	"yunion.io/x/onecloud/pkg/compute/options"
 	"yunion.io/x/onecloud/pkg/httperrors"
 	"yunion.io/x/onecloud/pkg/mcclient"
-	"yunion.io/x/onecloud/pkg/util/rand"
-	"yunion.io/x/onecloud/pkg/util/rbacutils"
 	"yunion.io/x/onecloud/pkg/util/stringutils2"
 )
 
@@ -85,8 +86,8 @@ func (self *SSecurityGroupCache) GetOwnerId() mcclient.IIdentityProvider {
 	return &db.SOwnerId{DomainId: sec.DomainId, ProjectId: sec.ProjectId}
 }
 
-func (manager *SSecurityGroupCacheManager) ResourceScope() rbacutils.TRbacScope {
-	return rbacutils.ScopeProject
+func (manager *SSecurityGroupCacheManager) ResourceScope() rbacscope.TRbacScope {
+	return rbacscope.ScopeProject
 }
 
 // 安全组缓存列表
@@ -183,16 +184,21 @@ func (self *SSecurityGroupCache) GetIRegion(ctx context.Context) (cloudprovider.
 	return provider.GetIRegionById(region.ExternalId)
 }
 
-func (manager *SSecurityGroupCacheManager) FilterByOwner(q *sqlchemy.SQuery, userCred mcclient.IIdentityProvider, scope rbacutils.TRbacScope) *sqlchemy.SQuery {
+func (sgc *SSecurityGroupCache) IsSupportPeerSecgroup() bool {
+	driver := GetRegionDriver(sgc.GetProviderName())
+	return driver.IsSupportPeerSecgroup()
+}
+
+func (manager *SSecurityGroupCacheManager) FilterByOwner(q *sqlchemy.SQuery, userCred mcclient.IIdentityProvider, scope rbacscope.TRbacScope) *sqlchemy.SQuery {
 	if userCred != nil {
 		sq := SecurityGroupManager.Query("id")
 		switch scope {
-		case rbacutils.ScopeProject:
+		case rbacscope.ScopeProject:
 			if len(userCred.GetProjectId()) > 0 {
 				sq = sq.Equals("tenant_id", userCred.GetProjectId())
 				return q.In("secgroup_id", sq)
 			}
-		case rbacutils.ScopeDomain:
+		case rbacscope.ScopeDomain:
 			if len(userCred.GetProjectDomainId()) > 0 {
 				sq = sq.Equals("domain_id", userCred.GetProjectDomainId())
 				return q.In("secgroup_id", sq)
@@ -367,7 +373,9 @@ func (self *SSecurityGroupCache) GetSecgroup() (*SSecurityGroup, error) {
 func (self *SSecurityGroupCache) SyncBaseInfo(ctx context.Context, userCred mcclient.TokenCredential, ext cloudprovider.ICloudSecurityGroup) error {
 	_, err := db.Update(self, func() error {
 		self.Status = api.SECGROUP_CACHE_STATUS_READY
-		self.Name = ext.GetName()
+		if options.Options.EnableSyncName {
+			self.Name = ext.GetName()
+		}
 		self.Description = ext.GetDescription()
 		self.ExternalProjectId = ext.GetProjectId()
 		references, err := ext.GetReferences()
@@ -770,7 +778,7 @@ func (self *SSecurityGroupCache) CreateISecurityGroup(ctx context.Context) (clou
 	return iSecgroup, nil
 }
 
-func (self *SSecurityGroupCache) GetSecuritRuleSet(ctx context.Context) (cloudprovider.SecurityRuleSet, []SSecurityGroupCache, error) {
+func (self *SSecurityGroupCache) getSecurityRuleSet(ctx context.Context) (cloudprovider.SecurityRuleSet, []SSecurityGroupCache, error) {
 	secgroup, err := self.GetSecgroup()
 	if err != nil {
 		return nil, nil, errors.Wrapf(err, "GetSecgroup")
@@ -807,7 +815,7 @@ func (self *SSecurityGroupCache) convertRules(ctx context.Context, rules []SSecu
 		if err != nil {
 			return nil, nil, errors.Wrapf(err, "toRule")
 		}
-		peerId := ""
+		peerExtId := ""
 		if len(rules[i].PeerSecgroupId) > 0 {
 			_peerSecgroup, err := SecurityGroupManager.FetchById(rules[i].PeerSecgroupId)
 			if err != nil {
@@ -821,13 +829,13 @@ func (self *SSecurityGroupCache) convertRules(ctx context.Context, rules []SSecu
 
 			for _, cache := range peerCaches {
 				if cache.ManagerId == self.ManagerId && cache.VpcId == self.VpcId && len(cache.ExternalId) > 0 && (!driver.IsPeerSecgroupWithSameProject() || cache.ExternalProjectId == self.ExternalProjectId) {
-					peerId = cache.ExternalId
+					peerExtId = cache.ExternalId
 					break
 				}
 			}
 
-			if len(peerId) == 0 {
-				cache, err := SecurityGroupCacheManager.newCache(context.TODO(), peerSecgroup.Id, peerSecgroup.Name, self.VpcId, self.CloudregionId, self.ManagerId, self.ExternalProjectId)
+			if len(peerExtId) == 0 {
+				cache, err := SecurityGroupCacheManager.newCache(ctx, peerSecgroup.Id, peerSecgroup.Name, self.VpcId, self.CloudregionId, self.ManagerId, self.ExternalProjectId)
 				if err != nil {
 					return nil, nil, errors.Wrapf(err, "SecurityGroupCacheManager.newCache")
 				}
@@ -835,11 +843,15 @@ func (self *SSecurityGroupCache) convertRules(ctx context.Context, rules []SSecu
 				if err != nil {
 					return nil, nil, errors.Wrapf(err, "cache.CreateISecurityGroup")
 				}
-				peerId = iSecgroup.GetGlobalId()
+				peerExtId = iSecgroup.GetGlobalId()
 				caches = append(caches, *cache)
 			}
 		}
-		ruleSet = append(ruleSet, cloudprovider.SecurityRule{SecurityRule: *rule, ExternalId: rules[i].Id, PeerSecgroupId: peerId})
+		ruleSet = append(ruleSet, cloudprovider.SecurityRule{
+			SecurityRule:   *rule,
+			ExternalId:     rules[i].Id,
+			PeerSecgroupId: peerExtId,
+		})
 	}
 	return ruleSet, caches, nil
 }
@@ -862,9 +874,9 @@ func (self *SSecurityGroupCache) SyncRules(ctx context.Context, skipSyncRule boo
 		return errors.Wrapf(err, "iSecgroup.GetRules")
 	}
 
-	localRules, caches, err := self.GetSecuritRuleSet(ctx)
+	localRules, caches, err := self.getSecurityRuleSet(ctx)
 	if err != nil {
-		return errors.Wrapf(err, "GetSecuritRuleSet")
+		return errors.Wrapf(err, "getSecurityRuleSet")
 	}
 
 	src := cloudprovider.NewSecRuleInfo(GetRegionDriver(api.CLOUD_PROVIDER_ONECLOUD))
