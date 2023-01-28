@@ -413,6 +413,9 @@ type HostCreateInput struct {
 	// 新建带IPMI信息的物理机时不进行IPMI信息探测
 	NoProbe *bool `json:"no_probe"`
 
+	// 物理机不带 BMC 控制器
+	NoBMC bool `json:"no_bmc"`
+
 	// host uuid
 	Uuid string `json:"uuid"`
 
@@ -454,6 +457,7 @@ type HostUpdateInput struct {
 	HostAccessAttributes
 	HostSizeAttributes
 	HostIpmiAttributes
+	HostnameInput
 
 	// IPMI info
 	IpmiInfo jsonutils.JSONObject `json:"ipmi_info"`

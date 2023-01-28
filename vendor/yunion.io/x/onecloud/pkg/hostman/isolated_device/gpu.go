@@ -24,10 +24,12 @@ import (
 
 	"yunion.io/x/jsonutils"
 	"yunion.io/x/log"
+	"yunion.io/x/pkg/errors"
 	"yunion.io/x/pkg/util/sets"
 	"yunion.io/x/pkg/utils"
 
 	api "yunion.io/x/onecloud/pkg/apis/compute"
+	"yunion.io/x/onecloud/pkg/hostman/guestman/desc"
 	o "yunion.io/x/onecloud/pkg/hostman/options"
 	"yunion.io/x/onecloud/pkg/util/fileutils2"
 	"yunion.io/x/onecloud/pkg/util/procutils"
@@ -156,31 +158,34 @@ func (dev *sGPUBaseDevice) DetectByAddr() error {
 	return err
 }
 
-func (dev *sGPUBaseDevice) CustomProbe() error {
-	// vfio kernel driver check
-	for _, driver := range []string{"vfio", "vfio_iommu_type1", "vfio-pci"} {
-		if err := procutils.NewRemoteCommandAsFarAsPossible("modprobe", driver).Run(); err != nil {
-			return fmt.Errorf("modprobe %s: %v", driver, err)
+func (dev *sGPUBaseDevice) CustomProbe(idx int) error {
+	// check environments on first probe
+	if idx == 0 {
+		// vfio kernel driver check
+		for _, driver := range []string{"vfio", "vfio_iommu_type1", "vfio-pci"} {
+			if err := procutils.NewRemoteCommandAsFarAsPossible("modprobe", driver).Run(); err != nil {
+				return fmt.Errorf("modprobe %s: %v", driver, err)
+			}
 		}
-	}
-	// grub check
-	grubCmdline, err := fileutils2.FileGetContents("/proc/cmdline")
-	if err != nil {
-		return err
-	}
-	grubCmdline = strings.TrimSpace(grubCmdline)
-	params := sets.NewString(strings.Split(grubCmdline, " ")...)
-	if !params.IsSuperset(sets.NewString("intel_iommu=on",
-		"vfio_iommu_type1.allow_unsafe_interrupts=1")) {
-		return fmt.Errorf("Some GRUB_CMDLINE iommu parameters are missing")
-	}
-	isNouveauBlacklisted := false
-	if params.IsSuperset(sets.NewString("rdblacklist=nouveau", "nouveau.modeset=0")) ||
-		params.IsSuperset(sets.NewString("rd.driver.blacklist=nouveau", "nouveau.modeset=0")) {
-		isNouveauBlacklisted = true
-	}
-	if !isNouveauBlacklisted {
-		return fmt.Errorf("Some GRUB_CMDLINE nouveau_blacklisted parameters are missing")
+		// grub check
+		grubCmdline, err := fileutils2.FileGetContents("/proc/cmdline")
+		if err != nil {
+			return err
+		}
+		grubCmdline = strings.TrimSpace(grubCmdline)
+		params := sets.NewString(strings.Split(grubCmdline, " ")...)
+		if !params.IsSuperset(sets.NewString("intel_iommu=on",
+			"vfio_iommu_type1.allow_unsafe_interrupts=1")) {
+			return fmt.Errorf("Some GRUB_CMDLINE iommu parameters are missing")
+		}
+		isNouveauBlacklisted := false
+		if params.IsSuperset(sets.NewString("rdblacklist=nouveau", "nouveau.modeset=0")) ||
+			params.IsSuperset(sets.NewString("rd.driver.blacklist=nouveau", "nouveau.modeset=0")) {
+			isNouveauBlacklisted = true
+		}
+		if !isNouveauBlacklisted {
+			return fmt.Errorf("Some GRUB_CMDLINE nouveau_blacklisted parameters are missing")
+		}
 	}
 	driver, err := dev.GetKernelDriver()
 	if err != nil {
@@ -197,42 +202,60 @@ func (dev *sGPUBaseDevice) CustomProbe() error {
 	return nil
 }
 
-func (dev *sGPUBaseDevice) GetHotPlugOptions() ([]*HotPlugOption, error) {
-	return nil, fmt.Errorf("Not implemented")
+func (dev *sGPUBaseDevice) GetQemuId() string {
+	return fmt.Sprintf("dev_%s", strings.ReplaceAll(dev.GetAddr(), ":", "_"))
 }
 
-func (dev *sGPUBaseDevice) GetHotUnplugOptions() ([]*HotUnplugOption, error) {
-	return nil, fmt.Errorf("Not implemented")
+func (dev *sGPUBaseDevice) GetHotPlugOptions(isolatedDev *desc.SGuestIsolatedDevice) ([]*HotPlugOption, error) {
+	ret := make([]*HotPlugOption, 0)
+
+	var masterDevOpt *HotPlugOption
+	for i := 0; i < len(isolatedDev.VfioDevs); i++ {
+		cmd := isolatedDev.VfioDevs[i].HostAddr
+		if optCmd := isolatedDev.VfioDevs[i].OptionsStr(); len(optCmd) > 0 {
+			cmd += fmt.Sprintf(",%s", optCmd)
+		}
+		opts := map[string]string{
+			"host": cmd,
+			"id":   isolatedDev.VfioDevs[i].Id,
+		}
+		if isolatedDev.VfioDevs[i].XVga {
+			opts["x-vga"] = "on"
+		}
+		devOpt := &HotPlugOption{
+			Device:  isolatedDev.VfioDevs[i].DevType,
+			Options: opts,
+		}
+		if isolatedDev.VfioDevs[i].Function == 0 {
+			masterDevOpt = devOpt
+		} else {
+			ret = append(ret, devOpt)
+		}
+	}
+	// if PCI slot function 0 already assigned, qemu will reject hotplug function
+	// so put function 0 at the enda
+	if masterDevOpt == nil {
+		return nil, errors.Errorf("GPU Device no function 0 found")
+	}
+	ret = append(ret, masterDevOpt)
+	return ret, nil
 }
 
-type sGPUVGADevice struct {
-	*sGPUBaseDevice
-}
+func (dev *sGPUBaseDevice) GetHotUnplugOptions(isolatedDev *desc.SGuestIsolatedDevice) ([]*HotUnplugOption, error) {
+	if len(isolatedDev.VfioDevs) == 0 {
+		return nil, errors.Errorf("device %s no pci ids", isolatedDev.Id)
+	}
 
-func (gpu *sGPUVGADevice) GetDeviceType() string {
-	return api.GPU_VGA_TYPE
-}
-
-func (gpu *sGPUVGADevice) GetVGACmd() string {
-	return " -vga none"
+	return []*HotUnplugOption{
+		{
+			Id: isolatedDev.VfioDevs[0].Id,
+		},
+	}, nil
 }
 
 func getGuestAddr(index int) string {
 	vAddr := fmt.Sprintf("0x%x", 21+index) // from 0x15 above
 	return vAddr
-}
-
-func (gpu *sGPUVGADevice) GetPassthroughCmd(index int) string {
-	// vAddr := getGuestAddr(index)
-	return fmt.Sprintf(" -device vfio-pci,host=%s,multifunction=on,x-vga=on", gpu.GetAddr())
-}
-
-func (gpu *sGPUVGADevice) CustomProbe() error {
-	_, err := bashOutput(`cat /boot/cfg-$(uname -r) | grep -E "^CONFIG_VFIO_PCI_VGA=y"`)
-	if err != nil {
-		return fmt.Errorf("CONFIG_VFIO_PCI_VGA=y needs to be set in kernel compiling parameters")
-	}
-	return nil
 }
 
 type sGPUHPCDevice struct {
@@ -327,7 +350,7 @@ func (d *PCIDevice) IsBootVGA() (bool, error) {
 			return false, err
 		}
 	}
-	paths := ParseOutput(output)
+	paths := ParseOutput(output, true)
 	for _, p := range paths {
 		if strings.Contains(p, addr) && !strings.Contains(p, "No such file or directory") {
 			if content, err := fileutils2.FileGetContents(p); err != nil {

@@ -14,15 +14,21 @@
 
 package compute
 
-import "yunion.io/x/onecloud/pkg/apis"
+import (
+	"yunion.io/x/cloudmux/pkg/apis/compute"
+
+	"yunion.io/x/onecloud/pkg/apis"
+)
 
 const (
-	KAFKA_STATUS_AVAILABLE     = "available"
-	KAFKA_STATUS_UNAVAILABLE   = "unavailable"
-	KAFKA_STATUS_CREATING      = "creating"
-	KAFKA_STATUS_DELETING      = "deleting"
+	KAFKA_STATUS_AVAILABLE     = compute.KAFKA_STATUS_AVAILABLE
+	KAFKA_STATUS_UNAVAILABLE   = compute.KAFKA_STATUS_UNAVAILABLE
+	KAFKA_STATUS_CREATING      = compute.KAFKA_STATUS_CREATING
+	KAFKA_STATUS_DELETING      = compute.KAFKA_STATUS_DELETING
 	KAFKA_STATUS_DELETE_FAILED = "delete_failed"
-	KAFKA_STATUS_UNKNOWN       = "unknown"
+	KAFKA_STATUS_UNKNOWN       = compute.KAFKA_STATUS_UNKNOWN
+	KAFKA_UPDATE_TAGS          = "update_tags"
+	KAFKA_UPDATE_TAGS_FAILED   = "update_tags_fail"
 )
 
 type KafkaCreateInput struct {

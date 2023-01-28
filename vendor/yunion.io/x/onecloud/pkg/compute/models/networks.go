@@ -18,7 +18,6 @@ import (
 	"context"
 	"database/sql"
 	"fmt"
-	"net"
 	"sort"
 	"strconv"
 	"strings"
@@ -29,8 +28,11 @@ import (
 	"yunion.io/x/log"
 	"yunion.io/x/pkg/errors"
 	"yunion.io/x/pkg/tristate"
+	"yunion.io/x/pkg/util/billing"
 	"yunion.io/x/pkg/util/compare"
 	"yunion.io/x/pkg/util/netutils"
+	"yunion.io/x/pkg/util/rand"
+	"yunion.io/x/pkg/util/rbacscope"
 	"yunion.io/x/pkg/util/regutils"
 	"yunion.io/x/pkg/utils"
 	"yunion.io/x/sqlchemy"
@@ -48,9 +50,7 @@ import (
 	"yunion.io/x/onecloud/pkg/httperrors"
 	"yunion.io/x/onecloud/pkg/mcclient"
 	"yunion.io/x/onecloud/pkg/mcclient/auth"
-	"yunion.io/x/onecloud/pkg/util/billing"
 	"yunion.io/x/onecloud/pkg/util/logclient"
-	"yunion.io/x/onecloud/pkg/util/rand"
 	"yunion.io/x/onecloud/pkg/util/rbacutils"
 	"yunion.io/x/onecloud/pkg/util/stringutils2"
 )
@@ -191,66 +191,6 @@ func (self *SNetwork) ValidateDeleteCondition(ctx context.Context, data *api.Net
 	return self.SSharableVirtualResourceBase.ValidateDeleteCondition(ctx, nil)
 }
 
-/*验证elb network可用，并返回关联的region, zone,vpc, wire*/
-func (self *SNetwork) ValidateElbNetwork(ipAddr net.IP) (*SCloudregion, *SZone, *SVpc, *SWire, error) {
-	// 验证IP Address可用
-	if ipAddr != nil {
-		ipS := ipAddr.String()
-		ip, err := netutils.NewIPV4Addr(ipS)
-		if err != nil {
-			return nil, nil, nil, nil, err
-		}
-		if !self.IsAddressInRange(ip) {
-			return nil, nil, nil, nil, httperrors.NewInputParameterError("address %s is not in the range of network %s(%s)",
-				ipS, self.Name, self.Id)
-		}
-
-		used, err := self.isAddressUsed(ipS)
-		if err != nil {
-			return nil, nil, nil, nil, httperrors.NewInternalServerError("isAddressUsed fail %s", err)
-		}
-		if used {
-			return nil, nil, nil, nil, httperrors.NewInputParameterError("address %s is already occupied", ipS)
-		}
-	}
-
-	// 验证网络存在剩余地址空间
-	freeCnt, err := self.getFreeAddressCount()
-	if err != nil {
-		return nil, nil, nil, nil, httperrors.NewInternalServerError("getFreeAddressCount fail %s", err)
-	}
-	if freeCnt <= 0 {
-		return nil, nil, nil, nil, httperrors.NewNotAcceptableError("network %s(%s) has no free addresses",
-			self.Name, self.Id)
-	}
-
-	// 验证网络可用
-	wire, _ := self.GetWire()
-	if wire == nil {
-		return nil, nil, nil, nil, fmt.Errorf("getting wire failed")
-	}
-
-	vpc, err := wire.GetVpc()
-	if err != nil {
-		return nil, nil, nil, nil, errors.Wrapf(err, "GetVpc")
-	}
-
-	var zone *SZone
-	if len(wire.ZoneId) > 0 {
-		zone, _ = wire.GetZone()
-		if zone == nil {
-			return nil, nil, nil, nil, fmt.Errorf("getting zone failed")
-		}
-	}
-
-	region, _ := wire.GetRegion()
-	if region == nil {
-		return nil, nil, nil, nil, fmt.Errorf("getting region failed")
-	}
-
-	return region, zone, vpc, wire, nil
-}
-
 func (self *SNetwork) GetGuestnetworks() ([]SGuestnetwork, error) {
 	q := GuestnetworkManager.Query().Equals("network_id", self.Id)
 	gns := []SGuestnetwork{}
@@ -317,7 +257,7 @@ func (manager *SNetworkManager) GetOrCreateClassicNetwork(ctx context.Context, w
 func (self *SNetwork) GetUsedAddresses() map[string]bool {
 	used := make(map[string]bool)
 
-	q := self.getUsedAddressQuery(nil, rbacutils.ScopeSystem, true)
+	q := self.getUsedAddressQuery(nil, rbacscope.ScopeSystem, true)
 	results, err := q.AllStringMap()
 	if err != nil {
 		log.Errorf("GetUsedAddresses fail %s", err)
@@ -593,7 +533,7 @@ func (self *SNetwork) IsExitNetwork() bool {
 }
 
 func (manager *SNetworkManager) getNetworksByWire(wire *SWire) ([]SNetwork, error) {
-	return wire.getNetworks(nil, rbacutils.ScopeNone)
+	return wire.getNetworks(nil, rbacscope.ScopeNone)
 	/* nets := make([]SNetwork, 0)
 	q := manager.Query().Equals("wire_id", wire.Id)
 	err := db.FetchModelObjects(manager, q, &nets)
@@ -696,7 +636,13 @@ func (self *SNetwork) syncRemoveCloudNetwork(ctx context.Context, userCred mccli
 func (self *SNetwork) SyncWithCloudNetwork(ctx context.Context, userCred mcclient.TokenCredential, extNet cloudprovider.ICloudNetwork, syncOwnerId mcclient.IIdentityProvider, provider *SCloudprovider) error {
 	vpc, _ := self.GetVpc()
 	diff, err := db.UpdateWithLock(ctx, self, func() error {
-		extNet.Refresh()
+		if options.Options.EnableSyncName {
+			newName, _ := db.GenerateAlterName(self, extNet.GetName())
+			if len(newName) > 0 {
+				self.Name = newName
+			}
+		}
+
 		self.Status = extNet.GetStatus()
 		self.GuestIpStart = extNet.GetIpStart()
 		self.GuestIpEnd = extNet.GetIpEnd()
@@ -725,14 +671,14 @@ func (self *SNetwork) SyncWithCloudNetwork(ctx context.Context, userCred mcclien
 	}
 
 	//syncVirtualResourceMetadata(ctx, userCred, self, extNet)
-	SyncCloudProject(userCred, self, syncOwnerId, extNet, vpc.ManagerId)
+	SyncCloudProject(ctx, userCred, self, syncOwnerId, extNet, vpc.ManagerId)
 
 	if provider != nil {
 		shareInfo := provider.getAccountShareInfo()
-		if utils.IsInStringArray(provider.Provider, api.PRIVATE_CLOUD_PROVIDERS) && extNet.GetPublicScope() == rbacutils.ScopeNone {
+		if utils.IsInStringArray(provider.Provider, api.PRIVATE_CLOUD_PROVIDERS) && extNet.GetPublicScope() == rbacscope.ScopeNone {
 			shareInfo = apis.SAccountShareInfo{
 				IsPublic:    false,
-				PublicScope: rbacutils.ScopeNone,
+				PublicScope: rbacscope.ScopeNone,
 			}
 		}
 		self.SyncShareState(ctx, userCred, shareInfo)
@@ -784,14 +730,14 @@ func (manager *SNetworkManager) newFromCloudNetwork(ctx context.Context, userCre
 
 	vpc, _ := wire.GetVpc()
 	syncVirtualResourceMetadata(ctx, userCred, &net, extNet)
-	SyncCloudProject(userCred, &net, syncOwnerId, extNet, vpc.ManagerId)
+	SyncCloudProject(ctx, userCred, &net, syncOwnerId, extNet, vpc.ManagerId)
 
 	if provider != nil {
 		shareInfo := provider.getAccountShareInfo()
-		if utils.IsInStringArray(provider.Provider, api.PRIVATE_CLOUD_PROVIDERS) && extNet.GetPublicScope() == rbacutils.ScopeNone {
+		if utils.IsInStringArray(provider.Provider, api.PRIVATE_CLOUD_PROVIDERS) && extNet.GetPublicScope() == rbacscope.ScopeNone {
 			shareInfo = apis.SAccountShareInfo{
 				IsPublic:    false,
-				PublicScope: rbacutils.ScopeNone,
+				PublicScope: rbacscope.ScopeNone,
 			}
 		}
 		net.SyncShareState(ctx, userCred, shareInfo)
@@ -811,7 +757,7 @@ func (self *SNetwork) IsAddressInRange(address netutils.IPV4Addr) bool {
 }
 
 func (self *SNetwork) isAddressUsed(address string) (bool, error) {
-	q := self.getUsedAddressQuery(nil, rbacutils.ScopeSystem, true)
+	q := self.getUsedAddressQuery(nil, rbacscope.ScopeSystem, true)
 	q = q.Equals("ip_addr", address)
 	count, err := q.CountWithError()
 	if err != nil && errors.Cause(err) != sql.ErrNoRows {
@@ -874,7 +820,7 @@ func (manager *SNetworkManager) allNetworksQ(providers []string, brands []string
 }
 
 func (manager *SNetworkManager) totalPortCountQ(
-	scope rbacutils.TRbacScope,
+	scope rbacscope.TRbacScope,
 	userCred mcclient.IIdentityProvider,
 	providers []string,
 	brands []string,
@@ -884,10 +830,10 @@ func (manager *SNetworkManager) totalPortCountQ(
 ) *sqlchemy.SQuery {
 	q := manager.allNetworksQ(providers, brands, cloudEnv, rangeObjs)
 	switch scope {
-	case rbacutils.ScopeSystem:
-	case rbacutils.ScopeDomain:
+	case rbacscope.ScopeSystem:
+	case rbacscope.ScopeDomain:
 		q = q.Equals("domain_id", userCred.GetProjectDomainId())
-	case rbacutils.ScopeProject:
+	case rbacscope.ScopeProject:
 		q = q.Equals("tenant_id", userCred.GetProjectId())
 	}
 	q = db.ObjectIdQueryWithPolicyResult(q, manager, policyResult)
@@ -900,7 +846,7 @@ type NetworkPortStat struct {
 }
 
 func (manager *SNetworkManager) TotalPortCount(
-	scope rbacutils.TRbacScope,
+	scope rbacscope.TRbacScope,
 	userCred mcclient.IIdentityProvider,
 	providers []string, brands []string, cloudEnv string,
 	rangeObjs []db.IStandaloneModel,
@@ -1908,16 +1854,16 @@ func (self *SNetwork) CustomizeCreate(ctx context.Context, userCred mcclient.Tok
 	if !data.Contains("public_scope") {
 		if self.ServerType == api.NETWORK_TYPE_GUEST && !self.IsManaged() {
 			wire, _ := self.GetWire()
-			if db.IsAdminAllowPerform(ctx, userCred, self, "public") && ownerId.GetProjectDomainId() == userCred.GetProjectDomainId() && wire != nil && wire.IsPublic && wire.PublicScope == string(rbacutils.ScopeSystem) {
-				self.SetShare(rbacutils.ScopeSystem)
+			if db.IsAdminAllowPerform(ctx, userCred, self, "public") && ownerId.GetProjectDomainId() == userCred.GetProjectDomainId() && wire != nil && wire.IsPublic && wire.PublicScope == string(rbacscope.ScopeSystem) {
+				self.SetShare(rbacscope.ScopeSystem)
 			} else if db.IsDomainAllowPerform(ctx, userCred, self, "public") && ownerId.GetProjectId() == userCred.GetProjectId() && consts.GetNonDefaultDomainProjects() {
 				// only if non_default_domain_projects turned on, share to domain
-				self.SetShare(rbacutils.ScopeDomain)
+				self.SetShare(rbacscope.ScopeDomain)
 			} else {
-				self.SetShare(rbacutils.ScopeNone)
+				self.SetShare(rbacscope.ScopeNone)
 			}
 		} else {
-			self.SetShare(rbacutils.ScopeNone)
+			self.SetShare(rbacscope.ScopeNone)
 		}
 		data.(*jsonutils.JSONDict).Set("public_scope", jsonutils.NewString(self.PublicScope))
 	}
@@ -2851,7 +2797,7 @@ func (network *SNetwork) PerformChangeOwner(ctx context.Context, userCred mcclie
 	return ret, nil
 }
 
-func (network *SNetwork) getUsedAddressQuery(owner mcclient.IIdentityProvider, scope rbacutils.TRbacScope, addrOnly bool) *sqlchemy.SQuery {
+func (network *SNetwork) getUsedAddressQuery(owner mcclient.IIdentityProvider, scope rbacscope.TRbacScope, addrOnly bool) *sqlchemy.SQuery {
 	var (
 		args = &usedAddressQueryArgs{
 			network:  network,
@@ -2889,7 +2835,7 @@ func (network *SNetwork) GetDetailsAddresses(ctx context.Context, userCred mccli
 	output := api.GetNetworkAddressesOutput{}
 
 	allowScope, _ := policy.PolicyManager.AllowScope(userCred, api.SERVICE_TYPE, network.KeywordPlural(), policy.PolicyActionGet, "addresses")
-	scope := rbacutils.String2ScopeDefault(input.Scope, allowScope)
+	scope := rbacscope.String2ScopeDefault(input.Scope, allowScope)
 	if scope.HigherThan(allowScope) {
 		return output, errors.Wrapf(httperrors.ErrNotSufficientPrivilege, "require %s allow %s", scope, allowScope)
 	}
@@ -2970,7 +2916,7 @@ func (manager *SNetworkManager) ListItemExportKeys(ctx context.Context,
 	return q, nil
 }
 
-func (manager *SNetworkManager) AllowScope(userCred mcclient.TokenCredential) rbacutils.TRbacScope {
+func (manager *SNetworkManager) AllowScope(userCred mcclient.TokenCredential) rbacscope.TRbacScope {
 	scope, _ := policy.PolicyManager.AllowScope(userCred, api.SERVICE_TYPE, NetworkManager.KeywordPlural(), policy.PolicyActionGet)
 	return scope
 }

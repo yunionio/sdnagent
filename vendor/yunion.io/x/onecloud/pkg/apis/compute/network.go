@@ -15,12 +15,14 @@
 package compute
 
 import (
+	"yunion.io/x/cloudmux/pkg/apis/compute"
+
 	"yunion.io/x/onecloud/pkg/apis"
 )
 
 const (
-	NETWORK_TYPE_VPC     = "vpc"
-	NETWORK_TYPE_CLASSIC = "classic"
+	NETWORK_TYPE_VPC     = compute.NETWORK_TYPE_VPC
+	NETWORK_TYPE_CLASSIC = compute.NETWORK_TYPE_CLASSIC
 )
 
 type WireResourceInput struct {
@@ -65,6 +67,14 @@ type NetworkFilterListBase struct {
 type NetworkFilterListInput struct {
 	WireFilterListInput
 	NetworkFilterListBase
+}
+
+type NetworkIpMacListInput struct {
+	apis.StandaloneAnonResourceListInput
+
+	NetworkId string   `json:"network_id"`
+	MacAddr   []string `json:"mac_addr"`
+	IpAddr    []string `json:"ip_addr"`
 }
 
 type NetworkListInput struct {
@@ -147,6 +157,14 @@ type NetworkResourceInfo struct {
 	WireId string `json:"wire_id"`
 
 	WireResourceInfo
+}
+
+type NetworkIpMacCreateInput struct {
+	apis.StandaloneAnonResourceCreateInput
+
+	NetworkId string `json:"network_id"`
+	MacAddr   string `json:"mac_addr"`
+	IpAddr    string `json:"ip_addr"`
 }
 
 type NetworkCreateInput struct {
@@ -278,6 +296,14 @@ type NetworkDetails struct {
 	Schedtags []SchedtagShortDescDetails `json:"schedtags"`
 }
 
+type NetworkIpMacDetails struct {
+	apis.StandaloneAnonResourceDetails
+
+	NetworkId string `json:"network_id"`
+	IpAddr    string `json:"ip_addr"`
+	MacAddr   string `json:"mac_addr"`
+}
+
 type NetworkReserveIpInput struct {
 	apis.Meta
 
@@ -343,6 +369,13 @@ type NetworkSyncInput struct {
 	apis.Meta
 }
 
+type NetworkIpMacUpdateInput struct {
+	apis.StandaloneAnonResourceBaseUpdateInput
+
+	MacAddr string `json:"mac_addr"`
+	IpAddr  string `json:"ip_addr"`
+}
+
 type NetworkUpdateInput struct {
 	apis.SharableVirtualResourceBaseUpdateInput
 
@@ -389,4 +422,9 @@ type NetworkSetBgpTypeInput struct {
 	// required: true
 	// example: ChinaTelecom, BGP, etc.
 	BgpType string `json:"bgp_type"`
+}
+
+type NetworkIpMacBatchCreateInput struct {
+	NetworkId string            `json:"network_id"`
+	IpMac     map[string]string `json:"ip_mac"`
 }

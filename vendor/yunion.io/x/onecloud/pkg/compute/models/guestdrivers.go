@@ -21,14 +21,14 @@ import (
 
 	"yunion.io/x/cloudmux/pkg/cloudprovider"
 	"yunion.io/x/jsonutils"
+	"yunion.io/x/pkg/util/billing"
+	"yunion.io/x/pkg/util/rbacscope"
 
 	api "yunion.io/x/onecloud/pkg/apis/compute"
 	"yunion.io/x/onecloud/pkg/cloudcommon/db/quotas"
 	"yunion.io/x/onecloud/pkg/cloudcommon/db/taskman"
 	guestdriver_types "yunion.io/x/onecloud/pkg/compute/guestdrivers/types"
 	"yunion.io/x/onecloud/pkg/mcclient"
-	"yunion.io/x/onecloud/pkg/util/billing"
-	"yunion.io/x/onecloud/pkg/util/rbacutils"
 )
 
 type IGuestScheduleDriver interface {
@@ -44,7 +44,7 @@ type IGuestDriver interface {
 
 	GetHypervisor() string
 	GetProvider() string
-	GetComputeQuotaKeys(scope rbacutils.TRbacScope, ownerId mcclient.IIdentityProvider, brand string) SComputeResourceKeys
+	GetComputeQuotaKeys(scope rbacscope.TRbacScope, ownerId mcclient.IIdentityProvider, brand string) SComputeResourceKeys
 
 	GetMaxVCpuCount() int
 	GetMaxVMemSizeGB() int
@@ -79,7 +79,7 @@ type IGuestDriver interface {
 
 	RequestGuestCreateAllDisks(ctx context.Context, guest *SGuest, task taskman.ITask) error
 
-	RequestGuestCreateInsertIso(ctx context.Context, imageId string, guest *SGuest, task taskman.ITask) error
+	RequestGuestCreateInsertIso(ctx context.Context, imageId string, bootIndex *int8, task taskman.ITask, guest *SGuest) error
 
 	StartGuestStopTask(guest *SGuest, ctx context.Context, userCred mcclient.TokenCredential, params *jsonutils.JSONDict, parentTaskId string) error
 	StartGuestResetTask(guest *SGuest, ctx context.Context, userCred mcclient.TokenCredential, isHard bool, parentTaskId string) error
@@ -177,6 +177,7 @@ type IGuestDriver interface {
 	RequestDeleteSnapshot(ctx context.Context, guest *SGuest, task taskman.ITask, params *jsonutils.JSONDict) error
 	RequestReloadDiskSnapshot(ctx context.Context, guest *SGuest, task taskman.ITask, params *jsonutils.JSONDict) error
 	RequestSyncToBackup(ctx context.Context, guest *SGuest, task taskman.ITask) error
+	RequestSlaveBlockStreamDisks(ctx context.Context, guest *SGuest, task taskman.ITask) error
 
 	IsSupportEip() bool
 	IsSupportPublicIp() bool
@@ -207,8 +208,8 @@ type IGuestDriver interface {
 	IsSupportLiveMigrate() bool
 	CheckMigrate(ctx context.Context, guest *SGuest, userCred mcclient.TokenCredential, input api.GuestMigrateInput) error
 	CheckLiveMigrate(ctx context.Context, guest *SGuest, userCred mcclient.TokenCredential, input api.GuestLiveMigrateInput) error
-	RequestMigrate(ctx context.Context, guest *SGuest, userCred mcclient.TokenCredential, data *jsonutils.JSONDict, task taskman.ITask) error
-	RequestLiveMigrate(ctx context.Context, guest *SGuest, userCred mcclient.TokenCredential, data *jsonutils.JSONDict, task taskman.ITask) error
+	RequestMigrate(ctx context.Context, guest *SGuest, userCred mcclient.TokenCredential, input api.GuestMigrateInput, task taskman.ITask) error
+	RequestLiveMigrate(ctx context.Context, guest *SGuest, userCred mcclient.TokenCredential, input api.GuestLiveMigrateInput, task taskman.ITask) error
 
 	ValidateUpdateData(ctx context.Context, guest *SGuest, userCred mcclient.TokenCredential, input api.ServerUpdateInput) (api.ServerUpdateInput, error)
 	RequestRemoteUpdate(ctx context.Context, guest *SGuest, userCred mcclient.TokenCredential, replaceTags bool) error

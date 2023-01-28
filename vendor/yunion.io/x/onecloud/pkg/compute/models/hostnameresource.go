@@ -19,21 +19,23 @@ import (
 	"strings"
 
 	"yunion.io/x/pkg/util/osprofile"
+	"yunion.io/x/pkg/util/pinyinutils"
 
 	api "yunion.io/x/onecloud/pkg/apis/compute"
 	"yunion.io/x/onecloud/pkg/httperrors"
-	"yunion.io/x/onecloud/pkg/util/pinyinutils"
 )
 
 type SHostnameResourceBase struct {
-	Hostname string `width:"60" charset:"ascii" nullable:"true" list:"user" create:"optional"`
+	Hostname string `width:"60" charset:"ascii" nullable:"true" list:"user" create:"optional" update:"user"`
 }
 
 type SHostnameResourceBaseManager struct {
 }
 
 func (manager *SHostnameResourceBaseManager) ValidateHostname(name string, osType string, input api.HostnameInput) (api.HostnameInput, error) {
+	inputHostname := true
 	if len(input.Hostname) == 0 {
+		inputHostname = false
 		if len(name) == 0 {
 			return input, httperrors.NewMissingParameterError("name")
 		}
@@ -59,14 +61,16 @@ func (manager *SHostnameResourceBaseManager) ValidateHostname(name string, osTyp
 	if len(input.Hostname) > 60 {
 		input.Hostname = input.Hostname[:60]
 	}
-	if strings.ToLower(osType) == strings.ToLower(osprofile.OS_TYPE_WINDOWS) {
+	if strings.EqualFold(osType, osprofile.OS_TYPE_WINDOWS) {
 		if num, err := strconv.Atoi(input.Hostname); err == nil && num > 0 {
 			return input, httperrors.NewInputParameterError("hostname cannot be number %d", num)
 		}
 		input.Hostname = strings.ReplaceAll(input.Hostname, ".", "")
 		if len(input.Hostname) > api.MAX_WINDOWS_COMPUTER_NAME_LENGTH {
-			return input, httperrors.NewInputParameterError("Windows hostname cannot be longer than %d characters", api.MAX_WINDOWS_COMPUTER_NAME_LENGTH)
-			// input.Hostname = input.Hostname[:15]
+			if inputHostname {
+				return input, httperrors.NewInputParameterError("Windows hostname cannot be longer than %d characters", api.MAX_WINDOWS_COMPUTER_NAME_LENGTH)
+			}
+			input.Hostname = input.Hostname[:15]
 		}
 	}
 	if len(input.Hostname) < 2 {

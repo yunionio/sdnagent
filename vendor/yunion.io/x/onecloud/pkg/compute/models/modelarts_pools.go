@@ -23,6 +23,7 @@ import (
 	"yunion.io/x/jsonutils"
 	"yunion.io/x/pkg/errors"
 	"yunion.io/x/pkg/util/compare"
+	"yunion.io/x/pkg/util/netutils"
 	"yunion.io/x/sqlchemy"
 
 	billing_api "yunion.io/x/onecloud/pkg/apis/billing"
@@ -31,6 +32,7 @@ import (
 	"yunion.io/x/onecloud/pkg/cloudcommon/db/lockman"
 	"yunion.io/x/onecloud/pkg/cloudcommon/db/taskman"
 	"yunion.io/x/onecloud/pkg/cloudcommon/validators"
+	"yunion.io/x/onecloud/pkg/compute/options"
 	"yunion.io/x/onecloud/pkg/httperrors"
 	"yunion.io/x/onecloud/pkg/mcclient"
 	"yunion.io/x/onecloud/pkg/util/stringutils2"
@@ -74,6 +76,7 @@ type SModelartsPool struct {
 	WorkType     string `width:"72" charset:"ascii" nullable:"true" list:"user" update:"user" create:"optional"`
 	// CPU 架构 x86|xarm
 	CpuArch string `width:"16" charset:"ascii" nullable:"true" list:"user" create:"admin_optional" update:"admin"`
+	Cidr    string `width:"32" charset:"ascii" nullable:"true" list:"user" create:"admin_optional"`
 }
 
 func (manager *SModelartsPoolManager) GetContextManagers() [][]db.IModelManager {
@@ -155,6 +158,10 @@ func (man *SModelartsPoolManager) ValidateCreateData(ctx context.Context, userCr
 	}
 	if input.NodeCount > 200 {
 		return input, errors.Wrap(errors.ErrNotSupported, "node count must between 1 and 200")
+	}
+	_, err = netutils.NewIPV4Prefix(input.Cidr)
+	if err != nil {
+		return input, httperrors.NewInputParameterError("invalid cidr: %s", input.Cidr)
 	}
 	_, err = validators.ValidateModel(userCred, CloudproviderManager, &input.CloudproviderId)
 	if err != nil {
@@ -419,6 +426,13 @@ func (self *SModelartsPool) SyncWithCloudModelartsPool(ctx context.Context, user
 		return errors.Wrapf(err, "get modelartsPoolSku")
 	}
 	diff, err := db.UpdateWithLock(ctx, self, func() error {
+		if options.Options.EnableSyncName {
+			newName, _ := db.GenerateAlterName(self, ext.GetName())
+			if len(newName) > 0 {
+				self.Name = newName
+			}
+		}
+
 		self.Status = ext.GetStatus()
 		self.BillingType = ext.GetBillingType()
 		self.InstanceType = instanceName
@@ -436,7 +450,7 @@ func (self *SModelartsPool) SyncWithCloudModelartsPool(ctx context.Context, user
 		return errors.Wrapf(err, "syncVirtualResourceMetadata")
 	}
 	if provider := self.GetCloudprovider(); provider != nil {
-		SyncCloudProject(userCred, self, provider.GetOwnerId(), ext, provider.Id)
+		SyncCloudProject(ctx, userCred, self, provider.GetOwnerId(), ext, provider.Id)
 	}
 	db.OpsLog.LogSyncUpdate(self, diff, userCred)
 	return nil
@@ -490,7 +504,7 @@ func (self *SCloudregion) newFromCloudModelartsPool(ctx context.Context, userCre
 	// 同步标签
 	syncVirtualResourceMetadata(ctx, userCred, &pool, ext)
 	// 同步项目归属
-	SyncCloudProject(userCred, &pool, provider.GetOwnerId(), ext, provider.Id)
+	SyncCloudProject(ctx, userCred, &pool, provider.GetOwnerId(), ext, provider.Id)
 
 	db.OpsLog.LogEvent(&pool, db.ACT_CREATE, pool.GetShortDesc(ctx), userCred)
 

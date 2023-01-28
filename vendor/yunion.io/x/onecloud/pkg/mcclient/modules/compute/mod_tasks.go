@@ -16,6 +16,7 @@ package compute
 
 import (
 	"yunion.io/x/jsonutils"
+	"yunion.io/x/pkg/util/printutils"
 
 	"yunion.io/x/onecloud/pkg/apis"
 	"yunion.io/x/onecloud/pkg/httperrors"
@@ -86,18 +87,18 @@ func (self *TasksManager) getManager(session *mcclient.ClientSession, params jso
 		version = "v1"
 	}
 
-	_, err := session.GetServiceURL(serviceType, "", "")
+	_, err := session.GetServiceURL(serviceType, "")
 	if err != nil {
 		return nil, httperrors.NewNotFoundError("service %s not found error: %v", serviceType, err)
 	}
 
 	return &modulebase.ResourceManager{
-		BaseManager: *modulebase.NewBaseManager(serviceType, "", version, []string{}, []string{}, ""),
+		BaseManager: *modulebase.NewBaseManager(serviceType, "", version, []string{}, []string{}),
 		Keyword:     "task", KeywordPlural: "tasks",
 	}, nil
 }
 
-func (this *TasksManager) List(session *mcclient.ClientSession, params jsonutils.JSONObject) (*modulebase.ListResult, error) {
+func (this *TasksManager) List(session *mcclient.ClientSession, params jsonutils.JSONObject) (*printutils.ListResult, error) {
 	man, err := this.getManager(session, params)
 	if err != nil {
 		return nil, err

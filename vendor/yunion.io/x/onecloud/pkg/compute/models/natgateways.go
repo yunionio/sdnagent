@@ -23,6 +23,7 @@ import (
 	"yunion.io/x/jsonutils"
 	"yunion.io/x/log"
 	"yunion.io/x/pkg/errors"
+	"yunion.io/x/pkg/util/billing"
 	"yunion.io/x/pkg/util/compare"
 	"yunion.io/x/pkg/utils"
 	"yunion.io/x/sqlchemy"
@@ -38,7 +39,6 @@ import (
 	"yunion.io/x/onecloud/pkg/compute/options"
 	"yunion.io/x/onecloud/pkg/httperrors"
 	"yunion.io/x/onecloud/pkg/mcclient"
-	"yunion.io/x/onecloud/pkg/util/billing"
 	"yunion.io/x/onecloud/pkg/util/logclient"
 	"yunion.io/x/onecloud/pkg/util/stringutils2"
 )
@@ -478,6 +478,13 @@ func (self *SNatGateway) ValidateDeleteCondition(ctx context.Context, info jsonu
 
 func (self *SNatGateway) SyncWithCloudNatGateway(ctx context.Context, userCred mcclient.TokenCredential, provider *SCloudprovider, extNat cloudprovider.ICloudNatGateway) error {
 	diff, err := db.UpdateWithLock(ctx, self, func() error {
+		if options.Options.EnableSyncName {
+			newName, _ := db.GenerateAlterName(self, extNat.GetName())
+			if len(newName) > 0 {
+				self.Name = newName
+			}
+		}
+
 		self.Status = extNat.GetStatus()
 		self.NatSpec = extNat.GetNatSpec()
 		self.BandwidthMb = extNat.GetBandwidthMb()
@@ -644,8 +651,8 @@ func (self *SNatGateway) GetEips() ([]SElasticip, error) {
 }
 
 func (self *SNatGateway) SyncNatGatewayEips(ctx context.Context, userCred mcclient.TokenCredential, provider *SCloudprovider, extEips []cloudprovider.ICloudEIP) compare.SyncResult {
-	lockman.LockRawObject(ctx, "elasticip", self.Id)
-	defer lockman.ReleaseRawObject(ctx, "elasticip", self.Id)
+	lockman.LockRawObject(ctx, ElasticipManager.Keyword(), self.Id)
+	defer lockman.ReleaseRawObject(ctx, ElasticipManager.Keyword(), self.Id)
 
 	result := compare.SyncResult{}
 
@@ -672,6 +679,8 @@ func (self *SNatGateway) SyncNatGatewayEips(ctx context.Context, userCred mcclie
 		}
 		result.Delete()
 	}
+
+	result.UpdateCnt = len(commondb)
 
 	for i := 0; i < len(added); i += 1 {
 		region, _ := self.GetRegion()

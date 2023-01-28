@@ -21,6 +21,7 @@ import (
 	"yunion.io/x/jsonutils"
 	"yunion.io/x/pkg/errors"
 	"yunion.io/x/pkg/util/compare"
+	"yunion.io/x/pkg/util/rbacscope"
 	"yunion.io/x/sqlchemy"
 
 	"yunion.io/x/onecloud/pkg/apis"
@@ -29,9 +30,9 @@ import (
 	"yunion.io/x/onecloud/pkg/cloudcommon/db/lockman"
 	"yunion.io/x/onecloud/pkg/cloudcommon/notifyclient"
 	"yunion.io/x/onecloud/pkg/cloudcommon/policy"
+	"yunion.io/x/onecloud/pkg/compute/options"
 	"yunion.io/x/onecloud/pkg/httperrors"
 	"yunion.io/x/onecloud/pkg/mcclient"
-	"yunion.io/x/onecloud/pkg/util/rbacutils"
 	"yunion.io/x/onecloud/pkg/util/stringutils2"
 )
 
@@ -145,6 +146,13 @@ func (self *STablestore) syncRemoveCloudTablestore(ctx context.Context, userCred
 
 func (self *STablestore) SyncWithCloudTablestore(ctx context.Context, userCred mcclient.TokenCredential, ext cloudprovider.ICloudTablestore, provider *SCloudprovider) error {
 	diff, err := db.Update(self, func() error {
+		if options.Options.EnableSyncName {
+			newName, _ := db.GenerateAlterName(self, ext.GetName())
+			if len(newName) > 0 {
+				self.Name = newName
+			}
+		}
+
 		self.Status = ext.GetStatus()
 		return nil
 	})
@@ -160,7 +168,7 @@ func (self *STablestore) SyncWithCloudTablestore(ctx context.Context, userCred m
 	}
 
 	syncVirtualResourceMetadata(ctx, userCred, self, ext)
-	SyncCloudProject(userCred, self, provider.GetOwnerId(), ext, provider.Id)
+	SyncCloudProject(ctx, userCred, self, provider.GetOwnerId(), ext, provider.Id)
 	return nil
 }
 
@@ -193,7 +201,7 @@ func (self *SCloudregion) newFromCloudTablestore(ctx context.Context, userCred m
 	}
 
 	syncVirtualResourceMetadata(ctx, userCred, ret, ext)
-	SyncCloudProject(userCred, ret, provider.GetOwnerId(), ext, provider.Id)
+	SyncCloudProject(ctx, userCred, ret, provider.GetOwnerId(), ext, provider.Id)
 
 	db.OpsLog.LogEvent(ret, db.ACT_CREATE, ret.GetShortDesc(ctx), userCred)
 	notifyclient.EventNotify(ctx, userCred, notifyclient.SEventNotifyParam{
@@ -346,7 +354,7 @@ func (manager *STablestoreManager) ListItemExportKeys(ctx context.Context,
 	return q, nil
 }
 
-func (manager *STablestoreManager) AllowScope(userCred mcclient.TokenCredential) rbacutils.TRbacScope {
+func (manager *STablestoreManager) AllowScope(userCred mcclient.TokenCredential) rbacscope.TRbacScope {
 	scope, _ := policy.PolicyManager.AllowScope(userCred, api.SERVICE_TYPE, TablestoreManager.KeywordPlural(), policy.PolicyActionGet)
 	return scope
 }

@@ -19,16 +19,17 @@ import (
 	"net/http"
 
 	"yunion.io/x/jsonutils"
+	"yunion.io/x/pkg/util/httputils"
+	"yunion.io/x/pkg/util/printutils"
 
 	"yunion.io/x/onecloud/pkg/mcclient"
-	"yunion.io/x/onecloud/pkg/util/httputils"
 )
 
 func Get(manager ResourceManager, session *mcclient.ClientSession, path string, respKey string) (jsonutils.JSONObject, error) {
 	return manager._get(session, path, respKey)
 }
 
-func List(manager ResourceManager, session *mcclient.ClientSession, path, respKey string) (*ListResult, error) {
+func List(manager ResourceManager, session *mcclient.ClientSession, path, respKey string) (*printutils.ListResult, error) {
 	return manager._list(session, path, respKey)
 }
 
@@ -57,7 +58,7 @@ func RawRequest(manager ResourceManager, session *mcclient.ClientSession,
 	header http.Header, body io.Reader) (*http.Response, error) {
 	return session.RawVersionRequest(manager.serviceType, manager.endpointType,
 		method, manager.versionedURL(path),
-		header, body, manager.GetApiVersion())
+		header, body)
 }
 
 func JsonRequest(manager ResourceManager, session *mcclient.ClientSession,
@@ -65,5 +66,5 @@ func JsonRequest(manager ResourceManager, session *mcclient.ClientSession,
 	header http.Header, body jsonutils.JSONObject) (http.Header, jsonutils.JSONObject, error) {
 	return session.JSONVersionRequest(manager.serviceType, manager.endpointType,
 		method, manager.versionedURL(path),
-		header, body, manager.GetApiVersion())
+		header, body)
 }

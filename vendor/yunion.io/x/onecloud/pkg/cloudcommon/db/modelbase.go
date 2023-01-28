@@ -23,15 +23,16 @@ import (
 
 	"yunion.io/x/jsonutils"
 	"yunion.io/x/pkg/errors"
+	"yunion.io/x/pkg/object"
+	"yunion.io/x/pkg/util/rbacscope"
+	"yunion.io/x/pkg/util/version"
 	"yunion.io/x/sqlchemy"
 
 	"yunion.io/x/onecloud/pkg/apis"
 	"yunion.io/x/onecloud/pkg/appsrv"
-	"yunion.io/x/onecloud/pkg/cloudcommon/object"
 	"yunion.io/x/onecloud/pkg/cloudcommon/policy"
 	"yunion.io/x/onecloud/pkg/httperrors"
 	"yunion.io/x/onecloud/pkg/mcclient"
-	"yunion.io/x/onecloud/pkg/util/rbacutils"
 	"yunion.io/x/onecloud/pkg/util/splitable"
 	"yunion.io/x/onecloud/pkg/util/stringutils2"
 )
@@ -231,15 +232,15 @@ func (manager *SModelBaseManager) FilterByName(q *sqlchemy.SQuery, name string) 
 	return q
 }
 
-func (manager *SModelBaseManager) FilterByOwner(q *sqlchemy.SQuery, ownerId mcclient.IIdentityProvider, scope rbacutils.TRbacScope) *sqlchemy.SQuery {
+func (manager *SModelBaseManager) FilterByOwner(q *sqlchemy.SQuery, ownerId mcclient.IIdentityProvider, scope rbacscope.TRbacScope) *sqlchemy.SQuery {
 	return q
 }
 
-func (manager *SModelBaseManager) FilterBySystemAttributes(q *sqlchemy.SQuery, userCred mcclient.TokenCredential, query jsonutils.JSONObject, scope rbacutils.TRbacScope) *sqlchemy.SQuery {
+func (manager *SModelBaseManager) FilterBySystemAttributes(q *sqlchemy.SQuery, userCred mcclient.TokenCredential, query jsonutils.JSONObject, scope rbacscope.TRbacScope) *sqlchemy.SQuery {
 	return q
 }
 
-func (manager *SModelBaseManager) FilterByHiddenSystemAttributes(q *sqlchemy.SQuery, userCred mcclient.TokenCredential, query jsonutils.JSONObject, scope rbacutils.TRbacScope) *sqlchemy.SQuery {
+func (manager *SModelBaseManager) FilterByHiddenSystemAttributes(q *sqlchemy.SQuery, userCred mcclient.TokenCredential, query jsonutils.JSONObject, scope rbacscope.TRbacScope) *sqlchemy.SQuery {
 	return q
 }
 
@@ -277,7 +278,7 @@ func (manager *SModelBaseManager) AllowPerformAction(ctx context.Context, userCr
 }
 
 func (manager *SModelBaseManager) PerformAction(ctx context.Context, userCred mcclient.TokenCredential, action string, query jsonutils.JSONObject, data jsonutils.JSONObject) (jsonutils.JSONObject, error) {
-	return nil, httperrors.NewActionNotFoundError("Action %s not found", action)
+	return nil, httperrors.NewActionNotFoundError("Action %s not found, please check service version, current version: %s", action, version.GetShortString())
 }
 
 func (manager *SModelBaseManager) InitializeData() error {
@@ -345,12 +346,12 @@ func (manager *SModelBaseManager) FetchUniqValues(ctx context.Context, data json
 	return nil
 }
 
-func (manager *SModelBaseManager) NamespaceScope() rbacutils.TRbacScope {
-	return rbacutils.ScopeSystem
+func (manager *SModelBaseManager) NamespaceScope() rbacscope.TRbacScope {
+	return rbacscope.ScopeSystem
 }
 
-func (manager *SModelBaseManager) ResourceScope() rbacutils.TRbacScope {
-	return rbacutils.ScopeSystem
+func (manager *SModelBaseManager) ResourceScope() rbacscope.TRbacScope {
+	return rbacscope.ScopeSystem
 }
 
 func (manager *SModelBaseManager) AllowGetPropertyDistinctField(ctx context.Context, userCred mcclient.TokenCredential, query jsonutils.JSONObject) bool {
@@ -538,6 +539,15 @@ func (manager *SModelBaseManager) PerformPurgeSplitable(ctx context.Context, use
 	return jsonutils.Marshal(map[string][]string{"tables": ret}), nil
 }
 
+func (manager *SModelBaseManager) CustomizedTotalCount(ctx context.Context, userCred mcclient.TokenCredential, query jsonutils.JSONObject, totalQ *sqlchemy.SQuery) (int, jsonutils.JSONObject, error) {
+	ret := apis.TotalCountBase{}
+	err := totalQ.First(&ret)
+	if err != nil {
+		return -1, nil, errors.Wrap(err, "SModelBaseManager Query total")
+	}
+	return ret.Count, nil, nil
+}
+
 func (model *SModelBase) GetId() string {
 	return ""
 }
@@ -612,7 +622,7 @@ func (model *SModelBase) AllowPerformAction(ctx context.Context, userCred mcclie
 }
 
 func (model *SModelBase) PerformAction(ctx context.Context, userCred mcclient.TokenCredential, action string, query jsonutils.JSONObject, data jsonutils.JSONObject) (jsonutils.JSONObject, error) {
-	return nil, httperrors.NewActionNotFoundError("Action %s not found", action)
+	return nil, httperrors.NewActionNotFoundError("Action %s not found, please check service version, current version: %s", action, version.GetShortString())
 }
 
 func (model *SModelBase) PreCheckPerformAction(

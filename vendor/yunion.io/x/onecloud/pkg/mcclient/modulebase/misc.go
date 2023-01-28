@@ -18,12 +18,13 @@ import (
 	"io/ioutil"
 
 	"yunion.io/x/jsonutils"
+	"yunion.io/x/pkg/util/printutils"
 
 	"yunion.io/x/onecloud/pkg/mcclient"
 )
 
 func GetVersion(s *mcclient.ClientSession, serviceType string) (string, error) {
-	man := NewBaseManager(serviceType, "", "", nil, nil, "")
+	man := NewBaseManager(serviceType, "", "", nil, nil)
 	resp, err := man.rawBaseUrlRequest(s, "GET", "/version", nil, nil)
 	if err != nil {
 		return "", err
@@ -36,8 +37,8 @@ func GetVersion(s *mcclient.ClientSession, serviceType string) (string, error) {
 	return string(body), nil
 }
 
-func ListWorkers(s *mcclient.ClientSession, serviceType string) (*ListResult, error) {
-	man := NewBaseManager(serviceType, "", "", nil, nil, "")
+func ListWorkers(s *mcclient.ClientSession, serviceType string) (*printutils.ListResult, error) {
+	man := NewBaseManager(serviceType, "", "", nil, nil)
 	resp, err := man.rawBaseUrlRequest(s, "GET", "/worker_stats", nil, nil)
 	if err != nil {
 		return nil, err
@@ -47,7 +48,7 @@ func ListWorkers(s *mcclient.ClientSession, serviceType string) (*ListResult, er
 	if err != nil {
 		return nil, err
 	}
-	ret := ListResult{}
+	ret := printutils.ListResult{}
 	if workers, _ := jsonutils.Parse(body); workers != nil {
 		workers.Unmarshal(&ret.Data, "workers")
 		ret.Total = len(ret.Data)

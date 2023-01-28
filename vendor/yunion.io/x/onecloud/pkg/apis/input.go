@@ -227,6 +227,8 @@ type PerformStatusInput struct {
 	BlockJobsCount int `json:"block_jobs_count"`
 	// 电源状态
 	PowerStates string `json:"power_states"`
+	// call from host id
+	HostId string `json:"host_id"`
 
 	// 更改状态的原因描述
 	// required:false
@@ -264,6 +266,7 @@ type PerformPrivateInput struct {
 }
 
 type PerformChangeProjectOwnerInput struct {
+	DomainizedResourceInput
 	ProjectizedResourceInput
 }
 

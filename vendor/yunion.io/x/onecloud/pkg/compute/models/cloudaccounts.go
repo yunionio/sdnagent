@@ -31,6 +31,8 @@ import (
 	"yunion.io/x/pkg/errors"
 	"yunion.io/x/pkg/tristate"
 	"yunion.io/x/pkg/util/compare"
+	"yunion.io/x/pkg/util/httputils"
+	"yunion.io/x/pkg/util/rbacscope"
 	"yunion.io/x/pkg/util/timeutils"
 	"yunion.io/x/pkg/utils"
 	"yunion.io/x/sqlchemy"
@@ -38,19 +40,19 @@ import (
 	"yunion.io/x/onecloud/pkg/apis"
 	proxyapi "yunion.io/x/onecloud/pkg/apis/cloudcommon/proxy"
 	api "yunion.io/x/onecloud/pkg/apis/compute"
+	"yunion.io/x/onecloud/pkg/apis/notify"
 	"yunion.io/x/onecloud/pkg/cloudcommon/db"
 	"yunion.io/x/onecloud/pkg/cloudcommon/db/lockman"
 	"yunion.io/x/onecloud/pkg/cloudcommon/db/proxy"
 	"yunion.io/x/onecloud/pkg/cloudcommon/db/quotas"
 	"yunion.io/x/onecloud/pkg/cloudcommon/db/taskman"
+	"yunion.io/x/onecloud/pkg/cloudcommon/notifyclient"
 	"yunion.io/x/onecloud/pkg/cloudcommon/validators"
 	"yunion.io/x/onecloud/pkg/compute/options"
 	"yunion.io/x/onecloud/pkg/httperrors"
 	"yunion.io/x/onecloud/pkg/mcclient"
 	"yunion.io/x/onecloud/pkg/mcclient/auth"
-	"yunion.io/x/onecloud/pkg/util/httputils"
 	"yunion.io/x/onecloud/pkg/util/logclient"
-	"yunion.io/x/onecloud/pkg/util/rbacutils"
 	"yunion.io/x/onecloud/pkg/util/stringutils2"
 )
 
@@ -137,7 +139,7 @@ type SCloudaccount struct {
 	Brand string `width:"64" charset:"utf8" nullable:"true" list:"domain" create:"optional"`
 
 	// 额外信息
-	Options *jsonutils.JSONDict `get:"domain" create:"domain_optional" update:"domain"`
+	Options *jsonutils.JSONDict `get:"domain" list:"domain" create:"domain_optional" update:"domain"`
 
 	// for backward compatiblity, keep is_public field, but not usable
 	// IsPublic bool `default:"false" nullable:"false"`
@@ -308,7 +310,10 @@ func (self *SCloudaccount) ValidateUpdateData(
 				Secret:        secret,
 				DefaultRegion: defaultRegion,
 				ProxyFunc:     proxyFunc,
-				Options:       input.Options,
+
+				AliyunResourceGroupIds: options.Options.AliyunResourceGroups,
+
+				Options: input.Options,
 			})
 			if err != nil {
 				return input, httperrors.NewInputParameterError("invalid proxy setting %s", err)
@@ -347,6 +352,11 @@ func (manager *SCloudaccountManager) ValidateCreateData(
 	input api.CloudaccountCreateInput,
 ) (api.CloudaccountCreateInput, error) {
 	input, err := manager.validateCreateData(ctx, userCred, ownerId, query, input)
+	if err != nil {
+		return input, err
+	}
+
+	input.SProjectMappingResourceInput, err = manager.SProjectMappingResourceBaseManager.ValidateCreateData(ctx, userCred, ownerId, query, input.SProjectMappingResourceInput)
 	if err != nil {
 		return input, err
 	}
@@ -395,7 +405,11 @@ func (manager *SCloudaccountManager) validateCreateData(
 
 	if len(input.ProjectId) > 0 {
 		var proj *db.STenant
-		proj, input.ProjectizedResourceInput, err = db.ValidateProjectizedResourceInput(ctx, input.ProjectizedResourceInput)
+		projInput := apis.ProjectizedResourceCreateInput{
+			DomainizedResourceInput:  input.DomainizedResourceInput,
+			ProjectizedResourceInput: input.ProjectizedResourceInput,
+		}
+		proj, input.ProjectizedResourceInput, err = db.ValidateProjectizedResourceInput(ctx, projInput)
 		if err != nil {
 			return input, errors.Wrap(err, "db.ValidateProjectizedResourceInput")
 		}
@@ -426,7 +440,7 @@ func (manager *SCloudaccountManager) validateCreateData(
 		input.Options.Add(jsonutils.NewString(input.DefaultRegion), "default_region")
 	}
 
-	input.SCloudaccount, err = providerDriver.ValidateCreateCloudaccountData(ctx, userCred, input.SCloudaccountCredential)
+	input.SCloudaccount, err = providerDriver.ValidateCreateCloudaccountData(ctx, input.SCloudaccountCredential)
 	if err != nil {
 		return input, err
 	}
@@ -484,6 +498,9 @@ func (manager *SCloudaccountManager) validateCreateData(
 		DefaultRegion: input.DefaultRegion,
 		ProxyFunc:     proxyFunc,
 
+		AdminProjectId:         auth.GetAdminSession(ctx, options.Options.Region).GetProjectId(),
+		AliyunResourceGroupIds: options.Options.AliyunResourceGroups,
+
 		Options: input.Options,
 	})
 	if err != nil {
@@ -539,7 +556,7 @@ func (self *SCloudaccount) CustomizeCreate(ctx context.Context, userCred mcclien
 	if !data.Contains("public_scope") {
 		self.ShareMode = api.CLOUD_ACCOUNT_SHARE_MODE_ACCOUNT_DOMAIN
 		self.IsPublic = false
-		self.PublicScope = string(rbacutils.ScopeNone)
+		self.PublicScope = string(rbacscope.ScopeNone)
 		// mark the public_scope has been set
 		data.(*jsonutils.JSONDict).Set("public_scope", jsonutils.NewString(self.PublicScope))
 	}
@@ -571,7 +588,7 @@ func (self *SCloudaccount) PostCreate(ctx context.Context, userCred mcclient.Tok
 	if self.Enabled.IsTrue() {
 		if self.Provider == api.CLOUD_PROVIDER_VMWARE {
 			zone, _ := data.GetString("zone")
-			self.StartSyncVmwareNetworkTask(ctx, userCred, "", zone)
+			self.StartSyncVMwareNetworkTask(ctx, userCred, "", zone)
 		} else {
 			self.StartSyncCloudProviderInfoTask(ctx, userCred, nil, "")
 		}
@@ -625,7 +642,7 @@ func (self *SCloudaccount) PerformTestConnectivity(ctx context.Context, userCred
 		return nil, httperrors.NewBadRequestError("failed to found provider factory error: %v", err)
 	}
 
-	account, err := providerDriver.ValidateUpdateCloudaccountCredential(ctx, userCred, input, self.Account)
+	account, err := providerDriver.ValidateUpdateCloudaccountCredential(ctx, input, self.Account)
 	if err != nil {
 		return nil, err
 	}
@@ -638,6 +655,8 @@ func (self *SCloudaccount) PerformTestConnectivity(ctx context.Context, userCred
 		Secret:  account.Secret,
 
 		DefaultRegion: defaultRegion,
+
+		AliyunResourceGroupIds: options.Options.AliyunResourceGroups,
 
 		ReadOnly: self.ReadOnly,
 
@@ -666,7 +685,7 @@ func (self *SCloudaccount) PerformUpdateCredential(ctx context.Context, userCred
 		return nil, httperrors.NewInputParameterError("failed to unmarshal input params: %v", err)
 	}
 
-	account, err := providerDriver.ValidateUpdateCloudaccountCredential(ctx, userCred, input, self.Account)
+	account, err := providerDriver.ValidateUpdateCloudaccountCredential(ctx, input, self.Account)
 	if err != nil {
 		return nil, err
 	}
@@ -719,6 +738,8 @@ func (self *SCloudaccount) PerformUpdateCredential(ctx context.Context, userCred
 		Secret:        account.Secret,
 		Options:       self.Options,
 		DefaultRegion: defaultRegion,
+
+		AliyunResourceGroupIds: options.Options.AliyunResourceGroups,
 
 		ReadOnly: self.ReadOnly,
 
@@ -778,19 +799,6 @@ func (self *SCloudaccount) PerformUpdateCredential(ctx context.Context, userCred
 	return nil, nil
 }
 
-func (self *SCloudaccount) StartSyncVmwareNetworkTask(ctx context.Context, userCred mcclient.TokenCredential, parentTaskId string, zone string) error {
-	params := jsonutils.NewDict()
-	if len(zone) != 0 {
-		params.Set("zone", jsonutils.NewString(zone))
-	}
-	task, err := taskman.TaskManager.NewTask(ctx, "CloudAccountSyncVMwareNetworkTask", self, userCred, params, parentTaskId, "", nil)
-	if err != nil {
-		return errors.Wrap(err, "unable to create task CloudAccountSyncVMwareNetworkTask")
-	}
-	task.ScheduleRun(nil)
-	return nil
-}
-
 func (self *SCloudaccount) StartSyncCloudProviderInfoTask(ctx context.Context, userCred mcclient.TokenCredential, syncRange *SSyncRange, parentTaskId string) error {
 	params := jsonutils.NewDict()
 	if syncRange != nil {
@@ -826,13 +834,11 @@ func (self *SCloudaccount) markStartSync(userCred mcclient.TokenCredential, sync
 	return nil
 }
 
-func (self *SCloudaccount) MarkSyncing(userCred mcclient.TokenCredential, probe bool) error {
+func (self *SCloudaccount) MarkSyncing(userCred mcclient.TokenCredential) error {
 	_, err := db.Update(self, func() error {
 		self.SyncStatus = api.CLOUD_PROVIDER_SYNC_STATUS_SYNCING
-		if !probe {
-			self.LastSync = timeutils.UtcNow()
-			self.LastSyncEndAt = time.Time{}
-		}
+		self.LastSync = timeutils.UtcNow()
+		self.LastSyncEndAt = time.Time{}
 		return nil
 	})
 	if err != nil {
@@ -857,15 +863,13 @@ func (self *SCloudaccount) MarkEndSyncWithLock(ctx context.Context, userCred mcc
 		return errors.Error("some cloud providers not idle")
 	}
 
-	return self.markEndSync(userCred, false)
+	return self.markEndSync(userCred)
 }
 
-func (self *SCloudaccount) markEndSync(userCred mcclient.TokenCredential, probe bool) error {
+func (self *SCloudaccount) markEndSync(userCred mcclient.TokenCredential) error {
 	_, err := db.Update(self, func() error {
 		self.SyncStatus = api.CLOUD_PROVIDER_SYNC_STATUS_IDLE
-		if !probe {
-			self.LastSyncEndAt = timeutils.UtcNow()
-		}
+		self.LastSyncEndAt = timeutils.UtcNow()
 		return nil
 	})
 	if err != nil {
@@ -952,7 +956,8 @@ func (self *SCloudaccount) getProviderInternal(ctx context.Context) (cloudprovid
 		DefaultRegion: defaultRegion,
 		ProxyFunc:     self.proxyFunc(),
 
-		ReadOnly: self.ReadOnly,
+		ReadOnly:               self.ReadOnly,
+		AliyunResourceGroupIds: options.Options.AliyunResourceGroups,
 
 		UpdatePermission: self.UpdatePermission(ctx),
 	})
@@ -1341,7 +1346,7 @@ func migrateCloudprovider(cloudprovider *SCloudprovider) error {
 
 		secret, err := cloudprovider.getPassword()
 		if err != nil {
-			account.markAccountDiscconected(context.Background(), auth.AdminCredential())
+			account.markAccountDisconected(context.Background(), auth.AdminCredential())
 			log.Errorf("Get password from provider %s error %v", cloudprovider.Name, err)
 		} else {
 			err = account.savePassword(secret)
@@ -1423,13 +1428,13 @@ func (manager *SCloudaccountManager) initializePublicScope() error {
 		_, err = db.Update(account, func() error {
 			switch account.ShareMode {
 			case api.CLOUD_ACCOUNT_SHARE_MODE_ACCOUNT_DOMAIN:
-				account.PublicScope = string(rbacutils.ScopeNone)
+				account.PublicScope = string(rbacscope.ScopeNone)
 				account.IsPublic = false
 			case api.CLOUD_ACCOUNT_SHARE_MODE_PROVIDER_DOMAIN:
-				account.PublicScope = string(rbacutils.ScopeSystem)
+				account.PublicScope = string(rbacscope.ScopeSystem)
 				account.IsPublic = true
 			case api.CLOUD_ACCOUNT_SHARE_MODE_SYSTEM:
-				account.PublicScope = string(rbacutils.ScopeSystem)
+				account.PublicScope = string(rbacscope.ScopeSystem)
 				account.IsPublic = true
 			}
 			return nil
@@ -1575,8 +1580,12 @@ func (self *SCloudaccount) PerformChangeProject(ctx context.Context, userCred mc
 	}
 
 	project := input.ProjectId
+	domain := input.ProjectDomainId
+	if len(domain) == 0 {
+		domain = self.DomainId
+	}
 
-	tenant, err := db.TenantCacheManager.FetchTenantByIdOrName(ctx, project)
+	tenant, err := db.TenantCacheManager.FetchTenantByIdOrNameInDomain(ctx, project, domain)
 	if err != nil {
 		return nil, httperrors.NewNotFoundError("project %s not found", project)
 	}
@@ -1744,7 +1753,7 @@ func (manager *SCloudaccountManager) OrderByExtraFields(
 	return q, nil
 }
 
-func (account *SCloudaccount) markAccountDiscconected(ctx context.Context, userCred mcclient.TokenCredential) error {
+func (account *SCloudaccount) markAccountDisconected(ctx context.Context, userCred mcclient.TokenCredential) error {
 	_, err := db.UpdateWithLock(ctx, account, func() error {
 		account.ErrorCount = account.ErrorCount + 1
 		account.HealthStatus = api.CLOUD_PROVIDER_HEALTH_UNKNOWN
@@ -1753,10 +1762,13 @@ func (account *SCloudaccount) markAccountDiscconected(ctx context.Context, userC
 	if err != nil {
 		return err
 	}
+	if account.Status == api.CLOUD_PROVIDER_CONNECTED {
+		account.EventNotify(ctx, userCred, notify.ActionSyncAccountStatus)
+	}
 	return account.SetStatus(userCred, api.CLOUD_PROVIDER_DISCONNECTED, "")
 }
 
-func (account *SCloudaccount) markAllProvidersDicconnected(ctx context.Context, userCred mcclient.TokenCredential) error {
+func (account *SCloudaccount) markAllProvidersDisconnected(ctx context.Context, userCred mcclient.TokenCredential) error {
 	providers := account.GetCloudproviders()
 	for i := 0; i < len(providers); i += 1 {
 		err := providers[i].markProviderDisconnected(ctx, userCred, "cloud account disconnected")
@@ -1866,7 +1878,6 @@ func (manager *SCloudaccountManager) AutoSyncCloudaccountStatusTask(ctx context.
 				if err != nil {
 					log.Errorf("unable to syncAccountStatus for cloudaccount %s: %s", account.Id, err.Error())
 				}
-				account.markEndSync(userCred, true)
 			})
 		}
 	}
@@ -2023,11 +2034,10 @@ func (self *SCloudaccount) setSubAccountStatus() error {
 }
 
 func (account *SCloudaccount) syncAccountStatus(ctx context.Context, userCred mcclient.TokenCredential) error {
-	account.MarkSyncing(userCred, true)
 	subaccounts, err := account.probeAccountStatus(ctx, userCred)
 	if err != nil {
-		account.markAllProvidersDicconnected(ctx, userCred)
-		account.markAccountDiscconected(ctx, userCred)
+		account.markAllProvidersDisconnected(ctx, userCred)
+		account.markAccountDisconected(ctx, userCred)
 		return errors.Wrap(err, "account.probeAccountStatus")
 	}
 	account.markAccountConnected(ctx, userCred)
@@ -2178,9 +2188,9 @@ func (account *SCloudaccount) PerformPublic(ctx context.Context, userCred mcclie
 	switch input.ShareMode {
 	case api.CLOUD_ACCOUNT_SHARE_MODE_PROVIDER_DOMAIN:
 		if len(input.SharedDomainIds) == 0 {
-			input.Scope = string(rbacutils.ScopeSystem)
+			input.Scope = string(rbacscope.ScopeSystem)
 		} else {
-			input.Scope = string(rbacutils.ScopeDomain)
+			input.Scope = string(rbacscope.ScopeDomain)
 			providers := account.GetCloudproviders()
 			for i := range providers {
 				if !utils.IsInStringArray(providers[i].DomainId, input.SharedDomainIds) && providers[i].DomainId != account.DomainId {
@@ -2191,9 +2201,9 @@ func (account *SCloudaccount) PerformPublic(ctx context.Context, userCred mcclie
 		}
 	case api.CLOUD_ACCOUNT_SHARE_MODE_SYSTEM:
 		if len(input.SharedDomainIds) == 0 {
-			input.Scope = string(rbacutils.ScopeSystem)
+			input.Scope = string(rbacscope.ScopeSystem)
 		} else {
-			input.Scope = string(rbacutils.ScopeDomain)
+			input.Scope = string(rbacscope.ScopeDomain)
 		}
 	default:
 		return nil, errors.Wrap(httperrors.ErrInputParameter, "share_mode cannot be account_domain")
@@ -2274,7 +2284,7 @@ func (account *SCloudaccount) PerformShareMode(ctx context.Context, userCred mcc
 		input2 := api.CloudaccountPerformPublicInput{
 			ShareMode: input.ShareMode,
 			PerformPublicDomainInput: apis.PerformPublicDomainInput{
-				Scope: string(rbacutils.ScopeSystem),
+				Scope: string(rbacscope.ScopeSystem),
 			},
 		}
 		return account.PerformPublic(ctx, userCred, query, input2)
@@ -2321,23 +2331,23 @@ func (manager *SCloudaccountManager) filterByDomainId(q *sqlchemy.SQuery, domain
 			// sqlchemy.Equals(q.Field("share_mode"), api.CLOUD_ACCOUNT_SHARE_MODE_SYSTEM),
 			sqlchemy.In(q.Field("id"), subq.SubQuery()),
 			sqlchemy.IsTrue(q.Field("is_public")),
-			sqlchemy.Equals(q.Field("public_scope"), rbacutils.ScopeDomain),
+			sqlchemy.Equals(q.Field("public_scope"), rbacscope.ScopeDomain),
 		),
 		// share_mode=system/public_scope=system
 		sqlchemy.AND(
 			// sqlchemy.Equals(q.Field("share_mode"), api.CLOUD_ACCOUNT_SHARE_MODE_SYSTEM),
 			sqlchemy.IsTrue(q.Field("is_public")),
-			sqlchemy.Equals(q.Field("public_scope"), rbacutils.ScopeSystem),
+			sqlchemy.Equals(q.Field("public_scope"), rbacscope.ScopeSystem),
 		),
 	))
 
 	return q
 }
 
-func (manager *SCloudaccountManager) FilterByOwner(q *sqlchemy.SQuery, owner mcclient.IIdentityProvider, scope rbacutils.TRbacScope) *sqlchemy.SQuery {
+func (manager *SCloudaccountManager) FilterByOwner(q *sqlchemy.SQuery, owner mcclient.IIdentityProvider, scope rbacscope.TRbacScope) *sqlchemy.SQuery {
 	if owner != nil {
 		switch scope {
-		case rbacutils.ScopeProject, rbacutils.ScopeDomain:
+		case rbacscope.ScopeProject, rbacscope.ScopeDomain:
 			if len(owner.GetProjectDomainId()) > 0 {
 				q = manager.filterByDomainId(q, owner.GetProjectDomainId())
 				/*cloudproviders := CloudproviderManager.Query().SubQuery()
@@ -2550,15 +2560,15 @@ func (account *SCloudaccount) getAccountShareInfo() apis.SAccountShareInfo {
 	return apis.SAccountShareInfo{
 		ShareMode:     account.ShareMode,
 		IsPublic:      account.IsPublic,
-		PublicScope:   rbacutils.String2Scope(account.PublicScope),
+		PublicScope:   rbacscope.String2Scope(account.PublicScope),
 		SharedDomains: account.GetSharedDomains(),
 	}
 }
 
-func (manager *SCloudaccountManager) totalCount(scope rbacutils.TRbacScope, ownerId mcclient.IIdentityProvider) int {
+func (manager *SCloudaccountManager) totalCount(scope rbacscope.TRbacScope, ownerId mcclient.IIdentityProvider) int {
 	q := manager.Query()
 	switch scope {
-	case rbacutils.ScopeProject, rbacutils.ScopeDomain:
+	case rbacscope.ScopeProject, rbacscope.ScopeDomain:
 		q = q.Equals("domain_id", ownerId.GetProjectDomainId())
 	}
 	cnt, _ := q.CountWithError()
@@ -2835,16 +2845,31 @@ func (self *SCloudaccount) PerformProjectMapping(ctx context.Context, userCred m
 			return nil, httperrors.NewInputParameterError("account %s has aleady bind project mapping %s", self.Name, self.ProjectMappingId)
 		}
 	}
-	// no changes
-	if self.ProjectMappingId == input.ProjectMappingId {
-		return nil, nil
-	}
 	_, err := db.Update(self, func() error {
 		self.ProjectMappingId = input.ProjectMappingId
+		if input.EnableProjectSync != nil {
+			self.EnableProjectSync = tristate.NewFromBool(*input.EnableProjectSync)
+		}
+		if input.EnableResourceSync != nil {
+			self.EnableResourceSync = tristate.NewFromBool(*input.EnableResourceSync)
+		}
 		return nil
 	})
 	if err != nil {
 		return nil, err
 	}
 	return nil, refreshPmCaches()
+}
+
+// 同步云账号消息通知
+func (account *SCloudaccount) EventNotify(ctx context.Context, userCred mcclient.TokenCredential, action notify.SAction) {
+	var resourceType string
+	resourceType = notify.TOPIC_RESOURCE_ACCOUNT_STATUS
+
+	notifyclient.EventNotify(ctx, userCred, notifyclient.SEventNotifyParam{
+		Obj:          account,
+		ResourceType: resourceType,
+		Action:       action,
+		AdvanceDays:  0,
+	})
 }
