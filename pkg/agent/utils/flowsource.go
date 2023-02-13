@@ -237,7 +237,7 @@ func (g *Guest) FlowsMap() (map[string][]*ovs.Flow, error) {
 			F(0, 28300, T("in_port=LOCAL,dl_dst={{.MAC}},udp,tp_src={{.DHCPServerPort}},tp_dst=68"), T("mod_tp_src:67,output:{{.PortNo}}")),
 			F(0, 26700, T("in_port={{.PortNoPhy}},dl_dst={{.MAC}},{{._dl_vlan}}"), "normal"),
 		)
-		if !g.SrcMacCheck() || disableSecgrp {
+		if !g.SrcMacCheck() {
 			flows = append(flows, F(0, 24670, T("in_port={{.PortNo}}"), "normal"))
 		} else {
 			if !g.SrcIpCheck() {
@@ -250,6 +250,31 @@ func (g *Guest) FlowsMap() (map[string][]*ovs.Flow, error) {
 						F(0, 25770, T2("in_port={{.PortNo}},arp,dl_src={{.MAC}},arp_sha={{.MAC}},arp_spa={{.IP}}"), "normal"),
 					)
 				})
+			}
+			if disableSecgrp {
+				if !g.SrcIpCheck() {
+					flows = append(flows,
+						F(0, 26870, T("in_port={{.PortNoPhy}},dl_dst={{.MAC}},{{._dl_vlan}},ip"), "normal"),
+						F(0, 25870, T("in_port={{.PortNo}},dl_src={{.MAC}},ip"), "normal"),
+						F(0, 24770, T("dl_dst={{.MAC}},ip"), "normal"),
+					)
+				} else {
+					g.eachIP(m, func(T2 func(string) string) {
+						flows = append(flows,
+							F(0, 26870, T2("in_port={{.PortNoPhy}},dl_dst={{.MAC}},{{._dl_vlan}},ip,nw_dst={{.IP}}"), "normal"),
+							F(0, 25870, T2("in_port={{.PortNo}},dl_src={{.MAC}},ip,nw_src={{.IP}}"), "normal"),
+							F(0, 24770, T2("dl_dst={{.MAC}},ip,nw_dst={{.IP}}"), "normal"),
+						)
+					})
+					flows = append(flows,
+						F(0, 26860, T("in_port={{.PortNoPhy}},dl_dst={{.MAC}},{{._dl_vlan}},ip"), "drop"),
+						F(0, 25860, T("in_port={{.PortNo}},dl_src={{.MAC}},ip"), "drop"),
+						F(0, 24760, T("dl_dst={{.MAC}},ip"), "drop"),
+					)
+				}
+				flows = append(flows,
+					F(0, 25600, T("in_port={{.PortNo}},dl_src={{.MAC}}"), "normal"),
+				)
 			}
 			flows = append(flows,
 				F(0, 25760, T("in_port={{.PortNo}},arp"), "drop"),
