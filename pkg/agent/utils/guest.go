@@ -34,10 +34,10 @@ type guestDesc struct {
 	AdminSecurityRules string      `json:"admin_security_rules"`
 	Name               string
 
-	IsMaster bool   `json:"is_master"`
-	IsSlave  bool   `json:"is_slave"`
-	HostId   string `json:"host_id"`
-	IsVolatileHost bool `json:"is_volatile_host"`
+	IsMaster       bool   `json:"is_master"`
+	IsSlave        bool   `json:"is_slave"`
+	HostId         string `json:"host_id"`
+	IsVolatileHost bool   `json:"is_volatile_host"`
 
 	SrcIpCheck  bool `json:"src_ip_check"`
 	SrcMacCheck bool `json:"src_mac_check"`
@@ -154,7 +154,7 @@ type Guest struct {
 	srcIpCheck  bool
 	srcMacCheck bool
 
-	isSlave bool
+	isSlave        bool
 	isVolatileHost bool
 }
 
@@ -198,7 +198,7 @@ func (g *Guest) Running() bool {
 }
 
 func (g *Guest) IsVolatileHost() bool {
-	return  g.isVolatileHost || g.isSlave
+	return g.isVolatileHost || g.isSlave
 }
 
 func (g *Guest) GetJSONObjectDesc() (*desc.SGuestDesc, error) {
