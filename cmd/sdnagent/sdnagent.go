@@ -16,82 +16,17 @@ package main
 
 import (
 	"context"
-	"fmt"
-	"os"
-	"os/signal"
-	"syscall"
 
-	"yunion.io/x/log"
-	"yunion.io/x/pkg/appctx"
-	"yunion.io/x/pkg/errors"
+	"yunion.io/x/onecloud/pkg/util/atexit"
+	"yunion.io/x/onecloud/pkg/util/procutils"
 
 	"yunion.io/x/sdnagent/pkg/agent/server"
-	"yunion.io/x/sdnagent/pkg/agent/utils"
 )
 
-func LockPidFile(path string) (*os.File, error) {
-	f, err := os.OpenFile(path, os.O_WRONLY|os.O_CREATE, os.FileMode(0644))
-	if err != nil {
-		return nil, err
-	}
-	err = syscall.Flock(int(f.Fd()), syscall.LOCK_EX|syscall.LOCK_NB)
-	if err != nil {
-		return nil, err
-	}
-	pid := fmt.Sprintf("%d\n", os.Getpid())
-	_, err = f.WriteString(pid)
-	if err != nil {
-		return nil, err
-	}
-	return f, nil
-}
-
-func UnlockPidFile(f *os.File) error {
-	defer f.Close()
-	return os.Remove(f.Name())
-}
-
 func main() {
-	var (
-		ctx = context.Background()
-		hc  *utils.HostConfig
-		err error
-	)
-	ctx = context.WithValue(ctx, appctx.APP_CONTEXT_KEY_APPNAME, "sdnagent")
-	if hc, err = utils.NewHostConfig(); err != nil {
-		log.Errorln(errors.Wrap(err, "host config"))
-	} else if err = hc.Auth(ctx); err != nil {
-		log.Errorln(errors.Wrap(err, "keystone auth"))
-	}
+	defer atexit.Handle()
 
-	{
-		f, err := LockPidFile(hc.SdnPidFile)
-		if err != nil {
-			log.Errorf("create pid file %s failed: %s", hc.SdnPidFile, err)
-			return
-		}
-		defer UnlockPidFile(f)
-		err = os.Remove(hc.SdnSocketPath)
-		if err != nil && !os.IsNotExist(err) {
-			log.Errorf("remove %s failed: %s", hc.SdnSocketPath, err)
-			return
-		}
-	}
+	go procutils.WaitZombieLoop(context.TODO())
 
-	s := server.Server().HostConfig(hc)
-	go hc.WatchChange(ctx, func() {
-		log.Warningf("host config content changed")
-		s.Stop()
-	})
-	go func() {
-		sigChan := make(chan os.Signal)
-		signal.Notify(sigChan, syscall.SIGINT)
-		signal.Notify(sigChan, syscall.SIGTERM)
-		sig := <-sigChan
-		log.Infof("signal received: %s", sig)
-		s.Stop()
-	}()
-	if err := s.Start(ctx); err != nil {
-		log.Warningf("Start server error: %v", err)
-	}
+	server.StartService()
 }
