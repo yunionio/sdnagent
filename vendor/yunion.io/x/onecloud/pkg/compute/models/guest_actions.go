@@ -1439,7 +1439,55 @@ func (self *SGuest) GuestNonSchedStartTask(
 }
 
 func (self *SGuest) StartGuestCreateTask(ctx context.Context, userCred mcclient.TokenCredential, input *api.ServerCreateInput, pendingUsage quotas.IQuota, parentTaskId string) error {
+	if input.FakeCreate {
+		self.fixFakeServerInfo(ctx, userCred)
+		return nil
+	}
 	return self.GetDriver().StartGuestCreateTask(self, ctx, userCred, input.JSON(input), pendingUsage, parentTaskId)
+}
+
+func (self *SGuest) fixFakeServerInfo(ctx context.Context, userCred mcclient.TokenCredential) {
+	status := []string{api.VM_READY, api.VM_RUNNING}
+	rand.Seed(time.Now().Unix())
+	db.Update(self, func() error {
+		self.Status = status[rand.Intn(len(status))]
+		self.PowerStates = api.VM_POWER_STATES_ON
+		if self.Status == api.VM_READY {
+			self.PowerStates = api.VM_POWER_STATES_OFF
+		}
+		return nil
+	})
+	disks, _ := self.GetDisks()
+	for i := range disks {
+		db.Update(&disks[i], func() error {
+			disks[i].Status = api.DISK_READY
+			return nil
+		})
+	}
+	networks, _ := self.GetNetworks("")
+	for i := range networks {
+		if len(networks[i].IpAddr) > 0 {
+			continue
+		}
+		network := networks[i].GetNetwork()
+		if network != nil {
+			db.Update(&networks[i], func() error {
+				networks[i].IpAddr, _ = network.GetFreeIP(ctx, userCred, nil, nil, "", api.IPAllocationRadnom, false)
+				return nil
+			})
+		}
+	}
+	if eip, _ := self.GetEipOrPublicIp(); eip != nil && len(eip.IpAddr) == 0 {
+		db.Update(eip, func() error {
+			if len(eip.NetworkId) > 0 {
+				if network, _ := eip.GetNetwork(); network != nil {
+					eip.IpAddr, _ = network.GetFreeIP(ctx, userCred, nil, nil, "", api.IPAllocationRadnom, false)
+					return nil
+				}
+			}
+			return nil
+		})
+	}
 }
 
 func (self *SGuest) StartSyncstatus(ctx context.Context, userCred mcclient.TokenCredential, parentTaskId string) error {
@@ -2538,7 +2586,7 @@ func (self *SGuest) PerformChangeConfig(ctx context.Context, userCred mcclient.T
 			confs.Add(jsonutils.NewInt(int64(input.VcpuCount)), "vcpu_count")
 		}
 		if !regutils.MatchSize(input.VmemSize) {
-			return nil, httperrors.NewBadRequestError("Memory size must be number[+unit], like 256M, 1G or 256")
+			return nil, httperrors.NewBadRequestError("Memory size %q must be number[+unit], like 256M, 1G or 256", input.VmemSize)
 		}
 		nVmem, err := fileutils.GetSizeMb(input.VmemSize, 'M', 1024)
 		if err != nil {
@@ -4352,6 +4400,7 @@ func (self *SGuest) createConvertedServer(
 	// generate guest create params
 	createInput := self.ToCreateInput(ctx, userCred)
 	createInput.Hypervisor = api.HYPERVISOR_KVM
+	createInput.PreferHost = ""
 	createInput.Vdi = api.VM_VDI_PROTOCOL_VNC
 	createInput.GenerateName = fmt.Sprintf("%s-%s", self.Name, api.HYPERVISOR_KVM)
 	// change drivers so as to bootable in KVM
@@ -4359,6 +4408,9 @@ func (self *SGuest) createConvertedServer(
 		if createInput.Disks[i].Driver != "ide" {
 			createInput.Disks[i].Driver = "ide"
 		}
+		createInput.Disks[i].Format = ""
+		createInput.Disks[i].Backend = ""
+		createInput.Disks[i].Medium = ""
 	}
 	for i := range createInput.Networks {
 		if createInput.Networks[i].Driver != "e1000" && createInput.Networks[i].Driver != "vmxnet3" {

@@ -32,8 +32,12 @@ pkg/agent/proto/agent.pb.go: pkg/agent/proto/agent.proto
 pkg/agent/proto/agent_pb2.py: pkg/agent/proto/agent.proto
 	python -m grpc_tools.protoc -Ipkg/agent/proto --python_out=pkg/agent/proto --grpc_python_out=pkg/agent/proto pkg/agent/proto/agent.proto
 
+RELEASE_BRANCH:=master
+
+GOPROXY ?= direct
+
 mod:
-	GOPROXY=direct go get -v yunion.io/x/onecloud@release/3.10
+	GOPROXY=$(GOPROXY) GONOSUMDB=yunion.io/x go get -v yunion.io/x/onecloud@$(RELEASE_BRANCH) yunion.io/x/cloudmux@$(RELEASE_BRANCH)
 	go mod tidy
 	go mod vendor -v
 

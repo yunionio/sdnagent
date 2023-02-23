@@ -70,8 +70,6 @@ type ICloudRegion interface {
 	ICloudResource
 	ICloudI18nResource
 
-	// GetLatitude() float32
-	// GetLongitude() float32
 	GetGeographicInfo() SGeographicInfo
 
 	GetIZones() ([]ICloudZone, error)
@@ -754,7 +752,10 @@ type ICloudLoadbalancerListener interface {
 
 	Start() error
 	Stop() error
-	Sync(ctx context.Context, listener *SLoadbalancerListenerCreateOptions) error
+	ChangeScheduler(ctx context.Context, opts *ChangeListenerSchedulerOptions) error
+	SetHealthCheck(ctx context.Context, opts *ListenerHealthCheckOptions) error
+	ChangeCertificate(ctx context.Context, opts *ListenerCertificateOptions) error
+	SetAcl(ctx context.Context, opts *ListenerAclOptions) error
 
 	Delete(ctx context.Context) error
 }
@@ -1577,12 +1578,28 @@ type ICloudNatSku interface {
 }
 
 type ICloudCDNDomain interface {
-	ICloudEnabledResource
+	IVirtualResource
+	GetEnabled() bool
 
 	GetArea() string
 	GetServiceType() string
 	GetCname() string
 	GetOrigins() *SCdnOrigins
+
+	// 是否忽略参数
+	GetCacheKeys() (*SCDNCacheKeys, error)
+	// 是否分片回源
+	GetRangeOriginPull() (*SCDNRangeOriginPull, error)
+	// 缓存配置
+	GetCache() (*SCDNCache, error)
+	// https配置
+	GetHTTPS() (*SCDNHttps, error)
+	// 强制跳转
+	GetForceRedirect() (*SCDNForceRedirect, error)
+	// 防盗链配置
+	GetReferer() (*SCDNReferer, error)
+	// 浏览器缓存配置
+	GetMaxAge() (*SCDNMaxAge, error)
 
 	Delete() error
 }

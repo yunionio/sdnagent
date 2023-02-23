@@ -976,7 +976,7 @@ func (guest *SGuest) GetNetworks(netId string) ([]SGuestnetwork, error) {
 	return guestnics, nil
 }
 
-func (guest *SGuest) ConvertNetworks(targetGuest *SGuest) error {
+func (guest *SGuest) ConvertEsxiNetworks(targetGuest *SGuest) error {
 	gns, err := guest.GetNetworks("")
 	if err != nil {
 		return err
@@ -985,6 +985,9 @@ func (guest *SGuest) ConvertNetworks(targetGuest *SGuest) error {
 	for ; i < len(gns); i++ {
 		_, err = db.Update(&gns[i], func() error {
 			gns[i].GuestId = targetGuest.Id
+			if gns[i].Driver != "e1000" && gns[i].Driver != "vmxnet3" {
+				gns[i].Driver = "e1000"
+			}
 			return nil
 		})
 		if err != nil {
@@ -5835,6 +5838,7 @@ func (self *SGuest) ToCreateInput(ctx context.Context, userCred mcclient.TokenCr
 	// clean some of user input
 	userInput.GenerateName = ""
 	userInput.Description = ""
+	userInput.Hostname = ""
 	return userInput
 }
 
@@ -6387,7 +6391,21 @@ func (manager *SGuestManager) CustomizedTotalCount(ctx context.Context, userCred
 		return -1, nil, errors.Wrap(err, "SGuestManager query total_disk")
 	}
 
-	log.Debugf("CustomizedTotalCount %s", jsonutils.Marshal(results))
+	// log.Debugf("CustomizedTotalCount %s", jsonutils.Marshal(results))
 
 	return results.Count, jsonutils.Marshal(results), nil
+}
+
+func (guest *SGuest) IsSriov() bool {
+	nics, err := guest.GetNetworks("")
+	if err != nil {
+		log.Errorf("guest.GetNetworks fail %s", err)
+		return false
+	}
+	for i := range nics {
+		if nics[i].Driver == api.NETWORK_DRIVER_VFIO {
+			return true
+		}
+	}
+	return false
 }
