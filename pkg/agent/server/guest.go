@@ -212,6 +212,10 @@ func (g *Guest) clearTc(ctx context.Context) {
 }
 
 func (g *Guest) updateOvn(ctx context.Context) {
+	if g.HostConfig.DisableLocalVpc {
+		return
+	}
+
 	if len(g.VpcNICs) > 0 && g.HostId != "" {
 		ovnMan := g.watcher.ovnMan
 		ovnMan.SetHostId(ctx, g.HostId)
@@ -223,6 +227,10 @@ func (g *Guest) updateOvn(ctx context.Context) {
 }
 
 func (g *Guest) clearOvn(ctx context.Context) {
+	if g.HostConfig.DisableLocalVpc {
+		return
+	}
+
 	ovnMan := g.watcher.ovnMan
 	ovnMan.SetGuestNICs(ctx, g.Id, nil)
 
