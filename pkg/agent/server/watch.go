@@ -79,8 +79,6 @@ func newServersWatcher() (*serversWatcher, error) {
 
 		cmdCh: make(chan wCmdReq),
 	}
-	w.ovnMan = newOvnMan(w)
-	w.ovnMdMan = newOvnMdMan(w)
 	return w, nil
 }
 
@@ -170,6 +168,11 @@ func (w *serversWatcher) Start(ctx context.Context, agent *AgentServer) {
 
 	w.hostConfig = w.agent.hostConfig
 
+	if !w.hostConfig.DisableLocalVpc {
+		w.ovnMan = newOvnMan(w)
+		w.ovnMdMan = newOvnMdMan(w)
+	}
+
 	var err error
 
 	// start watcher before scan
@@ -191,11 +194,13 @@ func (w *serversWatcher) Start(ctx context.Context, agent *AgentServer) {
 		go w.tcMan.Start(ctx)
 	}
 
-	wg.Add(1)
-	go w.ovnMan.Start(ctx)
+	if !w.hostConfig.DisableLocalVpc {
+		wg.Add(1)
+		go w.ovnMan.Start(ctx)
 
-	wg.Add(1)
-	go w.ovnMdMan.Start(ctx)
+		wg.Add(1)
+		go w.ovnMdMan.Start(ctx)
+	}
 
 	// init scan
 	w.hostLocal = NewHostLocal(w)

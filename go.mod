@@ -14,12 +14,12 @@ require (
 	github.com/spf13/viper v1.3.2
 	github.com/vishvananda/netlink v1.1.0
 	github.com/vishvananda/netns v0.0.0-20211101163701-50045581ed74
-	golang.org/x/net v0.1.0
+	golang.org/x/net v0.7.0
 	google.golang.org/grpc v1.38.0
 	google.golang.org/protobuf v1.27.1
 	yunion.io/x/jsonutils v1.0.1-0.20220819091305-3bab322ab4fd
 	yunion.io/x/log v1.0.0
-	yunion.io/x/onecloud v0.3.10-0-alpha2.0.20230118155957-4287c3cd95b7
+	yunion.io/x/onecloud v0.0.0-20230223112202-52a9b945366f
 	yunion.io/x/pkg v1.0.1-0.20230102060551-df05ccecb71c
 )
 
@@ -92,9 +92,9 @@ require (
 	golang.org/x/crypto v0.1.0 // indirect
 	golang.org/x/oauth2 v0.0.0-20210514164344-f6687ab2804c // indirect
 	golang.org/x/sync v0.1.0 // indirect
-	golang.org/x/sys v0.1.0 // indirect
-	golang.org/x/term v0.1.0 // indirect
-	golang.org/x/text v0.4.0 // indirect
+	golang.org/x/sys v0.5.0 // indirect
+	golang.org/x/term v0.5.0 // indirect
+	golang.org/x/text v0.7.0 // indirect
 	golang.org/x/time v0.0.0-20210220033141-f8bda1e9f3ba // indirect
 	google.golang.org/appengine v1.6.6 // indirect
 	google.golang.org/genproto v0.0.0-20210602131652-f16073e35f0c // indirect
@@ -111,10 +111,10 @@ require (
 	moul.io/http2curl/v2 v2.3.0 // indirect
 	sigs.k8s.io/structured-merge-diff/v4 v4.0.1 // indirect
 	sigs.k8s.io/yaml v1.2.0 // indirect
-	yunion.io/x/cloudmux v0.3.10-0-alpha.1.0.20230118073936-d3cbe5f82a65 // indirect
+	yunion.io/x/cloudmux v0.3.10-0-alpha.1.0.20230222084258-da453fa38129 // indirect
 	yunion.io/x/executor v0.0.0-20211018100936-39a2cd966656 // indirect
 	yunion.io/x/s3cli v0.0.0-20190917004522-13ac36d8687e // indirect
-	yunion.io/x/sqlchemy v1.1.2-0.20230102055317-b2aa2b5c26f8 // indirect
+	yunion.io/x/sqlchemy v1.1.2-0.20230209140205-3ee293d3963b // indirect
 	yunion.io/x/structarg v0.0.0-20220312084958-9c6c79c7d1c6 // indirect
 )
 
