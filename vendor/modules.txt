@@ -23,8 +23,8 @@ github.com/beevik/etree
 # github.com/cloudflare/golz4 v0.0.0-20150217214814-ef862a3cdc58
 ## explicit
 github.com/cloudflare/golz4
-# github.com/coredns/coredns v1.3.0
-## explicit
+# github.com/coredns/coredns v1.6.6
+## explicit; go 1.12
 github.com/coredns/coredns/plugin/pkg/log
 # github.com/coreos/go-iptables v0.6.0
 ## explicit; go 1.16
