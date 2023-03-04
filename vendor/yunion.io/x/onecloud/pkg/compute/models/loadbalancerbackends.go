@@ -306,7 +306,12 @@ func (man *SLoadbalancerBackendManager) ValidateCreateData(ctx context.Context, 
 			return nil, httperrors.NewInputParameterError("region of host %q (%s) != region of loadbalancer %q (%s))",
 				host.Name, host.ZoneId, lb.Name, lb.ZoneId)
 		}
-		if host.ManagerId != lb.ManagerId {
+		if len(lb.ManagerId) == 0 {
+			if !utils.IsInStringArray(host.HostType, []string{api.HOST_TYPE_HYPERVISOR, api.HOST_TYPE_ESXI}) {
+				return nil, httperrors.NewInputParameterError("host type of host %q (%s) should be either hypervisor or esxi",
+					host.Name, host.HostType)
+			}
+		} else if host.ManagerId != lb.ManagerId {
 			return nil, httperrors.NewInputParameterError("manager of host %q (%s) != manager of loadbalancer %q (%s))",
 				host.Name, host.ManagerId, lb.Name, lb.ManagerId)
 		}
@@ -410,10 +415,31 @@ func (lbb *SLoadbalancerBackend) ValidateUpdateData(ctx context.Context, userCre
 	return region.GetDriver().ValidateUpdateLoadbalancerBackendData(ctx, userCred, lbbg, input)
 }
 
+func (lbb *SLoadbalancerBackend) PreUpdate(ctx context.Context, userCred mcclient.TokenCredential, query jsonutils.JSONObject, data jsonutils.JSONObject) {
+	doSyncTask := false
+	if data.Contains("port") {
+		port, _ := data.Int("port")
+		if lbb.Port != int(port) {
+			doSyncTask = true
+		}
+	}
+
+	if data.Contains("weight") {
+		weight, _ := data.Int("weight")
+		if lbb.Weight != int(weight) {
+			doSyncTask = true
+		}
+	}
+	data.(*jsonutils.JSONDict).Set("do_sync_task", jsonutils.NewBool(doSyncTask))
+}
+
 func (lbb *SLoadbalancerBackend) PostUpdate(ctx context.Context, userCred mcclient.TokenCredential, query jsonutils.JSONObject, data jsonutils.JSONObject) {
 	lbb.SStatusStandaloneResourceBase.PostUpdate(ctx, userCred, query, data)
 	if data.Contains("port") || data.Contains("weight") {
-		lbb.StartLoadBalancerBackendSyncTask(ctx, userCred, "")
+		doSyncTask, _ := data.Bool("do_sync_task")
+		if doSyncTask {
+			lbb.StartLoadBalancerBackendSyncTask(ctx, userCred, "")
+		}
 	}
 }
 
