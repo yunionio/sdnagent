@@ -1,4 +1,4 @@
-FROM registry.cn-beijing.aliyuncs.com/yunionio/sdnagent-base:v0.0.1
+FROM registry.cn-beijing.aliyuncs.com/yunionio/sdnagent-base:v0.0.2
 
 ENV TZ UTC
 RUN mkdir -p /opt/yunion/bin
