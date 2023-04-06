@@ -83,6 +83,11 @@ func newServersWatcher() (*serversWatcher, error) {
 }
 
 func (w *serversWatcher) newForwardService() fwdpb.ForwarderServer {
+	w.hostConfig = w.agent.hostConfig
+	if !w.hostConfig.DisableLocalVpc {
+		w.ovnMan = newOvnMan(w)
+		w.ovnMdMan = newOvnMdMan(w)
+	}
 	return newOvnMdFwdService(w.ovnMdMan)
 }
 
@@ -165,13 +170,6 @@ func (w *serversWatcher) Start(ctx context.Context, agent *AgentServer) {
 	defer wg.Done()
 
 	w.agent = agent
-
-	w.hostConfig = w.agent.hostConfig
-
-	if !w.hostConfig.DisableLocalVpc {
-		w.ovnMan = newOvnMan(w)
-		w.ovnMdMan = newOvnMdMan(w)
-	}
 
 	var err error
 
