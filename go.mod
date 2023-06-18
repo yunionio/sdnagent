@@ -102,14 +102,14 @@ require (
 	gopkg.in/inf.v0 v0.9.1 // indirect
 	gopkg.in/ini.v1 v1.62.0 // indirect
 	gopkg.in/yaml.v2 v2.4.0 // indirect
-	k8s.io/api v0.19.3 // indirect
-	k8s.io/apimachinery v0.19.3 // indirect
-	k8s.io/client-go v0.19.3 // indirect
+	k8s.io/api v0.20.0 // indirect
+	k8s.io/apimachinery v0.20.0 // indirect
+	k8s.io/client-go v0.20.0 // indirect
 	k8s.io/cluster-bootstrap v0.19.3 // indirect
-	k8s.io/klog/v2 v2.2.0 // indirect
-	k8s.io/utils v0.0.0-20200729134348-d5654de09c73 // indirect
+	k8s.io/klog/v2 v2.4.0 // indirect
+	k8s.io/utils v0.0.0-20201110183641-67b214c5f920 // indirect
 	moul.io/http2curl/v2 v2.3.0 // indirect
-	sigs.k8s.io/structured-merge-diff/v4 v4.0.1 // indirect
+	sigs.k8s.io/structured-merge-diff/v4 v4.0.2 // indirect
 	sigs.k8s.io/yaml v1.2.0 // indirect
 	yunion.io/x/cloudmux v0.3.10-0-alpha.1.0.20230303123627-557af65a8433 // indirect
 	yunion.io/x/executor v0.0.0-20211018100936-39a2cd966656 // indirect
