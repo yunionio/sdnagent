@@ -31,6 +31,7 @@ type ICloudResource interface {
 	GetName() string
 	GetGlobalId() string
 	GetCreatedAt() time.Time
+	GetDescription() string
 
 	GetStatus() string
 
@@ -193,7 +194,7 @@ type ICloudRegion interface {
 
 	GetIModelartsPools() ([]ICloudModelartsPool, error)
 	GetIModelartsPoolById(id string) (ICloudModelartsPool, error)
-	CreateIModelartsPool(pool *ModelartsPoolCreateOption) (ICloudModelartsPool, error)
+	CreateIModelartsPool(pool *ModelartsPoolCreateOption, callback func(externalId string)) (ICloudModelartsPool, error)
 	GetIModelartsPoolSku() ([]ICloudModelartsPoolSku, error)
 
 	GetIMiscResources() ([]ICloudMiscResource, error)
@@ -242,8 +243,6 @@ type ICloudStoragecache interface {
 	GetIImageById(extId string) (ICloudImage, error)
 
 	GetPath() string
-
-	CreateIImage(snapshotId, imageName, osType, imageDesc string) (ICloudImage, error)
 
 	DownloadImage(imageId string, extId string, path string) (jsonutils.JSONObject, error)
 
@@ -468,10 +467,10 @@ type ICloudSecurityGroup interface {
 	IVirtualResource
 
 	GetDescription() string
+	// 返回的优先级字段(priority)要求数字越大优先级越高, 若有默认不可修改的allow规则依然需要返回
 	GetRules() ([]SecurityRule, error)
 	GetVpcId() string
 
-	SyncRules(common, inAdds, outAdds, inDels, outDels []SecurityRule) error
 	GetReferences() ([]SecurityGroupReference, error)
 	Delete() error
 }
@@ -855,7 +854,7 @@ type ICloudSku interface {
 
 	GetGpuAttachable() bool
 	GetGpuSpec() string
-	GetGpuCount() int
+	GetGpuCount() string
 	GetGpuMaxCount() int
 
 	Delete() error
@@ -1263,24 +1262,25 @@ type ICloudgroup interface {
 }
 
 type ICloudDnsZone interface {
-	ICloudResource
+	IVirtualResource
 
 	GetZoneType() TDnsZoneType
-	GetOptions() *jsonutils.JSONDict
 
 	GetICloudVpcIds() ([]string, error)
 	AddVpc(*SPrivateZoneVpc) error
 	RemoveVpc(*SPrivateZoneVpc) error
 
-	GetIDnsRecordSets() ([]ICloudDnsRecordSet, error)
-	SyncDnsRecordSets(common, add, del, update []DnsRecordSet) error
+	GetIDnsRecords() ([]ICloudDnsRecord, error)
+	GetIDnsRecordById(id string) (ICloudDnsRecord, error)
+
+	AddDnsRecord(*DnsRecord) (string, error)
 
 	Delete() error
 
 	GetDnsProductType() TDnsProductType
 }
 
-type ICloudDnsRecordSet interface {
+type ICloudDnsRecord interface {
 	GetGlobalId() string
 
 	GetDnsName() string
@@ -1291,9 +1291,14 @@ type ICloudDnsRecordSet interface {
 	GetTTL() int64
 	GetMxPriority() int64
 
+	Update(*DnsRecord) error
+
+	Enable() error
+	Disable() error
+
 	GetPolicyType() TDnsPolicyType
 	GetPolicyValue() TDnsPolicyValue
-	GetPolicyOptions() *jsonutils.JSONDict
+	Delete() error
 }
 
 type ICloudVpcPeeringConnection interface {

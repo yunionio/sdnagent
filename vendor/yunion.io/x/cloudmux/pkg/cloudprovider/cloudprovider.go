@@ -247,6 +247,12 @@ type ICloudProviderFactory interface {
 	GetAccountIdEqualizer() func(origin, now string) bool
 }
 
+type SBalanceInfo struct {
+	Currency string
+	Amount   float64
+	Status   string
+}
+
 type ICloudProvider interface {
 	GetFactory() ICloudProviderFactory
 
@@ -261,7 +267,7 @@ type ICloudProvider interface {
 
 	GetOnPremiseIRegion() (ICloudRegion, error)
 
-	GetBalance() (float64, string, error)
+	GetBalance() (*SBalanceInfo, error)
 
 	GetSubAccounts() ([]SSubAccount, error)
 	GetAccountId() string
@@ -629,7 +635,7 @@ func (self *SBaseProvider) GetIModelartsPoolById(id string) (ICloudModelartsPool
 	return nil, errors.Wrapf(ErrNotImplemented, "GetIModelartsPoolDetail")
 }
 
-func (self *SBaseProvider) CreateIModelartsPool(pool *ModelartsPoolCreateOption) (ICloudModelartsPool, error) {
+func (self *SBaseProvider) CreateIModelartsPool(pool *ModelartsPoolCreateOption, callback func(id string)) (ICloudModelartsPool, error) {
 	return nil, errors.Wrapf(ErrNotImplemented, "CreateIModelartsPool")
 }
 
@@ -938,6 +944,7 @@ type ICloudModelartsPool interface {
 	GetWorkType() string
 	GetNodeCount() int
 	ChangeConfig(opts *ModelartsPoolChangeConfigOptions) error
+	GetStatusMessage() string
 }
 
 type ICloudModelartsPoolSku interface {

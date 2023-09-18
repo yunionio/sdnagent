@@ -183,15 +183,15 @@ func (manager *SLoadbalancerListenerManager) FetchOwnerId(ctx context.Context, d
 	return db.FetchProjectInfo(ctx, data)
 }
 
-func (man *SLoadbalancerListenerManager) FilterByOwner(q *sqlchemy.SQuery, userCred mcclient.IIdentityProvider, scope rbacscope.TRbacScope) *sqlchemy.SQuery {
-	if userCred != nil {
+func (man *SLoadbalancerListenerManager) FilterByOwner(q *sqlchemy.SQuery, manager db.FilterByOwnerProvider, userCred mcclient.TokenCredential, ownerId mcclient.IIdentityProvider, scope rbacscope.TRbacScope) *sqlchemy.SQuery {
+	if ownerId != nil {
 		sq := LoadbalancerManager.Query("id")
 		switch scope {
 		case rbacscope.ScopeProject:
-			sq = sq.Equals("tenant_id", userCred.GetProjectId())
+			sq = sq.Equals("tenant_id", ownerId.GetProjectId())
 			return q.In("loadbalancer_id", sq.SubQuery())
 		case rbacscope.ScopeDomain:
-			sq = sq.Equals("domain_id", userCred.GetProjectDomainId())
+			sq = sq.Equals("domain_id", ownerId.GetProjectDomainId())
 			return q.In("loadbalancer_id", sq.SubQuery())
 		}
 	}
@@ -497,6 +497,7 @@ func (manager *SLoadbalancerListenerManager) FetchCustomizeColumns(
 	lbaclRows := manager.SLoadbalancerAclResourceBaseManager.FetchCustomizeColumns(ctx, userCred, query, objs, fields, isList)
 	lbcertRows := manager.SLoadbalancerCertificateResourceBaseManager.FetchCustomizeColumns(ctx, userCred, query, objs, fields, isList)
 	lbbgIds := make([]string, len(objs))
+	lbIds := make([]string, len(objs))
 	for i := range rows {
 		rows[i] = api.LoadbalancerListenerDetails{
 			StatusStandaloneResourceDetails:     stdRows[i],
@@ -505,10 +506,26 @@ func (manager *SLoadbalancerListenerManager) FetchCustomizeColumns(
 			LoadbalancerCertificateResourceInfo: lbcertRows[i],
 		}
 		lis := objs[i].(*SLoadbalancerListener)
+		lbIds[i] = lis.LoadbalancerId
 		lbbgIds[i] = lis.BackendGroupId
 	}
+
+	lbs := map[string]SLoadbalancer{}
+	err := db.FetchStandaloneObjectsByIds(LoadbalancerManager, lbIds, &lbs)
+	if err != nil {
+		return rows
+	}
+
+	virObjs := make([]interface{}, len(objs))
+	for i := range rows {
+		if lb, ok := lbs[lbIds[i]]; ok {
+			virObjs[i] = &lb
+			rows[i].ProjectId = lb.ProjectId
+		}
+	}
+
 	lbbgs := map[string]SLoadbalancerBackendGroup{}
-	err := db.FetchModelObjectsByIds(LoadbalancerBackendGroupManager, "id", lbbgIds, &lbbgs)
+	err = db.FetchModelObjectsByIds(LoadbalancerBackendGroupManager, "id", lbbgIds, &lbbgs)
 	if err != nil {
 		return rows
 	}

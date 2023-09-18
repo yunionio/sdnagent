@@ -112,6 +112,8 @@ const (
 	ACT_VM_SYNC_ISOLATED_DEVICE = "vm_sync_isolated_device"
 
 	ACT_CACHED_IMAGE = "cached_image"
+	// 同步云上项目
+	ACT_SYNC_CLOUD_PROJECT = "sync_cloud_project"
 
 	ACT_REBOOT        = "reboot"
 	ACT_CHANGE_CONFIG = "change_config"
@@ -204,8 +206,8 @@ const (
 	ACT_SEND_VERIFICATION = "send_verification"
 	ACT_REPULL_SUBCONTACT = "repull_subcontact"
 
-	ACT_SYNC_VPCS        = "sync_vpcs"
-	ACT_SYNC_RECORD_SETS = "sync_record_sets"
+	ACT_ADD_VPCS    = "add_vpcs"
+	ACT_REMOVE_VPCS = "remove_vpcs"
 
 	ACT_DETACH_ALERTRESOURCE          = "detach_alertresoruce"
 	ACT_NETWORK_ADD_VPC               = "network_add_vpc"
@@ -244,4 +246,15 @@ const (
 	ACT_INIT_NOTIFY_CONFIGMAP = "init_notify_configmap"
 
 	ACT_EXPORT = "export"
+
+	ACT_CANCEL = "cancel"
+	ACT_START  = "start"
+	ACT_DONE   = "done"
+
+	ACT_ASSOCIATE  = "associate"
+	ACT_DISSOCIATE = "dissociate"
+
+	ACT_ADD_BASTION_SERVER = "add_bastion_server"
+
+	ACT_SYNC_TRAFFIC_LIMIT = "sync_traffic_limit"
 )

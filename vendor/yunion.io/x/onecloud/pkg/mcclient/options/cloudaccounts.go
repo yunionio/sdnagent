@@ -30,6 +30,10 @@ type CloudaccountListOptions struct {
 
 	//DistinctField string `help:"distinct field"`
 	ProxySetting string `help:"Proxy setting id or name"`
+	// 按宿主机数量排序
+	OrderByHostCount string
+	// 按虚拟机数量排序
+	OrderByGuestCount string
 }
 
 func (opts *CloudaccountListOptions) Params() (jsonutils.JSONObject, error) {
@@ -46,6 +50,8 @@ type SVMwareCredentialWithEnvironment struct {
 
 	Host string `help:"VMware VCenter/ESXi host" positional:"true"`
 	Port string `help:"VMware VCenter/ESXi host port" default:"443"`
+
+	Zone string `help:"zone for this account"`
 }
 
 type SNutanixCredentialWithEnvironment struct {
@@ -112,8 +118,9 @@ type SCloudAccountCreateBaseOptions struct {
 	Desc  string `help:"Description" token:"desc" json:"description"`
 	Brand string `help:"Brand of cloud account" choices:"DStack"`
 
-	AutoCreateProject bool `help:"Enable the account with same name project"`
-	EnableAutoSync    bool `help:"Enable automatically synchronize resources of this account"`
+	AutoCreateProject            bool `help:"Enable the account with same name project"`
+	AutoCreateProjectForProvider bool `help:"Is Auto Create Project For Provider"`
+	EnableAutoSync               bool `help:"Enable automatically synchronize resources of this account"`
 
 	SyncIntervalSeconds int `help:"Interval to synchronize if auto sync is enable" metavar:"SECONDS"`
 
@@ -134,6 +141,10 @@ type SCloudAccountCreateBaseOptions struct {
 	ProjectMappingId   string
 	EnableProjectSync  bool
 	EnableResourceSync bool
+
+	SkipSyncResources []string `help:"Skip sync resource, etc snapshot"`
+
+	Currency string `choices:"CNY|USD"`
 }
 
 type SVMwareCloudAccountCreateOptions struct {
@@ -302,6 +313,8 @@ type SHCSOAccountCreateOptions struct {
 	SCloudAccountCreateBaseOptions
 	cloudprovider.SHCSOEndpoints
 	SAccessKeyCredential
+
+	DefaultRegion string `json:"default_region"`
 }
 
 func (opts *SHCSOAccountCreateOptions) Params() (jsonutils.JSONObject, error) {
@@ -453,6 +466,9 @@ func (opts *SCloudAccountIdOptions) Params() (jsonutils.JSONObject, error) {
 type SVMwareCloudAccountUpdateCredentialOptions struct {
 	SCloudAccountIdOptions
 	SUserPasswordCredential
+
+	Host string `help:"VMware VCenter/ESXi host"`
+	Port string `help:"VMware VCenter/ESXi host port" default:"443"`
 }
 
 func (opts *SVMwareCloudAccountUpdateCredentialOptions) Params() (jsonutils.JSONObject, error) {
@@ -620,7 +636,13 @@ type SCloudAccountUpdateBaseOptions struct {
 
 	CleanLakeOfPermissions bool `help:"clean lake of permissions"`
 
+	SkipSyncResources       []string
+	AddSkipSyncResources    []string
+	RemoveSkipSyncResources []string
+
 	Desc string `help:"Description" json:"description" token:"desc"`
+
+	Currency string `choices:"CNY|USD"`
 }
 
 func (opts *SCloudAccountUpdateBaseOptions) Params() (jsonutils.JSONObject, error) {
@@ -971,9 +993,10 @@ func (opts *SCloudpodsCloudAccountUpdateOptions) Params() (jsonutils.JSONObject,
 	return jsonutils.Marshal(opts), nil
 }
 
-type SVMwareCloudAccountPrepareNetsOptions struct {
+/*type SVMwareCloudAccountPrepareNetsOptions struct {
 	SVMwareCredentialWithEnvironment
 
+	Zone          string `help:"zone for this account"`
 	Project       string `help:"project for this account"`
 	ProjectDomain string `help:"domain for this account"`
 	WireLevel     string `help:"wire level for this account" choices:"vcenter|datacenter|cluster" json:"wire_level_for_vmware"`
@@ -985,7 +1008,7 @@ func (opts *SVMwareCloudAccountPrepareNetsOptions) Params() (jsonutils.JSONObjec
 	params := jsonutils.Marshal(opts)
 	params.(*jsonutils.JSONDict).Add(jsonutils.NewString("VMware"), "provider")
 	return params, nil
-}
+}*/
 
 type SApsaraCloudAccountCreateOptions struct {
 	SCloudAccountCreateBaseOptions
@@ -1120,13 +1143,15 @@ func (opts *SubscriptionCreateOptions) Params() (jsonutils.JSONObject, error) {
 
 type ClouaccountProjectMappingOptions struct {
 	SCloudAccountIdOptions
+	ProjectId          string `json:"project_id" help:"default project id"`
+	AutoCreateProject  bool   `help:"auto create project"`
 	ProjectMappingId   string `json:"project_mapping_id" help:"project mapping id"`
 	EnableProjectSync  bool
 	EnableResourceSync bool
 }
 
 func (opts *ClouaccountProjectMappingOptions) Params() (jsonutils.JSONObject, error) {
-	return jsonutils.Marshal(map[string]string{"project_mapping_id": opts.ProjectMappingId}), nil
+	return jsonutils.Marshal(opts), nil
 }
 
 type SNutanixCloudAccountCreateOptions struct {
@@ -1153,6 +1178,10 @@ type SNutanixCloudAccountUpdateOptions struct {
 	SCloudAccountUpdateBaseOptions
 }
 
+func (opts *SNutanixCloudAccountUpdateOptions) Params() (jsonutils.JSONObject, error) {
+	return jsonutils.Marshal(opts), nil
+}
+
 type SBingoCloudAccountCreateOptions struct {
 	SCloudAccountCreateBaseOptions
 	Endpoint string
@@ -1167,6 +1196,10 @@ func (opts *SBingoCloudAccountCreateOptions) Params() (jsonutils.JSONObject, err
 
 type SBingoCloudAccountUpdateOptions struct {
 	SCloudAccountUpdateBaseOptions
+}
+
+func (opts *SBingoCloudAccountUpdateOptions) Params() (jsonutils.JSONObject, error) {
+	return jsonutils.Marshal(opts), nil
 }
 
 type SBingoCloudAccountUpdateCredentialOptions struct {
@@ -1194,6 +1227,10 @@ type SInCloudSphereAccountUpdateOptions struct {
 	SCloudAccountUpdateBaseOptions
 }
 
+func (opts *SInCloudSphereAccountUpdateOptions) Params() (jsonutils.JSONObject, error) {
+	return jsonutils.Marshal(opts), nil
+}
+
 type SInCloudSphereAccountUpdateCredentialOptions struct {
 	SCloudAccountIdOptions
 	SAccessKeyCredential
@@ -1216,6 +1253,10 @@ func (opts *SProxmoxAccountCreateOptions) Params() (jsonutils.JSONObject, error)
 
 type SProxmoxAccountUpdateOptions struct {
 	SCloudAccountUpdateBaseOptions
+}
+
+func (opts *SProxmoxAccountUpdateOptions) Params() (jsonutils.JSONObject, error) {
+	return jsonutils.Marshal(opts), nil
 }
 
 type SProxmoxAccountUpdateCredentialOptions struct {

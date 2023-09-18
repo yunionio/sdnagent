@@ -47,6 +47,7 @@ const (
 	HOST_TYPE_INCLOUD_SPHERE = compute.HOST_TYPE_INCLOUD_SPHERE
 	HOST_TYPE_PROXMOX        = compute.HOST_TYPE_PROXMOX
 	HOST_TYPE_REMOTEFILE     = compute.HOST_TYPE_REMOTEFILE
+	HOST_TYPE_H3C            = compute.HOST_TYPE_H3C
 
 	HOST_TYPE_DEFAULT = HOST_TYPE_HYPERVISOR
 
@@ -136,6 +137,7 @@ var HOST_TYPES = []string{
 	HOST_TYPE_INCLOUD_SPHERE,
 	HOST_TYPE_PROXMOX,
 	HOST_TYPE_REMOTEFILE,
+	HOST_TYPE_H3C,
 }
 
 var NIC_TYPES = []string{NIC_TYPE_IPMI, NIC_TYPE_ADMIN}
@@ -160,6 +162,7 @@ const (
 const (
 	HOSTMETA_AUTO_MIGRATE_ON_HOST_DOWN     = "__auto_migrate_on_host_down"
 	HOSTMETA_AUTO_MIGRATE_ON_HOST_SHUTDOWN = "__auto_migrate_on_host_shutdown"
+	HOSTMETA_HOST_ERRORS                   = "__host_errors"
 )
 
 const (

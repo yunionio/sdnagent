@@ -14,7 +14,9 @@
 
 package compute
 
-import "yunion.io/x/onecloud/pkg/apis"
+import (
+	"yunion.io/x/onecloud/pkg/apis"
+)
 
 type SElasticipCreateInput struct {
 	apis.VirtualResourceCreateInput
@@ -70,7 +72,14 @@ type SElasticipCreateInput struct {
 	// 指定新建EIP的地址
 	IpAddr string `json:"ip_addr"`
 
-	// description: BgpType for the new eip
+	// 线路类型
+	//
+	//
+	//
+	// | 平台       |    支持类型            |  说明 |
+	// | ---        |    --------            | ---   |
+	// |Aliyun      | BGP, BGP_PRO(精品线路)           | 部分区域不支持BGP_PRO|
+	// default: BGP
 	BgpType string `json:"bgp_type"`
 
 	BandwidthMb int `json:"bandwidth"`
@@ -85,6 +94,26 @@ type ElasticipDetails struct {
 
 	// 绑定资源名称
 	AssociateName string `json:"associate_name"`
+}
+
+func (self ElasticipDetails) GetMetricTags() map[string]string {
+	ret := map[string]string{
+		"id":             self.Id,
+		"name":           self.Name,
+		"status":         self.Status,
+		"mode":           self.Mode,
+		"cloudregion":    self.Cloudregion,
+		"cloudregion_id": self.CloudregionId,
+		"region_ext_id":  self.RegionExtId,
+		"tenant":         self.Project,
+		"tenant_id":      self.ProjectId,
+		"brand":          self.Brand,
+		"domain_id":      self.DomainId,
+		"project_domain": self.ProjectDomain,
+		"ip_addr":        self.IpAddr,
+		"external_id":    self.ExternalId,
+	}
+	return ret
 }
 
 type ElasticipSyncstatusInput struct {
@@ -113,4 +142,9 @@ type ElasticDissociateInput struct {
 	// 是否解绑后自动删除弹性公网IP
 	// default: false
 	AutoDelete bool `json:"auto_delete"`
+}
+
+type ElasticipRemoteUpdateInput struct {
+	// 是否覆盖替换所有标签
+	ReplaceTags *bool `json:"replace_tags" help:"replace all remote tags"`
 }

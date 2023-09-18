@@ -84,9 +84,6 @@ const (
 	IdentitySyncStatusIdle    = "idle"
 
 	MinimalSyncIntervalSeconds = 5 * 60 // 5 minutes
-
-	MaxUserRolesInProject  = 10
-	MaxGroupRolesInProject = 5
 )
 
 var (
@@ -116,6 +113,7 @@ var (
 			"global_https_proxy",
 			"ignore_nonrunning_guests",
 			"platform_name",
+			"enable_cloud_shell",
 			"platform_names",
 		},
 	}
@@ -154,6 +152,7 @@ var (
 
 			"is_slave_node",
 			"config_sync_period_seconds",
+			"enable_app_profiling",
 
 			// ############################
 			// db blacklist options
@@ -227,6 +226,11 @@ var (
 			"deploy_server_socket_path",
 			"enable_remote_executor",
 			"executor_socket_path",
+
+			// ############################
+			// kubeserver blacklist options
+			// ############################
+			"running_mode",
 		},
 	}
 )

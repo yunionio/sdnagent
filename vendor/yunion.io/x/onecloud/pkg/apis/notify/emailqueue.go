@@ -24,6 +24,8 @@ import (
 
 type SEmailMessage struct {
 	To      []string `json:"to"`
+	Cc      []string `json:"cc"`
+	Bcc     []string `json:"bcc"`
 	Subject string   `json:"subject"`
 	Body    string   `json:"body"`
 
@@ -52,6 +54,10 @@ type EmailQueueCreateInput struct {
 	// swagger: ignore
 	Dest string `json:"dest"`
 	// swagger: ignore
+	DestCc string `json:"dest_cc"`
+	// swagger: ignore
+	DestBcc string `json:"dest_bcc"`
+	// swagger: ignore
 	Content jsonutils.JSONObject `json:"content"`
 
 	// swagger: ignore
@@ -72,6 +78,8 @@ type EmailQueueCreateInput struct {
 	Domain string `json:"domain"`
 	// swagger: ignore
 	Roles string `json:"roles"`
+
+	MoreDetails map[string]string `json:"more_datails"`
 
 	SessionId string `json:"session_id"`
 }

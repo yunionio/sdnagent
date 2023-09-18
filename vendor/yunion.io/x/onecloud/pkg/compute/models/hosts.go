@@ -107,7 +107,7 @@ type SHost struct {
 	Slots string `width:"16" charset:"ascii" nullable:"true" get:"domain" update:"domain" create:"domain_optional"`
 
 	// 管理口MAC
-	AccessMac string `width:"32" charset:"ascii" nullable:"false" index:"true" list:"domain" update:"domain"`
+	AccessMac string `width:"32" charset:"ascii" nullable:"true" index:"true" list:"domain" update:"domain"`
 
 	// 管理口Ip地址
 	AccessIp string `width:"16" charset:"ascii" nullable:"true" list:"domain" update:"domain"`
@@ -270,14 +270,24 @@ func (manager *SHostManager) ListItemFilter(
 		}
 	}
 	if len(query.AnyIp) > 0 {
-		hn := HostnetworkManager.Query("baremetal_id").Contains("ip_addr", query.AnyIp).SubQuery()
+		hnQ := HostnetworkManager.Query("baremetal_id") //.Contains("ip_addr", query.AnyIp).SubQuery()
+		conditions := []sqlchemy.ICondition{}
+		for _, ip := range query.AnyIp {
+			conditions = append(conditions, sqlchemy.Contains(hnQ.Field("ip_addr"), ip))
+		}
+		hn := hnQ.Filter(
+			sqlchemy.OR(conditions...),
+		)
+		conditions = []sqlchemy.ICondition{}
+		for _, ip := range query.AnyIp {
+			conditions = append(conditions, sqlchemy.Contains(q.Field("access_ip"), ip))
+			conditions = append(conditions, sqlchemy.Contains(q.Field("ipmi_ip"), ip))
+		}
+		conditions = append(conditions, sqlchemy.In(q.Field("id"), hn))
 		q = q.Filter(sqlchemy.OR(
-			sqlchemy.Contains(q.Field("access_ip"), query.AnyIp),
-			sqlchemy.Contains(q.Field("ipmi_ip"), query.AnyIp),
-			sqlchemy.In(q.Field("id"), hn),
+			conditions...,
 		))
 	}
-	// var scopeQuery *sqlchemy.SSubQuery
 
 	schedTagStr := query.SchedtagId
 	if len(schedTagStr) > 0 {
@@ -790,71 +800,11 @@ func (self *SHost) StartDeleteBaremetalTask(ctx context.Context, userCred mcclie
 	if err != nil {
 		return err
 	}
-	task.ScheduleRun(nil)
-	return nil
+	return task.ScheduleRun(nil)
 }
 
 func (self *SHost) RealDelete(ctx context.Context, userCred mcclient.TokenCredential) error {
-	DeleteResourceJointSchedtags(self, ctx, userCred)
-
-	// delete tap devices
-	if err := NetTapServiceManager.removeTapServicesByHostId(ctx, userCred, self.Id); err != nil {
-		return errors.Wrap(err, "NetTapServiceManager.getTapServicesByHostId")
-	}
-	if err := NetTapFlowManager.removeTapFlowsByHostId(ctx, userCred, self.Id); err != nil {
-		return errors.Wrap(err, "NetTapFlowManager.getTapFlowsByHostId")
-	}
-
-	IsolatedDeviceManager.DeleteDevicesByHost(ctx, userCred, self)
-
-	for _, hoststorage := range self.GetHoststorages() {
-		storage := hoststorage.GetStorage()
-		if storage != nil && storage.IsLocal() {
-			cnt, err := storage.GetDiskCount()
-			if err != nil {
-				return errors.Wrapf(err, "GetDiskCount")
-			}
-			if cnt > 0 {
-				return httperrors.NewNotEmptyError("Inconsistent: local storage is not empty???")
-			}
-		}
-	}
-	for _, hoststorage := range self.GetHoststorages() {
-		storage := hoststorage.GetStorage()
-		hoststorage.Delete(ctx, userCred)
-		if storage != nil && storage.IsLocal() {
-			storage.Delete(ctx, userCred)
-		}
-	}
-	for _, bn := range self.GetBaremetalnetworks() {
-		self.DeleteBaremetalnetwork(ctx, userCred, &bn, false)
-	}
-	for _, netif := range self.GetNetInterfaces() {
-		netif.Remove(ctx, userCred)
-	}
-	for _, hostwire := range self.GetHostwires() {
-		hostwire.Detach(ctx, userCred)
-		// hostwire.Delete(ctx, userCred) ???
-	}
-	baremetalStorage := self.GetBaremetalstorage()
-	if baremetalStorage != nil {
-		store := baremetalStorage.GetStorage()
-		baremetalStorage.Delete(ctx, userCred)
-		if store != nil {
-			store.Delete(ctx, userCred)
-		}
-	}
-	backends, err := self.GetLoadbalancerBackends()
-	if err != nil {
-		return errors.Wrapf(err, "GetLoadbalancerBackends")
-	}
-	for i := range backends {
-		err := backends[i].RealDelete(ctx, userCred)
-		if err != nil {
-			return errors.Wrapf(err, "backend real delete %s", backends[i].Id)
-		}
-	}
-	return self.SEnabledStatusInfrasResourceBase.Delete(ctx, userCred)
+	return self.purge(ctx, userCred)
 }
 
 func (self *SHost) GetLoadbalancerBackends() ([]SLoadbalancerBackend, error) {
@@ -880,6 +830,13 @@ func (self *SHost) GetHoststorages() []SHoststorage {
 		return nil
 	}
 	return hoststorages
+}
+
+func (self *SHost) GetStorages() ([]SStorage, error) {
+	sq := HoststorageManager.Query("storage_id").Equals("host_id", self.Id).SubQuery()
+	q := StorageManager.Query().In("id", sq)
+	storages := []SStorage{}
+	return storages, db.FetchModelObjects(StorageManager, q, &storages)
 }
 
 func (self *SHost) GetHoststorageOfId(storageId string) *SHoststorage {
@@ -1119,6 +1076,31 @@ func (self *SHostManager) IsNewNameUnique(name string, userCred mcclient.TokenCr
 		return false, err
 	}
 	return cnt == 0, nil
+}
+
+func (self *SHostManager) GetPropertyK8sMasterNodeIps(ctx context.Context, userCred mcclient.TokenCredential, query jsonutils.JSONObject) (jsonutils.JSONObject, error) {
+	cli, err := tokens.GetCoreClient()
+	if err != nil {
+		return nil, errors.Wrap(err, "get k8s client")
+	}
+	nodes, err := cli.Nodes().List(context.Background(), metav1.ListOptions{
+		LabelSelector: "node-role.kubernetes.io/master",
+	})
+	if err != nil {
+		return nil, errors.Wrap(err, "list master nodes")
+	}
+	ips := make([]string, 0)
+	for i := range nodes.Items {
+		for j := range nodes.Items[i].Status.Addresses {
+			if nodes.Items[i].Status.Addresses[j].Type == v1.NodeInternalIP {
+				ips = append(ips, nodes.Items[i].Status.Addresses[j].Address)
+			}
+		}
+	}
+	log.Infof("k8s master nodes ips %v", ips)
+	res := jsonutils.NewDict()
+	res.Set("ips", jsonutils.Marshal(ips))
+	return res, nil
 }
 
 func (self *SHostManager) GetPropertyBmStartRegisterScript(ctx context.Context, userCred mcclient.TokenCredential, query jsonutils.JSONObject) (jsonutils.JSONObject, error) {
@@ -1780,13 +1762,13 @@ func (manager *SHostManager) getHostsByZoneProvider(zone *SZone, provider *SClou
 	return hosts, nil
 }
 
-func (manager *SHostManager) SyncHosts(ctx context.Context, userCred mcclient.TokenCredential, provider *SCloudprovider, zone *SZone, hosts []cloudprovider.ICloudHost) ([]SHost, []cloudprovider.ICloudHost, compare.SyncResult) {
+func (manager *SHostManager) SyncHosts(ctx context.Context, userCred mcclient.TokenCredential, provider *SCloudprovider, zone *SZone, hosts []cloudprovider.ICloudHost, xor bool) ([]SHost, []cloudprovider.ICloudHost, compare.SyncResult) {
 	key := provider.Id
 	if zone != nil {
 		key = fmt.Sprintf("%s-%s", zone.Id, provider.Id)
 	}
-	lockman.LockRawObject(ctx, "hosts", key)
-	defer lockman.ReleaseRawObject(ctx, "hosts", key)
+	lockman.LockRawObject(ctx, manager.Keyword(), key)
+	defer lockman.ReleaseRawObject(ctx, manager.Keyword(), key)
 
 	localHosts := make([]SHost, 0)
 	remoteHosts := make([]cloudprovider.ICloudHost, 0)
@@ -1821,14 +1803,15 @@ func (manager *SHostManager) SyncHosts(ctx context.Context, userCred mcclient.To
 		}
 	}
 	for i := 0; i < len(commondb); i += 1 {
-		err = commondb[i].syncWithCloudHost(ctx, userCred, commonext[i], provider)
-		if err != nil {
-			syncResult.UpdateError(err)
-		} else {
-			localHosts = append(localHosts, commondb[i])
-			remoteHosts = append(remoteHosts, commonext[i])
-			syncResult.Update()
+		if !xor {
+			err = commondb[i].syncWithCloudHost(ctx, userCred, commonext[i], provider)
+			if err != nil {
+				syncResult.UpdateError(err)
+			}
 		}
+		localHosts = append(localHosts, commondb[i])
+		remoteHosts = append(remoteHosts, commonext[i])
+		syncResult.Update()
 	}
 	for i := 0; i < len(added); i += 1 {
 		new, err := manager.NewFromCloudHost(ctx, userCred, added[i], provider, zone)
@@ -1919,6 +1902,7 @@ func (self *SHost) syncWithCloudHost(ctx context.Context, userCred mcclient.Toke
 		SyncCloudDomain(userCred, self, provider.GetOwnerId())
 		self.SyncShareState(ctx, userCred, provider.getAccountShareInfo())
 	}
+	syncMetadata(ctx, userCred, self, extHost)
 
 	if err := self.syncSchedtags(ctx, userCred, extHost); err != nil {
 		log.Errorf("syncSchedtags fail:  %v", err)
@@ -2091,16 +2075,16 @@ func (manager *SHostManager) NewFromCloudHost(ctx context.Context, userCred mccl
 		accessIp := extHost.GetAccessIp()
 		if len(accessIp) == 0 {
 			msg := fmt.Sprintf("fail to find wire for host %s: empty host access ip", extHost.GetName())
-			log.Errorf(msg)
 			return nil, fmt.Errorf(msg)
 		}
 		wire, err := WireManager.GetOnPremiseWireOfIp(accessIp)
 		if err != nil {
-			msg := fmt.Sprintf("fail to find wire for host %s %s: %s", extHost.GetName(), accessIp, err)
-			log.Errorf(msg)
-			return nil, fmt.Errorf(msg)
+			return nil, errors.Wrapf(err, "GetOnPremiseWireOfIp for host %s with ip %s", extHost.GetName(), accessIp)
 		}
-		izone, _ = wire.GetZone()
+		izone, err = wire.GetZone()
+		if err != nil {
+			return nil, errors.Wrapf(err, "get zone for wire %s", wire.Name)
+		}
 	}
 
 	host.ExternalId = extHost.GetGlobalId()
@@ -2189,7 +2173,7 @@ func (manager *SHostManager) NewFromCloudHost(ctx context.Context, userCred mccl
 	return &host, nil
 }
 
-func (self *SHost) SyncHostStorages(ctx context.Context, userCred mcclient.TokenCredential, storages []cloudprovider.ICloudStorage, provider *SCloudprovider) ([]SStorage, []cloudprovider.ICloudStorage, compare.SyncResult) {
+func (self *SHost) SyncHostStorages(ctx context.Context, userCred mcclient.TokenCredential, storages []cloudprovider.ICloudStorage, provider *SCloudprovider, xor bool) ([]SStorage, []cloudprovider.ICloudStorage, compare.SyncResult) {
 	lockman.LockRawObject(ctx, "storages", self.Id)
 	defer lockman.ReleaseRawObject(ctx, "storages", self.Id)
 
@@ -2238,15 +2222,16 @@ func (self *SHost) SyncHostStorages(ctx context.Context, userCred mcclient.Token
 	}
 
 	for i := 0; i < len(commondb); i += 1 {
-		log.Infof("host %s is still connected with %s, to update ...", self.Id, commondb[i].Id)
-		err := self.syncWithCloudHostStorage(ctx, userCred, &commondb[i], commonext[i], provider)
-		if err != nil {
-			syncResult.UpdateError(err)
-		} else {
-			localStorages = append(localStorages, commondb[i])
-			remoteStorages = append(remoteStorages, commonext[i])
-			syncResult.Update()
+		if !xor {
+			log.Infof("host %s is still connected with %s, to update ...", self.Id, commondb[i].Id)
+			err := self.syncWithCloudHostStorage(ctx, userCred, &commondb[i], commonext[i], provider)
+			if err != nil {
+				syncResult.UpdateError(err)
+			}
 		}
+		localStorages = append(localStorages, commondb[i])
+		remoteStorages = append(remoteStorages, commonext[i])
+		syncResult.Update()
 	}
 
 	for i := 0; i < len(added); i += 1 {
@@ -2450,28 +2435,32 @@ type SGuestSyncResult struct {
 }
 
 func IsNeedSkipSync(ext cloudprovider.ICloudResource) (bool, string) {
-	if len(options.Options.SkipServerBySysTagKeys) == 0 && len(options.Options.SkipServerBySysTagKeys) == 0 {
+	if len(options.Options.SkipServerBySysTagKeys) == 0 && len(options.Options.SkipServerByUserTagKeys) == 0 {
 		return false, ""
 	}
-	keys := strings.Split(options.Options.SkipServerBySysTagKeys, ",")
-	for key := range ext.GetSysTags() {
-		if utils.IsInStringArray(key, keys) {
-			return true, key
+	if keys := strings.Split(options.Options.SkipServerBySysTagKeys, ","); len(keys) > 0 {
+		for key := range ext.GetSysTags() {
+			key = strings.Trim(key, "")
+			if len(key) > 0 && utils.IsInStringArray(key, keys) {
+				return true, key
+			}
 		}
 	}
-	userKeys := strings.Split(options.Options.SkipServerByUserTagKeys, ",")
-	tags, _ := ext.GetTags()
-	for key := range tags {
-		if utils.IsInStringArray(key, userKeys) {
-			return true, key
+	if userKeys := strings.Split(options.Options.SkipServerByUserTagKeys, ","); len(userKeys) > 0 {
+		tags, _ := ext.GetTags()
+		for key := range tags {
+			key = strings.Trim(key, "")
+			if len(key) > 0 && utils.IsInStringArray(key, userKeys) {
+				return true, key
+			}
 		}
 	}
 	return false, ""
 }
 
-func (self *SHost) SyncHostVMs(ctx context.Context, userCred mcclient.TokenCredential, iprovider cloudprovider.ICloudProvider, vms []cloudprovider.ICloudVM, syncOwnerId mcclient.IIdentityProvider) ([]SGuestSyncResult, compare.SyncResult) {
-	lockman.LockRawObject(ctx, "guests", self.Id)
-	defer lockman.ReleaseRawObject(ctx, "guests", self.Id)
+func (self *SHost) SyncHostVMs(ctx context.Context, userCred mcclient.TokenCredential, iprovider cloudprovider.ICloudProvider, vms []cloudprovider.ICloudVM, syncOwnerId mcclient.IIdentityProvider, xor bool) ([]SGuestSyncResult, compare.SyncResult) {
+	lockman.LockRawObject(ctx, GuestManager.Keyword(), self.Id)
+	defer lockman.ReleaseRawObject(ctx, GuestManager.Keyword(), self.Id)
 
 	syncVMPairs := make([]SGuestSyncResult, 0)
 	syncResult := compare.SyncResult{}
@@ -2510,30 +2499,32 @@ func (self *SHost) SyncHostVMs(ctx context.Context, userCred mcclient.TokenCrede
 		}
 	}
 
-	for i := 0; i < len(commondb); i += 1 {
-		skip, key := IsNeedSkipSync(commonext[i])
-		if skip {
-			log.Infof("delete server %s(%s) with system tag key: %s", commonext[i].GetName(), commonext[i].GetGlobalId(), key)
-			err := commondb[i].purge(ctx, userCred)
-			if err != nil {
-				syncResult.DeleteError(err)
+	if !xor {
+		for i := 0; i < len(commondb); i += 1 {
+			skip, key := IsNeedSkipSync(commonext[i])
+			if skip {
+				log.Infof("delete server %s(%s) with system tag key: %s", commonext[i].GetName(), commonext[i].GetGlobalId(), key)
+				err := commondb[i].purge(ctx, userCred)
+				if err != nil {
+					syncResult.DeleteError(err)
+					continue
+				}
+				syncResult.Delete()
 				continue
 			}
-			syncResult.Delete()
-			continue
+			err := commondb[i].syncWithCloudVM(ctx, userCred, iprovider, self, commonext[i], syncOwnerId, true)
+			if err != nil {
+				syncResult.UpdateError(err)
+				continue
+			}
+			syncVMPair := SGuestSyncResult{
+				Local:  &commondb[i],
+				Remote: commonext[i],
+				IsNew:  false,
+			}
+			syncVMPairs = append(syncVMPairs, syncVMPair)
+			syncResult.Update()
 		}
-		err := commondb[i].syncWithCloudVM(ctx, userCred, iprovider, self, commonext[i], syncOwnerId, true)
-		if err != nil {
-			syncResult.UpdateError(err)
-			continue
-		}
-		syncVMPair := SGuestSyncResult{
-			Local:  &commondb[i],
-			Remote: commonext[i],
-			IsNew:  false,
-		}
-		syncVMPairs = append(syncVMPairs, syncVMPair)
-		syncResult.Update()
 	}
 
 	for i := 0; i < len(added); i += 1 {
@@ -2612,7 +2603,7 @@ func (self *SHost) SyncHostVMs(ctx context.Context, userCred mcclient.TokenCrede
 func (self *SHost) getNetworkOfIPOnHost(ipAddr string) (*SNetwork, error) {
 	netInterfaces := self.GetNetInterfaces()
 	for _, netInterface := range netInterfaces {
-		network, err := netInterface.GetCandidateNetworkForIp(nil, rbacscope.ScopeNone, ipAddr)
+		network, err := netInterface.GetCandidateNetworkForIp(nil, nil, rbacscope.ScopeNone, ipAddr)
 		if err == nil && network != nil {
 			return network, nil
 		}
@@ -3187,6 +3178,9 @@ func (self *SHost) GetDevsReservedResource(devs []SIsolatedDevice) *api.Isolated
 		ReservedCpu:     &reservedCpu,
 	}
 	for _, dev := range devs {
+		if !utils.IsInStringArray(dev.DevType, api.VALID_GPU_TYPES) {
+			continue
+		}
 		reservedCpu += dev.ReservedCpu
 		reservedMem += dev.ReservedMemory
 		reservedStorage += dev.ReservedStorage
@@ -3280,6 +3274,14 @@ func (manager *SHostManager) GetHostsByManagerAndRegion(managerId string, region
 		return nil
 	}
 	return ret
+}
+
+func (self *SHost) RequestScanIsolatedDevices(ctx context.Context, userCred mcclient.TokenCredential) error {
+	_, err := self.Request(ctx, userCred, "POST", fmt.Sprintf("/hosts/%s/probe-isolated-devices", self.Id), mcclient.GetTokenHeaders(userCred), nil)
+	if err != nil {
+		return errors.Wrapf(err, "request host %s probe isolaed devices", self.Id)
+	}
+	return nil
 }
 
 func (self *SHost) Request(ctx context.Context, userCred mcclient.TokenCredential, method httputils.THttpMethod, url string, headers http.Header, body jsonutils.JSONObject) (jsonutils.JSONObject, error) {
@@ -3581,7 +3583,7 @@ func (manager *SHostManager) ValidateCreateData(
 					wire := wireObj.(*SWire)
 					lockman.LockObject(ctx, wire)
 					defer lockman.ReleaseObject(ctx, wire)
-					net, err := wire.GetCandidatePrivateNetwork(userCred, NetworkManager.AllowScope(userCred), false, []string{api.NETWORK_TYPE_PXE, api.NETWORK_TYPE_BAREMETAL, api.NETWORK_TYPE_GUEST})
+					net, err := wire.GetCandidatePrivateNetwork(userCred, userCred, NetworkManager.AllowScope(userCred), false, []string{api.NETWORK_TYPE_PXE, api.NETWORK_TYPE_BAREMETAL, api.NETWORK_TYPE_GUEST})
 					if err != nil {
 						return input, httperrors.NewGeneralError(err)
 					}
@@ -3686,7 +3688,7 @@ func (self *SHost) ValidateUpdateData(ctx context.Context, userCred mcclient.Tok
 		return input, errors.Wrap(err, "inputUniquenessCheck")
 	}
 
-	if self.IsHugePage() && input.MemCmtbound != nil {
+	if self.IsHugePage() && input.MemCmtbound != nil && *input.MemCmtbound != self.MemCmtbound {
 		return input, errors.Errorf("host mem is hugepage, cannot update mem_cmtbound")
 	}
 
@@ -3875,6 +3877,14 @@ func (self *SHost) PerformStart(ctx context.Context, userCred mcclient.TokenCred
 	return self.PerformMaintenance(ctx, userCred, nil, params)
 }
 
+func (self *SHost) PerformPurge(ctx context.Context, userCred mcclient.TokenCredential, query jsonutils.JSONObject,
+	data jsonutils.JSONObject) (jsonutils.JSONObject, error) {
+	if self.GetEnabled() {
+		return nil, httperrors.NewInvalidStatusError("Host is not disabled")
+	}
+	return nil, self.purge(ctx, userCred)
+}
+
 func (self *SHost) PerformStop(ctx context.Context, userCred mcclient.TokenCredential, query jsonutils.JSONObject,
 	data jsonutils.JSONObject) (jsonutils.JSONObject, error) {
 	if !self.IsBaremetal {
@@ -4053,6 +4063,17 @@ func (self *SHost) PerformOnline(ctx context.Context, userCred mcclient.TokenCre
 	return nil, nil
 }
 
+func (self *SHost) PerformRestartHostAgent(
+	ctx context.Context, userCred mcclient.TokenCredential, query jsonutils.JSONObject, data jsonutils.JSONObject,
+) (jsonutils.JSONObject, error) {
+	_, err := self.Request(ctx, userCred, "POST", fmt.Sprintf("/hosts/%s/restart-host-agent", self.Id),
+		mcclient.GetTokenHeaders(userCred), data)
+	if err != nil {
+		return nil, err
+	}
+	return nil, nil
+}
+
 func (self *SHost) PerformAutoMigrateOnHostDown(
 	ctx context.Context, userCred mcclient.TokenCredential, query jsonutils.JSONObject, input api.HostAutoMigrateInput,
 ) (jsonutils.JSONObject, error) {
@@ -4068,15 +4089,18 @@ func (self *SHost) PerformAutoMigrateOnHostDown(
 		meta[api.HOSTMETA_AUTO_MIGRATE_ON_HOST_SHUTDOWN] = "disable"
 	}
 
+	data := jsonutils.NewDict()
 	if input.AutoMigrateOnHostDown == "enable" {
+		data.Set("shutdown_servers", jsonutils.JSONTrue)
 		meta[api.HOSTMETA_AUTO_MIGRATE_ON_HOST_DOWN] = "enable"
-		_, err := self.Request(ctx, userCred, "POST", "/hosts/shutdown-servers-on-host-down",
-			mcclient.GetTokenHeaders(userCred), nil)
-		if err != nil {
-			return nil, err
-		}
 	} else if input.AutoMigrateOnHostDown == "disable" {
 		meta[api.HOSTMETA_AUTO_MIGRATE_ON_HOST_DOWN] = "disable"
+		data.Set("shutdown_servers", jsonutils.JSONFalse)
+	}
+	_, err := self.Request(ctx, userCred, "POST", fmt.Sprintf("/hosts/%s/shutdown-servers-on-host-down", self.Id),
+		mcclient.GetTokenHeaders(userCred), data)
+	if err != nil {
+		return nil, err
 	}
 
 	return nil, self.SetAllMetadata(ctx, meta, userCred)
@@ -4459,7 +4483,7 @@ func (self *SHost) addNetif(ctx context.Context, userCred mcclient.TokenCredenti
 				return httperrors.NewInputParameterError("invalid ipaddr %s", ipAddr)
 			}
 			findAddr := false
-			swNets, err := sw.getNetworks(userCred, NetworkManager.AllowScope(userCred))
+			swNets, err := sw.getNetworks(userCred, userCred, NetworkManager.AllowScope(userCred))
 			if err != nil {
 				return httperrors.NewInputParameterError("no networks on wire %s", wire)
 			}
@@ -4635,7 +4659,7 @@ func (self *SHost) EnableNetif(ctx context.Context, userCred mcclient.TokenCrede
 	var net *SNetwork
 	var err error
 	if len(ipAddr) > 0 {
-		net, err = netif.GetCandidateNetworkForIp(userCred, NetworkManager.AllowScope(userCred), ipAddr)
+		net, err = netif.GetCandidateNetworkForIp(userCred, userCred, NetworkManager.AllowScope(userCred), ipAddr)
 		if net != nil {
 			log.Infof("find network %s for ip %s", net.GetName(), ipAddr)
 		} else if requireDesignatedIp {
@@ -4682,12 +4706,12 @@ func (self *SHost) EnableNetif(ctx context.Context, userCred mcclient.TokenCrede
 			} else {
 				netTypes = []string{api.NETWORK_TYPE_BAREMETAL}
 			}
-			net, err = wire.GetCandidatePrivateNetwork(userCred, NetworkManager.AllowScope(userCred), false, netTypes)
+			net, err = wire.GetCandidatePrivateNetwork(userCred, userCred, NetworkManager.AllowScope(userCred), false, netTypes)
 			if err != nil {
 				return fmt.Errorf("fail to find private network %s", err)
 			}
 			if net == nil {
-				net, err = wire.GetCandidateAutoAllocNetwork(userCred, NetworkManager.AllowScope(userCred), false, netTypes)
+				net, err = wire.GetCandidateAutoAllocNetwork(userCred, userCred, NetworkManager.AllowScope(userCred), false, netTypes)
 				if err != nil {
 					return fmt.Errorf("fail to find public network %s", err)
 				}
@@ -4877,12 +4901,6 @@ func (self *SHost) RemoveNetif(ctx context.Context, userCred mcclient.TokenCrede
 	if err != nil {
 		return errors.Wrap(err, "netif.Remove")
 	}
-	if nicType == api.NIC_TYPE_ADMIN && self.AccessMac == mac {
-		err := self.setAccessMac(userCred, "")
-		if err != nil {
-			return errors.Wrap(err, "self.setAccessMac")
-		}
-	}
 	if wire != nil {
 		others := self.GetNetifsOnWire(wire)
 		if len(others) == 0 {
@@ -4890,8 +4908,38 @@ func (self *SHost) RemoveNetif(ctx context.Context, userCred mcclient.TokenCrede
 			if hw != nil {
 				db.OpsLog.LogDetachEvent(ctx, self, wire, userCred, jsonutils.NewString(fmt.Sprintf("disable netif %s", self.AccessMac)))
 				log.Debugf("Detach host wire because of remove netif %s", netif.Mac)
-				return hw.Delete(ctx, userCred)
+				err := hw.Delete(ctx, userCred)
+				if err != nil {
+					return errors.Wrap(err, "remove host wire")
+				}
 			}
+		}
+	}
+	// is this a converted host?
+	if self.HostType == api.HOST_TYPE_HYPERVISOR && self.IsBaremetal {
+		guests, err := self.GetGuests()
+		if err != nil {
+			return errors.Wrap(err, "GetGuests")
+		}
+		for i := range guests {
+			guest := &guests[i]
+			if guest.Hypervisor == api.HYPERVISOR_BAREMETAL {
+				gn, err := guest.GetGuestnetworkByMac(netif.Mac)
+				if err != nil && errors.Cause(err) != sql.ErrNoRows {
+					return errors.Wrap(err, "GetGuestnetworkByMac")
+				} else if gn != nil {
+					err = gn.Detach(ctx, userCred)
+					if err != nil {
+						return errors.Wrap(err, "detach guest nic")
+					}
+				}
+			}
+		}
+	}
+	if nicType == api.NIC_TYPE_ADMIN && self.AccessMac == mac {
+		err := self.setAccessMac(userCred, "")
+		if err != nil {
+			return errors.Wrap(err, "setAccessMac")
 		}
 	}
 	self.ClearSchedDescCache()
@@ -6275,6 +6323,39 @@ func (self *SHost) GetPinnedCpusetCores(ctx context.Context, userCred mcclient.T
 		ret[gst.GetId()] = pinned
 	}
 	return ret, nil
+}
+
+func (h *SHost) PerformSyncGuestNicTraffics(ctx context.Context, userCred mcclient.TokenCredential, query jsonutils.JSONObject, data jsonutils.JSONObject) (jsonutils.JSONObject, error) {
+	guestTraffics, err := data.GetMap()
+	if err != nil {
+		return nil, errors.Wrap(err, "get guest traffics")
+	}
+	for guestId, nicTraffics := range guestTraffics {
+		nicTrafficMap := make(map[string]api.SNicTrafficRecord)
+		err = nicTraffics.Unmarshal(&nicTrafficMap)
+		if err != nil {
+			log.Errorf("failed unmarshal guest %s nic traffics %s", guestId, err)
+			continue
+		}
+
+		guest := GuestManager.FetchGuestById(guestId)
+		gns, err := guest.GetNetworks("")
+		if err != nil {
+			log.Errorf("failed fetch guest %s networks %s", guestId, err)
+			continue
+		}
+		for i := range gns {
+			nicTraffic, ok := nicTrafficMap[strconv.Itoa(int(gns[i].Index))]
+			if !ok {
+				continue
+			}
+			if err = gns[i].UpdateNicTrafficUsed(nicTraffic.RxTraffic, nicTraffic.TxTraffic); err != nil {
+				log.Errorf("failed update guestnetwork %d traffic used %s", gns[i].RowId, err)
+				continue
+			}
+		}
+	}
+	return nil, nil
 }
 
 func (h *SHost) GetDetailsAppOptions(ctx context.Context, userCred mcclient.TokenCredential, query jsonutils.JSONObject) (jsonutils.JSONObject, error) {

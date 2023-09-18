@@ -410,7 +410,7 @@ func (tenant *STenant) GetDomainId() string {
 }*/
 
 func (manager *STenantCacheManager) findFirstProjectOfDomain(domainId string) (*STenant, error) {
-	q := manager.Query().Equals("domain_id", domainId)
+	q := manager.Query().Equals("domain_id", domainId).Asc("created_at")
 	tenant := STenant{}
 	tenant.SetModelManager(manager, &tenant)
 	err := q.First(&tenant)
@@ -547,6 +547,32 @@ func (tenant *STenant) GetAllClassMetadata() (map[string]string, error) {
 			continue
 		}
 		ret[k[len(CLASS_TAG_PREFIX):]] = v
+	}
+	return ret, nil
+}
+
+func (manager *STenantCacheManager) ConvertIds(ids []string, isDomain bool) ([]string, error) {
+	var q *sqlchemy.SQuery
+	if isDomain {
+		q = manager.GetDomainQuery("id")
+	} else {
+		q = manager.GetTenantQuery("id")
+	}
+	q = q.Filter(sqlchemy.OR(
+		sqlchemy.In(q.Field("id"), ids),
+		sqlchemy.In(q.Field("name"), ids),
+	))
+	q = q.Distinct()
+	results := []struct {
+		Id string
+	}{}
+	err := q.All(&results)
+	if err != nil {
+		return nil, errors.Wrap(err, "query")
+	}
+	ret := make([]string, len(results))
+	for i := range results {
+		ret[i] = results[i].Id
 	}
 	return ret, nil
 }

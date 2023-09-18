@@ -41,6 +41,8 @@ const (
 
 	SERVICE_TYPE_SCHEDULEDTASK = "scheduledtask"
 
+	SERVICE_TYPE_APIMAP = "apimap"
+
 	STATUS_UPDATE_TAGS        = "update_tags"
 	STATUS_UPDATE_TAGS_FAILED = "update_tags_fail"
 
@@ -72,6 +74,33 @@ var (
 		SERVICE_TYPE_KEYSTONE,
 		SERVICE_TYPE_ETCD,
 		SERVICE_TYPE_INFLUXDB,
+		SERVICE_TYPE_CLOUDMON,
+		SERVICE_TYPE_METER,
+		SERVICE_TYPE_CLOUDEVENT,
+		SERVICE_TYPE_ANSIBLE,
+		SERVICE_TYPE_INFLUXDB,
+		SERVICE_TYPE_APIMAP,
+		SERVICE_TYPE_LOG,
+		"autoupdate",
+		"yunionagent",
+		"webconsole",
+		"esxiagent",
+		"s3gateway",
+		"common",
+		"websocket",
+		"echarts-ssr",
+		"lbagent",
+		"vpcagent",
+		"cloudwatcher",
+		"cloudnet",
+		"repo",
+		"cloudproxy",
+		"apigateway",
+		"yunionapi",
+		"billing",
+		"etcd",
+		"itsm",
+		"ntp",
 	}
 )
 

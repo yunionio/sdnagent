@@ -52,11 +52,15 @@ type ServerListInput struct {
 	Gpu *bool `json:"gpu"`
 	// 只列出透传了 USB 的主机
 	Usb *bool `json:"usb"`
+	// 自定义 PCI 设备类型
+	CustomDevType string `json:"custom_dev_type"`
+	// 通用虚拟机
+	Normal *bool `json:"normal"`
 	// 只列出还有备份机的主机
 	Backup *bool `json:"bakcup"`
 	// 列出指定类型的主机
 	// enum: normal,gpu,usb,backup
-	ServerType string `json:"server_type"`
+	ServerType []string `json:"server_type"`
 	// 列出管理安全组为指定安全组的主机
 	AdminSecgroup string `json:"admin_security"`
 	// 列出Hypervisor为指定值的主机
@@ -78,7 +82,9 @@ type ServerListInput struct {
 
 	OrderByIp string `json:"order_by_ip"`
 	// 根据ip查找机器
-	IpAddr string `json:"ip_addr"`
+	IpAddr string `json:"ip_addr" yunion-deprecated-by:"ip_addrs"`
+	// 根据多个ip查找机器
+	IpAddrs []string `json:"ip_addrs"`
 
 	// 列出可以挂载指定EIP的主机
 	UsableServerForEip string `json:"usable_server_for_eip"`
@@ -133,6 +139,7 @@ type ServerRebuildRootInput struct {
 
 	// swagger: ignore
 	Image string `json:"image" yunion-deprecated-by:"image_id"`
+	// 关机且停机不收费情况下不允许重装系统
 	// 镜像 id
 	// required: true
 	ImageId string `json:"image_id"`
@@ -298,6 +305,9 @@ func (self ServerDetails) GetMetricTags() map[string]string {
 	}
 	for k, v := range self.Metadata {
 		if strings.HasPrefix(k, db.USER_TAG_PREFIX) {
+			if strings.Contains(k, "login_key") || strings.Contains(v, "=") {
+				continue
+			}
 			ret[k] = v
 		}
 	}
@@ -722,6 +732,7 @@ type ServerDetachDiskInput struct {
 }
 
 type ServerChangeConfigInput struct {
+	// 关机且停机不收费情况下不允许调整配置
 	// 实例类型, 优先级高于vcpu_count和vmem_size
 	InstanceType string `json:"instance_type"`
 	// swagger: ignore
@@ -847,6 +858,13 @@ type ServerSetBootIndexInput struct {
 	Cdroms map[string]int8 `json:"cdroms"`
 }
 
+type ServerSetDiskIoThrottleInput struct {
+	// key disk id, value bps
+	Bps map[string]int `json:"bps"`
+	// key disk id, value
+	IOPS map[string]int `json:"iops"`
+}
+
 type ServerChangeStorageInput struct {
 	TargetStorageId string `json:"target_storage_id"`
 	KeepOriginDisk  bool   `json:"keep_origin_disk"`
@@ -856,6 +874,7 @@ type ServerChangeStorageInternalInput struct {
 	ServerChangeStorageInput
 	Disks        []string `json:"disks"`
 	GuestRunning bool     `json:"guest_running"`
+	DiskCount    int      `json:"disk_count"`
 }
 
 type ServerChangeDiskStorageInput struct {
@@ -871,6 +890,10 @@ type ServerChangeDiskStorageInternalInput struct {
 	DiskFormat     string             `json:"disk_format"`
 	GuestRunning   bool               `json:"guest_running"`
 	TargetDiskDesc *GuestdiskJsonDesc `json:"target_disk_desc"`
+
+	// clone progress
+	CompletedDiskCount int `json:"completed_disk_count"`
+	CloneDiskCount     int `json:"disk_count"`
 }
 
 type ServerSetExtraOptionInput struct {
@@ -966,7 +989,13 @@ type ServerQgaSetPasswordInput struct {
 	Password string
 }
 
+type ServerQgaTimeoutInput struct {
+	// qga execute timeout millisecond
+	Timeout int
+}
+
 type ServerQgaCommandInput struct {
+	ServerQgaTimeoutInput
 	Command string
 }
 
@@ -992,4 +1021,10 @@ type ServerEjectVfdInput struct {
 type ServerSetLiveMigrateParamsInput struct {
 	MaxBandwidthMB  *int64
 	DowntimeLimitMS *int64
+}
+
+type ServerNicTrafficLimit struct {
+	Mac            string `json:"mac"`
+	RxTrafficLimit *int64 `json:"rx_traffic_limit"`
+	TxTrafficLimit *int64 `json:"tx_traffic_limit"`
 }

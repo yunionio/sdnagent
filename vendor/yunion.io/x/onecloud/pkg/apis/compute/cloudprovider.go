@@ -141,6 +141,9 @@ type CloudproviderDetails struct {
 	ReadOnly bool `json:"read_only"`
 
 	ProjectMappingResourceInfo
+
+	// 上次同步耗时
+	LastSyncCost string
 }
 
 // 云订阅输入参数
@@ -162,11 +165,29 @@ type CloudproviderResourceInput struct {
 	Cloudprovider string `json:"cloudprovider" yunion-deprecated-by:"cloudprovider_id"`
 }
 
+type CloudproviderResourceListInput struct {
+	// 列出关联指定云订阅(ID或Name)的资源
+	CloudproviderId []string `json:"cloudprovider_id"`
+	// List objects belonging to the cloud provider
+	// swagger:ignore
+	// Deprecated
+	// description: this param will be deprecate at 3.0
+	Manager string `json:"manager" yunion-deprecated-by:"cloudprovider_id"`
+	// swagger:ignore
+	// Deprecated
+	// description: this param will be deprecate at 3.0
+	ManagerId string `json:"manager_id" yunion-deprecated-by:"cloudprovider_id"`
+	// swagger:ignore
+	// Deprecated
+	// description: this param will be deprecate at 3.0
+	Cloudprovider string `json:"cloudprovider" yunion-deprecated-by:"cloudprovider_id"`
+}
+
 type ManagedResourceListInput struct {
 	apis.DomainizedResourceListInput
 	CloudenvResourceListInput
 
-	CloudproviderResourceInput
+	CloudproviderResourceListInput
 
 	// 列出关联指定云账号(ID或Name)的资源
 	CloudaccountId []string `json:"cloudaccount_id"`

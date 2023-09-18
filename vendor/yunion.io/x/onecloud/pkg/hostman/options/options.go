@@ -33,6 +33,7 @@ type SHostBaseOptions struct {
 	LiveMigrateCpuThrottleMax int64 `default:"99" help:"live migrate auto converge cpu throttle max"`
 
 	DefaultQemuVersion string `help:"Default qemu version" default:"4.2.0"`
+	NoHpet             bool   `help:"disable qemu hpet timer" default:"false"`
 
 	CdromCount  int `help:"cdrom count" default:"1"`
 	FloppyCount int `help:"floppy count" default:"1"`
@@ -95,6 +96,7 @@ type SHostOptions struct {
 	PrivatePrefixes []string `help:"IPv4 private prefixes"`
 	LocalImagePath  []string `help:"Local image storage paths"`
 	SharedStorages  []string `help:"Path of shared storages"`
+	LVMVolumeGroups []string `help:"LVM Volume Groups(vgs)"`
 
 	DhcpRelay       []string `help:"DHCP relay upstream"`
 	DhcpLeaseTime   int      `default:"100663296" help:"DHCP lease time in seconds"`
@@ -159,18 +161,21 @@ type SHostOptions struct {
 	HostHealthTimeout int `help:"host health timeout" default:"30"`
 	HostLeaseTimeout  int `help:"lease timeout" default:"10"`
 
-	SyncStorageInfoDurationSecond int  `help:"sync storage size duration, unit is second, default is every 2 minutes" default:"120"`
-	StartHostIgnoreSysError       bool `help:"start host agent ignore sys error" default:"false"`
+	SyncStorageInfoDurationSecond int `help:"sync storage size duration, unit is second, default is every 2 minutes" default:"120"`
 
 	DisableProbeKubelet bool   `help:"Disable probe kubelet config" default:"false"`
 	KubeletRunDirectory string `help:"Kubelet config file path" default:"/var/lib/kubelet"`
 
 	DisableKVM bool `help:"force disable KVM" default:"false" json:"disable_kvm"`
 
-	DisableGPU     bool     `help:"force disable GPU detect" default:"false" json:"disable_gpu"`
-	DisableUSB     bool     `help:"force disable USB detect" default:"true" json:"disable_usb"`
-	SRIOVNics      []string `help:"nics enable sriov" json:"sriov_nics"`
-	OvsOffloadNics []string `help:"nics enable ovs offload" json:"ovs_offload_nics"`
+	DisableGPU          bool     `help:"force disable GPU detect" default:"false" json:"disable_gpu"`
+	DisableCustomDevice bool     `help:"force disable custom pci device detect" default:"false" json:"disable_custom_device"`
+	DisableUSB          bool     `help:"force disable USB detect" default:"true" json:"disable_usb"`
+	SRIOVNics           []string `help:"nics enable sriov" json:"sriov_nics"`
+	OvsOffloadNics      []string `help:"nics enable ovs offload" json:"ovs_offload_nics"`
+	PTNVMEConfigs       []string `help:"passthrough nvme disk pci address and size"`
+	AMDVgpuPFs          []string `help:"amd vgpu pf pci addresses"`
+	NVIDIAVgpuPFs       []string `help:"nvidia vgpu pf pci addresses"`
 
 	EthtoolEnableGso bool `help:"use ethtool to turn on or off GSO(generic segment offloading)" default:"false" json:"ethtool_enable_gso"`
 

@@ -99,15 +99,15 @@ func (manager *SDBInstanceAccountManager) FetchOwnerId(ctx context.Context, data
 	return db.FetchProjectInfo(ctx, data)
 }
 
-func (manager *SDBInstanceAccountManager) FilterByOwner(q *sqlchemy.SQuery, userCred mcclient.IIdentityProvider, scope rbacscope.TRbacScope) *sqlchemy.SQuery {
-	if userCred != nil {
+func (manager *SDBInstanceAccountManager) FilterByOwner(q *sqlchemy.SQuery, man db.FilterByOwnerProvider, userCred mcclient.TokenCredential, owner mcclient.IIdentityProvider, scope rbacscope.TRbacScope) *sqlchemy.SQuery {
+	if owner != nil {
 		sq := DBInstanceManager.Query("id")
 		switch scope {
 		case rbacscope.ScopeProject:
-			sq = sq.Equals("tenant_id", userCred.GetProjectId())
+			sq = sq.Equals("tenant_id", owner.GetProjectId())
 			return q.In("dbinstance_id", sq.SubQuery())
 		case rbacscope.ScopeDomain:
-			sq = sq.Equals("domain_id", userCred.GetProjectDomainId())
+			sq = sq.Equals("domain_id", owner.GetProjectDomainId())
 			return q.In("dbinstance_id", sq.SubQuery())
 		}
 	}
@@ -654,7 +654,7 @@ func (manager *SDBInstanceAccountManager) SyncDBInstanceAccounts(ctx context.Con
 				if passwd, err := locals[i].GetPassword(); err == nil && len(passwd) > 0 {
 					password = passwd
 				}
-				err := locals[i].Purge(ctx, userCred)
+				err := locals[i].RealDelete(ctx, userCred)
 				if err != nil {
 					result.DeleteError(err)
 					continue
@@ -671,7 +671,7 @@ func (manager *SDBInstanceAccountManager) SyncDBInstanceAccounts(ctx context.Con
 		_, ok := remoteMaps[key]
 		if !ok {
 			for i := range accounts {
-				err := accounts[i].Purge(ctx, userCred)
+				err := accounts[i].RealDelete(ctx, userCred)
 				if err != nil {
 					result.DeleteError(err)
 					continue
@@ -766,7 +766,7 @@ func (manager *SDBInstanceAccountManager) InitializeData() error {
 		return errors.Wrapf(err, "db.FetchModelObjects")
 	}
 	for i := range accounts {
-		err = accounts[i].Purge(context.Background(), nil)
+		err = accounts[i].RealDelete(context.Background(), nil)
 		if err != nil {
 			return errors.Wrapf(err, "purge %s", accounts[i].Id)
 		}

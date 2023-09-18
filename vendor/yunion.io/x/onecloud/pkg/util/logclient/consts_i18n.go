@@ -642,13 +642,13 @@ func init() {
 		CN("发送验证消息"),
 	)
 
-	t.Set(ACT_SYNC_VPCS, i18n.NewTableEntry().
-		EN("Sync Vpcs").
-		CN("同步VPC"),
+	t.Set(ACT_ADD_VPCS, i18n.NewTableEntry().
+		EN("Add Vpcs").
+		CN("添加VPC"),
 	)
-	t.Set(ACT_SYNC_RECORD_SETS, i18n.NewTableEntry().
-		EN("Sync Record Sets").
-		CN("同步解析列表"),
+	t.Set(ACT_REMOVE_VPCS, i18n.NewTableEntry().
+		EN("Remove Vpcs").
+		CN("移除VPC"),
 	)
 
 	t.Set(ACT_FREEZE, i18n.NewTableEntry().
@@ -1355,6 +1355,56 @@ func init() {
 	o.Set(ACT_CLOUDACCOUNT_SYNC_NETWORK, i18n.NewTableEntry().
 		EN("Probe Network").
 		CN("探测网络配置"),
+	)
+
+	o.Set(ACT_EXPORT, i18n.NewTableEntry().
+		EN("Export").
+		CN("导出"),
+	)
+
+	o.Set(ACT_CANCEL, i18n.NewTableEntry().
+		EN("Cancel").
+		CN("取消"),
+	)
+
+	o.Set(ACT_START, i18n.NewTableEntry().
+		EN("Start").
+		CN("开始"),
+	)
+
+	o.Set(ACT_DONE, i18n.NewTableEntry().
+		EN("Done").
+		CN("完成"),
+	)
+
+	o.Set(ACT_ASSOCIATE, i18n.NewTableEntry().
+		EN("Associate").
+		CN("关联"),
+	)
+
+	o.Set(ACT_DISSOCIATE, i18n.NewTableEntry().
+		EN("Dissociate").
+		CN("解除关联"),
+	)
+
+	o.Set(ACT_ADD_BASTION_SERVER, i18n.NewTableEntry().
+		EN("Add Bastionhost Server").
+		CN("添加实例到堡垒机"),
+	)
+
+	o.Set(ACT_SET_USER_PASSWORD, i18n.NewTableEntry().
+		EN("Set Password For User").
+		CN("设置用户密码"),
+	)
+
+	o.Set(ACT_DISK_CHANGE_STORAGE, i18n.NewTableEntry().
+		EN("Disk Change Storage").
+		CN("磁盘更换存储"),
+	)
+
+	o.Set(ACT_SYNC_TRAFFIC_LIMIT, i18n.NewTableEntry().
+		EN("Sync Nic Traffic Limit").
+		CN("同步网卡流量限制"),
 	)
 
 }
