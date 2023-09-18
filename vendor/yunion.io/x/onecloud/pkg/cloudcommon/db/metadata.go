@@ -45,7 +45,10 @@ const (
 	CLOUD_TAG_PREFIX     = dbapi.CLOUD_TAG_PREFIX
 	USER_TAG_PREFIX      = dbapi.USER_TAG_PREFIX
 	SYS_CLOUD_TAG_PREFIX = dbapi.SYS_CLOUD_TAG_PREFIX
-	CLASS_TAG_PREFIX     = dbapi.CLASS_TAT_PREFIX
+	CLASS_TAG_PREFIX     = dbapi.CLASS_TAG_PREFIX
+	SKU_METADAT_KEY      = "md5"
+
+	ORGANIZATION_TAG_PREFIX = dbapi.ORGANIZATION_TAG_PREFIX
 
 	// TAG_DELETE_RANGE_USER  = "user"
 	// TAG_DELETE_RANGE_CLOUD = CLOUD_TAG_PREFIX // "cloud"
@@ -406,7 +409,7 @@ func (manager *SMetadataManager) ListItemFilter(ctx context.Context, q *sqlchemy
 				log.Warningf("FetchCheckQueryOwnerScope.%s error: %v", man.Keyword(), err)
 				continue
 			}
-			sq = man.FilterByOwner(sq, ownerId, queryScope)
+			sq = man.FilterByOwner(sq, man, userCred, ownerId, queryScope)
 			sq = man.FilterBySystemAttributes(sq, userCred, query, queryScope)
 			sq = man.FilterByHiddenSystemAttributes(sq, userCred, query, queryScope)
 			conditions = append(conditions, sqlchemy.In(q.Field("obj_id"), sq))
@@ -432,6 +435,9 @@ func (manager *SMetadataManager) ListItemFilter(ctx context.Context, q *sqlchemy
 }
 
 func (manager *SMetadataManager) GetStringValue(ctx context.Context, model IModel, key string, userCred mcclient.TokenCredential) string {
+	if !isAllowGetMetadata(ctx, model, userCred) {
+		return ""
+	}
 	if strings.HasPrefix(key, SYSTEM_ADMIN_PREFIX) && (userCred == nil || !IsAllowGetSpec(ctx, rbacscope.ScopeSystem, userCred, model, "metadata")) {
 		return ""
 	}
@@ -445,6 +451,9 @@ func (manager *SMetadataManager) GetStringValue(ctx context.Context, model IMode
 }
 
 func (manager *SMetadataManager) GetJsonValue(ctx context.Context, model IModel, key string, userCred mcclient.TokenCredential) jsonutils.JSONObject {
+	if !isAllowGetMetadata(ctx, model, userCred) {
+		return nil
+	}
 	if strings.HasPrefix(key, SYSTEM_ADMIN_PREFIX) && (userCred == nil || !IsAllowGetSpec(ctx, rbacscope.ScopeSystem, userCred, model, "metadata")) {
 		return nil
 	}
@@ -540,14 +549,7 @@ func (manager *SMetadataManager) rawSetValues(ctx context.Context, objType strin
 		}
 
 		newRecord := SMetadata{}
-		newRecord.SetModelManager(manager, &newRecord)
 
-		newRecord.ObjId = objId
-		newRecord.ObjType = objType
-		newRecord.Id = idStr
-		newRecord.Key = key
-
-		// valStr := stringutils.Interface2String(value)
 		valStr := value
 		valStrLower := strings.ToLower(valStr)
 		if valStrLower == "none" || valStrLower == "null" {
@@ -562,6 +564,13 @@ func (manager *SMetadataManager) rawSetValues(ctx context.Context, objType strin
 			// no changes
 			continue
 		}
+
+		newRecord.SetModelManager(manager, &newRecord)
+
+		newRecord.ObjId = objId
+		newRecord.ObjType = objType
+		newRecord.Id = idStr
+		newRecord.Key = key
 
 		if len(record.Id) == 0 {
 			err = manager.TableSpec().InsertOrUpdate(ctx, &newRecord)
@@ -638,7 +647,25 @@ func (manager *SMetadataManager) SetAll(ctx context.Context, obj IModel, store m
 	return nil
 }
 
+func isAllowGetMetadata(ctx context.Context, obj IModel, userCred mcclient.TokenCredential) bool {
+	if userCred != nil {
+		for _, scope := range []rbacscope.TRbacScope{
+			rbacscope.ScopeSystem,
+			rbacscope.ScopeDomain,
+			rbacscope.ScopeProject,
+		} {
+			if IsAllowGetSpec(ctx, scope, userCred, obj, "metadata") {
+				return true
+			}
+		}
+	}
+	return false
+}
+
 func (manager *SMetadataManager) GetAll(ctx context.Context, obj IModel, keys []string, keyPrefix string, userCred mcclient.TokenCredential) (map[string]string, error) {
+	if !isAllowGetMetadata(ctx, obj, userCred) {
+		return map[string]string{}, nil
+	}
 	meta, err := manager.rawGetAll(obj.Keyword(), obj.GetId(), keys, keyPrefix)
 	if err != nil {
 		return nil, errors.Wrap(err, "rawGetAll")
@@ -657,7 +684,7 @@ func (manager *SMetadataManager) rawGetAll(objType, objId string, keys []string,
 	idStr := getObjectIdstr(objType, objId)
 	records := make([]SMetadata, 0)
 	q := manager.Query().Equals("id", idStr)
-	if keys != nil && len(keys) > 0 {
+	if len(keys) > 0 {
 		q = q.In("key", keys)
 	}
 	if len(keyPrefix) > 0 {
@@ -676,15 +703,19 @@ func (manager *SMetadataManager) rawGetAll(objType, objId string, keys []string,
 	return ret, nil
 }
 
-func (manager *SMetadataManager) IsSystemAdminKey(key string) bool {
-	return IsMetadataKeySystemAdmin(key)
+/*func (manager *SMetadataManager) IsSystemAdminKey(key string) bool {
+	return isMetadataKeySystemAdmin(key)
+}*/
+
+func isMetadataLoginKey(key string) bool {
+	return strings.HasPrefix(key, "login_")
 }
 
-func IsMetadataKeySystemAdmin(key string) bool {
+func isMetadataKeySystemAdmin(key string) bool {
 	return strings.HasPrefix(key, SYSTEM_ADMIN_PREFIX)
 }
 
-func IsMetadataKeyPrivateKey(key string) bool {
+func isMetadataKeyPrivateKey(key string) bool {
 	for _, k := range []string{"admin", "project"} {
 		for _, v := range []string{"ssh-private-key", "ssh-public-key"} {
 			if key == fmt.Sprintf("%s-%s", k, v) {
@@ -695,7 +726,7 @@ func IsMetadataKeyPrivateKey(key string) bool {
 	return strings.HasPrefix(key, SYSTEM_ADMIN_PREFIX)
 }
 
-func IsMetadataKeySysTag(key string) bool {
+func isMetadataKeySysTag(key string) bool {
 	return strings.HasPrefix(key, SYS_TAG_PREFIX)
 }
 
@@ -703,11 +734,11 @@ func (manager *SMetadataManager) GetSysadminKey(key string) string {
 	return fmt.Sprintf("%s%s", SYSTEM_ADMIN_PREFIX, key)
 }
 
-func IsMetadataKeyVisiable(key string) bool {
-	return !(IsMetadataKeySysTag(key) || IsMetadataKeySystemAdmin(key) || IsMetadataKeyPrivateKey(key))
+func IsMetadataKeyVisible(key string) bool {
+	return !(isMetadataKeySysTag(key) || isMetadataKeySystemAdmin(key) || isMetadataKeyPrivateKey(key))
 }
 
-func GetVisiableMetadata(ctx context.Context, model IStandaloneModel, userCred mcclient.TokenCredential) (map[string]string, error) {
+func GetVisibleMetadata(ctx context.Context, model IStandaloneModel, userCred mcclient.TokenCredential) (map[string]string, error) {
 	metaData, err := model.GetAllMetadata(ctx, userCred)
 	if err != nil {
 		return nil, err
@@ -716,7 +747,7 @@ func GetVisiableMetadata(ctx context.Context, model IStandaloneModel, userCred m
 		delete(metaData, key)
 	}
 	for key := range metaData {
-		if !IsMetadataKeyVisiable(key) {
+		if !IsMetadataKeyVisible(key) {
 			delete(metaData, key)
 		}
 	}
@@ -728,10 +759,51 @@ func metaList2Map(manager IMetadataBaseModelManager, userCred mcclient.TokenCred
 
 	hiddenKeys := manager.GetMetadataHiddenKeys()
 	for _, meta := range metaList {
-		if IsMetadataKeyVisiable(meta.Key) && !utils.IsInStringArray(meta.Key, hiddenKeys) {
+		if IsMetadataKeyVisible(meta.Key) && !utils.IsInStringArray(meta.Key, hiddenKeys) {
 			metaMap[meta.Key] = meta.Value
 		}
 	}
 
 	return metaMap
+}
+
+func CopyTags(ctx context.Context, objType string, keys1 []string, values []string, keys2 []string) error {
+	return Metadata.copyTags(ctx, objType, keys1, values, keys2)
+}
+
+func (manager *SMetadataManager) copyTags(ctx context.Context, objType string, keys1 []string, values []string, keys2 []string) error {
+	for i := 0; i < len(keys1) && i < len(values) && i < len(keys2); i++ {
+		key1 := keys1[i]
+		key2 := keys2[i]
+		value := values[i]
+
+		q := manager.Query("obj_id").Equals("obj_type", objType).Equals("key", key1).Equals("value", value)
+		q2 := manager.Query("obj_id").Equals("obj_type", objType).Equals("key", key2).Equals("value", value)
+		q = q.NotIn("obj_id", q2.SubQuery())
+
+		results := []struct {
+			ObjId string
+		}{}
+		err := q.All(&results)
+		if err != nil {
+			return errors.Wrapf(err, "copy key %s value %s to %s", key1, value, key2)
+		}
+
+		for _, result := range results {
+			record := SMetadata{}
+			record.SetModelManager(manager, &record)
+
+			record.ObjId = result.ObjId
+			record.ObjType = objType
+			record.Id = getObjectIdstr(objType, result.ObjId)
+			record.Key = key2
+			record.Value = value
+
+			err := manager.TableSpec().InsertOrUpdate(ctx, &record)
+			if err != nil {
+				return errors.Wrapf(err, "insert %s", jsonutils.Marshal(record))
+			}
+		}
+	}
+	return nil
 }

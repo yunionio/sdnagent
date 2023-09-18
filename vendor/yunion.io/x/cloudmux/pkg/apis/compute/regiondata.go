@@ -38,10 +38,22 @@ var (
 		City:        CITY_SHANG_HAI,
 		CountryCode: COUNTRY_CODE_CN,
 	}
+	RegionQingYang = cloudprovider.SGeographicInfo{
+		Latitude:    35.73,
+		Longitude:   107.61,
+		City:        CITY_QING_YANG,
+		CountryCode: COUNTRY_CODE_CN,
+	}
 	RegionGuangzhou = cloudprovider.SGeographicInfo{
 		Latitude:    23.12911,
 		Longitude:   113.264385,
 		City:        CITY_GUANG_ZHOU,
+		CountryCode: COUNTRY_CODE_CN,
+	}
+	RegionSuzhou = cloudprovider.SGeographicInfo{
+		Latitude:    31.328,
+		Longitude:   120.479,
+		City:        CITY_SU_ZHOU,
 		CountryCode: COUNTRY_CODE_CN,
 	}
 	RegionDalian = cloudprovider.SGeographicInfo{
@@ -68,6 +80,12 @@ var (
 		City:        CITY_QING_DAO,
 		CountryCode: COUNTRY_CODE_CN,
 	}
+	RegionBaoDing = cloudprovider.SGeographicInfo{
+		Latitude:    38.871,
+		Longitude:   115.393,
+		City:        CITY_BAO_DING,
+		CountryCode: COUNTRY_CODE_CN,
+	}
 	RegionZhangjiakou = cloudprovider.SGeographicInfo{
 		Latitude:    40.767544,
 		Longitude:   114.886337,
@@ -84,6 +102,12 @@ var (
 		Latitude:    30.274084,
 		Longitude:   120.155067,
 		City:        CITY_HANG_ZHOU,
+		CountryCode: COUNTRY_CODE_CN,
+	}
+	RegionWuhan = cloudprovider.SGeographicInfo{
+		Latitude:    30.568,
+		Longitude:   114.136,
+		City:        CITY_WU_HAN,
 		CountryCode: COUNTRY_CODE_CN,
 	}
 	RegionShenzhen = cloudprovider.SGeographicInfo{
@@ -167,6 +191,7 @@ var (
 		City:        CITY_MUMBAI,
 		CountryCode: COUNTRY_CODE_IN,
 	}
+	// 德里
 	RegionDelhi = cloudprovider.SGeographicInfo{
 		Latitude:    28.61,
 		Longitude:   77.23,
@@ -185,6 +210,12 @@ var (
 		City:        CITY_KANCHIPURAM,
 		CountryCode: COUNTRY_CODE_IN,
 	}
+	RegionHyderabad = cloudprovider.SGeographicInfo{
+		Latitude:    17.4123318,
+		Longitude:   78.3256457,
+		City:        CITY_HYDERABAD,
+		CountryCode: COUNTRY_CODE_IN,
+	}
 
 	RegionSingapore = cloudprovider.SGeographicInfo{
 		Latitude:    1.352083,
@@ -192,6 +223,7 @@ var (
 		City:        CITY_SINGAPORE,
 		CountryCode: COUNTRY_CODE_SG,
 	}
+	// 雅加达
 	RegionJakarta = cloudprovider.SGeographicInfo{
 		Latitude:    -6.175110,
 		Longitude:   106.865036,
@@ -217,6 +249,7 @@ var (
 		City:        CITY_SYDNEY,
 		CountryCode: COUNTRY_CODE_AU,
 	}
+	// 墨尔本
 	RegionMelbourne = cloudprovider.SGeographicInfo{
 		Latitude:    -37.813611,
 		Longitude:   144.963056,
@@ -259,10 +292,18 @@ var (
 		City:        CITY_BAHRAIN,
 		CountryCode: COUNTRY_CODE_BH,
 	}
+	// 迪拜
 	RegionDubai = cloudprovider.SGeographicInfo{
 		Latitude:    25.263056,
 		Longitude:   55.297222,
 		City:        CITY_DUBAI,
+		CountryCode: COUNTRY_CODE_AE,
+	}
+	// 阿布扎比
+	RegionAbuDhabi = cloudprovider.SGeographicInfo{
+		Latitude:    24.3867414,
+		Longitude:   54.3938162,
+		City:        CITY_ABU_DHABI,
 		CountryCode: COUNTRY_CODE_AE,
 	}
 

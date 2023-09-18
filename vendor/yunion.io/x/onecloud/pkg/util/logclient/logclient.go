@@ -174,6 +174,7 @@ func addLog(model IObject, action string, iNotes interface{}, userCred mcclient.
 	logentry.Add(jsonutils.NewString(userCred.GetProjectDomain()), "project_domain")
 	logentry.Add(jsonutils.NewString(strings.Join(userCred.GetRoles(), ",")), "roles")
 	logentry.Add(jsonutils.NewString(userCred.GetLoginIp()), "ip")
+	logentry.Add(jsonutils.NewBool(userCred.IsSystemAccount()), "is_system_account")
 
 	service := consts.GetServiceType()
 	if len(service) > 0 {
@@ -241,7 +242,9 @@ type logTask struct {
 }
 
 func (t *logTask) Run() {
-	s := DefaultSessionGenerator(context.Background(), t.userCred, "")
+	ctx := context.Background()
+	ctx = context.WithValue(ctx, appctx.APP_CONTEXT_KEY_APPNAME, consts.GetServiceType())
+	s := DefaultSessionGenerator(ctx, t.userCred, "")
 	_, err := t.api.Create(s, t.logentry)
 	if err != nil {
 		log.Errorf("create action log %s failed %s", t.logentry, err)

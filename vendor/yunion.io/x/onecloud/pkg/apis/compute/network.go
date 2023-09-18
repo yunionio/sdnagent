@@ -18,6 +18,7 @@ import (
 	"yunion.io/x/cloudmux/pkg/apis/compute"
 
 	"yunion.io/x/onecloud/pkg/apis"
+	"yunion.io/x/onecloud/pkg/cloudcommon/types"
 )
 
 const (
@@ -93,11 +94,11 @@ type NetworkListInput struct {
 
 	// description: Exact matching ip address in network.
 	// example: 10.168.222.1
-	Ip string `json:"ip"`
+	Ip []string `json:"ip"`
 
 	// description: Fuzzy matching ip address in network.
 	// example: 10.168.222.1
-	IpMatch string `json:"ip_match"`
+	IpMatch []string `json:"ip_match"`
 
 	IfnameHint []string `json:"ifname_hint"`
 	// 起始IP地址
@@ -143,6 +144,13 @@ type NetworkListInput struct {
 	BgpType []string `json:"bgp_type"`
 
 	HostType string `json:"host_type"`
+
+	// 按起始ip地址排序
+	// pattern:asc|desc
+	OrderByIpStart string `json:"order_by_ip_start"`
+	// 按终止ip地址排序
+	// pattern:asc|desc
+	OrderByIpEnd string `json:"order_by_ip_end"`
 }
 
 type NetworkResourceInfoBase struct {
@@ -234,6 +242,9 @@ type NetworkCreateInput struct {
 
 	// 线路类型
 	BgpType string `json:"bgp_type"`
+
+	// 是否申请ip时自动挂载公网ip，仅对aws生效
+	AssignPublicIp bool `json:"assign_public_ip"`
 }
 
 type SNetworkNics struct {
@@ -292,8 +303,10 @@ type NetworkDetails struct {
 	Ports int `json:"ports"`
 
 	// 路由信息
-	Routes    [][]string                 `json:"routes"`
+	Routes    []types.SRoute             `json:"routes"`
 	Schedtags []SchedtagShortDescDetails `json:"schedtags"`
+
+	IsClassic bool `json:"is_classic"`
 }
 
 type NetworkIpMacDetails struct {
@@ -427,4 +440,13 @@ type NetworkSetBgpTypeInput struct {
 type NetworkIpMacBatchCreateInput struct {
 	NetworkId string            `json:"network_id"`
 	IpMac     map[string]string `json:"ip_mac"`
+}
+
+type NetworkSwitchWireInput struct {
+	apis.Meta
+
+	// description: new wire Id or name
+	// required: true
+	// example: bcast0
+	WireId string `json:"wire_id"`
 }

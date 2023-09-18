@@ -21,12 +21,14 @@ import (
 	"net/url"
 	"regexp"
 	"strings"
+	"time"
 
 	"yunion.io/x/jsonutils"
 	"yunion.io/x/log"
 	"yunion.io/x/pkg/errors"
 	"yunion.io/x/pkg/util/httputils"
 	"yunion.io/x/pkg/util/printutils"
+	"yunion.io/x/pkg/util/sets"
 
 	"yunion.io/x/onecloud/pkg/httperrors"
 	"yunion.io/x/onecloud/pkg/mcclient"
@@ -40,6 +42,8 @@ type BaseManager struct {
 
 	columns      []string
 	adminColumns []string
+
+	specificMethods sets.String
 }
 
 func NewBaseManager(serviceType, endpointType, version string, columns, adminColumns []string) *BaseManager {
@@ -48,9 +52,18 @@ func NewBaseManager(serviceType, endpointType, version string, columns, adminCol
 		endpointType: endpointType,
 		version:      version,
 		// apiVersion:   apiVersion,
-		columns:      columns,
-		adminColumns: adminColumns,
+		columns:         columns,
+		adminColumns:    adminColumns,
+		specificMethods: sets.NewString(),
 	}
+}
+
+func (m *BaseManager) GetSpecificMethods() sets.String {
+	return m.specificMethods
+}
+
+func (m *BaseManager) SetSpecificMethods(ms ...string) {
+	m.specificMethods = sets.NewString(ms...)
 }
 
 func (this *BaseManager) GetColumns(session *mcclient.ClientSession) []string {
@@ -213,7 +226,7 @@ func (this *BaseManager) _list(session *mcclient.ClientSession, path, responseKe
 	}
 	rets, err := body.GetArray(responseKey)
 	if err != nil {
-		return nil, err
+		return nil, errors.Wrapf(err, "key:%s", responseKey)
 	}
 	nextMarker, _ := body.GetString("next_marker")
 	markerField, _ := body.GetString("marker_field")
@@ -263,7 +276,7 @@ func (this *BaseManager) _submit(session *mcclient.ClientSession, method httputi
 	}
 	ret, e := resp.Get(respKey)
 	if e != nil {
-		return nil, e
+		return nil, errors.Wrapf(e, "key:%s", respKey)
 	}
 	return ret, nil
 }
@@ -278,11 +291,15 @@ func (this *BaseManager) _submit(session *mcclient.ClientSession, method httputi
 
 func SubmitResults2JSON(results []printutils.SubmitResult) jsonutils.JSONObject {
 	arr := jsonutils.NewArray()
+	now := time.Now().In(httperrors.GetTimeZone())
 	for _, r := range results {
 		obj := jsonutils.NewDict()
 		obj.Add(jsonutils.NewInt(int64(r.Status)), "status")
 		obj.Add(jsonutils.Marshal(r.Id), "id")
 		obj.Add(r.Data, "data")
+		if r.Status >= 400 {
+			obj.Add(jsonutils.NewString(now.Format(time.RFC3339)), "data", "time")
+		}
 		arr.Add(obj)
 	}
 	body := jsonutils.NewDict()

@@ -392,9 +392,17 @@ func (manager *SNatGatewayManager) FetchCustomizeColumns(
 	return rows
 }
 
-func (manager *SNatGatewayManager) SyncNatGateways(ctx context.Context, userCred mcclient.TokenCredential, syncOwnerId mcclient.IIdentityProvider, provider *SCloudprovider, vpc *SVpc, cloudNatGateways []cloudprovider.ICloudNatGateway) ([]SNatGateway, []cloudprovider.ICloudNatGateway, compare.SyncResult) {
-	lockman.LockRawObject(ctx, "natgateways", vpc.Id)
-	defer lockman.ReleaseRawObject(ctx, "natgateways", vpc.Id)
+func (manager *SNatGatewayManager) SyncNatGateways(
+	ctx context.Context,
+	userCred mcclient.TokenCredential,
+	syncOwnerId mcclient.IIdentityProvider,
+	provider *SCloudprovider,
+	vpc *SVpc,
+	cloudNatGateways []cloudprovider.ICloudNatGateway,
+	xor bool,
+) ([]SNatGateway, []cloudprovider.ICloudNatGateway, compare.SyncResult) {
+	lockman.LockRawObject(ctx, manager.Keyword(), vpc.Id)
+	defer lockman.ReleaseRawObject(ctx, manager.Keyword(), vpc.Id)
 
 	localNatGateways := make([]SNatGateway, 0)
 	remoteNatGateways := make([]cloudprovider.ICloudNatGateway, 0)
@@ -425,10 +433,12 @@ func (manager *SNatGatewayManager) SyncNatGateways(ctx context.Context, userCred
 	}
 
 	for i := 0; i < len(commondb); i += 1 {
-		err := commondb[i].SyncWithCloudNatGateway(ctx, userCred, provider, commonext[i])
-		if err != nil {
-			syncResult.UpdateError(err)
-			continue
+		if !xor {
+			err := commondb[i].SyncWithCloudNatGateway(ctx, userCred, provider, commonext[i])
+			if err != nil {
+				syncResult.UpdateError(err)
+				continue
+			}
 		}
 		localNatGateways = append(localNatGateways, commondb[i])
 		remoteNatGateways = append(remoteNatGateways, commonext[i])
@@ -759,27 +769,7 @@ func (self *SNatGateway) Delete(ctx context.Context, userCred mcclient.TokenCred
 }
 
 func (self *SNatGateway) RealDelete(ctx context.Context, userCred mcclient.TokenCredential) error {
-	dnats, err := self.GetDTable()
-	if err != nil {
-		return errors.Wrap(err, "fetch dnat table failed")
-	}
-	snats, err := self.GetSTable()
-	if err != nil {
-		return errors.Wrap(err, "fetch snat table failed")
-	}
-	for i := range dnats {
-		err = dnats[i].RealDelete(ctx, userCred)
-		if err != nil {
-			return errors.Wrapf(err, "delete dnat %s failed", dnats[i].GetId())
-		}
-	}
-	for i := range snats {
-		err = snats[i].RealDelete(ctx, userCred)
-		if err != nil {
-			return errors.Wrapf(err, "delete snat %s failed", snats[i].GetId())
-		}
-	}
-	return self.SInfrasResourceBase.Delete(ctx, userCred)
+	return self.purge(ctx, userCred)
 }
 
 type SNatEntryManager struct {
@@ -1127,4 +1117,15 @@ func (self *SNatGateway) OnMetadataUpdated(ctx context.Context, userCred mcclien
 	if err != nil {
 		log.Errorf("StartRemoteUpdateTask fail: %s", err)
 	}
+}
+
+func (nat *SNatGateway) GetShortDesc(ctx context.Context) *jsonutils.JSONDict {
+	desc := nat.SStatusInfrasResourceBase.GetShortDesc(ctx)
+	region, _ := nat.GetRegion()
+	provider := nat.GetCloudprovider()
+	info := MakeCloudProviderInfo(region, nil, provider)
+	desc.Set("bandwidth_mb", jsonutils.NewInt(int64(nat.BandwidthMb)))
+	desc.Set("nat_spec", jsonutils.NewString(nat.NatSpec))
+	desc.Update(jsonutils.Marshal(&info))
+	return desc
 }

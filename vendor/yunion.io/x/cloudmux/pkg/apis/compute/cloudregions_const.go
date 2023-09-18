@@ -25,6 +25,7 @@ const (
 	CITY_HU_HE_HAO_TE   = "Huhehaote"    //呼和浩特
 	CITY_HANG_ZHOU      = "Hangzhou"     //杭州
 	CITY_SHANG_HAI      = "Shanghai"     //上海
+	CITY_QING_YANG      = "Qingyang"     //庆阳
 	CITY_SHEN_ZHEN      = "Shenzhen"     //深圳
 	CITY_HONG_KONG      = "Hongkong"     //香港
 	CITY_NING_XIA       = "Ningxia"      //宁夏
@@ -101,11 +102,12 @@ const (
 
 	// 印度
 	CITY_DELHI       = "Delhi"       // 德里
-	CITY_MUMBAI      = "Mumbai"      //孟买
-	CITY_KANCHIPURAM = "Kanchipuram" //甘吉布勒姆
-	CITY_MAHARASHTRA = "Maharashtra" //马哈拉施特拉邦
-	CITY_JAMNAGAR    = "Jamnagar"    //贾姆讷格尔
-	CITY_NAGPUR      = "Nagpur"      //那格浦尔
+	CITY_MUMBAI      = "Mumbai"      // 孟买
+	CITY_KANCHIPURAM = "Kanchipuram" // 甘吉布勒姆
+	CITY_MAHARASHTRA = "Maharashtra" // 马哈拉施特拉邦
+	CITY_JAMNAGAR    = "Jamnagar"    // 贾姆讷格尔
+	CITY_NAGPUR      = "Nagpur"      // 那格浦尔
+	CITY_HYDERABAD   = "Hyderabad"   // 海得拉巴
 
 	// 美国
 	CITY_VIRGINIA       = "Virginia"       //弗吉尼亚
@@ -135,7 +137,8 @@ const (
 	CITY_WEST_SUSSEX = "West Sussex" //西苏塞克斯
 
 	// 阿拉伯联合酋长国
-	CITY_DUBAI = "Dubai" //迪拜
+	CITY_DUBAI     = "Dubai"     //迪拜
+	CITY_ABU_DHABI = "Abu Dhabi" // 阿布扎比
 
 	// 德国
 	CITY_FRANKFURT   = "Frankfurt"   // 法兰克福

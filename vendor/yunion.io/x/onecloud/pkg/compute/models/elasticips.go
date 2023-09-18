@@ -24,6 +24,7 @@ import (
 	"yunion.io/x/jsonutils"
 	"yunion.io/x/log"
 	"yunion.io/x/pkg/errors"
+	"yunion.io/x/pkg/gotypes"
 	"yunion.io/x/pkg/tristate"
 	"yunion.io/x/pkg/util/compare"
 	"yunion.io/x/pkg/util/pinyinutils"
@@ -304,6 +305,9 @@ func (manager *SElasticipManager) OrderByExtraFields(
 	if err != nil {
 		return nil, errors.Wrap(err, "SCloudregionResourceBaseManager.OrderByExtraFields")
 	}
+	if db.NeedOrderQuery([]string{query.OrderByIp}) {
+		db.OrderByFields(q, []string{query.OrderByIp}, []sqlchemy.IQueryField{sqlchemy.INET_ATON(q.Field("ip_addr"))})
+	}
 	return q, nil
 }
 
@@ -348,6 +352,7 @@ func (self *SElasticip) GetShortDesc(ctx context.Context) *jsonutils.JSONDict {
 	desc.Add(jsonutils.NewInt(int64(self.Bandwidth)), "bandwidth")
 	desc.Add(jsonutils.NewString(self.Mode), "mode")
 	desc.Add(jsonutils.NewString(self.IpAddr), "ip_addr")
+	desc.Add(jsonutils.NewString(self.BgpType), "bgp_type")
 
 	// region := self.GetRegion()
 	// if len(region.ExternalId) > 0 {
@@ -375,7 +380,15 @@ func (self *SElasticip) GetShortDesc(ctx context.Context) *jsonutils.JSONDict {
 	return desc
 }
 
-func (manager *SElasticipManager) SyncEips(ctx context.Context, userCred mcclient.TokenCredential, provider *SCloudprovider, region *SCloudregion, eips []cloudprovider.ICloudEIP, syncOwnerId mcclient.IIdentityProvider) compare.SyncResult {
+func (manager *SElasticipManager) SyncEips(
+	ctx context.Context,
+	userCred mcclient.TokenCredential,
+	provider *SCloudprovider,
+	region *SCloudregion,
+	eips []cloudprovider.ICloudEIP,
+	syncOwnerId mcclient.IIdentityProvider,
+	xor bool,
+) compare.SyncResult {
 	lockman.LockRawObject(ctx, manager.KeywordPlural(), region.Id)
 	defer lockman.ReleaseRawObject(ctx, manager.KeywordPlural(), region.Id)
 
@@ -413,11 +426,13 @@ func (manager *SElasticipManager) SyncEips(ctx context.Context, userCred mcclien
 			syncResult.Delete()
 		}
 	}
-	for i := 0; i < len(commondb); i += 1 {
-		err = commondb[i].SyncWithCloudEip(ctx, userCred, provider, commonext[i], syncOwnerId)
-		if err != nil {
-			syncResult.UpdateError(err)
-		} else {
+	if !xor {
+		for i := 0; i < len(commondb); i += 1 {
+			err = commondb[i].SyncWithCloudEip(ctx, userCred, provider, commonext[i], syncOwnerId)
+			if err != nil {
+				syncResult.UpdateError(err)
+				continue
+			}
 			syncResult.Update()
 		}
 	}
@@ -586,6 +601,9 @@ func (manager *SElasticipManager) newFromCloudEip(ctx context.Context, userCred 
 	eip.CloudregionId = region.Id
 	eip.ChargeType = extEip.GetInternetChargeType()
 	eip.AssociateType = extEip.GetAssociationType()
+	if !extEip.GetCreatedAt().IsZero() {
+		eip.CreatedAt = extEip.GetCreatedAt()
+	}
 	if len(eip.ChargeType) == 0 {
 		eip.ChargeType = api.EIP_CHARGE_TYPE_BY_TRAFFIC
 	}
@@ -1062,8 +1080,12 @@ func (self *SElasticip) CustomizeDelete(ctx context.Context, userCred mcclient.T
 	return self.StartEipDeallocateTask(ctx, userCred, "")
 }
 
-func (self *SElasticip) ValidateDeleteCondition(ctx context.Context, info jsonutils.JSONObject) error {
-	if self.IsAssociated() {
+func (self *SElasticip) ValidateDeleteCondition(ctx context.Context, info *api.ElasticipDetails) error {
+	if gotypes.IsNil(info) {
+		if self.IsAssociated() {
+			return fmt.Errorf("eip is associated with resources")
+		}
+	} else if len(info.AssociateName) > 0 {
 		return fmt.Errorf("eip is associated with resources")
 	}
 	return self.SVirtualResourceBase.ValidateDeleteCondition(ctx, nil)
@@ -1372,23 +1394,66 @@ func (manager *SElasticipManager) FetchCustomizeColumns(
 	virtRows := manager.SVirtualResourceBaseManager.FetchCustomizeColumns(ctx, userCred, query, objs, fields, isList)
 	managerRows := manager.SManagedResourceBaseManager.FetchCustomizeColumns(ctx, userCred, query, objs, fields, isList)
 	regionRows := manager.SCloudregionResourceBaseManager.FetchCustomizeColumns(ctx, userCred, query, objs, fields, isList)
+	lbIds := []string{}
+	guestIds := []string{}
+	natIds := []string{}
+	groupIds := []string{}
 	for i := range rows {
 		rows[i] = api.ElasticipDetails{
 			VirtualResourceDetails:  virtRows[i],
 			ManagedResourceInfo:     managerRows[i],
 			CloudregionResourceInfo: regionRows[i],
 		}
-		rows[i] = objs[i].(*SElasticip).getMoreDetails(rows[i])
+		eip := objs[i].(*SElasticip)
+		if len(eip.AssociateId) > 0 {
+			switch eip.AssociateType {
+			case api.EIP_ASSOCIATE_TYPE_SERVER:
+				guestIds = append(guestIds, eip.AssociateId)
+			case api.EIP_ASSOCIATE_TYPE_LOADBALANCER:
+				lbIds = append(lbIds, eip.AssociateId)
+			case api.EIP_ASSOCIATE_TYPE_NAT_GATEWAY:
+				natIds = append(natIds, eip.AssociateId)
+			case api.EIP_ASSOCIATE_TYPE_INSTANCE_GROUP:
+				groupIds = append(groupIds, eip.AssociateId)
+			}
+		}
+	}
+	guests, err := db.FetchIdNameMap2(GuestManager, guestIds)
+	if err != nil {
+		log.Errorf("FetchIdNameMap2 guests")
+		return rows
+	}
+	lbs, err := db.FetchIdNameMap2(LoadbalancerManager, lbIds)
+	if err != nil {
+		log.Errorf("FetchIdNameMap2 loadbalancer")
+		return rows
+	}
+	nats, err := db.FetchIdNameMap2(NatGatewayManager, natIds)
+	if err != nil {
+		log.Errorf("FetchIdNameMap2 natgateway")
+		return rows
+	}
+	groups, err := db.FetchIdNameMap2(GroupManager, groupIds)
+	if err != nil {
+		log.Errorf("FetchIdNameMap2 group")
+		return rows
+	}
+	for i := range rows {
+		eip := objs[i].(*SElasticip)
+		if len(eip.AssociateId) > 0 {
+			switch eip.AssociateType {
+			case api.EIP_ASSOCIATE_TYPE_SERVER:
+				rows[i].AssociateName, _ = guests[eip.AssociateId]
+			case api.EIP_ASSOCIATE_TYPE_LOADBALANCER:
+				rows[i].AssociateName, _ = lbs[eip.AssociateId]
+			case api.EIP_ASSOCIATE_TYPE_NAT_GATEWAY:
+				rows[i].AssociateName, _ = nats[eip.AssociateId]
+			case api.EIP_ASSOCIATE_TYPE_INSTANCE_GROUP:
+				rows[i].AssociateName, _ = groups[eip.AssociateId]
+			}
+		}
 	}
 	return rows
-}
-
-func (self *SElasticip) getMoreDetails(out api.ElasticipDetails) api.ElasticipDetails {
-	instance := self.GetAssociateResource()
-	if instance != nil {
-		out.AssociateName = instance.GetName()
-	}
-	return out
 }
 
 type SEipNetwork struct {
@@ -1530,6 +1595,7 @@ func (manager *SElasticipManager) NewEipForVMOnHost(ctx context.Context, userCre
 	// eip.AutoDellocate = tristate.True
 	eip.Bandwidth = bw
 	eip.ChargeType = chargeType
+	eip.BgpType = args.BgpType
 	eip.AutoDellocate = tristate.NewFromBool(autoDellocate)
 	ownerCred := userCred.(mcclient.IIdentityProvider)
 	if vm != nil {
@@ -1594,7 +1660,7 @@ func (manager *SElasticipManager) NewEipForVMOnHost(ctx context.Context, userCre
 
 		wireq := WireManager.Query().SubQuery()
 		scope, _ := policy.PolicyManager.AllowScope(userCred, consts.GetServiceType(), NetworkManager.KeywordPlural(), policy.PolicyActionList)
-		q = NetworkManager.FilterByOwner(q, userCred, scope)
+		q = NetworkManager.FilterByOwner(q, NetworkManager, userCred, userCred, scope)
 		q = q.Join(wireq, sqlchemy.Equals(wireq.Field("id"), q.Field("wire_id"))).
 			Filter(sqlchemy.Equals(wireq.Field("zone_id"), zoneId))
 
@@ -1868,6 +1934,35 @@ func (eip *SElasticip) GetUsages() []db.IUsage {
 	usage.SetKeys(keys)
 	return []db.IUsage{
 		&usage,
+	}
+}
+
+func (self *SElasticip) PerformRemoteUpdate(ctx context.Context, userCred mcclient.TokenCredential, query jsonutils.JSONObject, input api.ElasticipRemoteUpdateInput) (jsonutils.JSONObject, error) {
+	err := self.StartRemoteUpdateTask(ctx, userCred, (input.ReplaceTags != nil && *input.ReplaceTags), "")
+	if err != nil {
+		return nil, errors.Wrap(err, "StartRemoteUpdateTask")
+	}
+	return nil, nil
+}
+
+func (self *SElasticip) StartRemoteUpdateTask(ctx context.Context, userCred mcclient.TokenCredential, replaceTags bool, parentTaskId string) error {
+	data := jsonutils.NewDict()
+	data.Add(jsonutils.NewBool(replaceTags), "replace_tags")
+	task, err := taskman.TaskManager.NewTask(ctx, "EipRemoteUpdateTask", self, userCred, data, parentTaskId, "", nil)
+	if err != nil {
+		return errors.Wrap(err, "NewTask")
+	}
+	self.SetStatus(userCred, apis.STATUS_UPDATE_TAGS, "StartRemoteUpdateTask")
+	return task.ScheduleRun(nil)
+}
+
+func (self *SElasticip) OnMetadataUpdated(ctx context.Context, userCred mcclient.TokenCredential) {
+	if len(self.ExternalId) == 0 {
+		return
+	}
+	err := self.StartRemoteUpdateTask(ctx, userCred, true, "")
+	if err != nil {
+		log.Errorf("StartRemoteUpdateTask fail: %s", err)
 	}
 }
 
