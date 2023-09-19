@@ -38,8 +38,8 @@ GOPROXY ?= direct
 
 mod:
 	GOPROXY=$(GOPROXY) GONOSUMDB=yunion.io/x go get -v yunion.io/x/onecloud@$(RELEASE_BRANCH) yunion.io/x/cloudmux@$(RELEASE_BRANCH)
-	go mod tidy
-	go mod vendor -v
+	GOPROXY=$(GOPROXY) GONOSUMDB=yunion.io/x go mod tidy
+	GOPROXY=$(GOPROXY) GONOSUMDB=yunion.io/x go mod vendor -v
 
 .PHONY: mod
 

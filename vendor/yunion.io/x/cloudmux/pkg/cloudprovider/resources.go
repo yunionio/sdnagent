@@ -31,6 +31,7 @@ type ICloudResource interface {
 	GetName() string
 	GetGlobalId() string
 	GetCreatedAt() time.Time
+	GetDescription() string
 
 	GetStatus() string
 
@@ -188,12 +189,13 @@ type ICloudRegion interface {
 
 	GetICloudKubeClusters() ([]ICloudKubeCluster, error)
 	GetICloudKubeClusterById(id string) (ICloudKubeCluster, error)
+	CreateIKubeCluster(opts *KubeClusterCreateOptions) (ICloudKubeCluster, error)
 
 	GetICloudTablestores() ([]ICloudTablestore, error)
 
 	GetIModelartsPools() ([]ICloudModelartsPool, error)
 	GetIModelartsPoolById(id string) (ICloudModelartsPool, error)
-	CreateIModelartsPool(pool *ModelartsPoolCreateOption) (ICloudModelartsPool, error)
+	CreateIModelartsPool(pool *ModelartsPoolCreateOption, callback func(externalId string)) (ICloudModelartsPool, error)
 	GetIModelartsPoolSku() ([]ICloudModelartsPoolSku, error)
 
 	GetIMiscResources() ([]ICloudMiscResource, error)
@@ -230,6 +232,8 @@ type ICloudImage interface {
 
 	GetPublicScope() rbacscope.TRbacScope
 	GetSubImages() []SSubImage
+
+	Export(opts *SImageExportOptions) ([]SImageExportInfo, error)
 }
 
 type ICloudStoragecache interface {
@@ -242,10 +246,6 @@ type ICloudStoragecache interface {
 	GetIImageById(extId string) (ICloudImage, error)
 
 	GetPath() string
-
-	CreateIImage(snapshotId, imageName, osType, imageDesc string) (ICloudImage, error)
-
-	DownloadImage(imageId string, extId string, path string) (jsonutils.JSONObject, error)
 
 	UploadImage(ctx context.Context, image *SImageCreateOption, callback func(float32)) (string, error)
 }
@@ -282,7 +282,7 @@ type ICloudHost interface {
 	GetIVMs() ([]ICloudVM, error)
 	GetIVMById(id string) (ICloudVM, error)
 
-	GetIWires() ([]ICloudWire, error)
+	// GetIWires() ([]ICloudWire, error)
 	GetIStorages() ([]ICloudStorage, error)
 	GetIStorageById(id string) (ICloudStorage, error)
 
@@ -368,7 +368,7 @@ type ICloudVM interface {
 	StopVM(ctx context.Context, opts *ServerStopOptions) error
 	DeleteVM(ctx context.Context) error
 
-	UpdateVM(ctx context.Context, name string) error
+	UpdateVM(ctx context.Context, input SInstanceUpdateOptions) error
 
 	UpdateUserData(userData string) error
 
@@ -468,10 +468,10 @@ type ICloudSecurityGroup interface {
 	IVirtualResource
 
 	GetDescription() string
+	// 返回的优先级字段(priority)要求数字越大优先级越高, 若有默认不可修改的allow规则依然需要返回
 	GetRules() ([]SecurityRule, error)
 	GetVpcId() string
 
-	SyncRules(common, inAdds, outAdds, inDels, outDels []SecurityRule) error
 	GetReferences() ([]SecurityGroupReference, error)
 	Delete() error
 }
@@ -649,12 +649,14 @@ type ICloudHostNetInterface interface {
 	GetDevice() string
 	GetDriver() string
 	GetMac() string
+	GetVlanId() int
 	GetIndex() int8
 	IsLinkUp() tristate.TriState
 	GetIpAddr() string
 	GetMtu() int32
 	GetNicType() string
 	GetBridge() string
+	GetIWire() ICloudWire
 }
 
 type ICloudLoadbalancer interface {
@@ -855,7 +857,7 @@ type ICloudSku interface {
 
 	GetGpuAttachable() bool
 	GetGpuSpec() string
-	GetGpuCount() int
+	GetGpuCount() string
 	GetGpuMaxCount() int
 
 	Delete() error
@@ -989,6 +991,8 @@ type ICloudDBInstance interface {
 	CreateIBackup(conf *SDBInstanceBackupCreateConfig) (string, error)
 
 	RecoveryFromBackup(conf *SDBInstanceRecoveryConfig) error
+
+	Update(ctx context.Context, input SDBInstanceUpdateOptions) error
 
 	Delete() error
 }
@@ -1263,24 +1267,25 @@ type ICloudgroup interface {
 }
 
 type ICloudDnsZone interface {
-	ICloudResource
+	IVirtualResource
 
 	GetZoneType() TDnsZoneType
-	GetOptions() *jsonutils.JSONDict
 
 	GetICloudVpcIds() ([]string, error)
 	AddVpc(*SPrivateZoneVpc) error
 	RemoveVpc(*SPrivateZoneVpc) error
 
-	GetIDnsRecordSets() ([]ICloudDnsRecordSet, error)
-	SyncDnsRecordSets(common, add, del, update []DnsRecordSet) error
+	GetIDnsRecords() ([]ICloudDnsRecord, error)
+	GetIDnsRecordById(id string) (ICloudDnsRecord, error)
+
+	AddDnsRecord(*DnsRecord) (string, error)
 
 	Delete() error
 
 	GetDnsProductType() TDnsProductType
 }
 
-type ICloudDnsRecordSet interface {
+type ICloudDnsRecord interface {
 	GetGlobalId() string
 
 	GetDnsName() string
@@ -1291,9 +1296,14 @@ type ICloudDnsRecordSet interface {
 	GetTTL() int64
 	GetMxPriority() int64
 
+	Update(*DnsRecord) error
+
+	Enable() error
+	Disable() error
+
 	GetPolicyType() TDnsPolicyType
 	GetPolicyValue() TDnsPolicyValue
-	GetPolicyOptions() *jsonutils.JSONDict
+	Delete() error
 }
 
 type ICloudVpcPeeringConnection interface {
@@ -1609,7 +1619,12 @@ type ICloudKubeCluster interface {
 
 	GetKubeConfig(private bool, expireMinutes int) (*SKubeconfig, error)
 
+	GetVersion() string
+	GetVpcId() string
+	GetNetworkIds() []string
+
 	GetIKubeNodePools() ([]ICloudKubeNodePool, error)
+	CreateIKubeNodePool(opts *KubeNodePoolCreateOptions) (ICloudKubeNodePool, error)
 	GetIKubeNodes() ([]ICloudKubeNode, error)
 
 	Delete(isRetain bool) error
@@ -1623,6 +1638,16 @@ type ICloudKubeNode interface {
 
 type ICloudKubeNodePool interface {
 	ICloudResource
+
+	GetMinInstanceCount() int
+	GetMaxInstanceCount() int
+	GetDesiredInstanceCount() int
+	GetRootDiskSizeGb() int
+
+	GetInstanceTypes() []string
+	GetNetworkIds() []string
+
+	Delete() error
 }
 
 type ICloudTablestore interface {

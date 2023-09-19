@@ -38,6 +38,7 @@ type DeletePreventableCreateInput struct {
 
 type KeypairListInput struct {
 	apis.UserResourceListInput
+	apis.SharableResourceBaseListInput
 
 	// 加密类型
 	// example: RSA
@@ -162,6 +163,9 @@ type ServiceCatalogListInput struct {
 type SnapshotPolicyListInput struct {
 	apis.VirtualResourceListInput
 
+	// 按绑定的磁盘数量排序
+	// pattern:asc|desc
+	OrderByBindDiskCount string `json:"order_by_bind_disk_count"`
 	// 是否启用？
 	IsActivated *bool `json:"is_activated"`
 }

@@ -247,6 +247,10 @@ func (self *SRegion) GetICloudKubeClusters() ([]cloudprovider.ICloudKubeCluster,
 	return nil, errors.Wrapf(cloudprovider.ErrNotImplemented, "GetICloudKubeClusters")
 }
 
+func (self *SRegion) CreateIKubeCluster(opts *cloudprovider.KubeClusterCreateOptions) (cloudprovider.ICloudKubeCluster, error) {
+	return nil, errors.Wrapf(cloudprovider.ErrNotImplemented, "CreateIKubeCluster")
+}
+
 func (self *SRegion) GetICloudKubeClusterById(id string) (cloudprovider.ICloudKubeCluster, error) {
 	return nil, errors.Wrapf(cloudprovider.ErrNotImplemented, "GetICloudKubeClusterById")
 }
@@ -385,8 +389,12 @@ func (self *SRegion) GetIModelartsPoolById(id string) (cloudprovider.ICloudModel
 	return nil, errors.Wrapf(cloudprovider.ErrNotImplemented, "GetIModelartsPoolDetail")
 }
 
-func (self *SRegion) CreateIModelartsPool(pool *cloudprovider.ModelartsPoolCreateOption) (cloudprovider.ICloudModelartsPool, error) {
+func (self *SRegion) CreateIModelartsPool(pool *cloudprovider.ModelartsPoolCreateOption, callback func(id string)) (cloudprovider.ICloudModelartsPool, error) {
 	return nil, errors.Wrapf(cloudprovider.ErrNotImplemented, "CreateIModelartsPool")
+}
+
+func (self *SRegion) GetStatusMessage() string {
+	return ""
 }
 
 func (self *SRegion) GetIModelartsPoolSku() ([]cloudprovider.ICloudModelartsPoolSku, error) {

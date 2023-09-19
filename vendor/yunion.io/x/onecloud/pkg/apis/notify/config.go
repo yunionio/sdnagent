@@ -16,6 +16,7 @@ package notify
 
 import (
 	"reflect"
+	"time"
 
 	"yunion.io/x/jsonutils"
 	"yunion.io/x/pkg/gotypes"
@@ -97,11 +98,12 @@ type ConfigManagerGetTypesOutput struct {
 }
 
 type SsNotification struct {
-	ContactType string
-	Topic       string
-	Message     string
-	Event       SNotifyEvent
-	AdvanceDays int
+	ContactType      string
+	Topic            string
+	Message          string
+	Event            SNotifyEvent
+	AdvanceDays      int
+	RobotUseTemplate bool
 }
 
 type SBatchSendParams struct {
@@ -140,19 +142,46 @@ type SSendParams struct {
 	Receiver       SNotifyReceiver
 }
 
+type SNotificationGroupSearchInput struct {
+	StartTime   time.Time
+	EndTime     time.Time
+	GroupKey    string
+	ReceiverId  string
+	ContactType string
+}
+
 type SendParams struct {
-	Title          string
-	Message        string
-	Priority       string
-	RemoteTemplate string
-	Topic          string
-	Event          string
-	Receivers      SNotifyReceiver
-	EmailMsg       *SEmailMessage
-	DomainId       string
+	Title               string
+	Message             string
+	Priority            string
+	RemoteTemplate      string
+	Topic               string
+	Event               string
+	Receivers           SNotifyReceiver
+	EmailMsg            SEmailMessage
+	Header              jsonutils.JSONObject
+	Body                jsonutils.JSONObject
+	MsgKey              string
+	DomainId            string
+	RemoteTemplateParam SRemoteTemplateParam
+	GroupKey            string
+	// minutes
+	GroupTimes uint
+	ReceiverId string
+}
+
+type SRemoteTemplateParam struct {
+	Code      string `json:"code"`
+	Domain    string `json:"domain"`
+	User      string `json:"user"`
+	Type      string `json:"type"`
+	AlertName string `json:"alert_name"`
 }
 
 type SSMSSendParams struct {
+	RemoteTemplate      string
+	RemoteTemplateParam SRemoteTemplateParam
+
 	AppKey        string
 	AppSecret     string
 	From          string

@@ -39,7 +39,8 @@ type IRegionDriver interface {
 	IElasticcacheBackup
 	IDBInstanceDriver
 	IElasticSearchDriver
-	IKafkaDrive
+	IKafkaDriver
+	IKubeClusterDriver
 
 	ValidateCreateLoadbalancerData(ctx context.Context, userCred mcclient.TokenCredential, ownerId mcclient.IIdentityProvider, data *api.LoadbalancerCreateInput) (*api.LoadbalancerCreateInput, error)
 	RequestCreateLoadbalancerInstance(ctx context.Context, userCred mcclient.TokenCredential, lb *SLoadbalancer, input *api.LoadbalancerCreateInput, task taskman.ITask) error
@@ -125,23 +126,15 @@ type IRegionDriver interface {
 	RequestPackInstanceBackup(ctx context.Context, ib *SInstanceBackup, task taskman.ITask, packageName string) error
 	RequestUnpackInstanceBackup(ctx context.Context, ib *SInstanceBackup, task taskman.ITask, packageName string, metadataOnly bool) error
 
-	RequestCacheSecurityGroup(ctx context.Context, userCred mcclient.TokenCredential, region *SCloudregion, vpc *SVpc, secgroup *SSecurityGroup, classic bool, removeProjectId string, task taskman.ITask) error
-	RequestSyncSecurityGroup(ctx context.Context, userCred mcclient.TokenCredential, vpcId string, vpc *SVpc, secgroup *SSecurityGroup, removeProjectId, service string, skipSyncRule bool) (string, error)
-	GetDefaultSecurityGroupInRule() cloudprovider.SecurityRule
+	RequestCacheSecurityGroup(ctx context.Context, userCred mcclient.TokenCredential, region *SCloudregion, vpc *SVpc, secgroup *SSecurityGroup, removeProjectId string, task taskman.ITask) error
+	RequestSyncSecurityGroup(ctx context.Context, userCred mcclient.TokenCredential, vpcId string, vpc *SVpc, secgroup *SSecurityGroup, removeProjectId, service string) (string, error)
 	GenerateSecurityGroupName(name string) string
 	IsAllowSecurityGroupNameRepeat() bool
-	GetDefaultSecurityGroupOutRule() cloudprovider.SecurityRule
-	GetSecurityGroupRuleMaxPriority() int
-	GetSecurityGroupRuleMinPriority() int
-	IsOnlySupportAllowRules() bool
-	IsPeerSecgroupWithSameProject() bool
-	IsSupportPeerSecgroup() bool
-	IsSupportClassicSecurityGroup() bool
 	IsSecurityGroupBelongVpc() bool
 	IsVpcBelongGlobalVpc() bool
 	IsSecurityGroupBelongGlobalVpc() bool //安全组子账号范围内可用
 	GetDefaultSecurityGroupVpcId() string
-	GetSecurityGroupVpcId(ctx context.Context, userCred mcclient.TokenCredential, region *SCloudregion, host *SHost, vpc *SVpc, classic bool) (string, error)
+	GetSecurityGroupVpcId(ctx context.Context, userCred mcclient.TokenCredential, region *SCloudregion, host *SHost, vpc *SVpc) (string, error)
 	GetSecurityGroupPublicScope(service string) rbacscope.TRbacScope
 
 	IsSupportedBillingCycle(bc billing.SBillingCycle, resource string) bool
@@ -153,7 +146,7 @@ type IRegionDriver interface {
 	RequestSyncBucketStatus(ctx context.Context, userCred mcclient.TokenCredential, bucket *SBucket, task taskman.ITask) error
 	RequestSyncDBInstanceBackupStatus(ctx context.Context, userCred mcclient.TokenCredential, backup *SDBInstanceBackup, task taskman.ITask) error
 
-	RequestCreateNetwork(ctx context.Context, userCred mcclient.TokenCredential, network *SNetwork) error
+	RequestCreateNetwork(ctx context.Context, userCred mcclient.TokenCredential, network *SNetwork, task taskman.ITask) error
 
 	ValidateCreateCdnData(ctx context.Context, userCred mcclient.TokenCredential, input api.CDNDomainCreateInput) (api.CDNDomainCreateInput, error)
 }
@@ -273,8 +266,15 @@ type IElasticSearchDriver interface {
 	RequestRemoteUpdateElasticSearch(ctx context.Context, userCred mcclient.TokenCredential, elasticcache *SElasticSearch, replaceTags bool, task taskman.ITask) error
 }
 
-type IKafkaDrive interface {
+type IKafkaDriver interface {
 	RequestRemoteUpdateKafka(ctx context.Context, userCred mcclient.TokenCredential, kafka *SKafka, replaceTags bool, task taskman.ITask) error
+}
+
+type IKubeClusterDriver interface {
+	ValidateCreateKubeClusterData(ctx context.Context, userCred mcclient.TokenCredential, ownerId mcclient.IIdentityProvider, input *api.KubeClusterCreateInput) (*api.KubeClusterCreateInput, error)
+	ValidateCreateKubeNodePoolData(ctx context.Context, userCred mcclient.TokenCredential, ownerId mcclient.IIdentityProvider, input *api.KubeNodePoolCreateInput) (*api.KubeNodePoolCreateInput, error)
+	RequestCreateKubeCluster(ctx context.Context, userCred mcclient.TokenCredential, cluster *SKubeCluster, task taskman.ITask) error
+	RequestCreateKubeNodePool(ctx context.Context, userCred mcclient.TokenCredential, pool *SKubeNodePool, task taskman.ITask) error
 }
 
 var regionDrivers map[string]IRegionDriver

@@ -46,7 +46,7 @@ type SOpsLogManager struct {
 type SOpsLog struct {
 	SLogBase
 
-	ObjType string `width:"40" charset:"ascii" nullable:"false" list:"user" create:"required"`
+	ObjType string `width:"40" charset:"ascii" nullable:"false" list:"user" create:"required" index:"true"`
 	ObjId   string `width:"128" charset:"ascii" nullable:"false" list:"user" create:"required" index:"true"`
 	ObjName string `width:"128" charset:"utf8" nullable:"false" list:"user" create:"required"`
 	Action  string `width:"32" charset:"utf8" nullable:"false" list:"user" create:"required"`
@@ -362,7 +362,7 @@ func (manager *SOpsLogManager) LogSyncUpdate(m IModel, uds sqlchemy.UpdateDiffs,
 	}
 }
 
-func (self *SOpsLogManager) FilterByOwner(q *sqlchemy.SQuery, ownerId mcclient.IIdentityProvider, scope rbacscope.TRbacScope) *sqlchemy.SQuery {
+func (self *SOpsLogManager) FilterByOwner(q *sqlchemy.SQuery, man FilterByOwnerProvider, userCred mcclient.TokenCredential, ownerId mcclient.IIdentityProvider, scope rbacscope.TRbacScope) *sqlchemy.SQuery {
 	if ownerId != nil {
 		switch scope {
 		case rbacscope.ScopeUser:

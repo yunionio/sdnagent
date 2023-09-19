@@ -164,7 +164,8 @@ func (self *SGuest) PerformSaveImage(ctx context.Context, userCred mcclient.Toke
 	if !utils.IsInStringArray(self.Status, []string{api.VM_READY, api.VM_RUNNING}) {
 		return input, httperrors.NewInputParameterError("Cannot save image in status %s", self.Status)
 	}
-	input.Restart = (self.Status == api.VM_RUNNING) || input.AutoStart
+	driver := self.GetDriver()
+	input.Restart = ((self.Status == api.VM_RUNNING) || input.AutoStart) && !driver.IsAllowSaveImageOnRunning()
 	if len(input.Name) == 0 && len(input.GenerateName) == 0 {
 		return input, httperrors.NewInputParameterError("Image name is required")
 	}
@@ -1177,7 +1178,19 @@ func (self *SGuest) StartGuestStopTask(ctx context.Context, userCred mcclient.To
 	if len(parentTaskId) > 0 {
 		params.Add(jsonutils.JSONTrue, "subtask")
 	}
-	return self.GetDriver().StartGuestStopTask(self, ctx, userCred, params, parentTaskId)
+	driver := self.GetDriver()
+	shutdownMode := api.VM_SHUTDOWN_MODE_KEEP_CHARGING
+	if stopCharging && driver.IsSupportShutdownMode() {
+		shutdownMode = api.VM_SHUTDOWN_MODE_STOP_CHARGING
+	}
+	_, err := db.Update(self, func() error {
+		self.ShutdownMode = shutdownMode
+		return nil
+	})
+	if err != nil {
+		return errors.Wrapf(err, "db.Update")
+	}
+	return driver.StartGuestStopTask(self, ctx, userCred, params, parentTaskId)
 }
 
 func (self *SGuest) insertIso(imageId string, cdromOrdinal int64) bool {
@@ -1185,12 +1198,16 @@ func (self *SGuest) insertIso(imageId string, cdromOrdinal int64) bool {
 	return cdrom.insertIso(imageId)
 }
 
-func (self *SGuest) InsertIsoSucc(cdromOrdinal int64, imageId string, path string, size int64, name string, bootIndex *int8) bool {
+func (self *SGuest) InsertIsoSucc(cdromOrdinal int64, imageId string, path string, size int64, name string, bootIndex *int8) (*SGuestcdrom, bool) {
 	cdrom := self.getCdrom(false, cdromOrdinal)
-	return cdrom.insertIsoSucc(imageId, path, size, name, bootIndex)
+	return cdrom, cdrom.insertIsoSucc(imageId, path, size, name, bootIndex)
 }
 
-func (self *SGuest) GetDetailsIso(cdromOrdinal int64, userCred mcclient.TokenCredential) jsonutils.JSONObject {
+func (self *SGuest) GetDetailsIso(ctx context.Context, userCred mcclient.TokenCredential, query jsonutils.JSONObject) (jsonutils.JSONObject, error) {
+	var cdromOrdinal int64 = 0
+	if query.Contains("ordinal") {
+		cdromOrdinal, _ = query.Int("ordinal")
+	}
 	cdrom := self.getCdrom(false, cdromOrdinal)
 	desc := jsonutils.NewDict()
 	if len(cdrom.ImageId) > 0 {
@@ -1202,7 +1219,7 @@ func (self *SGuest) GetDetailsIso(cdromOrdinal int64, userCred mcclient.TokenCre
 		desc.Set("size", jsonutils.NewInt(int64(cdrom.Size)))
 		desc.Set("status", jsonutils.NewString("ready"))
 	}
-	return desc
+	return desc, nil
 }
 
 func (self *SGuest) PerformInsertiso(ctx context.Context, userCred mcclient.TokenCredential, query jsonutils.JSONObject, data jsonutils.JSONObject) (jsonutils.JSONObject, error) {
@@ -1614,6 +1631,10 @@ func (self *SGuest) PerformRebuildRoot(ctx context.Context, userCred mcclient.To
 		return nil, httperrors.NewInvalidStatusError("Cannot reset root in status %s", self.Status)
 	}
 
+	if self.Status == api.VM_READY && self.ShutdownMode == api.VM_SHUTDOWN_MODE_STOP_CHARGING {
+		return nil, httperrors.NewInvalidStatusError("Cannot reset root with %s", self.ShutdownMode)
+	}
+
 	autoStart := false
 	if input.AutoStart != nil {
 		autoStart = *input.AutoStart
@@ -1886,9 +1907,23 @@ func (self *SGuest) PerformDetachIsolatedDevice(ctx context.Context, userCred mc
 		lockman.LockObject(ctx, host)
 		defer lockman.ReleaseObject(ctx, host)
 		for i := 0; i < len(devs); i++ {
-			if devs[i].DevType == api.NIC_TYPE {
-				continue
+			// check first
+			dev := devs[i]
+			if !utils.IsInStringArray(dev.DevType, api.VALID_ATTACH_TYPES) {
+				if devModel, err := IsolatedDeviceModelManager.GetByDevType(dev.DevType); err != nil {
+					msg := fmt.Sprintf("Can't separately detach dev type %s", dev.DevType)
+					logclient.AddActionLogWithContext(ctx, self, logclient.ACT_GUEST_DETACH_ISOLATED_DEVICE, msg, userCred, false)
+					return nil, httperrors.NewBadRequestError(msg)
+				} else {
+					if !devModel.HotPluggable.Bool() && self.GetStatus() == api.VM_RUNNING {
+						msg := fmt.Sprintf("dev type %s model %s unhotpluggable", dev.DevType, devModel.Model)
+						logclient.AddActionLogWithContext(ctx, self, logclient.ACT_GUEST_DETACH_ISOLATED_DEVICE, msg, userCred, false)
+						return nil, httperrors.NewBadRequestError(msg)
+					}
+				}
 			}
+		}
+		for i := 0; i < len(devs); i++ {
 			err := self.detachIsolateDevice(ctx, userCred, &devs[i])
 			if err != nil {
 				return nil, err
@@ -1907,12 +1942,20 @@ func (self *SGuest) startDetachIsolateDeviceWithoutNic(ctx context.Context, user
 		return httperrors.NewBadRequestError(msgFmt, device)
 	}
 	dev := iDev.(*SIsolatedDevice)
-	if dev.DevType == api.NIC_TYPE {
-		return httperrors.NewBadRequestError("Can't separately detach dev type %s", api.NIC_TYPE)
+	if !utils.IsInStringArray(dev.DevType, api.VALID_ATTACH_TYPES) {
+		if devModel, err := IsolatedDeviceModelManager.GetByDevType(dev.DevType); err != nil {
+			msg := fmt.Sprintf("Can't separately detach dev type %s", dev.DevType)
+			logclient.AddActionLogWithContext(ctx, self, logclient.ACT_GUEST_DETACH_ISOLATED_DEVICE, msg, userCred, false)
+			return httperrors.NewBadRequestError(msg)
+		} else {
+			if !devModel.HotPluggable.Bool() && self.GetStatus() == api.VM_RUNNING {
+				msg := fmt.Sprintf("dev type %s model %s unhotpluggable", dev.DevType, devModel.Model)
+				logclient.AddActionLogWithContext(ctx, self, logclient.ACT_GUEST_DETACH_ISOLATED_DEVICE, msg, userCred, false)
+				return httperrors.NewBadRequestError(msg)
+			}
+		}
 	}
-	if dev.IsGPU() && !utils.IsInStringArray(self.GetStatus(), []string{api.VM_READY, api.VM_RUNNING}) {
-		return httperrors.NewInvalidStatusError("Can't detach GPU when status is %q", self.GetStatus())
-	}
+
 	host, _ := self.GetHost()
 	lockman.LockObject(ctx, host)
 	defer lockman.ReleaseObject(ctx, host)
@@ -1929,6 +1972,7 @@ func (self *SGuest) detachIsolateDevice(ctx context.Context, userCred mcclient.T
 	_, err := db.Update(dev, func() error {
 		dev.GuestId = ""
 		dev.NetworkIndex = -1
+		dev.DiskIndex = -1
 		return nil
 	})
 	if err != nil {
@@ -1951,7 +1995,7 @@ func (self *SGuest) PerformAttachIsolatedDevice(ctx context.Context, userCred mc
 	autoStart := jsonutils.QueryBoolean(data, "auto_start", false)
 	if data.Contains("device") {
 		device, _ := data.GetString("device")
-		err = self.StartAttachIsolatedDeviceWithoutNic(ctx, userCred, device, autoStart)
+		err = self.StartAttachIsolatedDeviceGpuOrUsb(ctx, userCred, device, autoStart)
 	} else if data.Contains("model") {
 		vmodel, _ := data.GetString("model")
 		var count int64 = 1
@@ -1991,9 +2035,34 @@ func (self *SGuest) startAttachIsolatedDevices(ctx context.Context, userCred mcc
 	if len(devs) == 0 || len(devs) != count {
 		return httperrors.NewBadRequestError("guest %s host %s isolated device not enough", self.GetName(), host.GetName())
 	}
+	dev := devs[0]
+	if !utils.IsInStringArray(dev.DevType, api.VALID_ATTACH_TYPES) {
+		if devModel, err := IsolatedDeviceModelManager.GetByDevType(dev.DevType); err != nil {
+			return httperrors.NewBadRequestError("Can't separately attach dev type %s", dev.DevType)
+		} else {
+			if !devModel.HotPluggable.Bool() && self.GetStatus() == api.VM_RUNNING {
+				return httperrors.NewBadRequestError("dev type %s model %s unhotpluggable", dev.DevType, devModel.Model)
+			}
+		}
+	}
+
+	if dev.DevType == api.LEGACY_VGPU_TYPE {
+		devs, err := self.GetIsolatedDevices()
+		if err != nil {
+			return errors.Wrap(err, "get isolated devices")
+		}
+		for i := range devs {
+			if devs[i].DevType == api.LEGACY_VGPU_TYPE {
+				return httperrors.NewBadRequestError("Nvidia vgpu count exceed > 1")
+			} else if utils.IsInStringArray(devs[i].DevType, api.VALID_GPU_TYPES) {
+				return httperrors.NewBadRequestError("Nvidia vgpu can't passthrough with other gpus")
+			}
+		}
+	}
+
 	defer func() { go host.ClearSchedDescCache() }()
 	for i := 0; i < len(devs); i++ {
-		err = self.attachIsolatedDevice(ctx, userCred, &devs[i], nil)
+		err = self.attachIsolatedDevice(ctx, userCred, &devs[i], nil, nil)
 		if err != nil {
 			return err
 		}
@@ -2001,15 +2070,15 @@ func (self *SGuest) startAttachIsolatedDevices(ctx context.Context, userCred mcc
 	return nil
 }
 
-func (self *SGuest) StartAttachIsolatedDeviceWithoutNic(ctx context.Context, userCred mcclient.TokenCredential, device string, autoStart bool) error {
-	if err := self.startAttachIsolatedDeviceWithoutNic(ctx, userCred, device); err != nil {
+func (self *SGuest) StartAttachIsolatedDeviceGpuOrUsb(ctx context.Context, userCred mcclient.TokenCredential, device string, autoStart bool) error {
+	if err := self.startAttachIsolatedDevGeneral(ctx, userCred, device); err != nil {
 		return err
 	}
 	// perform post attach task
 	return self.startIsolatedDevicesSyncTask(ctx, userCred, autoStart, "")
 }
 
-func (self *SGuest) startAttachIsolatedDeviceWithoutNic(ctx context.Context, userCred mcclient.TokenCredential, device string) error {
+func (self *SGuest) startAttachIsolatedDevGeneral(ctx context.Context, userCred mcclient.TokenCredential, device string) error {
 	iDev, err := IsolatedDeviceManager.FetchByIdOrName(userCred, device)
 	if err != nil {
 		msgFmt := "Isolated device %s not found"
@@ -2018,16 +2087,37 @@ func (self *SGuest) startAttachIsolatedDeviceWithoutNic(ctx context.Context, use
 		return httperrors.NewBadRequestError(msgFmt, device)
 	}
 	dev := iDev.(*SIsolatedDevice)
-	if dev.DevType == api.NIC_TYPE {
-		return httperrors.NewBadRequestError("Can't separately attach dev type %s", api.NIC_TYPE)
+	if !utils.IsInStringArray(dev.DevType, api.VALID_ATTACH_TYPES) {
+		if devModel, err := IsolatedDeviceModelManager.GetByDevType(dev.DevType); err != nil {
+			return httperrors.NewBadRequestError("Can't separately attach dev type %s", dev.DevType)
+		} else {
+			if !devModel.HotPluggable.Bool() && self.GetStatus() == api.VM_RUNNING {
+				return httperrors.NewBadRequestError("dev type %s model %s unhotpluggable", dev.DevType, devModel.Model)
+			}
+		}
 	}
-	if dev.IsGPU() && !utils.IsInStringArray(self.GetStatus(), []string{api.VM_READY, api.VM_RUNNING}) {
+	if !utils.IsInStringArray(self.GetStatus(), []string{api.VM_READY, api.VM_RUNNING}) {
 		return httperrors.NewInvalidStatusError("Can't attach GPU when status is %q", self.GetStatus())
 	}
+
+	if dev.DevType == api.LEGACY_VGPU_TYPE {
+		devs, err := self.GetIsolatedDevices()
+		if err != nil {
+			return errors.Wrap(err, "get isolated devices")
+		}
+		for i := range devs {
+			if devs[i].DevType == api.LEGACY_VGPU_TYPE {
+				return httperrors.NewBadRequestError("Nvidia vgpu count exceed > 1")
+			} else if utils.IsInStringArray(devs[i].DevType, api.VALID_GPU_TYPES) {
+				return httperrors.NewBadRequestError("Nvidia vgpu can't passthrough with other gpus")
+			}
+		}
+	}
+
 	host, _ := self.GetHost()
 	lockman.LockObject(ctx, host)
 	defer lockman.ReleaseObject(ctx, host)
-	err = self.attachIsolatedDevice(ctx, userCred, dev, nil)
+	err = self.attachIsolatedDevice(ctx, userCred, dev, nil, nil)
 	var msg string
 	if err != nil {
 		msg = err.Error()
@@ -2038,7 +2128,7 @@ func (self *SGuest) startAttachIsolatedDeviceWithoutNic(ctx context.Context, use
 	return err
 }
 
-func (self *SGuest) attachIsolatedDevice(ctx context.Context, userCred mcclient.TokenCredential, dev *SIsolatedDevice, networkIndex *int8) error {
+func (self *SGuest) attachIsolatedDevice(ctx context.Context, userCred mcclient.TokenCredential, dev *SIsolatedDevice, networkIndex, diskIndex *int8) error {
 	if len(dev.GuestId) > 0 {
 		return fmt.Errorf("Isolated device already attached to another guest: %s", dev.GuestId)
 	}
@@ -2052,6 +2142,11 @@ func (self *SGuest) attachIsolatedDevice(ctx context.Context, userCred mcclient.
 			dev.NetworkIndex = *networkIndex
 		} else {
 			dev.NetworkIndex = -1
+		}
+		if diskIndex != nil {
+			dev.DiskIndex = *diskIndex
+		} else {
+			dev.DiskIndex = -1
 		}
 		return nil
 	})
@@ -2103,7 +2198,7 @@ func (self *SGuest) PerformSetIsolatedDevice(ctx context.Context, userCred mccli
 		}
 	}
 	for i := 0; i < len(addDevs); i++ {
-		err := self.startAttachIsolatedDeviceWithoutNic(ctx, userCred, addDevs[i])
+		err := self.startAttachIsolatedDevGeneral(ctx, userCred, addDevs[i])
 		if err != nil {
 			return nil, err
 		}
@@ -2377,7 +2472,7 @@ func (self *SGuest) PerformAttachnetwork(ctx context.Context, userCred mcclient.
 			if err != nil {
 				return nil, httperrors.NewInputParameterError("parse isolated device description error %s", err)
 			}
-			err = IsolatedDeviceManager.isValidNicDeviceinfo(devConfig)
+			err = IsolatedDeviceManager.isValidNicDeviceInfo(devConfig)
 			if err != nil {
 				return nil, err
 			}
@@ -2542,6 +2637,10 @@ func (self *SGuest) PerformChangeConfig(ctx context.Context, userCred mcclient.T
 	}
 	if !utils.IsInStringArray(self.Status, changeStatus) {
 		return nil, httperrors.NewInvalidStatusError("Cannot change config in %s for %s, requires %s", self.Status, self.GetHypervisor(), changeStatus)
+	}
+
+	if self.Status == api.VM_READY && self.ShutdownMode == api.VM_SHUTDOWN_MODE_STOP_CHARGING {
+		return nil, httperrors.NewInvalidStatusError("Cannot change config with %s", self.ShutdownMode)
 	}
 
 	_, err = self.GetHost()
@@ -3252,7 +3351,7 @@ func (self *SGuest) PerformCreateEip(ctx context.Context, userCred mcclient.Toke
 }
 
 func (self *SGuest) setUserData(ctx context.Context, userCred mcclient.TokenCredential, data string) error {
-	if err := userdata.ValidateUserdata(data); err != nil {
+	if err := userdata.ValidateUserdata(data, self.OsType); err != nil {
 		return err
 	}
 	encodeData, err := userdata.Encode(data)
@@ -3377,7 +3476,7 @@ func (manager *SGuestManager) getGuests(userCred mcclient.TokenCredential, data 
 	guests := []SGuest{}
 	q1 := manager.Query().In("id", _guests)
 	q2 := manager.Query().In("name", _guests)
-	q2 = manager.FilterByOwner(q2, userCred, manager.NamespaceScope())
+	q2 = manager.FilterByOwner(q2, manager, userCred, userCred, manager.NamespaceScope())
 	q2 = manager.FilterBySystemAttributes(q2, userCred, data, manager.ResourceScope())
 	q := sqlchemy.Union(q1, q2).Query().Distinct()
 	err := db.FetchModelObjects(manager, q, &guests)
@@ -3398,7 +3497,7 @@ func (manager *SGuestManager) getGuests(userCred mcclient.TokenCredential, data 
 	return guests, nil
 }
 
-func (manager *SGuestManager) getUserMetadata(data jsonutils.JSONObject) (map[string]interface{}, error) {
+func (manager *SGuestManager) getUserMetadata(data jsonutils.JSONObject) (map[string]string, error) {
 	if !data.Contains("metadata") {
 		return nil, httperrors.NewMissingParameterError("metadata")
 	}
@@ -3406,7 +3505,7 @@ func (manager *SGuestManager) getUserMetadata(data jsonutils.JSONObject) (map[st
 	if err != nil {
 		return nil, httperrors.NewInputParameterError("input data not key value dict")
 	}
-	dictStore := map[string]interface{}{}
+	dictStore := make(map[string]string)
 	for k, v := range metadata {
 		dictStore[db.USER_TAG_PREFIX+k], _ = v.GetString()
 	}
@@ -4587,34 +4686,64 @@ func (guest *SGuest) StartGuestDiskResizeTask(ctx context.Context, userCred mccl
 	return nil
 }
 
-func (self *SGuest) PerformIoThrottle(ctx context.Context, userCred mcclient.TokenCredential, query jsonutils.JSONObject, data jsonutils.JSONObject) (jsonutils.JSONObject, error) {
+func (self *SGuest) PerformIoThrottle(ctx context.Context, userCred mcclient.TokenCredential, query jsonutils.JSONObject, input *api.ServerSetDiskIoThrottleInput) (jsonutils.JSONObject, error) {
 	if self.Hypervisor != api.HYPERVISOR_KVM {
 		return nil, httperrors.NewBadRequestError("Hypervisor %s can't do io throttle", self.Hypervisor)
 	}
-	if self.Status != api.VM_RUNNING {
+	if self.Status != api.VM_RUNNING && self.Status != api.VM_READY {
 		return nil, httperrors.NewServerStatusError("Cannot do io throttle in status %s", self.Status)
 	}
-	bpsMb, err := data.Int("bps")
-	if err != nil {
-		return nil, httperrors.NewMissingParameterError("bps")
+
+	for diskId, bpsMb := range input.Bps {
+		if bpsMb < 0 {
+			return nil, httperrors.NewInputParameterError("disk %s bps must > 0", diskId)
+		}
+		disk := DiskManager.FetchDiskById(diskId)
+		if disk == nil {
+			return nil, httperrors.NewNotFoundError("disk %s not found", diskId)
+		}
 	}
-	if bpsMb < 0 {
-		return nil, httperrors.NewInputParameterError("bps must > 0")
+
+	for diskId, iops := range input.IOPS {
+		if iops < 0 {
+			return nil, httperrors.NewInputParameterError("disk %s iops must > 0", diskId)
+		}
+		disk := DiskManager.FetchDiskById(diskId)
+		if disk == nil {
+			return nil, httperrors.NewNotFoundError("disk %s not found", diskId)
+		}
 	}
-	iops, err := data.Int("iops")
-	if err != nil {
-		return nil, httperrors.NewMissingParameterError("iops")
+
+	if err := self.UpdateIoThrottle(input); err != nil {
+		return nil, errors.Wrap(err, "update io throttles")
 	}
-	if iops < 0 {
-		return nil, httperrors.NewInputParameterError("iops must > 0")
-	}
-	return nil, self.StartBlockIoThrottleTask(ctx, userCred, bpsMb, iops)
+	return nil, self.StartBlockIoThrottleTask(ctx, userCred, input)
 }
 
-func (self *SGuest) StartBlockIoThrottleTask(ctx context.Context, userCred mcclient.TokenCredential, bpsMb, iops int64) error {
-	params := jsonutils.NewDict()
-	params.Set("bps", jsonutils.NewInt(bpsMb))
-	params.Set("iops", jsonutils.NewInt(iops))
+func (self *SGuest) UpdateIoThrottle(input *api.ServerSetDiskIoThrottleInput) error {
+	gds, err := self.GetGuestDisks()
+	if err != nil {
+		return err
+	}
+	for i := 0; i < len(gds); i++ {
+		_, err := db.Update(&gds[i], func() error {
+			if bps, ok := input.Bps[gds[i].DiskId]; ok {
+				gds[i].Bps = bps
+			}
+			if iops, ok := input.IOPS[gds[i].DiskId]; ok {
+				gds[i].Iops = iops
+			}
+			return nil
+		})
+		if err != nil {
+			return nil
+		}
+	}
+	return nil
+}
+
+func (self *SGuest) StartBlockIoThrottleTask(ctx context.Context, userCred mcclient.TokenCredential, input *api.ServerSetDiskIoThrottleInput) error {
+	params := jsonutils.Marshal(input).(*jsonutils.JSONDict)
 	params.Set("old_status", jsonutils.NewString(self.Status))
 	self.SetStatus(userCred, api.VM_IO_THROTTLE, "start block io throttle task")
 	task, err := taskman.TaskManager.NewTask(ctx, "GuestBlockIoThrottleTask", self, userCred, params, "", "", nil)
@@ -4898,7 +5027,7 @@ func (self *SGuest) PerformInstanceSnapshot(
 			ctx, userCred, pendingUsage, pendingUsage, false)
 		return nil, httperrors.NewInternalServerError("create instance snapshot failed: %s", err)
 	}
-	err = self.InheritTo(ctx, instanceSnapshot)
+	err = self.InheritTo(ctx, userCred, instanceSnapshot)
 	if err != nil {
 		return nil, errors.Wrapf(err, "unable to inherit from guest %s to instance snapshot %s", self.GetId(), instanceSnapshot.GetId())
 	}
@@ -4949,7 +5078,7 @@ func (self *SGuest) PerformInstanceBackup(
 	if err != nil {
 		return nil, httperrors.NewInternalServerError("create instance backup failed: %s", err)
 	}
-	err = self.InheritTo(ctx, instanceBackup)
+	err = self.InheritTo(ctx, userCred, instanceBackup)
 	if err != nil {
 		return nil, errors.Wrapf(err, "unable to inherit from guest %s to instance backup %s", self.GetId(), instanceBackup.GetId())
 	}
@@ -5194,6 +5323,54 @@ func (guest *SGuest) StartDeleteGuestSnapshots(ctx context.Context, userCred mcc
 	}
 	task.ScheduleRun(nil)
 	return nil
+}
+
+func (self *SGuest) PerformResetNicTrafficLimit(ctx context.Context, userCred mcclient.TokenCredential,
+	query jsonutils.JSONObject, input *api.ServerNicTrafficLimit) (jsonutils.JSONObject, error) {
+
+	if !utils.IsInStringArray(self.Status, []string{api.VM_READY, api.VM_RUNNING}) {
+		return nil, httperrors.NewUnsupportOperationError("The guest status need be %s or %s, current is %s", api.VM_READY, api.VM_RUNNING, self.Status)
+	}
+	input.Mac = strings.ToLower(input.Mac)
+	_, err := self.GetGuestnetworkByMac(input.Mac)
+	if err != nil {
+		return nil, errors.Wrap(err, "get guest network by mac")
+	}
+
+	params := jsonutils.Marshal(input).(*jsonutils.JSONDict)
+	params.Set("old_status", jsonutils.NewString(self.Status))
+	self.SetStatus(userCred, api.VM_SYNC_TRAFFIC_LIMIT, "PerformResetNicTrafficLimit")
+	task, err := taskman.TaskManager.NewTask(ctx, "GuestResetNicTrafficsTask", self, userCred, params, "", "", nil)
+	if err != nil {
+		return nil, err
+	}
+	task.ScheduleRun(nil)
+	return nil, nil
+}
+
+func (self *SGuest) PerformSetNicTrafficLimit(ctx context.Context, userCred mcclient.TokenCredential,
+	query jsonutils.JSONObject, input *api.ServerNicTrafficLimit) (jsonutils.JSONObject, error) {
+
+	if !utils.IsInStringArray(self.Status, []string{api.VM_READY, api.VM_RUNNING}) {
+		return nil, httperrors.NewUnsupportOperationError("The guest status need be %s or %s, current is %s", api.VM_READY, api.VM_RUNNING, self.Status)
+	}
+	if input.RxTrafficLimit == nil && input.TxTrafficLimit == nil {
+		return nil, httperrors.NewBadRequestError("rx/tx traffic not provider")
+	}
+	input.Mac = strings.ToLower(input.Mac)
+	_, err := self.GetGuestnetworkByMac(input.Mac)
+	if err != nil {
+		return nil, errors.Wrap(err, "get guest network by mac")
+	}
+	params := jsonutils.Marshal(input).(*jsonutils.JSONDict)
+	params.Set("old_status", jsonutils.NewString(self.Status))
+	self.SetStatus(userCred, api.VM_SYNC_TRAFFIC_LIMIT, "GuestSetNicTrafficsTask")
+	task, err := taskman.TaskManager.NewTask(ctx, "GuestSetNicTrafficsTask", self, userCred, params, "", "", nil)
+	if err != nil {
+		return nil, err
+	}
+	task.ScheduleRun(nil)
+	return nil, nil
 }
 
 func (self *SGuest) PerformBindGroups(ctx context.Context, userCred mcclient.TokenCredential,
@@ -5504,6 +5681,7 @@ func (self *SGuest) StartGuestChangeStorageTask(ctx context.Context, userCred mc
 	params := api.ServerChangeStorageInternalInput{
 		ServerChangeStorageInput: *input,
 		Disks:                    disks,
+		DiskCount:                len(disks),
 		GuestRunning:             self.Status == api.VM_RUNNING,
 	}
 	reason := fmt.Sprintf("Change guest disks storage to %s", input.TargetStorageId)

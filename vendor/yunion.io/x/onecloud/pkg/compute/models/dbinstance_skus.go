@@ -19,6 +19,7 @@ import (
 	"database/sql"
 	"fmt"
 	"strings"
+	"sync"
 
 	"yunion.io/x/cloudmux/pkg/cloudprovider"
 	"yunion.io/x/jsonutils"
@@ -32,9 +33,11 @@ import (
 	api "yunion.io/x/onecloud/pkg/apis/compute"
 	"yunion.io/x/onecloud/pkg/cloudcommon/db"
 	"yunion.io/x/onecloud/pkg/cloudcommon/db/lockman"
+	"yunion.io/x/onecloud/pkg/compute/options"
 	"yunion.io/x/onecloud/pkg/httperrors"
 	"yunion.io/x/onecloud/pkg/mcclient"
 	"yunion.io/x/onecloud/pkg/util/stringutils2"
+	"yunion.io/x/onecloud/pkg/util/yunionmeta"
 )
 
 type SDBInstanceSkuManager struct {
@@ -56,6 +59,7 @@ func init() {
 	}
 	DBInstanceSkuManager.SetVirtualObject(DBInstanceSkuManager)
 	DBInstanceSkuManager.NameRequireAscii = false
+	DBInstanceSkuManager.TableSpec().AddIndex(false, "cloudregion_id", "deleted", "provider")
 }
 
 type SDBInstanceSku struct {
@@ -468,6 +472,11 @@ func (manager *SDBInstanceSkuManager) GetInstanceTypes(provider, cloudregionId, 
 	return manager.GetDBStringArray(q)
 }
 
+func (manager *SDBInstanceSkuManager) GetSkuCountByRegion(regionId string) (int, error) {
+	q := manager.Query().Equals("cloudregion_id", regionId)
+	return q.CountWithError()
+}
+
 func (manager *SDBInstanceSkuManager) GetDBInstanceSkus(provider, cloudregionId, engine, version, category, storageType string) ([]SDBInstanceSku, error) {
 	skus := []SDBInstanceSku{}
 	q := manager.Query("name").Equals("provider", provider).Equals("cloudregion_id", cloudregionId).Equals("engine", engine).Equals("engine_version", version).Distinct()
@@ -479,22 +488,34 @@ func (manager *SDBInstanceSkuManager) GetDBInstanceSkus(provider, cloudregionId,
 	return skus, nil
 }
 
-func (manager *SDBInstanceSkuManager) SyncDBInstanceSkus(ctx context.Context, userCred mcclient.TokenCredential, region *SCloudregion, meta *SSkuResourcesMeta) compare.SyncResult {
-	lockman.LockRawObject(ctx, "dbinstance-skus", region.Id)
-	defer lockman.ReleaseRawObject(ctx, "dbinstance-skus", region.Id)
+func (manager *SDBInstanceSkuManager) SyncDBInstanceSkus(
+	ctx context.Context,
+	userCred mcclient.TokenCredential,
+	region *SCloudregion,
+	xor bool,
+) compare.SyncResult {
+	lockman.LockRawObject(ctx, manager.Keyword(), region.Id)
+	defer lockman.ReleaseRawObject(ctx, manager.Keyword(), region.Id)
 
-	syncResult := compare.SyncResult{}
+	result := compare.SyncResult{}
 
-	iskus, err := meta.GetDBInstanceSkusByRegionExternalId(region.ExternalId)
+	meta, err := yunionmeta.FetchYunionmeta(ctx)
 	if err != nil {
-		syncResult.Error(err)
-		return syncResult
+		result.Error(errors.Wrapf(err, "FetchYunionmeta"))
+		return result
+	}
+
+	iskus := []SDBInstanceSku{}
+	err = meta.List(manager.Keyword(), region.ExternalId, &iskus)
+	if err != nil {
+		result.Error(err)
+		return result
 	}
 
 	dbSkus, err := manager.fetchDBInstanceSkus(region.Provider, region)
 	if err != nil {
-		syncResult.Error(err)
-		return syncResult
+		result.Error(err)
+		return result
 	}
 
 	removed := make([]SDBInstanceSku, 0)
@@ -504,35 +525,37 @@ func (manager *SDBInstanceSkuManager) SyncDBInstanceSkus(ctx context.Context, us
 
 	err = compare.CompareSets(dbSkus, iskus, &removed, &commondb, &commonext, &added)
 	if err != nil {
-		syncResult.Error(err)
-		return syncResult
+		result.Error(err)
+		return result
 	}
 
 	for i := 0; i < len(removed); i += 1 {
-		err = removed[i].Delete(ctx, userCred)
+		err = db.RealDeleteModel(ctx, userCred, &removed[i])
 		if err != nil {
-			syncResult.DeleteError(err)
+			result.DeleteError(err)
 		} else {
-			syncResult.Delete()
+			result.Delete()
 		}
 	}
-	for i := 0; i < len(commondb); i += 1 {
-		err = commondb[i].syncWithCloudSku(ctx, userCred, commonext[i])
-		if err != nil {
-			syncResult.UpdateError(err)
-		} else {
-			syncResult.Update()
+	if !xor {
+		for i := 0; i < len(commondb); i += 1 {
+			err = commondb[i].syncWithCloudSku(ctx, userCred, commonext[i])
+			if err != nil {
+				result.UpdateError(err)
+			} else {
+				result.Update()
+			}
 		}
 	}
 	for i := 0; i < len(added); i += 1 {
-		err = manager.newFromCloudSku(ctx, userCred, added[i], region)
+		err = region.newDBInstanceSkuFromCloudSku(ctx, userCred, added[i].GetGlobalId())
 		if err != nil {
-			syncResult.AddError(err)
+			result.AddError(err)
 		} else {
-			syncResult.Add()
+			result.Add()
 		}
 	}
-	return syncResult
+	return result
 }
 
 func (sku SDBInstanceSku) GetGlobalId() string {
@@ -542,24 +565,65 @@ func (sku SDBInstanceSku) GetGlobalId() string {
 func (sku *SDBInstanceSku) syncWithCloudSku(ctx context.Context, userCred mcclient.TokenCredential, isku SDBInstanceSku) error {
 	_, err := db.Update(sku, func() error {
 		sku.Status = isku.Status
-		sku.TPS = isku.TPS
-		sku.QPS = isku.QPS
-		sku.MultiAZ = isku.MultiAZ
-		sku.MaxConnections = isku.MaxConnections
 		return nil
 	})
 	return err
 }
 
-func (manager *SDBInstanceSkuManager) newFromCloudSku(ctx context.Context, userCred mcclient.TokenCredential, isku SDBInstanceSku, region *SCloudregion) error {
-	sku := &isku
-	sku.SetModelManager(manager, sku)
-	sku.Id = "" //避免使用yunion meta的id,导致出现duplicate entry问题
-	sku.CloudregionId = region.Id
-	return manager.TableSpec().Insert(ctx, sku)
+func (self *SCloudregion) newDBInstanceSkuFromCloudSku(ctx context.Context, userCred mcclient.TokenCredential, externalId string) error {
+	meta, err := yunionmeta.FetchYunionmeta(ctx)
+	if err != nil {
+		return err
+	}
+	zones, err := self.GetZones()
+	if err != nil {
+		return errors.Wrap(err, "GetZones")
+	}
+	zoneMaps := map[string]string{}
+	for _, zone := range zones {
+		zoneMaps[zone.ExternalId] = zone.Id
+	}
+
+	sku := &SDBInstanceSku{}
+	sku.SetModelManager(DBInstanceSkuManager, sku)
+
+	skuUrl := fmt.Sprintf("%s/%s/%s.json", meta.DBInstanceBase, self.ExternalId, externalId)
+	err = meta.Get(skuUrl, sku)
+	if err != nil {
+		return errors.Wrapf(err, "Get")
+	}
+
+	if len(sku.Zone1) > 0 {
+		zoneId := yunionmeta.GetZoneIdBySuffix(zoneMaps, sku.Zone1)
+		if len(zoneId) == 0 {
+			return errors.Wrapf(err, "GetZoneIdBySuffix(%s)", sku.Zone1)
+		}
+		sku.Zone1 = zoneId
+	}
+
+	if len(sku.Zone2) > 0 {
+		zoneId := yunionmeta.GetZoneIdBySuffix(zoneMaps, sku.Zone2)
+		if len(zoneId) == 0 {
+			return errors.Wrapf(err, "GetZoneIdBySuffix(%s)", sku.Zone2)
+		}
+		sku.Zone2 = zoneId
+	}
+
+	if len(sku.Zone3) > 0 {
+		zoneId := yunionmeta.GetZoneIdBySuffix(zoneMaps, sku.Zone3)
+		if len(zoneId) == 0 {
+			return errors.Wrapf(err, "GetZoneIdBySuffix(%s)", sku.Zone3)
+		}
+		sku.Zone3 = zoneId
+	}
+
+	sku.CloudregionId = self.Id
+	sku.Provider = self.Provider
+	sku.Enabled = tristate.True
+	return DBInstanceSkuManager.TableSpec().Insert(ctx, sku)
 }
 
-func SyncRegionDBInstanceSkus(ctx context.Context, userCred mcclient.TokenCredential, regionId string, isStart bool) {
+func SyncRegionDBInstanceSkus(ctx context.Context, userCred mcclient.TokenCredential, regionId string, isStart, xor bool) {
 	if isStart {
 		q := DBInstanceSkuManager.Query()
 		if len(regionId) > 0 {
@@ -588,27 +652,45 @@ func SyncRegionDBInstanceSkus(ctx context.Context, userCred mcclient.TokenCreden
 		return
 	}
 
-	meta, err := FetchSkuResourcesMeta()
+	meta, err := yunionmeta.FetchYunionmeta(ctx)
 	if err != nil {
-		log.Errorf("failed to fetch sku resource meta: %v", err)
+		log.Errorf("FetchYunionmeta: %v", err)
+		return
+	}
+
+	index, err := meta.Index(DBInstanceSkuManager.Keyword())
+	if err != nil {
+		log.Errorf("get rds sku index error: %v", err)
 		return
 	}
 
 	for _, region := range cloudregions {
 		if !region.GetDriver().IsSupportedDBInstance() {
-			log.Infof("region %s(%s) not support dbinstance, skip sync", region.Name, region.Id)
+			log.Debugf("region %s(%s) not support dbinstance, skip sync", region.Name, region.Id)
 			continue
 		}
-		result := DBInstanceSkuManager.SyncDBInstanceSkus(ctx, userCred, &region, meta)
+		skuMeta := &SDBInstanceSku{}
+		skuMeta.SetModelManager(DBInstanceSkuManager, skuMeta)
+		skuMeta.Id = region.ExternalId
+
+		oldMd5 := db.Metadata.GetStringValue(ctx, skuMeta, db.SKU_METADAT_KEY, userCred)
+		newMd5, ok := index[region.ExternalId]
+		if !ok || newMd5 == yunionmeta.EMPTY_MD5 || len(oldMd5) > 0 && newMd5 == oldMd5 {
+			continue
+		}
+
+		db.Metadata.SetValue(ctx, skuMeta, db.SKU_METADAT_KEY, newMd5, userCred)
+
+		result := DBInstanceSkuManager.SyncDBInstanceSkus(ctx, userCred, &region, xor)
 		msg := result.Result()
 		notes := fmt.Sprintf("sync rds sku for region %s result: %s", region.Name, msg)
-		log.Infof(notes)
+		log.Debugf(notes)
 	}
 
 }
 
 func SyncDBInstanceSkus(ctx context.Context, userCred mcclient.TokenCredential, isStart bool) {
-	SyncRegionDBInstanceSkus(ctx, userCred, "", isStart)
+	SyncRegionDBInstanceSkus(ctx, userCred, "", isStart, false)
 }
 
 func (manager *SDBInstanceSkuManager) ListItemExportKeys(ctx context.Context,
@@ -674,7 +756,12 @@ func (self *SCloudregion) GetDBInstanceSkus() ([]SDBInstanceSku, error) {
 	return skus, nil
 }
 
-func (self *SCloudregion) SyncDBInstanceSkus(ctx context.Context, userCred mcclient.TokenCredential, provider *SCloudprovider, exts []cloudprovider.ICloudDBInstanceSku) compare.SyncResult {
+func (self *SCloudregion) SyncDBInstanceSkus(
+	ctx context.Context,
+	userCred mcclient.TokenCredential,
+	provider *SCloudprovider,
+	exts []cloudprovider.ICloudDBInstanceSku,
+) compare.SyncResult {
 	lockman.LockRawObject(ctx, DBInstanceSkuManager.Keyword(), self.Id)
 	defer lockman.ReleaseRawObject(ctx, DBInstanceSkuManager.Keyword(), self.Id)
 
@@ -704,14 +791,26 @@ func (self *SCloudregion) SyncDBInstanceSkus(ctx context.Context, userCred mccli
 		}
 		result.Delete()
 	}
+	ch := make(chan struct{}, options.Options.SkuBatchSync)
+	defer close(ch)
+	var wg sync.WaitGroup
 	for i := 0; i < len(added); i += 1 {
-		err = self.newFromCloudSku(ctx, userCred, added[i])
-		if err != nil {
-			result.AddError(err)
-			continue
-		}
-		result.Add()
+		ch <- struct{}{}
+		wg.Add(1)
+		go func(sku cloudprovider.ICloudDBInstanceSku) {
+			defer func() {
+				wg.Done()
+				<-ch
+			}()
+			err = self.newFromCloudSku(ctx, userCred, sku)
+			if err != nil {
+				result.AddError(err)
+				return
+			}
+			result.Add()
+		}(added[i])
 	}
+	wg.Wait()
 	return result
 }
 

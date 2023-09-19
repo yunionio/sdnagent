@@ -19,6 +19,7 @@ import (
 	"database/sql"
 	"fmt"
 	"net/http"
+	"strings"
 	"time"
 
 	"yunion.io/x/jsonutils"
@@ -233,7 +234,7 @@ func (manager *SModelBaseManager) FilterByName(q *sqlchemy.SQuery, name string) 
 	return q
 }
 
-func (manager *SModelBaseManager) FilterByOwner(q *sqlchemy.SQuery, ownerId mcclient.IIdentityProvider, scope rbacscope.TRbacScope) *sqlchemy.SQuery {
+func (manager *SModelBaseManager) FilterByOwner(q *sqlchemy.SQuery, man FilterByOwnerProvider, userCred mcclient.TokenCredential, ownerId mcclient.IIdentityProvider, scope rbacscope.TRbacScope) *sqlchemy.SQuery {
 	return q
 }
 
@@ -270,12 +271,8 @@ func (manager *SModelBaseManager) ValidateCreateData(ctx context.Context, userCr
 	return input, nil
 }
 
-func (manager *SModelBaseManager) OnCreateComplete(ctx context.Context, items []IModel, userCred mcclient.TokenCredential, ownerId mcclient.IIdentityProvider, query jsonutils.JSONObject, data jsonutils.JSONObject) {
+func (manager *SModelBaseManager) OnCreateComplete(ctx context.Context, items []IModel, userCred mcclient.TokenCredential, ownerId mcclient.IIdentityProvider, query jsonutils.JSONObject, data []jsonutils.JSONObject) {
 	// do nothing
-}
-
-func (manager *SModelBaseManager) AllowPerformAction(ctx context.Context, userCred mcclient.TokenCredential, action string, query jsonutils.JSONObject, data jsonutils.JSONObject) bool {
-	return false
 }
 
 func (manager *SModelBaseManager) PerformAction(ctx context.Context, userCred mcclient.TokenCredential, action string, query jsonutils.JSONObject, data jsonutils.JSONObject) (jsonutils.JSONObject, error) {
@@ -301,7 +298,9 @@ func (manager *SModelBaseManager) CustomizeHandlerInfo(info *appsrv.SHandlerInfo
 
 func (manager *SModelBaseManager) SetHandlerProcessTimeout(info *appsrv.SHandlerInfo, r *http.Request) time.Duration {
 	splitableExportPath := fmt.Sprintf("/%s/splitable-export", manager.KeywordPlural())
-	if r.Method == http.MethodGet && (len(r.URL.Query().Get("export_keys")) > 0 || r.URL.Path == splitableExportPath) {
+	if r.Method == http.MethodGet && (len(r.URL.Query().Get("export_keys")) > 0 ||
+		r.URL.Query().Has("force_no_paging") ||
+		strings.HasSuffix(r.URL.Path, splitableExportPath)) {
 		return time.Hour * 2
 	}
 	return -time.Second
@@ -401,7 +400,7 @@ func (manager *SModelBaseManager) GetPropertyDistinctField(ctx context.Context, 
 	)
 	// query field
 	for i := 0; i < len(fields); i++ {
-		var nq = backupQuery
+		var nq = backupQuery.SubQuery().Query()
 		nq.AppendField(nq.Field(fields[i]))
 		of, err := nq.Distinct().AllStringMap()
 		if err == sql.ErrNoRows {
@@ -419,9 +418,9 @@ func (manager *SModelBaseManager) GetPropertyDistinctField(ctx context.Context, 
 
 	// query extra field
 	for i := 0; i < len(efs); i++ {
-		nq := backupQuery
+		nq := backupQuery.SubQuery().Query()
 		fe, _ := efs[i].GetString()
-		nqp, err := im.QueryDistinctExtraField(&nq, fe)
+		nqp, err := im.QueryDistinctExtraField(nq, fe)
 		if err != nil {
 			continue
 		}
@@ -527,14 +526,10 @@ func (manager *SModelBaseManager) GetPropertySplitableExport(ctx context.Context
 	return nil, httperrors.NewResourceNotFoundError("table %s not found", input.Table)
 }
 
-func (manager *SModelBaseManager) AllowPerformPurgeSplitable(ctx context.Context, userCred mcclient.TokenCredential, query jsonutils.JSONObject, data jsonutils.JSONObject) bool {
-	return true
-}
-
 func (manager *SModelBaseManager) PerformPurgeSplitable(ctx context.Context, userCred mcclient.TokenCredential, query jsonutils.JSONObject, input apis.PurgeSplitTableInput) (jsonutils.JSONObject, error) {
 	splitable := manager.GetIModelManager().GetImmutableInstance(ctx, userCred, query).GetSplitTable()
 	if splitable == nil {
-		return jsonutils.Marshal(map[string][]string{"tables": []string{}}), nil
+		return jsonutils.Marshal(map[string][]string{"tables": {}}), nil
 	}
 	ret, err := splitable.Purge(input.Tables)
 	if err != nil {
@@ -603,11 +598,6 @@ func (model *SModelBase) GetShortDescV2(ctx context.Context) *apis.ModelBaseShor
 	return &apis.ModelBaseShortDescDetail{ResName: model.Keyword()}
 }
 
-// get hooks
-func (model *SModelBase) AllowGetDetails(ctx context.Context, userCred mcclient.TokenCredential, query jsonutils.JSONObject) bool {
-	return false
-}
-
 func (model *SModelBase) GetExtraDetailsHeaders(ctx context.Context, userCred mcclient.TokenCredential, query jsonutils.JSONObject) map[string]string {
 	return nil
 }
@@ -619,10 +609,6 @@ func (model *SModelBase) CustomizeCreate(ctx context.Context, userCred mcclient.
 
 func (model *SModelBase) PostCreate(ctx context.Context, userCred mcclient.TokenCredential, ownerId mcclient.IIdentityProvider, query jsonutils.JSONObject, data jsonutils.JSONObject) {
 
-}
-
-func (model *SModelBase) AllowPerformAction(ctx context.Context, userCred mcclient.TokenCredential, action string, query jsonutils.JSONObject, data jsonutils.JSONObject) bool {
-	return false
 }
 
 func (model *SModelBase) PerformAction(ctx context.Context, userCred mcclient.TokenCredential, action string, query jsonutils.JSONObject, data jsonutils.JSONObject) (jsonutils.JSONObject, error) {

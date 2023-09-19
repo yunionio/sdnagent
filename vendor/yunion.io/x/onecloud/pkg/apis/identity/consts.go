@@ -84,9 +84,6 @@ const (
 	IdentitySyncStatusIdle    = "idle"
 
 	MinimalSyncIntervalSeconds = 5 * 60 // 5 minutes
-
-	MaxUserRolesInProject  = 10
-	MaxGroupRolesInProject = 5
 )
 
 var (
@@ -98,13 +95,13 @@ var (
 	}
 
 	SensitiveDomainConfigMap = map[string][]string{
-		"ldap": []string{
+		"ldap": {
 			"password",
 		},
 	}
 
 	CommonWhitelistOptionMap = map[string][]string{
-		"default": []string{
+		"default": {
 			"enable_quota_check",
 			"default_quota_value",
 			"non_default_domain_projects",
@@ -116,12 +113,14 @@ var (
 			"global_https_proxy",
 			"ignore_nonrunning_guests",
 			"platform_name",
+			"enable_cloud_shell",
+			"enable_watermark",
 			"platform_names",
 		},
 	}
 
 	ServiceBlacklistOptionMap = map[string][]string{
-		"default": []string{
+		"default": {
 			// ############################
 			// common blacklist options
 			// ############################
@@ -154,6 +153,7 @@ var (
 
 			"is_slave_node",
 			"config_sync_period_seconds",
+			"enable_app_profiling",
 
 			// ############################
 			// db blacklist options
@@ -227,6 +227,11 @@ var (
 			"deploy_server_socket_path",
 			"enable_remote_executor",
 			"executor_socket_path",
+
+			// ############################
+			// kubeserver blacklist options
+			// ############################
+			"running_mode",
 		},
 	}
 )

@@ -21,6 +21,7 @@ import (
 	"net/http"
 	"reflect"
 	"runtime/debug"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -123,10 +124,6 @@ func (manager *STaskManager) FilterByName(q *sqlchemy.SQuery, name string) *sqlc
 	return q
 }
 
-func (manager *STaskManager) AllowPerformAction(ctx context.Context, userCred mcclient.TokenCredential, action string, query jsonutils.JSONObject, data jsonutils.JSONObject) bool {
-	return true
-}
-
 func (manager *STaskManager) PerformAction(ctx context.Context, userCred mcclient.TokenCredential, taskId string, query jsonutils.JSONObject, data jsonutils.JSONObject) (jsonutils.JSONObject, error) {
 	err := runTask(taskId, data)
 	if err != nil {
@@ -151,7 +148,7 @@ func (self *STask) GetOwnerId() mcclient.IIdentityProvider {
 	return &owner
 }
 
-func (manager *STaskManager) FilterByOwner(q *sqlchemy.SQuery, owner mcclient.IIdentityProvider, scope rbacscope.TRbacScope) *sqlchemy.SQuery {
+func (manager *STaskManager) FilterByOwner(q *sqlchemy.SQuery, man db.FilterByOwnerProvider, userCred mcclient.TokenCredential, owner mcclient.IIdentityProvider, scope rbacscope.TRbacScope) *sqlchemy.SQuery {
 	if owner != nil {
 		switch scope {
 		case rbacscope.ScopeProject:
@@ -169,10 +166,6 @@ func (manager *STaskManager) FilterByOwner(q *sqlchemy.SQuery, owner mcclient.II
 
 func (manager *STaskManager) FetchTaskById(taskId string) *STask {
 	return manager.fetchTask(taskId)
-}
-
-func (self *STask) AllowGetDetails(ctx context.Context, userCred mcclient.TokenCredential, query jsonutils.JSONObject) bool {
-	return db.IsAdminAllowGet(ctx, userCred, self) || userCred.GetProjectId() == self.UserCred.GetProjectId()
 }
 
 func (self *STask) AllowUpdateItem(ctx context.Context, userCred mcclient.TokenCredential) bool {
@@ -275,9 +268,6 @@ func (manager *STaskManager) NewTask(
 		return nil, fmt.Errorf("task %s not found", taskName)
 	}
 
-	lockman.LockObject(ctx, obj)
-	defer lockman.ReleaseObject(ctx, obj)
-
 	data := fetchTaskParams(ctx, taskName, taskData, parentTaskId, parentTaskNotifyUrl, pendingUsage)
 	task := &STask{
 		ObjName:  obj.Keyword(),
@@ -325,8 +315,6 @@ func (manager *STaskManager) NewParallelTask(
 	}
 
 	log.Debugf("number of objs: %d", len(objs))
-	lockman.LockClass(ctx, objs[0].GetModelManager(), userCred.GetProjectId())
-	defer lockman.ReleaseClass(ctx, objs[0].GetModelManager(), userCred.GetProjectId())
 
 	data := fetchTaskParams(ctx, taskName, taskData, parentTaskId, parentTaskNotifyUrl, pendingUsage)
 	task := &STask{
@@ -343,15 +331,17 @@ func (manager *STaskManager) NewParallelTask(
 		log.Errorf("Task insert error %s", err)
 		return nil, err
 	}
+
 	for _, obj := range objs {
 		to := STaskObject{TaskId: task.Id, ObjId: obj.GetId()}
 		to.SetModelManager(TaskObjectManager, &to)
 		err := TaskObjectManager.TableSpec().Insert(ctx, &to)
 		if err != nil {
 			log.Errorf("Taskobject insert error %s", err)
-			return nil, err
+			return nil, errors.Wrap(err, "insert task object")
 		}
 	}
+
 	parentTask := task.GetParentTask()
 	if parentTask != nil {
 		st := SSubTask{TaskId: parentTask.Id, Stage: parentTask.Stage, SubtaskId: task.Id}
@@ -410,6 +400,12 @@ func (manager *STaskManager) execTask(taskId string, data jsonutils.JSONObject) 
 		log.Errorf("Unsupported task type?? %s", taskValue.Type())
 	}
 }
+
+type sSortedObjects []db.IStandaloneModel
+
+func (a sSortedObjects) Len() int           { return len(a) }
+func (a sSortedObjects) Swap(i, j int)      { a[i], a[j] = a[j], a[i] }
+func (a sSortedObjects) Less(i, j int) bool { return a[i].GetId() < a[j].GetId() }
 
 func execITask(taskValue reflect.Value, task *STask, odata jsonutils.JSONObject, isMulti bool) {
 	ctxData := task.GetRequestContext()
@@ -514,8 +510,13 @@ func execITask(taskValue reflect.Value, task *STask, odata jsonutils.JSONObject,
 		}
 		task.taskObjects = objs
 
-		lockman.LockClass(ctx, objResManager, task.UserCred.GetProjectId())
-		defer lockman.ReleaseClass(ctx, objResManager, task.UserCred.GetProjectId())
+		// sort objects by ids to avoid deadlock
+		sort.Sort(sSortedObjects(objs))
+
+		for i := range objs {
+			lockman.LockObject(ctx, objs[i])
+			defer lockman.ReleaseObject(ctx, objs[i])
+		}
 
 		params[1] = reflect.ValueOf(objs)
 	} else {

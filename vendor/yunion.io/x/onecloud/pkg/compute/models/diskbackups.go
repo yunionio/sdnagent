@@ -311,7 +311,7 @@ func (db *SDiskBackup) PostCreate(ctx context.Context, userCred mcclient.TokenCr
 	if err != nil {
 		log.Errorf("unable to GetDisk: %s", err.Error())
 	}
-	err = disk.InheritTo(ctx, db)
+	err = disk.InheritTo(ctx, userCred, db)
 	if err != nil {
 		log.Errorf("unable to inherit from disk %s to backup %s: %s", disk.GetId(), db.GetId(), err.Error())
 	}
@@ -388,6 +388,15 @@ func (manager *SDiskBackupManager) OrderByExtraFields(ctx context.Context, q *sq
 	q, err = manager.SCloudregionResourceBaseManager.OrderByExtraFields(ctx, q, userCred, query.RegionalFilterListInput)
 	if err != nil {
 		return nil, errors.Wrap(err, "SCloudregionResourceBaseManager.OrderByExtraFields")
+	}
+
+	if db.NeedOrderQuery([]string{query.OrderByDiskName}) {
+		dQ := DiskManager.Query()
+		dSQ := dQ.AppendField(dQ.Field("name").Label("disk_name"), dQ.Field("id")).SubQuery()
+		q = q.LeftJoin(dSQ, sqlchemy.Equals(dSQ.Field("id"), q.Field("disk_id")))
+		q = q.AppendField(q.QueryFields()...)
+		q = q.AppendField(dSQ.Field("disk_name"))
+		q = db.OrderByFields(q, []string{query.OrderByDiskName}, []sqlchemy.IQueryField{q.Field("disk_name")})
 	}
 	return q, nil
 }

@@ -137,6 +137,7 @@ func (manager *SVpcResourceBaseManager) FetchCustomizeColumns(
 			vpc := vpcs[vpcIds[i]]
 			rows[i].Vpc = vpc.Name
 			rows[i].VpcExtId = vpc.ExternalId
+			rows[i].IsDefaultVpc = vpc.IsDefault
 			rows[i].CloudregionId = vpc.CloudregionId
 			rows[i].ManagerId = vpc.ManagerId
 		}
@@ -161,18 +162,26 @@ func (manager *SVpcResourceBaseManager) ListItemFilter(
 	query api.VpcFilterListInput,
 ) (*sqlchemy.SQuery, error) {
 	var err error
-	if len(query.VpcId) > 0 {
-		switch query.VpcId {
+	conditions := []sqlchemy.ICondition{}
+	for _, vpcId := range query.VpcId {
+		if len(vpcId) == 0 {
+			continue
+		}
+		switch vpcId {
 		case api.CLASSIC_VPC_NAME:
-			q = q.Equals("name", api.CLASSIC_VPC_NAME)
+			conditions = append(conditions, sqlchemy.Equals(q.Field("name"), api.CLASSIC_VPC_NAME))
 		default:
-			_, err := validators.ValidateModel(userCred, VpcManager, &query.VpcId)
+			_, err := validators.ValidateModel(userCred, VpcManager, &vpcId)
 			if err != nil {
 				return nil, err
 			}
-			q = q.Equals("vpc_id", query.VpcId)
+			conditions = append(conditions, sqlchemy.Equals(q.Field("vpc_id"), vpcId))
 		}
 	}
+	if len(conditions) > 0 {
+		q = q.Filter(sqlchemy.OR(conditions...))
+	}
+
 	subq := VpcManager.Query("id").Snapshot()
 	subq, err = manager.SCloudregionResourceBaseManager.ListItemFilter(ctx, subq, userCred, query.RegionalFilterListInput)
 	if err != nil {

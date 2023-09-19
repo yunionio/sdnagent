@@ -89,6 +89,8 @@ type KeystoneUserV3 struct {
 	Domain KeystoneDomainV3
 	// 用户密码过期时间
 	PasswordExpiresAt time.Time
+	// 是否为系统账号
+	IsSystemAccount bool
 
 	// 用户的显式名称，通常为中文名
 	Displayname string
@@ -193,6 +195,10 @@ func (token *TokenCredentialV3) GetUserName() string {
 
 func (token *TokenCredentialV3) GetUserId() string {
 	return token.Token.User.Id
+}
+
+func (token *TokenCredentialV3) IsSystemAccount() bool {
+	return token.Token.User.IsSystemAccount
 }
 
 func (token *TokenCredentialV3) GetRoles() []string {
@@ -462,7 +468,7 @@ func (self *TokenCredentialV3) GetCatalogData(serviceTypes []string, region stri
 		}
 		neps := make([]KeystoneEndpointV3, 0)
 		for j := 0; j < len(catalog[i].Endpoints); j++ {
-			if catalog[i].Endpoints[j].Region != region {
+			if catalog[i].Endpoints[j].RegionId != region && catalog[i].Endpoints[j].Region != region {
 				continue
 			}
 			neps = append(neps, catalog[i].Endpoints[j])

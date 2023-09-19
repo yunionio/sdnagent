@@ -17,6 +17,7 @@ package models
 import (
 	"context"
 	"fmt"
+	"net/http"
 	"time"
 
 	"yunion.io/x/cloudmux/pkg/cloudprovider"
@@ -55,6 +56,7 @@ type IGuestDriver interface {
 
 	IsSupportedBillingCycle(bc billing.SBillingCycle) bool
 	IsSupportPostpaidExpire() bool
+	IsSupportShutdownMode() bool
 
 	RequestRenewInstance(ctx context.Context, guest *SGuest, bc billing.SBillingCycle) (time.Time, error)
 
@@ -95,7 +97,7 @@ type IGuestDriver interface {
 	RemoteDeployGuestForRebuildRoot(ctx context.Context, guest *SGuest, ihost cloudprovider.ICloudHost, task taskman.ITask, desc cloudprovider.SManagedVMCreateConfig) (jsonutils.JSONObject, error)
 	GetGuestInitialStateAfterCreate() string
 	GetGuestInitialStateAfterRebuild() string
-	GetDefaultAccount(desc cloudprovider.SManagedVMCreateConfig) string
+	GetDefaultAccount(osType, osDist, imageType string) string
 	GetInstanceCapability() cloudprovider.SInstanceCapability
 
 	OnGuestDeployTaskDataReceived(ctx context.Context, guest *SGuest, task taskman.ITask, data jsonutils.JSONObject) error
@@ -137,6 +139,7 @@ type IGuestDriver interface {
 	GetDetachDiskStatus() ([]string, error)
 	GetAttachDiskStatus() ([]string, error)
 	GetRebuildRootStatus() ([]string, error)
+	IsAllowSaveImageOnRunning() bool
 	GetChangeConfigStatus(guest *SGuest) ([]string, error)
 	GetDeployStatus() ([]string, error)
 	ValidateResizeDisk(guest *SGuest, disk *SDisk, storage *SStorage) error
@@ -228,11 +231,15 @@ type IGuestDriver interface {
 	RequestCPUSet(ctx context.Context, userCred mcclient.TokenCredential, host *SHost, guest *SGuest, input *api.ServerCPUSetInput) (*api.ServerCPUSetResp, error)
 	RequestCPUSetRemove(ctx context.Context, userCred mcclient.TokenCredential, host *SHost, guest *SGuest, input *api.ServerCPUSetRemoveInput) error
 
-	QgaRequestGuestPing(ctx context.Context, task taskman.ITask, host *SHost, guest *SGuest) error
+	QgaRequestGuestPing(ctx context.Context, header http.Header, host *SHost, guest *SGuest, async bool, input *api.ServerQgaTimeoutInput) error
 	QgaRequestSetUserPassword(ctx context.Context, task taskman.ITask, host *SHost, guest *SGuest, input *api.ServerQgaSetPasswordInput) error
 	RequestQgaCommand(ctx context.Context, userCred mcclient.TokenCredential, body jsonutils.JSONObject, host *SHost, guest *SGuest) (jsonutils.JSONObject, error)
 
 	FetchMonitorUrl(ctx context.Context, guest *SGuest) string
+	RequestResetNicTrafficLimit(ctx context.Context, task taskman.ITask, host *SHost, guest *SGuest, input *api.ServerNicTrafficLimit) error
+	RequestSetNicTrafficLimit(ctx context.Context, task taskman.ITask, host *SHost, guest *SGuest, input *api.ServerNicTrafficLimit) error
+
+	SyncOsInfo(ctx context.Context, userCred mcclient.TokenCredential, g *SGuest, extVM cloudprovider.IOSInfo) error
 }
 
 var guestDrivers map[string]IGuestDriver

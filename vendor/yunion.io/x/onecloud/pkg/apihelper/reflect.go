@@ -21,6 +21,7 @@ import (
 
 	"yunion.io/x/jsonutils"
 	"yunion.io/x/log"
+	"yunion.io/x/pkg/errors"
 	"yunion.io/x/pkg/util/printutils"
 	"yunion.io/x/pkg/util/timeutils"
 
@@ -118,8 +119,8 @@ func GetModels(opts *GetModelsOptions) error {
 	}
 	if !opts.InCludeOtherCloudEnv {
 		listOptions.Filter = append(listOptions.Filter,
-			"manager_id.isnullorempty()",  // len(manager_id) > 0 is for pubcloud objects
-			"external_id.isnullorempty()", // len(external_id) > 0 is for pubcloud objects
+			"manager_id.isnullorempty()", // len(manager_id) > 0 is for pubcloud objects
+			// "external_id.isnullorempty()", // len(external_id) > 0 is for pubcloud objects
 		)
 		listOptions.CloudEnv = "onpremise"
 	}
@@ -140,6 +141,9 @@ func GetModels(opts *GetModelsOptions) error {
 		filter := inter.ModelParamFilter()
 		params.Update(filter)
 	}
+	if inter, ok := opts.ModelSet.(IModelListSetParams); ok {
+		params = inter.SetModelListParams(params)
+	}
 	//XXX
 	//params.Set(api.LBAGENT_QUERY_ORIG_KEY, jsonutils.NewString(api.LBAGENT_QUERY_ORIG_VAL))
 
@@ -148,8 +152,8 @@ func GetModels(opts *GetModelsOptions) error {
 		var err error
 		listResult, err := opts.ModelManager.List(opts.ClientSession, params)
 		if err != nil {
-			return fmt.Errorf("%s: list failed with updated_at.gt('%s'): %s",
-				manKeyPlural, minUpdatedAt, err)
+			log.Errorf("%s: list failed with updated_at.gt('%s'): %s", manKeyPlural, minUpdatedAt, err)
+			return errors.Wrapf(err, "%s list failed with params: %s", manKeyPlural, params.QueryString())
 		}
 		entriesJson = append(entriesJson, listResult.Data...)
 		if listResult.Offset+len(listResult.Data) >= listResult.Total {

@@ -33,6 +33,7 @@ import (
 	"yunion.io/x/onecloud/pkg/cloudcommon/consts"
 	"yunion.io/x/onecloud/pkg/cloudcommon/db"
 	"yunion.io/x/onecloud/pkg/cloudcommon/db/lockman"
+	"yunion.io/x/onecloud/pkg/cloudcommon/db/taskman"
 	"yunion.io/x/onecloud/pkg/cloudcommon/validators"
 	"yunion.io/x/onecloud/pkg/compute/options"
 	"yunion.io/x/onecloud/pkg/httperrors"
@@ -67,7 +68,9 @@ type SExternalProject struct {
 	db.SVirtualResourceBase
 	db.SExternalizedResourceBase
 	SManagedResourceBase
-
+	// 优先级，同一个本地项目映射多个云上项目，优先级高的优先选择
+	// 数值越高，优先级越大
+	Priority         int    `default:"0" list:"user" update:"user" list:"user"`
 	ExternalDomainId string `width:"36" charset:"ascii" nullable:"true" list:"user"`
 	// 归属云账号ID
 	CloudaccountId string `width:"36" charset:"ascii" nullable:"false" list:"user" create:"required"`
@@ -89,20 +92,12 @@ func (manager *SExternalProjectManager) ValidateCreateData(
 		return input, err
 	}
 	account := _account.(*SCloudaccount)
-	driver, err := account.GetProvider(ctx)
-	if err != nil {
-		return input, err
-	}
+
 	if utils.IsInStringArray(account.Provider, api.MANGER_EXTERNAL_PROJECT_PROVIDERS) {
 		if len(input.ManagerId) == 0 {
 			return input, httperrors.NewMissingParameterError("manager_id")
 		}
-		_provider, err := validators.ValidateModel(userCred, CloudproviderManager, &input.ManagerId)
-		if err != nil {
-			return input, err
-		}
-		provider := _provider.(*SCloudprovider)
-		driver, err = provider.GetProvider(ctx)
+		_, err := validators.ValidateModel(userCred, CloudproviderManager, &input.ManagerId)
 		if err != nil {
 			return input, err
 		}
@@ -113,13 +108,111 @@ func (manager *SExternalProjectManager) ValidateCreateData(
 		return input, errors.Wrap(err, "SVirtualResourceBaseManager.ValidateCreateData")
 	}
 
-	iProj, err := driver.CreateIProject(input.Name)
+	// check duplicity
+	exist, err := manager.recordExists(input.CloudaccountId, input.ManagerId, input.Name, ownerId.GetProjectId())
 	if err != nil {
-		return input, errors.Wrapf(err, "CreateIProject")
+		return input, errors.Wrap(err, "recordExits")
+	} else if exist {
+		return input, errors.Wrapf(httperrors.ErrDuplicateResource, "account_id: %s manager_id: %s name: %s project: %s", input.CloudaccountId, input.ManagerId, input.Name, ownerId.GetProjectId())
 	}
-	input.ExternalId = iProj.GetGlobalId()
-	input.Status = api.EXTERNAL_PROJECT_STATUS_AVAILABLE
 	return input, nil
+}
+
+func (manager *SExternalProjectManager) recordExists(accountId, managerId, name, projectId string) (bool, error) {
+	q := manager.Query()
+	q = q.Equals("cloudaccount_id", accountId)
+	q = q.Equals("name", name)
+	q = q.Equals("tenant_id", projectId)
+	if len(managerId) > 0 {
+		q = q.Equals("manager_id", managerId)
+	}
+	cnt, err := q.CountWithError()
+	if err != nil {
+		return false, errors.Wrap(err, "CountWithError")
+	}
+	return cnt > 0, nil
+}
+
+func (extProj *SExternalProject) RemoteCreateProject(ctx context.Context, userCred mcclient.TokenCredential) error {
+	err := extProj.remoteCreateProjectInternal(ctx, userCred)
+	if err == nil {
+		return nil
+	}
+	extProj.SetStatus(userCred, api.EXTERNAL_PROJECT_STATUS_UNAVAILABLE, err.Error())
+
+	return errors.Wrap(err, "remoteCreateProjectInternal")
+}
+
+func (extProj *SExternalProject) remoteCreateProjectInternal(ctx context.Context, userCred mcclient.TokenCredential) error {
+	account, err := extProj.GetCloudaccount()
+	if err != nil {
+		return errors.Wrap(err, "GetCloudaccount")
+	}
+	driver, err := account.GetProvider(ctx)
+	if err != nil {
+		return errors.Wrap(err, "account.GetProvider")
+	}
+	if utils.IsInStringArray(account.Provider, api.MANGER_EXTERNAL_PROJECT_PROVIDERS) {
+		provider := extProj.GetCloudprovider()
+		if provider == nil {
+			return errors.Wrap(cloudprovider.ErrInvalidProvider, "GetCloudprovider empty")
+		}
+		driver, err = provider.GetProvider(ctx)
+		if err != nil {
+			return errors.Wrap(err, "provider.GetProvider")
+		}
+	}
+
+	iProj, err := driver.CreateIProject(extProj.Name)
+	if err != nil {
+		return errors.Wrapf(err, "driver.CreateIProject")
+	}
+	_, err = db.Update(extProj, func() error {
+		extProj.ExternalId = iProj.GetGlobalId()
+		extProj.Status = api.EXTERNAL_PROJECT_STATUS_AVAILABLE
+		return nil
+	})
+	if err != nil {
+		return errors.Wrap(err, "Update Status")
+	}
+
+	db.OpsLog.LogEvent(extProj, db.ACT_UPDATE, extProj.GetShortDesc(ctx), userCred)
+	logclient.AddActionLogWithContext(ctx, extProj, logclient.ACT_UPDATE, extProj.GetShortDesc(ctx), userCred, true)
+
+	return nil
+}
+
+func (extProj *SExternalProject) CustomizeCreate(
+	ctx context.Context,
+	userCred mcclient.TokenCredential,
+	ownerId mcclient.IIdentityProvider,
+	query jsonutils.JSONObject,
+	data jsonutils.JSONObject,
+) error {
+	return extProj.SVirtualResourceBase.CustomizeCreate(ctx, userCred, ownerId, query, data)
+}
+
+func (extProj *SExternalProject) PostCreate(
+	ctx context.Context,
+	userCred mcclient.TokenCredential,
+	ownerId mcclient.IIdentityProvider,
+	query jsonutils.JSONObject,
+	data jsonutils.JSONObject,
+) {
+	extProj.SVirtualResourceBase.PostCreate(ctx, userCred, ownerId, query, data)
+
+	extProj.startExternalProjectCreateTask(ctx, userCred)
+}
+
+func (extProj *SExternalProject) startExternalProjectCreateTask(ctx context.Context, userCred mcclient.TokenCredential) error {
+	extProj.SetStatus(userCred, api.EXTERNAL_PROJECT_STATUS_CREATING, "")
+	params := jsonutils.NewDict()
+	task, err := taskman.TaskManager.NewTask(ctx, "ExternalProjectCreateTask", extProj, userCred, params, "", "", nil)
+	if err != nil {
+		return err
+	}
+	task.ScheduleRun(nil)
+	return nil
 }
 
 func (manager *SExternalProjectManager) FetchCustomizeColumns(
@@ -179,9 +272,9 @@ func (manager *SExternalProjectManager) GetProject(externalId string, providerId
 	return project, q.First(project)
 }
 
-func (manager *SExternalProjectManager) SyncProjects(ctx context.Context, userCred mcclient.TokenCredential, account *SCloudaccount, projects []cloudprovider.ICloudProject) compare.SyncResult {
-	lockman.LockRawObject(ctx, "external-projects", account.Id)
-	defer lockman.ReleaseRawObject(ctx, "external-projects", account.Id)
+func (manager *SExternalProjectManager) SyncProjects(ctx context.Context, userCred mcclient.TokenCredential, account *SCloudaccount, projects []cloudprovider.ICloudProject, xor bool) compare.SyncResult {
+	lockman.LockRawObject(ctx, manager.Keyword(), account.Id)
+	defer lockman.ReleaseRawObject(ctx, manager.Keyword(), account.Id)
 
 	syncResult := compare.SyncResult{}
 
@@ -203,19 +296,25 @@ func (manager *SExternalProjectManager) SyncProjects(ctx context.Context, userCr
 	}
 
 	for i := 0; i < len(removed); i++ {
-		err = removed[i].syncRemoveCloudProject(ctx, userCred)
-		if err != nil {
-			syncResult.DeleteError(err)
+		if removed[i].Source == apis.EXTERNAL_RESOURCE_SOURCE_LOCAL {
+			removed[i].SetStatus(userCred, api.EXTERNAL_PROJECT_STATUS_UNKNOWN, "sync delete")
 		} else {
-			syncResult.Delete()
+			err = removed[i].syncRemoveCloudProject(ctx, userCred)
+			if err != nil {
+				syncResult.DeleteError(err)
+			} else {
+				syncResult.Delete()
+			}
 		}
 	}
-	for i := 0; i < len(commondb); i++ {
-		err = commondb[i].SyncWithCloudProject(ctx, userCred, account, commonext[i])
-		if err != nil {
-			syncResult.UpdateError(err)
-		} else {
-			syncResult.Update()
+	if !xor {
+		for i := 0; i < len(commondb); i++ {
+			err = commondb[i].SyncWithCloudProject(ctx, userCred, account, commonext[i])
+			if err != nil {
+				syncResult.UpdateError(err)
+			} else {
+				syncResult.Update()
+			}
 		}
 	}
 	for i := 0; i < len(added); i++ {
@@ -233,7 +332,38 @@ func (self *SExternalProject) syncRemoveCloudProject(ctx context.Context, userCr
 	lockman.LockObject(ctx, self)
 	defer lockman.ReleaseObject(ctx, self)
 
+	err := func() error {
+		account, err := self.GetCloudaccount()
+		if err != nil {
+			return errors.Wrapf(err, "GetCloudaccount")
+		}
+		if !account.AutoCreateProject || !options.Options.EnableAutoRenameProject {
+			return nil
+		}
+		pm, _ := account.GetProjectMapping()
+		if pm != nil {
+			return nil
+		}
+		count, _ := self.GetProjectCount()
+		if count != 1 {
+			return nil
+		}
+		s := auth.GetAdminSession(ctx, consts.GetRegion())
+		_, err = identity.Projects.Delete(s, self.ProjectId, nil)
+		if err != nil {
+			return errors.Wrapf(err, "try auto delete project %s error: %v", self.Name, err)
+		}
+		return nil
+	}()
+	if err != nil {
+		log.Errorf("syncRemoveCloudProject %s(%s) error: %v", self.Name, self.Id, err)
+	}
+
 	return self.Delete(ctx, userCred)
+}
+
+func (self *SExternalProject) GetProjectCount() (int, error) {
+	return ExternalProjectManager.Query().Equals("tenant_id", self.ProjectId).CountWithError()
 }
 
 func (self *SExternalProject) SyncWithCloudProject(ctx context.Context, userCred mcclient.TokenCredential, account *SCloudaccount, ext cloudprovider.ICloudProject) error {
@@ -243,6 +373,58 @@ func (self *SExternalProject) SyncWithCloudProject(ctx context.Context, userCred
 	for _, provider := range providers {
 		providerMaps[provider.Account] = provider.Id
 	}
+
+	domainId := ""
+	projectId := ""
+	share := account.GetSharedInfo()
+	if self.DomainId != account.DomainId && !(share.PublicScope == rbacscope.ScopeSystem ||
+		(share.PublicScope == rbacscope.ScopeDomain && utils.IsInStringArray(self.DomainId, share.SharedDomains))) {
+		projectId = account.ProjectId
+		domainId = account.DomainId
+		if account.AutoCreateProject {
+			desc := fmt.Sprintf("auto create from cloud project %s (%s)", self.Name, self.ExternalId)
+			var err error
+			domainId, projectId, err = account.getOrCreateTenant(ctx, self.Name, "", "", desc)
+			if err != nil {
+				return errors.Wrapf(err, "getOrCreateTenant")
+			}
+		}
+		return nil
+	}
+
+	pm, _ := account.GetProjectMapping()
+	if pm != nil && pm.Enabled.IsTrue() && pm.IsNeedProjectSync() && self.ProjectSrc != string(apis.OWNER_SOURCE_LOCAL) {
+		extTags, err := ext.GetTags()
+		if err != nil {
+			return errors.Wrapf(err, "extModel.GetTags")
+		}
+		find := false
+		if pm.Rules != nil {
+			for _, rule := range *pm.Rules {
+				var newProj string
+				var isMatch bool
+				domainId, projectId, newProj, isMatch = rule.IsMatchTags(extTags)
+				if isMatch && len(newProj) > 0 {
+					domainId, projectId, err = account.getOrCreateTenant(ctx, newProj, "", "", "auto create from tag")
+					if err != nil {
+						log.Errorf("getOrCreateTenant(%s) error: %v", newProj, err)
+						continue
+					}
+					find = true
+					break
+				}
+			}
+		}
+		if !find && account.AutoCreateProject {
+			desc := fmt.Sprintf("auto create from cloud project %s (%s)", self.Name, self.ExternalId)
+			domainId, projectId, err = account.getOrCreateTenant(ctx, self.Name, self.DomainId, "", desc)
+			if err != nil {
+				return errors.Wrapf(err, "getOrCreateTenant")
+			}
+		}
+	}
+
+	oldName := self.Name
 	diff, err := db.UpdateWithLock(ctx, self, func() error {
 		self.Name = ext.GetName()
 		self.IsEmulated = ext.IsEmulated()
@@ -250,87 +432,35 @@ func (self *SExternalProject) SyncWithCloudProject(ctx context.Context, userCred
 		if accountId := ext.GetAccountId(); len(accountId) > 0 {
 			self.ManagerId, _ = providerMaps[accountId]
 		}
-		share := account.GetSharedInfo()
-		if self.DomainId != account.DomainId && !(share.PublicScope == rbacscope.ScopeSystem ||
-			(share.PublicScope == rbacscope.ScopeDomain && utils.IsInStringArray(self.DomainId, share.SharedDomains))) {
-			self.ProjectId = account.ProjectId
-			self.DomainId = account.DomainId
-			if account.AutoCreateProject {
-				desc := fmt.Sprintf("auto create from cloud project %s (%s)", self.Name, self.ExternalId)
-				domainId, projectId, err := account.getOrCreateTenant(ctx, self.Name, "", "", desc)
-				if err != nil {
-					log.Errorf("failed to get or create tenant %s(%s) %v", self.Name, self.ExternalId, err)
-				} else {
-					self.ProjectId = projectId
-					self.DomainId = domainId
-				}
+		if len(domainId) > 0 && len(projectId) > 0 {
+			self.DomainId = domainId
+			self.ProjectId = projectId
+		}
+		cache, err := db.TenantCacheManager.FetchTenantByIdOrNameInDomain(ctx, self.ProjectId, self.DomainId)
+		if err != nil {
+			return errors.Wrapf(err, "FetchProject %s", self.ProjectId)
+		}
+		if cache.PendingDeleted {
+			desc := fmt.Sprintf("auto create from cloud project %s (%s)", self.Name, self.ExternalId)
+			_, self.ProjectId, err = account.getOrCreateTenant(ctx, self.Name, self.DomainId, "", desc)
+			if err != nil {
+				return errors.Wrapf(err, "getOrCreateTenant")
 			}
 			return nil
 		}
-		pm, _ := account.GetProjectMapping()
-		if pm != nil && pm.Enabled.IsTrue() && pm.IsNeedProjectSync() && self.ProjectSrc != string(apis.OWNER_SOURCE_LOCAL) {
-			extTags, err := ext.GetTags()
-			if err != nil {
-				return errors.Wrapf(err, "extModel.GetTags")
-			}
-			find := false
-			if pm.Rules != nil {
-				for _, rule := range *pm.Rules {
-					domainId, projectId, newProj, isMatch := rule.IsMatchTags(extTags)
-					if isMatch && len(newProj) > 0 {
-						domainId, projectId, err = account.getOrCreateTenant(context.TODO(), newProj, "", "", "auto create from tag")
-						if err != nil {
-							log.Errorf("getOrCreateTenant(%s) error: %v", newProj, err)
-							continue
-						}
-						if len(domainId) > 0 && len(projectId) > 0 {
-							self.DomainId = domainId
-							self.ProjectId = projectId
-							find = true
-							break
-						}
-					}
-				}
-			}
-			if !find && account.AutoCreateProject {
-				desc := fmt.Sprintf("auto create from cloud project %s (%s)", self.Name, self.ExternalId)
-				domainId, projectId, err := account.getOrCreateTenant(ctx, self.Name, self.DomainId, "", desc)
+		if pm == nil && account.AutoCreateProject && options.Options.EnableAutoRenameProject && oldName != self.Name {
+			count, _ := self.GetProjectCount()
+			if count == 1 {
+				params := map[string]string{"name": self.Name}
+				_, err = identity.Projects.Update(s, self.ProjectId, jsonutils.Marshal(params))
 				if err != nil {
-					log.Errorf("failed to get or create tenant %s(%s) %v", self.Name, self.ExternalId, err)
-				} else {
-					self.DomainId = domainId
-					self.ProjectId = projectId
+					return errors.Wrapf(err, "update project name from %s -> %s", oldName, self.Name)
 				}
-			}
-		} else if account.AutoCreateProject && options.Options.EnableAutoRenameProject {
-			tenant, err := db.TenantCacheManager.FetchTenantById(ctx, self.ProjectId)
-			if err != nil {
-				return errors.Wrapf(err, "TenantCacheManager.FetchTenantById(%s)", self.ProjectId)
-			}
-			if tenant.Name != self.Name {
-				proj, err := db.TenantCacheManager.FetchTenantByNameInDomain(ctx, self.Name, tenant.DomainId)
-				if err != nil {
-					if errors.Cause(err) == sql.ErrNoRows {
-						params := map[string]string{"name": self.Name}
-						_, err := identity.Projects.Update(s, tenant.Id, jsonutils.Marshal(params))
-						if err != nil {
-							return errors.Wrapf(err, "update project name from %s -> %s", tenant.Name, self.Name)
-						}
-						_, err = db.Update(tenant, func() error {
-							tenant.Name = self.Name
-							return nil
-						})
-						return err
-					}
-					return errors.Wrapf(err, "FetchTenantByName(%s)", self.Name)
-				}
-				if proj.DomainId == account.DomainId ||
-					share.PublicScope == rbacscope.ScopeSystem ||
-					(share.PublicScope == rbacscope.ScopeDomain && utils.IsInStringArray(proj.DomainId, share.SharedDomains)) {
-					self.ProjectId = proj.Id
-					self.DomainId = proj.DomainId
+				_, err = db.Update(cache, func() error {
+					cache.Name = self.Name
 					return nil
-				}
+				})
+				return err
 			}
 		}
 		return nil
@@ -572,17 +702,25 @@ func (manager *SExternalProjectManager) ListItemFilter(
 		return nil, errors.Wrap(err, "SExternalizedResourceBaseManager.ListItemFilter")
 	}
 
-	if len(query.CloudproviderId) > 0 {
-		p, err := CloudproviderManager.FetchByIdOrName(userCred, query.CloudproviderId)
-		if err != nil {
-			if errors.Cause(err) == sql.ErrNoRows {
-				return nil, httperrors.NewResourceNotFoundError2("cloudprovider", query.CloudproviderId)
-			}
-			return nil, httperrors.NewGeneralError(err)
+	managerStrs := query.CloudproviderId
+	conditions := []sqlchemy.ICondition{}
+	for _, managerStr := range managerStrs {
+		if len(managerStr) == 0 {
+			continue
 		}
-		q = q.Equals("manager_id", p.GetId())
-		provider := p.(*SCloudprovider)
-		query.CloudaccountId = []string{provider.CloudaccountId}
+		providerObj, err := manager.FetchByIdOrName(userCred, managerStr)
+		if err != nil {
+			if err == sql.ErrNoRows {
+				return nil, httperrors.NewResourceNotFoundError2(CloudproviderManager.Keyword(), managerStr)
+			} else {
+				return nil, httperrors.NewGeneralError(err)
+			}
+		}
+		provider := providerObj.(*SCloudprovider)
+		conditions = append(conditions, sqlchemy.Equals(q.Field("id"), provider.CloudaccountId))
+	}
+	if len(conditions) > 0 {
+		q = q.Filter(sqlchemy.OR(conditions...))
 	}
 
 	if len(query.CloudaccountId) > 0 {

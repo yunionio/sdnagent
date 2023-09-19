@@ -235,7 +235,18 @@ func (man *SDBInstanceManager) ListItemFilter(
 	}
 
 	if len(query.IpAddr) > 0 {
-		dn := DBInstanceNetworkManager.Query("dbinstance_id").Contains("ip_addr", query.IpAddr)
+		dn := DBInstanceNetworkManager.Query("dbinstance_id")
+		conditions := []sqlchemy.ICondition{}
+		for _, ipAddr := range query.IpAddr {
+			if len(ipAddr) == 0 {
+				continue
+			}
+			condition := sqlchemy.Contains(dn.Field("ip_addr"), ipAddr)
+			conditions = append(conditions, condition)
+		}
+		if len(conditions) > 0 {
+			dn = dn.Filter(sqlchemy.OR(conditions...))
+		}
 		q = q.Filter(sqlchemy.In(q.Field("id"), dn.SubQuery()))
 	}
 
@@ -572,7 +583,7 @@ func (manager *SDBInstanceManager) FetchCustomizeColumns(
 		log.Errorf("FetchCheckQueryOwnerScope error: %v", err)
 		return rows
 	}
-	secgroups := SecurityGroupManager.FilterByOwner(q, ownerId, queryScope).SubQuery()
+	secgroups := SecurityGroupManager.FilterByOwner(q, SecurityGroupManager, userCred, ownerId, queryScope).SubQuery()
 	rdssecgroups := DBInstanceSecgroupManager.Query().SubQuery()
 
 	secQ := rdssecgroups.Query(rdssecgroups.Field("dbinstance_id"), rdssecgroups.Field("secgroup_id"), secgroups.Field("name").Label("secgroup_name")).Join(secgroups, sqlchemy.Equals(rdssecgroups.Field("secgroup_id"), secgroups.Field("id"))).Filter(sqlchemy.In(rdssecgroups.Field("dbinstance_id"), rdsIds))
@@ -1150,6 +1161,7 @@ func (self *SDBInstance) GetShortDesc(ctx context.Context) *jsonutils.JSONDict {
 	desc.Set("vcpu_count", jsonutils.NewInt(int64(self.VcpuCount)))
 	desc.Set("vmem_size_mb", jsonutils.NewInt(int64(self.VmemSizeMb)))
 	desc.Set("disk_size_gb", jsonutils.NewInt(int64(self.DiskSizeGB)))
+	desc.Set("iops", jsonutils.NewInt(int64(self.Iops)))
 	desc.Update(jsonutils.Marshal(&info))
 	return desc
 }
@@ -1199,7 +1211,7 @@ func (self *SDBInstance) Delete(ctx context.Context, userCred mcclient.TokenCred
 }
 
 func (self *SDBInstance) RealDelete(ctx context.Context, userCred mcclient.TokenCredential) error {
-	return self.SVirtualResourceBase.Delete(ctx, userCred)
+	return self.purge(ctx, userCred)
 }
 
 func (self *SDBInstance) GetDBInstanceParameters() ([]SDBInstanceParameter, error) {
@@ -1419,7 +1431,15 @@ func (manager *SDBInstanceManager) SyncDBInstanceMasterId(ctx context.Context, u
 	}
 }
 
-func (manager *SDBInstanceManager) SyncDBInstances(ctx context.Context, userCred mcclient.TokenCredential, syncOwnerId mcclient.IIdentityProvider, provider *SCloudprovider, region *SCloudregion, cloudDBInstances []cloudprovider.ICloudDBInstance) ([]SDBInstance, []cloudprovider.ICloudDBInstance, compare.SyncResult) {
+func (manager *SDBInstanceManager) SyncDBInstances(
+	ctx context.Context,
+	userCred mcclient.TokenCredential,
+	syncOwnerId mcclient.IIdentityProvider,
+	provider *SCloudprovider,
+	region *SCloudregion,
+	cloudDBInstances []cloudprovider.ICloudDBInstance,
+	xor bool,
+) ([]SDBInstance, []cloudprovider.ICloudDBInstance, compare.SyncResult) {
 	lockman.LockRawObject(ctx, "dbinstances", fmt.Sprintf("%s-%s", provider.Id, region.Id))
 	defer lockman.ReleaseRawObject(ctx, "dbinstances", fmt.Sprintf("%s-%s", provider.Id, region.Id))
 
@@ -1458,15 +1478,17 @@ func (manager *SDBInstanceManager) SyncDBInstances(ctx context.Context, userCred
 		}
 	}
 
-	for i := 0; i < len(commondb); i++ {
-		err := commondb[i].SyncWithCloudDBInstance(ctx, userCred, provider, commonext[i])
-		if err != nil {
-			syncResult.UpdateError(err)
-			continue
+	if !xor {
+		for i := 0; i < len(commondb); i++ {
+			err := commondb[i].SyncWithCloudDBInstance(ctx, userCred, provider, commonext[i])
+			if err != nil {
+				syncResult.UpdateError(err)
+				continue
+			}
+			localDBInstances = append(localDBInstances, commondb[i])
+			remoteDBInstances = append(remoteDBInstances, commonext[i])
+			syncResult.Update()
 		}
-		localDBInstances = append(localDBInstances, commondb[i])
-		remoteDBInstances = append(remoteDBInstances, commonext[i])
-		syncResult.Update()
 	}
 
 	for i := 0; i < len(added); i++ {
@@ -1483,7 +1505,7 @@ func (manager *SDBInstanceManager) SyncDBInstances(ctx context.Context, userCred
 }
 
 func (self *SDBInstance) syncRemoveCloudDBInstance(ctx context.Context, userCred mcclient.TokenCredential) error {
-	err := self.Purge(ctx, userCred)
+	err := self.RealDelete(ctx, userCred)
 	if err != nil {
 		return err
 	}
@@ -1626,7 +1648,7 @@ func (self *SDBInstance) SyncAllWithCloudDBInstance(ctx context.Context, userCre
 	if err != nil {
 		return errors.Wrapf(err, "SyncWithCloudDBInstance")
 	}
-	syncDBInstanceResource(ctx, userCred, SSyncResultSet{}, self, extInstance)
+	syncDBInstanceResource(ctx, userCred, SSyncResultSet{}, self, extInstance, &SSyncRange{})
 	return nil
 }
 
@@ -1650,6 +1672,9 @@ func (self *SDBInstance) SyncWithCloudDBInstance(ctx context.Context, userCred m
 		self.Category = ext.GetCategory()
 		self.Status = ext.GetStatus()
 		self.Port = ext.GetPort()
+		if len(ext.GetDescription()) > 0 {
+			self.Description = ext.GetDescription()
+		}
 		if iops := ext.GetIops(); iops > 0 {
 			self.Iops = iops
 		}
@@ -1753,6 +1778,7 @@ func (manager *SDBInstanceManager) newFromCloudDBInstance(ctx context.Context, u
 	instance.ConnectionStr = extInstance.GetConnectionStr()
 	instance.StorageType = extInstance.GetStorageType()
 	instance.InternalConnectionStr = extInstance.GetInternalConnectionStr()
+	instance.Description = extInstance.GetDescription()
 
 	instance.MaintainTime = extInstance.GetMaintainTime()
 	instance.SetZoneIds(extInstance)
@@ -2137,4 +2163,10 @@ func (self *SDBInstance) GetExpiredAt() time.Time {
 
 func (db *SDBInstance) PostUpdate(ctx context.Context, userCred mcclient.TokenCredential, query jsonutils.JSONObject, data jsonutils.JSONObject) {
 	db.SVirtualResourceBase.PostUpdate(ctx, userCred, query, data)
+	if len(db.ExternalId) > 0 && (data.Contains("name") || data.Contains("description")) {
+		err := db.StartRemoteUpdateTask(ctx, userCred, false, "")
+		if err != nil {
+			log.Errorf("StartRemoteUpdateTask fail: %s", err)
+		}
+	}
 }
