@@ -82,18 +82,30 @@ func isDevKVMExists() bool {
 
 func detectKVMModuleSupport() string {
 	var km = KVM_MODULE_UNSUPPORT
-	if ModprobeKvmModule(KVM_MODULE_INTEL, false, false) {
-		km = KVM_MODULE_INTEL
-	} else if ModprobeKvmModule(KVM_MODULE_AMD, false, false) {
-		km = KVM_MODULE_AMD
-	} else if ModprobeKvmModule(KVM_MODULE, false, false) {
-		if isDevKVMExists() {
+	if isDevKVMExists() {
+		if IsKernelModuleLoaded(KVM_MODULE_INTEL) {
+			km = KVM_MODULE_INTEL
+		} else if IsKernelModuleLoaded(KVM_MODULE_AMD) {
+			km = KVM_MODULE_AMD
+		} else if IsKernelModuleLoaded(KVM_MODULE) {
 			km = KVM_MODULE
-		}
-	}
-	if km == KVM_MODULE_UNSUPPORT {
-		if isDevKVMExists() {
+		} else {
 			km = KVM_MODULE_BUILDIN
+		}
+	} else {
+		if ModprobeKvmModule(KVM_MODULE_INTEL, false, false) {
+			km = KVM_MODULE_INTEL
+		} else if ModprobeKvmModule(KVM_MODULE_AMD, false, false) {
+			km = KVM_MODULE_AMD
+		} else if ModprobeKvmModule(KVM_MODULE, false, false) {
+			if isDevKVMExists() {
+				km = KVM_MODULE
+			}
+		}
+		if km == KVM_MODULE_UNSUPPORT {
+			if isDevKVMExists() {
+				km = KVM_MODULE_BUILDIN
+			}
 		}
 	}
 	return km
@@ -185,19 +197,29 @@ func GetKernelModuleParameter(name, moduel string) string {
 	return GetSysConfig(pa)
 }
 
-func GetSysConfig(pa string) string {
+func getSysConfig(pa string, quiet bool) string {
 	if f, err := os.Stat(pa); err == nil {
 		if f.IsDir() {
 			return ""
 		}
 		cont, err := fileutils2.FileGetContents(pa)
 		if err != nil {
-			log.Errorln(err)
+			if !quiet {
+				log.Errorln(err)
+			}
 			return ""
 		}
 		return strings.TrimSpace(cont)
 	}
 	return ""
+}
+
+func GetSysConfig(pa string) string {
+	return getSysConfig(pa, false)
+}
+
+func GetSysConfigQuiet(pa string) string {
+	return getSysConfig(pa, true)
 }
 
 func IsKernelModuleLoaded(name string) bool {

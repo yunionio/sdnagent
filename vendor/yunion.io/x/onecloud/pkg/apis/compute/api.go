@@ -62,12 +62,14 @@ type NetworkConfig struct {
 
 	// 驱动方式
 	// 若指定镜像的网络驱动方式，此参数会被覆盖
-	Driver    string `json:"driver"`
-	BwLimit   int    `json:"bw_limit"`
-	Vip       bool   `json:"vip"`
-	Reserved  bool   `json:"reserved"`
-	NetType   string `json:"net_type"`
-	NumQueues int    `json:"num_queues"`
+	Driver         string `json:"driver"`
+	BwLimit        int    `json:"bw_limit"`
+	Vip            bool   `json:"vip"`
+	Reserved       bool   `json:"reserved"`
+	NetType        string `json:"net_type"`
+	NumQueues      int    `json:"num_queues"`
+	RxTrafficLimit int64  `json:"rx_traffic_limit"`
+	TxTrafficLimit int64  `json:"tx_traffic_limit"`
 
 	// sriov nic
 	SriovDevice *IsolatedDeviceConfig `json:"sriov_device"`
@@ -219,6 +221,9 @@ type DiskConfig struct {
 
 	//swagger:ignore
 	ExistingPath string `json:"existing_path"`
+
+	// NVNe device
+	NVMEDevice *IsolatedDeviceConfig `json:"nvme_device"`
 }
 
 type IsolatedDeviceConfig struct {
@@ -229,6 +234,7 @@ type IsolatedDeviceConfig struct {
 	Vendor       string `json:"vendor"`
 	NetworkIndex *int8  `json:"network_index"`
 	WireId       string `json:"wire_id"`
+	DiskIndex    *int8  `json:"disk_index"`
 }
 
 type BaremetalDiskConfig struct {
@@ -312,6 +318,11 @@ type ServerConfigs struct {
 	// required: false
 	Backup bool `json:"backup"`
 
+	// 设置为 daemon 虚机
+	// default: nil
+	// required: false
+	IsDaemon *bool `json:"is_daemon"`
+
 	// swagger:ignore
 	// 创建虚拟机数量
 	// default: 1
@@ -379,7 +390,7 @@ type ServerCreateInput struct {
 	VcpuCount int `json:"vcpu_count"`
 
 	// 用户自定义启动脚本
-	// 部分平台只支持 #cloud-config yaml 格式(由于部分平台密码依赖cloud-init注入密码信息,所以不支持特殊类型的user data)
+	// 支持 #cloud-config yaml 格式及shell脚本
 	// 支持特殊user data平台: Aliyun, Qcloud, Azure, Apsara, Ucloud
 	// required: false
 	UserData string `json:"user_data"`

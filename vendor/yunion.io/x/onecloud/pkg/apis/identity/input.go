@@ -191,6 +191,8 @@ type UserListInput struct {
 
 	// 角色生效所在的域
 	RoleAssignmentDomainId string `json:"role_assignment_domain_id"`
+	// 角色生效所在的项目
+	RoleAssignmentProjectId string `json:"role_assignment_project_id"`
 
 	// email
 	Email string `json:"email"`
@@ -586,3 +588,7 @@ type UserLinkIdpInput struct {
 }
 
 type UserUnlinkIdpInput UserLinkIdpInput
+
+type SProjectSetAdminInput struct {
+	UserId string
+}

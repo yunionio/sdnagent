@@ -67,10 +67,10 @@ type SCloudproviderQuota struct {
 
 	// 已使用的配额
 	// -1代表未从云平台拿到已使用配额信息
-	UsedCount int `nullable:"false" default:"0" list:"user"`
+	UsedCount int64 `nullable:"false" default:"0" list:"user"`
 
 	// 最大配额限制
-	MaxCount int `nullable:"false" default:"0" list:"user"`
+	MaxCount int64 `nullable:"false" default:"0" list:"user"`
 
 	// 配额类型
 	QuotaType string `width:"64" charset:"ascii" list:"user"`
@@ -196,7 +196,7 @@ func (manager *SCloudproviderQuotaManager) GetQuotas(provider *SCloudprovider, r
 	return quotas, nil
 }
 
-func (manager *SCloudproviderQuotaManager) SyncQuotas(ctx context.Context, userCred mcclient.TokenCredential, syncOwnerId mcclient.IIdentityProvider, provider *SCloudprovider, region *SCloudregion, quotaRange string, iQuotas []cloudprovider.ICloudQuota) compare.SyncResult {
+func (manager *SCloudproviderQuotaManager) SyncQuotas(ctx context.Context, userCred mcclient.TokenCredential, syncOwnerId mcclient.IIdentityProvider, provider *SCloudprovider, region *SCloudregion, quotaRange string, iQuotas []cloudprovider.ICloudQuota, xor bool) compare.SyncResult {
 	key := provider.Id
 	if region != nil {
 		key = fmt.Sprintf("%s-%s", key, region.Id)
@@ -207,7 +207,7 @@ func (manager *SCloudproviderQuotaManager) SyncQuotas(ctx context.Context, userC
 
 	dbQuotas, err := manager.GetQuotas(provider, region, quotaRange)
 	if err != nil {
-		result.Error(err)
+		result.Error(errors.Wrapf(err, "GetQuotas"))
 		return result
 	}
 
@@ -217,7 +217,7 @@ func (manager *SCloudproviderQuotaManager) SyncQuotas(ctx context.Context, userC
 	added := make([]cloudprovider.ICloudQuota, 0)
 	err = compare.CompareSets(dbQuotas, iQuotas, &removed, &commondb, &commonext, &added)
 	if err != nil {
-		result.Error(err)
+		result.Error(errors.Wrapf(err, "CompareSets"))
 		return result
 	}
 
@@ -230,13 +230,15 @@ func (manager *SCloudproviderQuotaManager) SyncQuotas(ctx context.Context, userC
 		}
 	}
 
-	for i := 0; i < len(commondb); i++ {
-		err := commondb[i].SyncWithCloudQuota(ctx, userCred, commonext[i])
-		if err != nil {
-			result.UpdateError(err)
-			continue
+	if !xor {
+		for i := 0; i < len(commondb); i++ {
+			err := commondb[i].SyncWithCloudQuota(ctx, userCred, commonext[i])
+			if err != nil {
+				result.UpdateError(err)
+				continue
+			}
+			result.Update()
 		}
-		result.Update()
 	}
 
 	for i := 0; i < len(added); i++ {
@@ -253,8 +255,8 @@ func (manager *SCloudproviderQuotaManager) SyncQuotas(ctx context.Context, userC
 
 func (self *SCloudproviderQuota) SyncWithCloudQuota(ctx context.Context, userCred mcclient.TokenCredential, iQuota cloudprovider.ICloudQuota) error {
 	_, err := db.UpdateWithLock(ctx, self, func() error {
-		self.UsedCount = iQuota.GetCurrentQuotaUsedCount()
-		self.MaxCount = iQuota.GetMaxQuotaCount()
+		self.UsedCount = int64(iQuota.GetCurrentQuotaUsedCount())
+		self.MaxCount = int64(iQuota.GetMaxQuotaCount())
 		return nil
 	})
 	return err
@@ -270,8 +272,8 @@ func (manager *SCloudproviderQuotaManager) newFromCloudQuota(ctx context.Context
 	quota.ManagerId = provider.Id
 	quota.QuotaType = iQuota.GetQuotaType()
 	quota.QuotaRange = quotaRange
-	quota.UsedCount = iQuota.GetCurrentQuotaUsedCount()
-	quota.MaxCount = iQuota.GetMaxQuotaCount()
+	quota.UsedCount = int64(iQuota.GetCurrentQuotaUsedCount())
+	quota.MaxCount = int64(iQuota.GetMaxQuotaCount())
 	if region != nil {
 		quota.CloudregionId = region.Id
 	}

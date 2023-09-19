@@ -20,6 +20,7 @@ import (
 	"time"
 
 	"yunion.io/x/jsonutils"
+	"yunion.io/x/log"
 	"yunion.io/x/pkg/errors"
 	"yunion.io/x/pkg/util/rbacscope"
 	"yunion.io/x/pkg/util/reflectutils"
@@ -28,6 +29,7 @@ import (
 	"yunion.io/x/onecloud/pkg/apis"
 	identityapi "yunion.io/x/onecloud/pkg/apis/identity"
 	"yunion.io/x/onecloud/pkg/cloudcommon/consts"
+	"yunion.io/x/onecloud/pkg/cloudcommon/policy"
 	"yunion.io/x/onecloud/pkg/httperrors"
 	"yunion.io/x/onecloud/pkg/mcclient"
 	"yunion.io/x/onecloud/pkg/util/stringutils2"
@@ -50,19 +52,54 @@ func (model *SProjectizedResourceBase) GetOwnerId() mcclient.IIdentityProvider {
 	return &owner
 }
 
-func (manager *SProjectizedResourceBaseManager) FilterByOwner(q *sqlchemy.SQuery, owner mcclient.IIdentityProvider, scope rbacscope.TRbacScope) *sqlchemy.SQuery {
+func (manager *SProjectizedResourceBaseManager) FilterByOwner(q *sqlchemy.SQuery, man FilterByOwnerProvider, userCred mcclient.TokenCredential, owner mcclient.IIdentityProvider, scope rbacscope.TRbacScope) *sqlchemy.SQuery {
 	if owner != nil {
 		switch scope {
 		case rbacscope.ScopeProject:
 			q = q.Equals("tenant_id", owner.GetProjectId())
+			if userCred != nil {
+				result := policy.PolicyManager.Allow(scope, userCred, consts.GetServiceType(), man.KeywordPlural(), policy.PolicyActionList)
+				if !result.ObjectTags.IsEmpty() {
+					policyTagFilters := tagutils.STagFilters{}
+					policyTagFilters.AddFilters(result.ObjectTags)
+					q = ObjectIdQueryWithTagFilters(q, "id", man.Keyword(), policyTagFilters)
+				}
+			}
 		case rbacscope.ScopeDomain:
 			q = q.Equals("domain_id", owner.GetProjectDomainId())
+			if userCred != nil {
+				result := policy.PolicyManager.Allow(scope, userCred, consts.GetServiceType(), man.KeywordPlural(), policy.PolicyActionList)
+				if !result.ProjectTags.IsEmpty() {
+					policyTagFilters := tagutils.STagFilters{}
+					policyTagFilters.AddFilters(result.ProjectTags)
+					q = ObjectIdQueryWithTagFilters(q, "tenant_id", "project", policyTagFilters)
+				}
+				if !result.ObjectTags.IsEmpty() {
+					policyTagFilters := tagutils.STagFilters{}
+					policyTagFilters.AddFilters(result.ObjectTags)
+					q = ObjectIdQueryWithTagFilters(q, "id", man.Keyword(), policyTagFilters)
+				}
+			}
+		case rbacscope.ScopeSystem:
+			if userCred != nil {
+				result := policy.PolicyManager.Allow(scope, userCred, consts.GetServiceType(), man.KeywordPlural(), policy.PolicyActionList)
+				if !result.DomainTags.IsEmpty() {
+					policyTagFilters := tagutils.STagFilters{}
+					policyTagFilters.AddFilters(result.DomainTags)
+					q = ObjectIdQueryWithTagFilters(q, "domain_id", "domain", policyTagFilters)
+				}
+				if !result.ProjectTags.IsEmpty() {
+					policyTagFilters := tagutils.STagFilters{}
+					policyTagFilters.AddFilters(result.ProjectTags)
+					q = ObjectIdQueryWithTagFilters(q, "tenant_id", "project", policyTagFilters)
+				}
+				if !result.ObjectTags.IsEmpty() {
+					policyTagFilters := tagutils.STagFilters{}
+					policyTagFilters.AddFilters(result.ObjectTags)
+					q = ObjectIdQueryWithTagFilters(q, "id", man.Keyword(), policyTagFilters)
+				}
+			}
 		}
-		/*if len(owner.GetProjectId()) > 0 {
-			q = q.Equals("tenant_id", owner.GetProjectId())
-		} else if len(owner.GetProjectDomainId()) > 0 {
-			q = q.Equals("domain_id", owner.GetProjectDomainId())
-		}*/
 	}
 	return q
 }
@@ -119,11 +156,6 @@ func (manager *SProjectizedResourceBaseManager) ListItemFilter(
 		tagFilters.AddNoFilters(query.NoProjectTags)
 	}
 	q = ObjectIdQueryWithTagFilters(q, "tenant_id", "project", tagFilters)
-	if !query.PolicyProjectTags.IsEmpty() {
-		policyTagFilters := tagutils.STagFilters{}
-		policyTagFilters.AddFilters(query.PolicyProjectTags)
-		q = ObjectIdQueryWithTagFilters(q, "tenant_id", "project", policyTagFilters)
-	}
 	return q, nil
 }
 
@@ -151,12 +183,14 @@ func (manager *SProjectizedResourceBaseManager) FetchCustomizeColumns(
 	isList bool,
 ) []apis.ProjectizedResourceInfo {
 	ret := make([]apis.ProjectizedResourceInfo, len(objs))
+	resIds := make([]string, len(objs))
 	if len(fields) == 0 || fields.Contains("project_domain") || fields.Contains("tenant") {
 		projectIds := stringutils2.SSortedStrings{}
 		for i := range objs {
 			var base *SProjectizedResourceBase
 			reflectutils.FindAnonymouStructPointer(objs[i], &base)
 			if base != nil && len(base.ProjectId) > 0 {
+				resIds[i] = getObjectIdstr("project", base.ProjectId)
 				projectIds = stringutils2.Append(projectIds, base.ProjectId)
 			}
 		}
@@ -178,6 +212,26 @@ func (manager *SProjectizedResourceBaseManager) FetchCustomizeColumns(
 			}
 		}
 	}
+
+	if fields == nil || fields.Contains("__meta__") {
+		q := Metadata.Query("id", "key", "value")
+		metaKeyValues := make(map[string][]SMetadata)
+		err := FetchQueryObjectsByIds(q, "id", resIds, &metaKeyValues)
+		if err != nil {
+			log.Errorf("FetchQueryObjectsByIds metadata fail %s", err)
+			return ret
+		}
+
+		for i := range objs {
+			if metaList, ok := metaKeyValues[resIds[i]]; ok {
+				ret[i].ProjectMetadata = map[string]string{}
+				for _, meta := range metaList {
+					ret[i].ProjectMetadata[meta.Key] = meta.Value
+				}
+			}
+		}
+	}
+
 	domainRows := manager.SDomainizedResourceBaseManager.FetchCustomizeColumns(ctx, userCred, query, objs, fields, isList)
 	for i := range ret {
 		ret[i].DomainizedResourceInfo = domainRows[i]

@@ -41,7 +41,7 @@ type ComputeOptions struct {
 	pending_delete.SPendingDeleteOptions
 
 	PrepaidExpireCheck              bool `default:"false" help:"clean expired servers or disks"`
-	PrepaidDeleteExpireCheck        bool `default:"true" help:"check prepaid expired before delete"`
+	PrepaidDeleteExpireCheck        bool `default:"false" help:"check prepaid expired before delete"`
 	PrepaidExpireCheckSeconds       int  `default:"600" help:"How long to wait to scan expired prepaid VM or disks, default is 10 minutes"`
 	ExpiredPrepaidMaxCleanBatchSize int  `default:"50" help:"How many expired prepaid servers can be deleted in a batch"`
 
@@ -109,6 +109,7 @@ type ComputeOptions struct {
 	RepeatWeekdaysLimit int `default:"7" help:"day point of every weekday, default 7 points"`
 
 	ServerSkuSyncIntervalMinutes int `default:"60" help:"Interval to sync public cloud server skus, defualt is 1 hour"`
+	SkuBatchSync                 int `default:"5" help:"How many skus can be sync in a batch"`
 
 	// sku sync
 	SyncSkusDay  int `default:"1" help:"Days auto sync skus data, default 1 day"`
@@ -163,6 +164,7 @@ type ComputeOptions struct {
 
 	SyncExtDiskSnapshotIntervalMinutes int  `help:"sync snapshot for external disk" default:"20"`
 	AutoReconcileBackupServers         bool `help:"auto reconcile backup servers" default:"false"`
+	SetKVMServerAsDaemonOnCreate       bool `help:"set kvm guest as daemon server on create" default:"false"`
 
 	SCapabilityOptions
 	SASControllerOptions
@@ -170,6 +172,7 @@ type ComputeOptions struct {
 	common_options.DBOptions
 
 	EnableAutoMergeSecurityGroup bool `help:"Enable auto merge secgroup when sync security group from cloud, default False" default:"false"`
+	EnableAutoSplitSecurityGroup bool `help:"Enable auto split secgroup when sync security group with diffrent rules from cloud, default False" default:"true"`
 	DeleteSnapshotExpiredRelease bool `help:"Should the virtual machine be automatically deleted when the virtual machine expires?" default:"false"`
 	DeleteEipExpiredRelease      bool `help:"Should the EIP  be automatically deleted when the virtual machine expires?" default:"false"`
 	DeleteDisksExpiredRelease    bool `help:"Should the Disks be automatically deleted when the virtual machine expires?" default:"false"`
@@ -186,8 +189,9 @@ type ComputeOptions struct {
 
 	DefaultIPAllocationDirection string `help:"default IP allocation direction" default:"stepdown"`
 
+	KeepDeletedSnapshotDays int `help:"The day of cleanup snapshot" default:"30"`
 	// 弹性伸缩中的ecs一般会有特殊的系统标签，通过指定这些标签可以忽略这部分ecs的同步, 指定多个key需要以 ',' 分隔
-	SkipServerBySysTagKeys  string `help:"skip server,disk sync and create with system tags" default:"acs:autoscaling:scalingGroupId"`
+	SkipServerBySysTagKeys  string `help:"skip server,disk sync and create with system tags" default:""`
 	SkipServerByUserTagKeys string `help:"skip server,disk sync and create with user tags" default:""`
 
 	EnableMonitorAgent bool `help:"enable public cloud vm monitor agent" default:"false"`
@@ -199,6 +203,19 @@ type ComputeOptions struct {
 	KvmMonitorAgentUseMetadataService bool   `help:"Monitor agent report metrics to metadata service on host" default:"true"`
 	MonitorEndpointType               string `help:"specify monitor endpoint type" default:"public"`
 	ForceUseOriginVnc                 bool   `help:"force openstack use origin vnc console" default:"true"`
+
+	LocalDataDiskMinSizeGB int `help:"Data disk min size when using local storage" default:"10"`
+	LocalDataDiskMaxSizeGB int `help:"Data disk max size when using local storage" default:"40960"`
+
+	LocalSysDiskMinSizeGB int `help:"System disk min size when using local storage" default:"30"`
+	LocalSysDiskMaxSizeGB int `help:"System disk max size when using local storage" default:"2048"`
+
+	SkuMaxMemSize  int64 `help:"Sku max memory size GB" default:"1024"`
+	SkuMaxCpuCount int64 `help:"Sku max cpu count" default:"256"`
+
+	SaveCloudImageToGlance bool `help:"Auto save cloud vm image to glance" default:"true"`
+
+	ResourceExpiredNotifyDays []int `help:"The notify of resource expired" default:"1,3,30"`
 
 	esxi.EsxiOptions
 }

@@ -124,14 +124,14 @@ func (self *SVirtualMachine) GetTags() (map[string]string, error) {
 		}{}
 		jsonutils.Update(&value, val)
 		_, ok := ret[value.Key]
-		if ok {
+		if ok && len(value.Value) > 0 {
 			result[ret[value.Key]] = value.Value
 		}
 	}
 	for _, key := range ret {
 		_, ok := result[key]
 		if !ok {
-			result[key] = ""
+			delete(result, key)
 		}
 	}
 	return result, nil
@@ -158,8 +158,72 @@ func (self *SVirtualMachine) GetSysTags() map[string]string {
 	return meta
 }
 
-func (self *SVirtualMachine) getVirtualMachine() *mo.VirtualMachine {
-	return self.object.(*mo.VirtualMachine)
+func (svm *SVirtualMachine) SetTags(tags map[string]string, replace bool) error {
+	oldTags, err := svm.GetTags()
+	if err != nil {
+		return errors.Wrapf(err, "GetTags")
+	}
+
+	added, removed := map[string]string{}, map[string]string{}
+	for k, v := range tags {
+		oldValue, ok := oldTags[k]
+		if !ok {
+			added[k] = v
+		} else if oldValue != v {
+			removed[k] = oldValue
+			added[k] = v
+		}
+	}
+	if replace {
+		for k, v := range oldTags {
+			newValue, ok := tags[k]
+			if !ok {
+				removed[k] = v
+			} else if v != newValue {
+				added[k] = newValue
+				removed[k] = v
+			}
+		}
+	}
+
+	cfm := object.NewCustomFieldsManager(svm.manager.client.Client)
+	ctx := context.Background()
+
+	for k := range removed {
+		id, err := cfm.FindKey(ctx, k)
+		if err != nil {
+			if !strings.Contains(err.Error(), "not found") {
+				return errors.Wrapf(err, "FindKey %s", k)
+			}
+			continue
+		}
+		err = cfm.Set(ctx, svm.object.Reference(), id, "")
+		if err != nil {
+			return errors.Wrapf(err, "Set")
+		}
+	}
+	for k, v := range added {
+		id, err := cfm.FindKey(ctx, k)
+		if err != nil {
+			if !strings.Contains(err.Error(), "not found") {
+				return errors.Wrapf(err, "FindKey %s", k)
+			}
+			ref, err := cfm.Add(ctx, k, "VirtualMachine", nil, nil)
+			if err != nil {
+				return errors.Wrapf(err, "Add %s", k)
+			}
+			id = ref.Key
+		}
+		err = cfm.Set(ctx, svm.object.Reference(), id, v)
+		if err != nil {
+			return errors.Wrapf(err, "Set")
+		}
+	}
+	return nil
+}
+
+func (svm *SVirtualMachine) getVirtualMachine() *mo.VirtualMachine {
+	return svm.object.(*mo.VirtualMachine)
 }
 
 func (self *SVirtualMachine) GetGlobalId() string {
@@ -251,8 +315,8 @@ func (self *SVirtualMachine) rebuildDisk(ctx context.Context, disk *SVirtualDisk
 	}, false)
 }
 
-func (self *SVirtualMachine) UpdateVM(ctx context.Context, name string) error {
-	return cloudprovider.ErrNotImplemented
+func (svm *SVirtualMachine) UpdateVM(ctx context.Context, name string) error {
+	return svm.DoRename(ctx, name)
 }
 
 // TODO: detach disk to a separate directory, so as to keep disk independent of VM
@@ -466,21 +530,18 @@ func (self *SVirtualMachine) startVM(ctx context.Context) error {
 
 	err := self.makeNicsStartConnected(ctx)
 	if err != nil {
-		log.Errorf("self.makeNicsStartConnected %s", err)
-		return err
+		return errors.Wrapf(err, "makeNicStartConnected")
 	}
 
 	vm := self.getVmObj()
 
 	task, err := vm.PowerOn(ctx)
 	if err != nil {
-		log.Errorf("vm.PowerOn %s", err)
-		return err
+		return errors.Wrapf(err, "PowerOn")
 	}
 	err = task.Wait(ctx)
 	if err != nil {
-		log.Errorf("task.Wait %s", err)
-		return err
+		return errors.Wrapf(err, "task.Wait")
 	}
 	return nil
 }
@@ -593,8 +654,7 @@ func (self *SVirtualMachine) doUnregister(ctx context.Context) error {
 
 	err := vm.Unregister(ctx)
 	if err != nil {
-		log.Errorf("vm.Unregister(ctx) fail %s", err)
-		return err
+		return errors.Wrapf(err, "Unregister")
 	}
 	return nil
 }
@@ -762,6 +822,11 @@ func (self *SVirtualMachine) GetCreatedAt() time.Time {
 	} else {
 		return time.Time{}
 	}
+}
+
+func (self *SVirtualMachine) GetDescription() string {
+	moVM := self.getVirtualMachine()
+	return moVM.Config.Annotation
 }
 
 func (self *SVirtualMachine) GetExpiredAt() time.Time {
@@ -1334,9 +1399,14 @@ func (self *SVirtualMachine) DoCustomize(ctx context.Context, params jsonutils.J
 	if params.Contains("name") {
 		name, _ = params.GetString("name")
 	}
+	// avoid spec.identity.hostName error
+	hostname := strings.ReplaceAll(name, "_", "")
+	if len(hostname) > 15 {
+		hostname = hostname[:15]
+	}
 	if osName == "Linux" {
 		linuxPrep := types.CustomizationLinuxPrep{
-			HostName: &types.CustomizationFixedName{Name: name},
+			HostName: &types.CustomizationFixedName{Name: hostname},
 			Domain:   domain,
 			TimeZone: "Asia/Shanghai",
 		}
@@ -1352,7 +1422,7 @@ func (self *SVirtualMachine) DoCustomize(ctx context.Context, params jsonutils.J
 				OrgName:   "Yunion",
 				ProductId: "",
 				ComputerName: &types.CustomizationFixedName{
-					Name: name,
+					Name: hostname,
 				},
 			},
 			Identification: types.CustomizationIdentification{},
@@ -1475,7 +1545,35 @@ func (self *SVirtualMachine) relocate(hostId string) error {
 	config.Pool = &pool
 	hrs := targetHs.Reference()
 	config.Host = &hrs
-	config.Datastore = &targetHs.Datastore[0]
+	dss := []types.ManagedObjectReference{}
+	var datastores []mo.Datastore
+	for i := range self.vdisks {
+		ds := self.vdisks[i].getBackingInfo().GetDatastore()
+		if ds != nil {
+			dss = append(dss, *ds)
+		}
+	}
+	dc, err := host.GetDatacenter()
+	if err != nil {
+		return err
+	}
+
+	err = host.manager.references2Objects(dss, DATASTORE_PROPS, &datastores)
+	if err != nil {
+		return err
+	}
+	isShared := true
+	for i := 0; i < len(datastores); i += 1 {
+		ds := NewDatastore(host.manager, &datastores[i], dc)
+		storageType := ds.GetStorageType()
+		if !utils.IsInStringArray(storageType, []string{api.STORAGE_NAS, api.STORAGE_NFS, api.STORAGE_VSAN}) {
+			isShared = false
+			break
+		}
+	}
+	if !isShared {
+		config.Datastore = &targetHs.Datastore[0]
+	}
 	task, err := self.getVmObj().Relocate(ctx, config, types.VirtualMachineMovePriorityDefaultPriority)
 	if err != nil {
 		return errors.Wrap(err, "Relocate")

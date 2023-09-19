@@ -45,10 +45,10 @@ type SStandaloneAnonResourceBase struct {
 	SResourceBase
 
 	// 资源UUID
-	Id string `width:"128" charset:"ascii" primary:"true" list:"user" json:"id"`
+	Id string `width:"128" charset:"ascii" primary:"true" list:"user" create:"optional" json:"id"`
 
 	// 资源描述信息
-	Description string `width:"256" charset:"utf8" get:"user" list:"user" update:"user" create:"optional" json:"description"`
+	Description string `length:"0" charset:"utf8" get:"user" list:"user" update:"user" create:"optional" json:"description"`
 
 	// 是否是模拟资源, 部分从公有云上同步的资源并不真实存在, 例如宿主机
 	// list 接口默认不会返回这类资源，除非显示指定 is_emulate=true 过滤参数
@@ -99,6 +99,18 @@ func (manager *SStandaloneAnonResourceBaseManager) FilterByName(q *sqlchemy.SQue
 
 func (manager *SStandaloneAnonResourceBaseManager) FilterByNotId(q *sqlchemy.SQuery, idStr string) *sqlchemy.SQuery {
 	return q.NotEquals("id", idStr)
+}
+
+func (manager *SStandaloneAnonResourceBaseManager) FilterByOwner(q *sqlchemy.SQuery, man FilterByOwnerProvider, userCred mcclient.TokenCredential, owner mcclient.IIdentityProvider, scope rbacscope.TRbacScope) *sqlchemy.SQuery {
+	if userCred != nil {
+		result := policy.PolicyManager.Allow(scope, userCred, consts.GetServiceType(), man.KeywordPlural(), policy.PolicyActionList)
+		if !result.ObjectTags.IsEmpty() {
+			policyTagFilters := tagutils.STagFilters{}
+			policyTagFilters.AddFilters(result.ObjectTags)
+			q = ObjectIdQueryWithTagFilters(q, "id", man.Keyword(), policyTagFilters)
+		}
+	}
+	return q
 }
 
 func (manager *SStandaloneAnonResourceBaseManager) FilterByHiddenSystemAttributes(q *sqlchemy.SQuery, userCred mcclient.TokenCredential, query jsonutils.JSONObject, scope rbacscope.TRbacScope) *sqlchemy.SQuery {

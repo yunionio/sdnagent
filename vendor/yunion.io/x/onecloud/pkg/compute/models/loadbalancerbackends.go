@@ -101,17 +101,17 @@ func (manager *SLoadbalancerBackendManager) FetchOwnerId(ctx context.Context, da
 	return db.FetchProjectInfo(ctx, data)
 }
 
-func (man *SLoadbalancerBackendManager) FilterByOwner(q *sqlchemy.SQuery, userCred mcclient.IIdentityProvider, scope rbacscope.TRbacScope) *sqlchemy.SQuery {
-	if userCred != nil {
+func (man *SLoadbalancerBackendManager) FilterByOwner(q *sqlchemy.SQuery, manager db.FilterByOwnerProvider, userCred mcclient.TokenCredential, ownerId mcclient.IIdentityProvider, scope rbacscope.TRbacScope) *sqlchemy.SQuery {
+	if ownerId != nil {
 		sq := LoadbalancerBackendGroupManager.Query("id")
 		lb := LoadbalancerManager.Query().SubQuery()
 		sq = sq.Join(lb, sqlchemy.Equals(sq.Field("loadbalancer_id"), lb.Field("id")))
 		switch scope {
 		case rbacscope.ScopeProject:
-			sq = sq.Filter(sqlchemy.Equals(lb.Field("tenant_id"), userCred.GetProjectId()))
+			sq = sq.Filter(sqlchemy.Equals(lb.Field("tenant_id"), ownerId.GetProjectId()))
 			return q.In("backend_group_id", sq.SubQuery())
 		case rbacscope.ScopeDomain:
-			sq = sq.Filter(sqlchemy.Equals(lb.Field("domain_id"), userCred.GetProjectDomainId()))
+			sq = sq.Filter(sqlchemy.Equals(lb.Field("domain_id"), ownerId.GetProjectDomainId()))
 			return q.In("backend_group_id", sq.SubQuery())
 		}
 	}
@@ -486,12 +486,29 @@ func (manager *SLoadbalancerBackendManager) FetchCustomizeColumns(
 	rows := make([]api.LoadbalancerBackendDetails, len(objs))
 	stdRows := manager.SStatusStandaloneResourceBaseManager.FetchCustomizeColumns(ctx, userCred, query, objs, fields, isList)
 	lbbgRows := manager.SLoadbalancerBackendgroupResourceBaseManager.FetchCustomizeColumns(ctx, userCred, query, objs, fields, isList)
+	lbIds := make([]string, len(objs))
 	for i := range rows {
 		rows[i] = api.LoadbalancerBackendDetails{
 			StatusStandaloneResourceDetails:      stdRows[i],
 			LoadbalancerBackendGroupResourceInfo: lbbgRows[i],
 		}
+		lbIds[i] = rows[i].LoadbalancerId
 	}
+
+	lbs := map[string]SLoadbalancer{}
+	err := db.FetchStandaloneObjectsByIds(LoadbalancerManager, lbIds, &lbs)
+	if err != nil {
+		return rows
+	}
+
+	virObjs := make([]interface{}, len(objs))
+	for i := range rows {
+		if lb, ok := lbs[lbIds[i]]; ok {
+			virObjs[i] = &lb
+			rows[i].ProjectId = lb.ProjectId
+		}
+	}
+
 	return rows
 }
 

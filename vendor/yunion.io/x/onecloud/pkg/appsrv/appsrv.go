@@ -73,6 +73,8 @@ type Application struct {
 	exception func(method, path string, body jsonutils.JSONObject, err error)
 
 	isTLS bool
+
+	enableProfiling bool
 }
 
 const (
@@ -123,9 +125,15 @@ func NewApplication(name string, connMax int, db bool) *Application {
 	return &app
 }
 
-func (self *Application) OnException(exception func(method, path string, body jsonutils.JSONObject, err error)) *Application {
-	self.exception = exception
-	return self
+func (app *Application) OnException(exception func(method, path string, body jsonutils.JSONObject, err error)) *Application {
+	app.exception = exception
+	return app
+}
+
+func (app *Application) SetDefaultTimeout(to time.Duration) *Application {
+	log.Infof("adjust application default timeout to %f seconds", to.Seconds())
+	app.processTimeout = to
+	return app
 }
 
 func SplitPath(path string) []string {
@@ -240,7 +248,6 @@ func genRequestId(w http.ResponseWriter, r *http.Request) string {
 }
 
 func (app *Application) ServeHTTP(w http.ResponseWriter, r *http.Request) {
-	// log.Printf("defaultHandler %s %s", r.Method, r.URL.Path)
 	rid := genRequestId(w, r)
 	w.Header().Set("X-Request-Host-Id", app.hostId)
 	lrw := &loggingResponseWriter{ResponseWriter: w, status: http.StatusOK, data: []byte{}}
@@ -256,9 +263,6 @@ func (app *Application) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		counter = &hi.counter4XX
 	} else {
 		counter = &hi.counter5XX
-		if app.exception != nil {
-			app.exception(r.Method, r.URL.String(), params.Body, errors.Errorf(string(lrw.data)))
-		}
 	}
 	duration := float64(time.Since(start).Nanoseconds()) / 1000000
 	counter.hit += 1
@@ -271,15 +275,19 @@ func (app *Application) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	} else if hi.skipLog {
 		skipLog = true
 	}
+	peerServiceName := r.Header.Get("X-Yunion-Peer-Service-Name")
+	var remote string
+	if len(peerServiceName) > 0 {
+		remote = fmt.Sprintf("%s:%s", r.RemoteAddr, peerServiceName)
+	} else {
+		remote = r.RemoteAddr
+	}
 	if !skipLog {
-		peerServiceName := r.Header.Get("X-Yunion-Peer-Service-Name")
-		var remote string
-		if len(peerServiceName) > 0 {
-			remote = fmt.Sprintf("%s:%s", r.RemoteAddr, peerServiceName)
-		} else {
-			remote = r.RemoteAddr
-		}
 		log.Infof("%s %d %s %s %s (%s) %.2fms", app.hostId, lrw.status, rid, r.Method, r.URL, remote, duration)
+	}
+	if lrw.status >= 500 && app.exception != nil {
+		url := fmt.Sprintf("%d %s (%s) %.2fms", lrw.status, r.URL.String(), remote, duration)
+		app.exception(r.Method, url, params.Body, errors.Errorf(string(lrw.data)))
 	}
 }
 
@@ -409,9 +417,8 @@ func (app *Application) defaultHandle(w http.ResponseWriter, r *http.Request, ri
 			)
 			runErr := task.fw.wait(task.ctx, currentWorker)
 			if runErr != nil {
-				switch runErr.(type) {
+				switch je := runErr.(type) {
 				case *httputils.JSONClientError:
-					je := runErr.(*httputils.JSONClientError)
 					httperrors.GeneralServerError(task.ctx, w, je)
 				default:
 					httperrors.InternalServerError(task.ctx, w, "Internal server error")
@@ -548,7 +555,9 @@ func (app *Application) ListenAndServeTLSWithCleanup2(addr string, certFile, key
 	httpSrv := app.initServer(addr)
 	if isMaster {
 		app.addDefaultHandlers()
-		AddPProfHandler("", app)
+		if app.enableProfiling {
+			addPProfHandler("", app)
+		}
 		app.httpServer = httpSrv
 		app.registerCleanShutdown(app.httpServer, onStop)
 	} else {
@@ -659,4 +668,8 @@ func FetchEnv(ctx context.Context, w http.ResponseWriter, r *http.Request) (para
 
 func (app *Application) GetContext() context.Context {
 	return app.context
+}
+
+func (app *Application) EnableProfiling() {
+	app.enableProfiling = true
 }

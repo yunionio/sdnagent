@@ -18,6 +18,23 @@ import (
 	"yunion.io/x/onecloud/pkg/apis"
 )
 
+type CloudregionResourceListInput struct {
+	// 区域名称或ID
+	CloudregionId []string `json:"cloudregion_id"`
+	// swagger:ignore
+	// Deprecated
+	// description: this param will be deprecate at 3.0
+	Cloudregion string `json:"cloudregion" yunion-deprecated-by:"cloudregion_id"`
+	// swagger:ignore
+	// Deprecated
+	// description: this param will be deprecate at 3.0
+	Region string `json:"region" yunion-deprecated-by:"cloudregion_id"`
+	// swagger:ignore
+	// Deprecated
+	// description: this param will be deprecate at 3.0
+	RegionId string `json:"region_id" yunion-deprecated-by:"cloudregion_id"`
+}
+
 type CloudregionResourceInput struct {
 	// 区域名称或ID
 	CloudregionId string `json:"cloudregion_id"`
@@ -39,7 +56,7 @@ type RegionalFilterListInput struct {
 	// 过滤位于指定城市区域的资源
 	City string `json:"city"`
 
-	CloudregionResourceInput
+	CloudregionResourceListInput
 
 	// 按区域名称过滤
 	OrderByRegion string `json:"order_by_region"`
@@ -106,6 +123,15 @@ type CloudregionListInput struct {
 
 	// 云环境
 	Environment []string `json:"environment"`
+	// 按可用区数量排序
+	// pattern:asc|desc
+	OrderByZoneCount string `json:"order_by_zone_count"`
+	// 按vpc数量排序
+	// pattern:asc|desc
+	OrderByVpcCount string `json:"order_by_vpc_count"`
+	// 按虚拟机数量排序
+	// pattern:asc|desc
+	OrderByGuestCount string `json:"order_by_guest_count"`
 }
 
 type ZoneListInput struct {
@@ -124,6 +150,12 @@ type ZoneListInput struct {
 
 	Location []string `json:"location"`
 	Contacts []string `json:"contacts"`
+
+	OrderByWires             string
+	OrderByHosts             string
+	OrderByHostsEnabled      string
+	OrderByBaremetals        string
+	OrderByBaremetalsEnabled string
 }
 
 type ZoneResourceInput struct {

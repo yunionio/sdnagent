@@ -58,9 +58,11 @@ type BaseOptions struct {
 
 	DebugClient bool `help:"Switch on/off mcclient debugs" default:"false"`
 
-	LogLevel        string `help:"log level" default:"info" choices:"debug|info|warn|error"`
-	LogVerboseLevel int    `help:"log verbosity level" default:"0"`
-	LogFilePrefix   string `help:"prefix of log files"`
+	LogLevel           string `help:"log level" default:"info" choices:"debug|info|warn|error"`
+	LogWithTimeZone    string `help:"log time zone" default:"UTC"`
+	LogTimestampFormat string `help:"log time format" default:"2006-01-02 15:04:05"`
+	LogVerboseLevel    int    `help:"log verbosity level" default:"0"`
+	LogFilePrefix      string `help:"prefix of log files"`
 
 	CorsHosts []string `help:"List of hostname that allow CORS"`
 	TempPath  string   `help:"Path for store temp file, at least 40G space" default:"/opt/yunion/tmp"`
@@ -68,6 +70,8 @@ type BaseOptions struct {
 	ApplicationID      string `help:"Application ID"`
 	RequestWorkerCount int    `default:"8" help:"Request worker thread count, default is 8"`
 	TaskWorkerCount    int    `default:"4" help:"Task manager worker thread count, default is 4"`
+
+	DefaultProcessTimeoutSeconds int `default:"60" help:"request process timeout, default is 60 seconds"`
 
 	EnableSsl   bool   `help:"Enable https"`
 	SslCaCerts  string `help:"ssl certificate ca root file, separating ca and cert file is not encouraged" alias:"ca-file"`
@@ -112,6 +116,8 @@ type BaseOptions struct {
 
 	PlatformName  string            `help:"identity name of this platform" default:"Cloudpods"`
 	PlatformNames map[string]string `help:"identity name of this platform by language"`
+
+	EnableAppProfiling bool `help:"enable profiling API" default:"false"`
 }
 
 const (
@@ -142,6 +148,8 @@ type HostCommonOptions struct {
 	DeployServerSocketPath string `help:"Deploy server listen socket path" default:"/var/run/onecloud/deploy.sock"`
 
 	EnableRemoteExecutor bool `help:"Enable remote executor" default:"false"`
+
+	ExecutorConnectTimeoutSeconds int `help:"executor client connection timeout in seconds, default is 30" default:"30"`
 }
 
 type DBOptions struct {
@@ -321,6 +329,7 @@ func ParseOptions(optStruct interface{}, args []string, configFileName string, s
 	}
 
 	consts.SetServiceName(optionsRef.ApplicationID)
+	httperrors.SetTimeZone(optionsRef.TimeZone)
 
 	// log configuration
 	log.SetVerboseLevel(int32(optionsRef.LogVerboseLevel))
@@ -330,7 +339,8 @@ func ParseOptions(optStruct interface{}, args []string, configFileName string, s
 	}
 	log.Infof("Set log level to %q", optionsRef.LogLevel)
 	log.Logger().Formatter = &log.TextFormatter{
-		TimestampFormat: "2006-01-02 15:04:05",
+		TimeZone:        optionsRef.LogWithTimeZone,
+		TimestampFormat: optionsRef.LogTimestampFormat,
 	}
 	if optionsRef.LogFilePrefix != "" {
 		dir, name := filepath.Split(optionsRef.LogFilePrefix)

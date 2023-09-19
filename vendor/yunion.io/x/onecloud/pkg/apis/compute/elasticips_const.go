@@ -88,7 +88,7 @@ type ElasticipListInput struct {
 	Mode string `json:"mode"`
 
 	// IP地址
-	IpAddr string `json:"ip_addr"`
+	IpAddr []string `json:"ip_addr"`
 
 	// 绑定资源类型
 	AssociateType string `json:"associate_type"`
@@ -105,4 +105,7 @@ type ElasticipListInput struct {
 
 	// 是否跟随主机删除而自动释放
 	AutoDellocate *bool `json:"auto_dellocate"`
+	// 按ip地址排序
+	// pattern:asc|desc
+	OrderByIp string `json:"order_by_ip"`
 }

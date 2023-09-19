@@ -15,6 +15,8 @@
 package compute
 
 import (
+	"time"
+
 	"yunion.io/x/jsonutils"
 
 	"yunion.io/x/onecloud/pkg/apis"
@@ -73,7 +75,7 @@ type HostListInput struct {
 	// filter by mac of any network interface
 	AnyMac string `json:"any_mac"`
 	// filter by ip of any network interface
-	AnyIp string `json:"any_ip"`
+	AnyIp []string `json:"any_ip"`
 	// filter storages not attached to this host
 	StorageNotAttached *bool `json:"storage_not_attached"`
 	// filter by Hypervisor
@@ -124,7 +126,7 @@ type HostListInput struct {
 	ServerIdForNetwork string `json:"server_id_for_network"`
 	// 宿主机 cpu 架构
 	CpuArchitecture []string `json:"cpu_architecture"`
-	OsArch          string   `json:"os_arch"`
+	OsArch          []string `json:"os_arch"`
 
 	// 按虚拟机数量排序
 	// enum: asc,desc
@@ -273,6 +275,9 @@ type HostResourceInfo struct {
 
 	// 宿主机序列号
 	HostSN string `json:"host_sn"`
+
+	// 宿主是否启用
+	HostEnabled bool `json:"host_enabled"`
 
 	// 宿主机状态
 	HostStatus string `json:"host_status"`
@@ -523,4 +528,16 @@ type HostReserveCpusInput struct {
 type HostAutoMigrateInput struct {
 	AutoMigrateOnHostDown     string `json:"auto_migrate_on_host_down"`
 	AutoMigrateOnHostShutdown string `json:"auto_migrate_on_host_shutdown"`
+}
+
+type HostError struct {
+	Type    string
+	Id      string
+	Name    string
+	Content string
+	Time    time.Time
+}
+
+type HostSyncErrorsInput struct {
+	HostErrors []HostError
 }

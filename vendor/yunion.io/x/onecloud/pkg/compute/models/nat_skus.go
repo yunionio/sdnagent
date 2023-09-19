@@ -34,6 +34,7 @@ import (
 	"yunion.io/x/onecloud/pkg/httperrors"
 	"yunion.io/x/onecloud/pkg/mcclient"
 	"yunion.io/x/onecloud/pkg/util/stringutils2"
+	"yunion.io/x/onecloud/pkg/util/yunionmeta"
 )
 
 type SNatSkuManager struct {
@@ -201,22 +202,29 @@ func (self SNatSku) GetGlobalId() string {
 	return self.ExternalId
 }
 
-func (self *SCloudregion) SyncNatSkus(ctx context.Context, userCred mcclient.TokenCredential, meta *SSkuResourcesMeta) compare.SyncResult {
-	lockman.LockRawObject(ctx, self.Id, "nat-sku")
-	defer lockman.ReleaseRawObject(ctx, self.Id, "nat-sku")
+func (self *SCloudregion) SyncNatSkus(ctx context.Context, userCred mcclient.TokenCredential, xor bool) compare.SyncResult {
+	lockman.LockRawObject(ctx, self.Id, NatSkuManager.Keyword())
+	defer lockman.ReleaseRawObject(ctx, self.Id, NatSkuManager.Keyword())
 
-	syncResult := compare.SyncResult{}
+	result := compare.SyncResult{}
 
-	iskus, err := meta.GetNatSkusByRegionExternalId(self.ExternalId)
+	meta, err := yunionmeta.FetchYunionmeta(ctx)
 	if err != nil {
-		syncResult.Error(err)
-		return syncResult
+		result.Error(errors.Wrapf(err, "FetchYunionmeta"))
+		return result
+	}
+
+	iskus := []SNatSku{}
+	err = meta.List(NatSkuManager.Keyword(), self.ExternalId, &iskus)
+	if err != nil {
+		result.Error(err)
+		return result
 	}
 
 	dbSkus, err := self.GetNatSkus()
 	if err != nil {
-		syncResult.Error(err)
-		return syncResult
+		result.Error(err)
+		return result
 	}
 
 	removed := make([]SNatSku, 0)
@@ -226,64 +234,97 @@ func (self *SCloudregion) SyncNatSkus(ctx context.Context, userCred mcclient.Tok
 
 	err = compare.CompareSets(dbSkus, iskus, &removed, &commondb, &commonext, &added)
 	if err != nil {
-		syncResult.Error(err)
-		return syncResult
+		result.Error(err)
+		return result
 	}
 
 	for i := 0; i < len(removed); i += 1 {
 		err = removed[i].Delete(ctx, userCred)
 		if err != nil {
-			syncResult.DeleteError(err)
+			result.DeleteError(err)
 			continue
 		}
-		syncResult.Delete()
+		result.Delete()
 	}
-	for i := 0; i < len(commondb); i += 1 {
-		err = commondb[i].syncWithCloudSku(ctx, userCred, commonext[i])
-		if err != nil {
-			syncResult.UpdateError(err)
-			continue
+	if !xor {
+		for i := 0; i < len(commondb); i += 1 {
+			err = commondb[i].syncWithCloudSku(ctx, userCred, commonext[i])
+			if err != nil {
+				result.UpdateError(err)
+				continue
+			}
+			result.Update()
 		}
-		syncResult.Update()
 	}
 	for i := 0; i < len(added); i += 1 {
 		err = self.newFromCloudNatSku(ctx, userCred, added[i])
 		if err != nil {
-			syncResult.AddError(err)
+			result.AddError(err)
 		} else {
-			syncResult.Add()
+			result.Add()
 		}
 	}
-	return syncResult
+	return result
 }
 
 func (self *SNatSku) syncWithCloudSku(ctx context.Context, userCred mcclient.TokenCredential, sku SNatSku) error {
 	_, err := db.Update(self, func() error {
-		jsonutils.Update(self, sku)
-		self.Status = api.NAT_SKU_AVAILABLE
+		self.PrepaidStatus = sku.PrepaidStatus
+		self.PostpaidStatus = sku.PostpaidStatus
 		return nil
 	})
 	return err
 }
 
 func (self *SCloudregion) newFromCloudNatSku(ctx context.Context, userCred mcclient.TokenCredential, isku SNatSku) error {
-	sku := &isku
+	meta, err := yunionmeta.FetchYunionmeta(ctx)
+	if err != nil {
+		return err
+	}
+	zones, err := self.GetZones()
+	if err != nil {
+		return errors.Wrap(err, "GetZones")
+	}
+	zoneMaps := map[string]string{}
+	for _, zone := range zones {
+		zoneMaps[zone.ExternalId] = zone.Id
+	}
+
+	sku := &SNatSku{}
 	sku.SetModelManager(NatSkuManager, sku)
-	sku.Id = "" //避免使用yunion meta的id,导致出现duplicate entry问题
-	sku.Status = api.NAT_SKU_AVAILABLE
+
+	skuUrl := fmt.Sprintf("%s/%s/%s.json", meta.NatBase, self.ExternalId, isku.GetGlobalId())
+	err = meta.Get(skuUrl, sku)
+	if err != nil {
+		return errors.Wrapf(err, "Get")
+	}
+
+	if len(sku.ZoneIds) > 0 {
+		zoneIds := []string{}
+		for _, zoneExtId := range strings.Split(sku.ZoneIds, ",") {
+			zoneId := yunionmeta.GetZoneIdBySuffix(zoneMaps, zoneExtId) // Huawei rds sku zone1 maybe is cn-north-4f
+			if len(zoneId) > 0 {
+				zoneIds = append(zoneIds, zoneId)
+			}
+		}
+		sku.ZoneIds = strings.Join(zoneIds, ",")
+	}
+
+	sku.Status = api.NAS_SKU_AVAILABLE
 	sku.SetEnabled(true)
 	sku.CloudregionId = self.Id
+	sku.Provider = self.Provider
 	return NatSkuManager.TableSpec().Insert(ctx, sku)
 }
 
 func SyncNatSkus(ctx context.Context, userCred mcclient.TokenCredential, isStart bool) {
-	err := SyncRegionNatSkus(ctx, userCred, "", isStart)
+	err := SyncRegionNatSkus(ctx, userCred, "", isStart, false)
 	if err != nil {
 		log.Errorf("SyncRegionNatSkus error: %v", err)
 	}
 }
 
-func SyncRegionNatSkus(ctx context.Context, userCred mcclient.TokenCredential, regionId string, isStart bool) error {
+func SyncRegionNatSkus(ctx context.Context, userCred mcclient.TokenCredential, regionId string, isStart, xor bool) error {
 	if isStart {
 		q := NatSkuManager.Query()
 		if len(regionId) > 0 {
@@ -310,17 +351,37 @@ func SyncRegionNatSkus(ctx context.Context, userCred mcclient.TokenCredential, r
 		return errors.Wrapf(err, "db.FetchModelObjects")
 	}
 
-	meta, err := FetchSkuResourcesMeta()
+	meta, err := yunionmeta.FetchYunionmeta(ctx)
 	if err != nil {
-		return errors.Wrapf(err, "FetchSkuResourcesMeta")
+		return errors.Wrapf(err, "FetchYunionmeta")
+	}
+
+	index, err := meta.Index(NatSkuManager.Keyword())
+	if err != nil {
+		log.Errorf("get nat sku index error: %v", err)
+		return err
 	}
 
 	for i := range regions {
-		if !regions[i].GetDriver().IsSupportedNatGateway() {
+		region := regions[i]
+		if !region.GetDriver().IsSupportedNatGateway() {
 			log.Infof("region %s(%s) not support nat, skip sync", regions[i].Name, regions[i].Id)
 			continue
 		}
-		result := regions[i].SyncNatSkus(ctx, userCred, meta)
+
+		skuMeta := &SNatSku{}
+		skuMeta.SetModelManager(NatSkuManager, skuMeta)
+		skuMeta.Id = region.ExternalId
+
+		oldMd5 := db.Metadata.GetStringValue(ctx, skuMeta, db.SKU_METADAT_KEY, userCred)
+		newMd5, ok := index[region.ExternalId]
+		if !ok || newMd5 == yunionmeta.EMPTY_MD5 || len(oldMd5) > 0 && newMd5 == oldMd5 {
+			continue
+		}
+
+		db.Metadata.SetValue(ctx, skuMeta, db.SKU_METADAT_KEY, newMd5, userCred)
+
+		result := regions[i].SyncNatSkus(ctx, userCred, xor)
 		msg := result.Result()
 		notes := fmt.Sprintf("SyncNatSkus for region %s result: %s", regions[i].Name, msg)
 		log.Infof(notes)

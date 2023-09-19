@@ -16,6 +16,7 @@ package models
 
 import (
 	"context"
+	"database/sql"
 	"fmt"
 	"strings"
 	"time"
@@ -37,14 +38,14 @@ import (
 )
 
 const (
-	DIRECT_PCI_TYPE = api.DIRECT_PCI_TYPE
-	GPU_HPC_TYPE    = api.GPU_HPC_TYPE // # for compute
-	GPU_VGA_TYPE    = api.GPU_VGA_TYPE // # for display
-	USB_TYPE        = api.USB_TYPE
-	NIC_TYPE        = api.NIC_TYPE
+//DIRECT_PCI_TYPE = api.DIRECT_PCI_TYPE
+//GPU_HPC_TYPE = api.GPU_HPC_TYPE // # for compute
+//GPU_VGA_TYPE = api.GPU_VGA_TYPE // # for display
+//USB_TYPE        = api.USB_TYPE
+//NIC_TYPE        = api.NIC_TYPE
 
-	NVIDIA_VENDOR_ID = api.NVIDIA_VENDOR_ID
-	AMD_VENDOR_ID    = api.AMD_VENDOR_ID
+//NVIDIA_VENDOR_ID = api.NVIDIA_VENDOR_ID
+//AMD_VENDOR_ID    = api.AMD_VENDOR_ID
 )
 
 var VALID_GPU_TYPES = api.VALID_GPU_TYPES
@@ -78,9 +79,6 @@ type SIsolatedDevice struct {
 	db.SStandaloneResourceBase
 	SHostResourceBase `width:"36" charset:"ascii" nullable:"false" default:"" index:"true" list:"domain" create:"domain_required"`
 
-	// 宿主机Id
-	// HostId string `width:"36" charset:"ascii" nullable:"false" default:"" index:"true" list:"domain" create:"domain_required"`
-
 	// # PCI / GPU-HPC / GPU-VGA / USB / NIC
 	// 设备类型
 	DevType string `width:"16" charset:"ascii" nullable:"false" default:"" index:"true" list:"domain" create:"domain_required" update:"domain"`
@@ -96,9 +94,32 @@ type SIsolatedDevice struct {
 	WireId string `width:"36" charset:"ascii" nullable:"true" index:"true" list:"domain" update:"domain" create:"domain_optional"`
 	// Offload interface name
 	OvsOffloadInterface string `width:"16" charset:"ascii" nullable:"true" list:"domain" update:"domain" create:"domain_optional"`
+	// NVME disk size
+	NvmeSizeMB int `nullable:"true" list:"domain" update:"domain" create:"domain_optional"`
+	// guest disk index
+	DiskIndex int8 `nullable:"true" default:"-1" list:"user" update:"user"`
 
 	// # pci address of `Bus:Device.Function` format, or usb bus address of `bus.addr`
 	Addr string `width:"16" charset:"ascii" nullable:"true" list:"domain" update:"domain" create:"domain_optional"`
+
+	// Is vgpu physical funcion, That means it cannot be attached to guest
+	// VGPUPhysicalFunction bool `nullable:"true" default:"false" list:"domain" create:"domain_optional"`
+	// nvidia vgpu config
+	// vgpu uuid generated on create
+	MdevId string `width:"36" charset:"ascii" nullable:"true" list:"domain" update:"domain" create:"domain_optional"`
+	// The frame rate limiter (FRL) configuration in frames per second
+	FRL string `nullable:"true" list:"domain" update:"domain" create:"domain_optional"`
+	// The frame buffer size in Mbytes
+	Framebuffer string `nullable:"true" list:"domain" update:"domain" create:"domain_optional"`
+	// The maximum resolution per display head, eg: 5120x2880
+	MaxResolution string `width:"16" charset:"ascii" nullable:"true" list:"domain" update:"domain" create:"domain_optional"`
+	// The maximum number of virtual display heads that the vGPU type supports
+	// In computer graphics and display technology, the term "head" is commonly used to
+	// describe the physical interface of a display device or display output.
+	// It refers to a connection point on the monitor, such as HDMI, DisplayPort, or VGA interface.
+	NumHeads string `nullable:"true" list:"domain" update:"domain" create:"domain_optional"`
+	// The maximum number of vGPU instances per physical GPU
+	MaxInstance string `nullable:"true" list:"domain" update:"domain" create:"domain_optional"`
 
 	VendorDeviceId string `width:"16" charset:"ascii" nullable:"true" list:"domain" create:"domain_optional"`
 
@@ -138,12 +159,22 @@ func (manager *SIsolatedDeviceManager) ValidateCreateData(ctx context.Context,
 		return input, httperrors.NewNotEmptyError("dev_type is empty")
 	}
 	if !utils.IsInStringArray(input.DevType, api.VALID_PASSTHROUGH_TYPES) {
-		return input, httperrors.NewInputParameterError("device type %q not supported", input.DevType)
+		if _, err := IsolatedDeviceModelManager.GetByDevType(input.DevType); err != nil {
+			return input, httperrors.NewInputParameterError("device type %q not supported", input.DevType)
+		}
 	}
 
 	input.StandaloneResourceCreateInput, err = manager.SStandaloneResourceBaseManager.ValidateCreateData(ctx, userCred, ownerId, query, input.StandaloneResourceCreateInput)
 	if err != nil {
 		return input, errors.Wrap(err, "SStandaloneResourceBaseManager.ValidateCreateData")
+	}
+
+	if input.HostId != "" && input.Addr != "" {
+		if hasDevAddr, err := manager.hostHasDevAddr(input.HostId, input.Addr, input.MdevId); err != nil {
+			return input, errors.Wrap(err, "check hostHasDevAddr")
+		} else if hasDevAddr {
+			return input, httperrors.NewBadRequestError("dev addr %s registed", input.Addr)
+		}
 	}
 
 	// validate reserverd resource
@@ -195,12 +226,16 @@ func (self *SIsolatedDevice) ValidateUpdateData(
 	}
 	if input.DevType != "" && input.DevType != self.DevType {
 		if !utils.IsInStringArray(input.DevType, api.VALID_GPU_TYPES) {
-			return input, httperrors.NewInputParameterError("device type %q not support update", input.DevType)
-		}
-		if !self.IsGPU() {
-			return input, httperrors.NewInputParameterError("Can't update for device %q", self.DevType)
+			if _, err := IsolatedDeviceModelManager.GetByDevType(input.DevType); err != nil {
+				return input, httperrors.NewInputParameterError("device type %q not support update", input.DevType)
+			}
+		} else {
+			if !self.IsGPU() {
+				return input, httperrors.NewInputParameterError("Can't update for device %q", self.DevType)
+			}
 		}
 	}
+
 	return input, nil
 }
 
@@ -435,7 +470,7 @@ func (manager *SIsolatedDeviceManager) parseDeviceInfo(userCred mcclient.TokenCr
 	return devConfig, nil
 }
 
-func (manager *SIsolatedDeviceManager) isValidDeviceinfo(config *api.IsolatedDeviceConfig) error {
+func (manager *SIsolatedDeviceManager) isValidDeviceInfo(config *api.IsolatedDeviceConfig) error {
 	if len(config.Id) > 0 {
 		devObj, err := manager.FetchById(config.Id)
 		if err != nil {
@@ -449,7 +484,15 @@ func (manager *SIsolatedDeviceManager) isValidDeviceinfo(config *api.IsolatedDev
 	return nil
 }
 
-func (manager *SIsolatedDeviceManager) isValidNicDeviceinfo(config *api.IsolatedDeviceConfig) error {
+func (manager *SIsolatedDeviceManager) isValidNicDeviceInfo(config *api.IsolatedDeviceConfig) error {
+	return manager._isValidDeviceInfo(config, api.NIC_TYPE)
+}
+
+func (manager *SIsolatedDeviceManager) isValidNVMEDeviceInfo(config *api.IsolatedDeviceConfig) error {
+	return manager._isValidDeviceInfo(config, api.NVME_PT_TYPE)
+}
+
+func (manager *SIsolatedDeviceManager) _isValidDeviceInfo(config *api.IsolatedDeviceConfig, devType string) error {
 	if len(config.Id) > 0 {
 		devObj, err := manager.FetchById(config.Id)
 		if err != nil {
@@ -459,9 +502,11 @@ func (manager *SIsolatedDeviceManager) isValidNicDeviceinfo(config *api.Isolated
 		if len(dev.GuestId) > 0 {
 			return httperrors.NewConflictError("Isolated device already attached to another guest: %s", dev.GuestId)
 		}
-		if dev.DevType != api.NIC_TYPE {
-			return httperrors.NewBadRequestError("IsolatedDevice is not device type %s", api.NIC_TYPE)
+		if dev.DevType != devType {
+			return httperrors.NewBadRequestError("IsolatedDevice is not device type %s", devType)
 		}
+	} else if config.DevType != "" && config.DevType != devType {
+		return httperrors.NewBadRequestError("request dev type %s not match %s", config.DevType, devType)
 	}
 	return nil
 }
@@ -483,7 +528,7 @@ func (manager *SIsolatedDeviceManager) attachSpecificDeviceToGuest(ctx context.C
 	if len(devConfig.DevType) > 0 && devConfig.DevType != dev.DevType {
 		dev.DevType = devConfig.DevType
 	}
-	return guest.attachIsolatedDevice(ctx, userCred, dev, devConfig.NetworkIndex)
+	return guest.attachIsolatedDevice(ctx, userCred, dev, devConfig.NetworkIndex, devConfig.DiskIndex)
 }
 
 func (manager *SIsolatedDeviceManager) attachHostDeviceToGuestByModel(ctx context.Context, guest *SGuest, host *SHost, devConfig *api.IsolatedDeviceConfig, userCred mcclient.TokenCredential) error {
@@ -496,7 +541,7 @@ func (manager *SIsolatedDeviceManager) attachHostDeviceToGuestByModel(ctx contex
 		return fmt.Errorf("Can't found model %s on host %s", devConfig.Model, host.Id)
 	}
 	selectedDev := devs[0]
-	return guest.attachIsolatedDevice(ctx, userCred, &selectedDev, devConfig.NetworkIndex)
+	return guest.attachIsolatedDevice(ctx, userCred, &selectedDev, devConfig.NetworkIndex, devConfig.DiskIndex)
 }
 
 func (manager *SIsolatedDeviceManager) findUnusedQuery() *sqlchemy.SQuery {
@@ -509,8 +554,8 @@ func (manager *SIsolatedDeviceManager) findUnusedQuery() *sqlchemy.SQuery {
 func (manager *SIsolatedDeviceManager) UnusedGpuQuery() *sqlchemy.SQuery {
 	q := manager.findUnusedQuery()
 	q = q.Filter(sqlchemy.OR(
-		sqlchemy.Equals(q.Field("dev_type"), GPU_HPC_TYPE),
-		sqlchemy.Equals(q.Field("dev_type"), GPU_VGA_TYPE)))
+		sqlchemy.Equals(q.Field("dev_type"), api.GPU_HPC_TYPE),
+		sqlchemy.Equals(q.Field("dev_type"), api.GPU_VGA_TYPE)))
 	return q
 }
 
@@ -562,13 +607,40 @@ func (manager *SIsolatedDeviceManager) findHostUnusedByDevConfig(model, devType,
 		q.Equals("dev_type", devType)
 	}
 	if wireId != "" {
-		q = q.Equals("wire_id", wireId)
+		wire := WireManager.FetchWireById(wireId)
+		if wire.VpcId == api.DEFAULT_VPC_ID {
+			q = q.Equals("wire_id", wireId)
+		}
 	}
 	err := db.FetchModelObjects(manager, q, &devs)
 	if err != nil {
 		return nil, err
 	}
 	return devs, nil
+}
+
+func (manager *SIsolatedDeviceManager) ReleaseGPUDevicesOfGuest(ctx context.Context, guest *SGuest, userCred mcclient.TokenCredential) error {
+	devs := manager.findAttachedDevicesOfGuest(guest)
+	if devs == nil {
+		return fmt.Errorf("fail to find attached devices")
+	}
+	for _, dev := range devs {
+		if !utils.IsInStringArray(dev.DevType, api.VALID_GPU_TYPES) {
+			continue
+		}
+		_, err := db.Update(&dev, func() error {
+			dev.GuestId = ""
+			dev.NetworkIndex = -1
+			dev.DiskIndex = -1
+			return nil
+		})
+		if err != nil {
+			db.OpsLog.LogEvent(guest, db.ACT_GUEST_DETACH_ISOLATED_DEVICE_FAIL, dev.GetShortDesc(ctx), userCred)
+			return err
+		}
+		db.OpsLog.LogEvent(guest, db.ACT_GUEST_DETACH_ISOLATED_DEVICE, dev.GetShortDesc(ctx), userCred)
+	}
+	return nil
 }
 
 func (manager *SIsolatedDeviceManager) ReleaseDevicesOfGuest(ctx context.Context, guest *SGuest, userCred mcclient.TokenCredential) error {
@@ -685,6 +757,9 @@ func (self *SIsolatedDevice) getDesc() *api.IsolatedDeviceJsonDesc {
 		Vendor:              self.getVendor(),
 		NetworkIndex:        self.NetworkIndex,
 		OvsOffloadInterface: self.OvsOffloadInterface,
+		DiskIndex:           self.DiskIndex,
+		NvmeSizeMB:          self.NvmeSizeMB,
+		MdevId:              self.MdevId,
 	}
 }
 
@@ -854,6 +929,51 @@ func (manager *SIsolatedDeviceManager) GetDevsOnHost(hostId string, model string
 	return devs, nil
 }
 
+func (manager *SIsolatedDeviceManager) hostHasDevAddr(hostId, addr, mdevId string) (bool, error) {
+	cnt, err := manager.Query().Equals("addr", addr).Equals("mdev_id", mdevId).
+		Equals("host_id", hostId).CountWithError()
+	if err != nil {
+		return false, err
+	}
+	return cnt != 0, nil
+}
+
+func (manager *SIsolatedDeviceManager) CheckModelIsEmpty(model, vendor, device, devType string) (bool, error) {
+	cnt, err := manager.Query().Equals("model", model).
+		Equals("dev_type", devType).
+		Equals("vendor_device_id", fmt.Sprintf("%s:%s", vendor, device)).
+		IsNotEmpty("guest_id").CountWithError()
+	if err != nil {
+		return false, err
+	}
+	return cnt == 0, nil
+}
+
+func (manager *SIsolatedDeviceManager) GetHostsByModel(model, vendor, device, devType string) ([]string, error) {
+	q := manager.Query("host_id").Equals("model", model).
+		Equals("dev_type", devType).
+		Equals("vendor_device_id", fmt.Sprintf("%s:%s", vendor, device)).GroupBy("host_id")
+
+	rows, err := q.Rows()
+	if err != nil && err != sql.ErrNoRows {
+		return nil, errors.Wrap(err, "q.Rows")
+	}
+	if rows == nil {
+		return nil, nil
+	}
+	defer rows.Close()
+	ret := make([]string, 0)
+	for rows.Next() {
+		var hostId string
+		err = rows.Scan(&hostId)
+		if err != nil {
+			return nil, errors.Wrap(err, "rows.Scan")
+		}
+		ret = append(ret, hostId)
+	}
+	return ret, nil
+}
+
 func (self *SIsolatedDevice) GetUniqValues() jsonutils.JSONObject {
 	return jsonutils.Marshal(map[string]string{"host_id": self.HostId})
 }
@@ -883,12 +1003,12 @@ func (manager *SIsolatedDeviceManager) ResourceScope() rbacscope.TRbacScope {
 	return rbacscope.ScopeDomain
 }
 
-func (manager *SIsolatedDeviceManager) FilterByOwner(q *sqlchemy.SQuery, owner mcclient.IIdentityProvider, scope rbacscope.TRbacScope) *sqlchemy.SQuery {
+func (manager *SIsolatedDeviceManager) FilterByOwner(q *sqlchemy.SQuery, man db.FilterByOwnerProvider, userCred mcclient.TokenCredential, owner mcclient.IIdentityProvider, scope rbacscope.TRbacScope) *sqlchemy.SQuery {
 	if owner != nil {
 		switch scope {
 		case rbacscope.ScopeProject, rbacscope.ScopeDomain:
 			hostsQ := HostManager.Query("id")
-			hostsQ = HostManager.FilterByOwner(hostsQ, owner, scope)
+			hostsQ = HostManager.FilterByOwner(hostsQ, HostManager, userCred, owner, scope)
 			hosts := hostsQ.SubQuery()
 			q = q.Join(hosts, sqlchemy.Equals(q.Field("host_id"), hosts.Field("id")))
 		}
