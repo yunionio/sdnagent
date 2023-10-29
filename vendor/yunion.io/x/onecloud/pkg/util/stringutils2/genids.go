@@ -12,20 +12,17 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-package compute
+package stringutils2
 
-import "yunion.io/x/onecloud/pkg/apis"
+import (
+	"crypto/sha256"
+	"fmt"
+)
 
-type SecurityGroupCacheDetails struct {
-	apis.StatusStandaloneResourceDetails
-	apis.ProjectizedResourceInfo
-	ManagedResourceInfo
-	CloudregionResourceInfo
-
-	SSecurityGroupCache
-
-	// 虚拟私有网络名称
-	Vpc string `json:"vpc"`
-
-	ProjectId string `json:"tenant_id"`
+func GenId(ids ...string) string {
+	h := sha256.New()
+	for _, id := range ids {
+		h.Write([]byte(id))
+	}
+	return fmt.Sprintf("%x", h.Sum(nil))
 }
