@@ -420,7 +420,7 @@ func (manager *SGuestManager) ListItemFilter(
 		vipq := GroupguestManager.Query("guest_id")
 		conditions := []sqlchemy.ICondition{}
 		for _, ipAddr := range query.IpAddrs {
-			conditions = append(conditions, sqlchemy.Contains(grpnets.Field("ip_addr"), ipAddr))
+			conditions = append(conditions, sqlchemy.Regexp(grpnets.Field("ip_addr"), ipAddr))
 		}
 		vipq = vipq.Join(grpnets, sqlchemy.Equals(grpnets.Field("group_id"), vipq.Field("group_id"))).Filter(
 			sqlchemy.OR(conditions...),
@@ -429,7 +429,7 @@ func (manager *SGuestManager) ListItemFilter(
 		grpeips := ElasticipManager.Query().Equals("associate_type", api.EIP_ASSOCIATE_TYPE_INSTANCE_GROUP).SubQuery()
 		conditions = []sqlchemy.ICondition{}
 		for _, ipAddr := range query.IpAddrs {
-			conditions = append(conditions, sqlchemy.Contains(grpeips.Field("ip_addr"), ipAddr))
+			conditions = append(conditions, sqlchemy.Regexp(grpeips.Field("ip_addr"), ipAddr))
 		}
 		vipeipq := GroupguestManager.Query("guest_id")
 		vipeipq = vipeipq.Join(grpeips, sqlchemy.Equals(grpeips.Field("associate_id"), vipeipq.Field("group_id"))).Filter(
@@ -439,14 +439,14 @@ func (manager *SGuestManager) ListItemFilter(
 		gnQ := GuestnetworkManager.Query("guest_id")
 		conditions = []sqlchemy.ICondition{}
 		for _, ipAddr := range query.IpAddrs {
-			conditions = append(conditions, sqlchemy.Contains(gnQ.Field("ip_addr"), ipAddr))
+			conditions = append(conditions, sqlchemy.Regexp(gnQ.Field("ip_addr"), ipAddr))
 		}
 		gn := gnQ.Filter(sqlchemy.OR(conditions...))
 
 		guestEipQ := ElasticipManager.Query("associate_id").Equals("associate_type", api.EIP_ASSOCIATE_TYPE_SERVER)
 		conditions = []sqlchemy.ICondition{}
 		for _, ipAddr := range query.IpAddrs {
-			conditions = append(conditions, sqlchemy.Contains(guestEipQ.Field("ip_addr"), ipAddr))
+			conditions = append(conditions, sqlchemy.Regexp(guestEipQ.Field("ip_addr"), ipAddr))
 		}
 		guestEip := guestEipQ.Filter(sqlchemy.OR(conditions...))
 
@@ -454,7 +454,7 @@ func (manager *SGuestManager) ListItemFilter(
 		conditions = []sqlchemy.ICondition{}
 		for _, ipAddr := range query.IpAddrs {
 			conditions = append(conditions, sqlchemy.AND(
-				sqlchemy.Contains(metadataQ.Field("value"), ipAddr),
+				sqlchemy.Regexp(metadataQ.Field("value"), ipAddr),
 				sqlchemy.Equals(metadataQ.Field("key"), "sync_ips"),
 				sqlchemy.Equals(metadataQ.Field("obj_type"), "server"),
 			))
@@ -1527,8 +1527,7 @@ func (manager *SGuestManager) validateCreateData(
 		}
 
 		switch {
-		case imgSupportUEFI == nil:
-		case *imgSupportUEFI:
+		case imgSupportUEFI != nil && *imgSupportUEFI:
 			if len(input.Bios) == 0 {
 				input.Bios = "UEFI"
 			} else if input.Bios != "UEFI" {
@@ -3382,6 +3381,8 @@ func (self *SGuest) Attach2Network(
 	userCred mcclient.TokenCredential,
 	args Attach2NetworkArgs,
 ) ([]SGuestnetwork, error) {
+	log.Debugf("Attach2Network %s", jsonutils.Marshal(args))
+
 	onceArgs := args.onceArgs(0)
 	firstNic, err := self.attach2NetworkOnce(ctx, userCred, onceArgs)
 	if err != nil {
@@ -3522,14 +3523,13 @@ func getCloudNicNetwork(ctx context.Context, vnic cloudprovider.ICloudNic, host 
 		return host.getNetworkOfIPOnHost(ip)
 	}
 	localNetObj, err := db.FetchByExternalIdAndManagerId(NetworkManager, vnetId, func(q *sqlchemy.SQuery) *sqlchemy.SQuery {
-		vpc := VpcManager.Query().SubQuery()
+		// vpc := VpcManager.Query().SubQuery()
 		wire := WireManager.Query().SubQuery()
 		return q.Join(wire, sqlchemy.Equals(q.Field("wire_id"), wire.Field("id"))).
-			Join(vpc, sqlchemy.Equals(wire.Field("vpc_id"), vpc.Field("id"))).
-			Filter(sqlchemy.Equals(vpc.Field("manager_id"), host.ManagerId))
+			Filter(sqlchemy.Equals(wire.Field("manager_id"), host.ManagerId))
 	})
 	if err != nil {
-		return nil, fmt.Errorf("Cannot find network of external_id %s: %v", vnetId, err)
+		return nil, errors.Wrapf(err, "Cannot find network of external_id %s", vnetId)
 	}
 	localNet := localNetObj.(*SNetwork)
 	return localNet, nil
@@ -3565,6 +3565,8 @@ func (self *SGuest) SyncVMNics(
 		result.Error(errors.Wrapf(err, "compare.CompareSets"))
 		return result
 	}
+
+	log.Debugf("SyncVMNics: removed: %d common: %d add: %d", len(removed), len(commondb), len(added))
 
 	for i := 0; i < len(removed); i += 1 {
 		err = self.detachNetworks(ctx, userCred, []SGuestnetwork{removed[i]}, false, false)
@@ -3638,12 +3640,16 @@ func (self *SGuest) SyncVMNics(
 			TryReserved:         true,
 			AllocDir:            api.IPAllocationDefault,
 			RequireDesignatedIP: true,
-			UseDesignatedIP:     true,
+			UseDesignatedIP:     false,
 			NicConfs:            []SNicConfig{nicConf},
 		})
 		if err != nil {
 			result.AddError(err)
 			continue
+		}
+		if len(ipList) > 0 {
+			// shift
+			ipList = ipList[1:]
 		}
 		result.Add()
 		for i := range guestnetworks {
@@ -3827,6 +3833,9 @@ func (self *SGuest) fixSysDiskIndex() error {
 	sysDisk.SetModelManager(GuestdiskManager, sysDisk)
 	err := sysQ.First(sysDisk)
 	if err != nil {
+		if errors.Cause(err) == sql.ErrNoRows {
+			return nil
+		}
 		return err
 	}
 	if sysDisk.Index == 0 {
@@ -5734,19 +5743,23 @@ func (self *SGuest) SyncVMEip(ctx context.Context, userCred mcclient.TokenCreden
 }
 
 func (self *SGuest) getSecgroupsBySecgroupExternalIds(externalIds []string) ([]SSecurityGroup, error) {
-	host, _ := self.GetHost()
-	if host == nil {
-		return nil, errors.Error("not found host for guest")
+	vpc, err := self.GetVpc()
+	if err != nil {
+		return nil, errors.Wrapf(err, "GetVpc")
+	}
+	region, err := vpc.GetRegion()
+	if err != nil {
+		return nil, errors.Wrapf(err, "GetRegion")
+	}
+	filter, err := region.GetDriver().GetSecurityGroupFilter(vpc)
+	if err != nil {
+		return nil, errors.Wrapf(err, "GetSecurityGroupFilter")
 	}
 
-	return getSecgroupsBySecgroupExternalIds(host.ManagerId, externalIds)
-}
-
-func getSecgroupsBySecgroupExternalIds(managerId string, externalIds []string) ([]SSecurityGroup, error) {
-	sq := SecurityGroupCacheManager.Query("secgroup_id").In("external_id", externalIds).Equals("manager_id", managerId)
-	q := SecurityGroupManager.Query().In("id", sq.SubQuery())
+	q := SecurityGroupManager.Query().In("external_id", externalIds)
+	q = filter(q)
 	secgroups := []SSecurityGroup{}
-	err := db.FetchModelObjects(SecurityGroupManager, q, &secgroups)
+	err = db.FetchModelObjects(SecurityGroupManager, q, &secgroups)
 	if err != nil {
 		return nil, errors.Wrapf(err, "db.FetchModelObjects")
 	}
@@ -5773,7 +5786,7 @@ func (self *SGuest) SyncVMSecgroups(ctx context.Context, userCred mcclient.Token
 		secgroupIds = append(secgroupIds, secgroup.Id)
 	}
 
-	return self.saveSecgroups(ctx, userCred, secgroupIds)
+	return self.SaveSecgroups(ctx, userCred, secgroupIds)
 }
 
 func (self *SGuest) GetIVM(ctx context.Context) (cloudprovider.ICloudVM, error) {
@@ -5786,7 +5799,7 @@ func (self *SGuest) GetIVM(ctx context.Context) (cloudprovider.ICloudVM, error) 
 	}
 	iregion, err := host.GetIRegion(ctx)
 	if err != nil {
-		return nil, err
+		return nil, errors.Wrapf(err, "GetIRegion")
 	}
 	ihost, err := iregion.GetIHostById(host.ExternalId)
 	if err != nil {
@@ -5795,7 +5808,7 @@ func (self *SGuest) GetIVM(ctx context.Context) (cloudprovider.ICloudVM, error) 
 	ivm, err := ihost.GetIVMById(self.ExternalId)
 	if err != nil {
 		if errors.Cause(err) != cloudprovider.ErrNotFound {
-			return nil, err
+			return nil, errors.Wrapf(err, "GetIVMById(%s)", self.ExternalId)
 		}
 		return iregion.GetIVMById(self.ExternalId)
 	}
