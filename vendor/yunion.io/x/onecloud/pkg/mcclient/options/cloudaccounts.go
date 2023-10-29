@@ -346,6 +346,17 @@ func (opts *SUcloudCloudAccountCreateOptions) Params() (jsonutils.JSONObject, er
 	return params, nil
 }
 
+type SVolcengineCloudAccountCreateOptions struct {
+	SCloudAccountCreateBaseOptions
+	SAccessKeyCredential
+}
+
+func (opts *SVolcengineCloudAccountCreateOptions) Params() (jsonutils.JSONObject, error) {
+	params := jsonutils.Marshal(opts)
+	params.(*jsonutils.JSONDict).Add(jsonutils.NewString("VolcEngine"), "provider")
+	return params, nil
+}
+
 type SZStackCloudAccountCreateOptions struct {
 	SCloudAccountCreateBaseOptions
 	SUserPasswordCredential
@@ -405,8 +416,6 @@ func (opts *SXskyCloudAccountCreateOptions) Params() (jsonutils.JSONObject, erro
 type SCtyunCloudAccountCreateOptions struct {
 	SCloudAccountCreateBaseOptions
 	SAccessKeyCredentialWithEnvironment
-
-	cloudprovider.SCtyunExtraOptions
 }
 
 func (opts *SCtyunCloudAccountCreateOptions) Params() (jsonutils.JSONObject, error) {
@@ -564,6 +573,15 @@ type SUcloudCloudAccountUpdateCredentialOptions struct {
 }
 
 func (opts *SUcloudCloudAccountUpdateCredentialOptions) Params() (jsonutils.JSONObject, error) {
+	return jsonutils.Marshal(opts), nil
+}
+
+type SVolcengineCloudAccountUpdateCredentialOptions struct {
+	SCloudAccountIdOptions
+	SUserPasswordCredential
+}
+
+func (opts *SVolcengineCloudAccountUpdateCredentialOptions) Params() (jsonutils.JSONObject, error) {
 	return jsonutils.Marshal(opts), nil
 }
 
@@ -942,6 +960,14 @@ func (opts *SUcloudCloudAccountUpdateOptions) Params() (jsonutils.JSONObject, er
 	return jsonutils.Marshal(opts), nil
 }
 
+type SVolcengineCloudAccountUpdateOptions struct {
+	SCloudAccountUpdateBaseOptions
+}
+
+func (opts *SVolcengineCloudAccountUpdateOptions) Params() (jsonutils.JSONObject, error) {
+	return jsonutils.Marshal(opts), nil
+}
+
 type SZStackCloudAccountUpdateOptions struct {
 	SCloudAccountUpdateBaseOptions
 }
@@ -960,16 +986,11 @@ func (opts *SS3CloudAccountUpdateOptions) Params() (jsonutils.JSONObject, error)
 
 type SCtyunCloudAccountUpdateOptions struct {
 	SCloudAccountUpdateBaseOptions
-
-	cloudprovider.SCtyunExtraOptions
 }
 
 func (opts *SCtyunCloudAccountUpdateOptions) Params() (jsonutils.JSONObject, error) {
 	params := jsonutils.Marshal(opts).(*jsonutils.JSONDict)
 	options := jsonutils.NewDict()
-	if len(opts.SCtyunExtraOptions.CrmBizId) > 0 {
-		options.Add(jsonutils.NewString(opts.SCtyunExtraOptions.CrmBizId), "crm_biz_id")
-	}
 	if options.Size() > 0 {
 		params.Add(options, "options")
 	}
