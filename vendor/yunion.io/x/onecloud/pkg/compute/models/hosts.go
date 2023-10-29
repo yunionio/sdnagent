@@ -90,7 +90,8 @@ func init() {
 	}
 	HostManager.SetVirtualObject(HostManager)
 	HostManager.SetAlias("baremetal", "baremetals")
-	HostManager.NameRequireAscii = false
+	notifyclient.AddNotifyDBHookResources(HostManager.KeywordPlural(), GuestManager.AliasPlural())
+	GuestManager.NameRequireAscii = false
 }
 
 type SHost struct {
@@ -330,6 +331,15 @@ func (manager *SHostManager) ListItemFilter(
 		} else {
 			q = q.NotIn("id", scopeQuery)
 		}
+	}
+
+	hostStorageType := query.HostStorageType
+	if len(hostStorageType) > 0 {
+		hoststorages := HoststorageManager.Query()
+		storages := StorageManager.Query().In("storage_type", hostStorageType).SubQuery()
+		hq := hoststorages.Join(storages, sqlchemy.Equals(hoststorages.Field("storage_id"), storages.Field("id"))).SubQuery()
+		scopeQuery := hq.Query(hq.Field("host_id")).SubQuery()
+		q = q.In("id", scopeQuery)
 	}
 
 	hypervisorStr := query.Hypervisor
@@ -772,6 +782,14 @@ func (hh *SHost) validateDeleteCondition(ctx context.Context, purge bool) error 
 	if cnt > 0 {
 		return httperrors.NewNotEmptyError("Not an empty host")
 	}
+	cnt, err = hh.GetBackupGuestCount()
+	if err != nil {
+		return httperrors.NewInternalServerError("GetBackupGuestCount fail %s", err)
+	}
+	if cnt > 0 {
+		return httperrors.NewNotEmptyError("Not an empty host")
+	}
+
 	for _, hoststorage := range hh.GetHoststorages() {
 		storage := hoststorage.GetStorage()
 		if storage != nil && storage.IsLocal() {
@@ -841,7 +859,10 @@ func (hh *SHost) GetStorages() ([]SStorage, error) {
 	sq := HoststorageManager.Query("storage_id").Equals("host_id", hh.Id).SubQuery()
 	q := StorageManager.Query().In("id", sq)
 	storages := []SStorage{}
-	return storages, db.FetchModelObjects(StorageManager, q, &storages)
+	if err := db.FetchModelObjects(StorageManager, q, &storages); err != nil {
+		return nil, err
+	}
+	return storages, nil
 }
 
 func (hh *SHost) GetHoststorageOfId(storageId string) *SHoststorage {
@@ -1612,6 +1633,11 @@ func (hh *SHost) GetGuestsBackupOnThisHost() []SGuest {
 	return guests
 }
 
+func (hh *SHost) GetBackupGuestCount() (int, error) {
+	q := GuestManager.Query().Equals("backup_host_id", hh.Id)
+	return q.CountWithError()
+}
+
 func (hh *SHost) GetGuestCount() (int, error) {
 	q := hh.GetGuestsQuery()
 	return q.CountWithError()
@@ -1638,7 +1664,7 @@ func (hh *SHost) GetRunningGuestCount() (int, error) {
 	return q.CountWithError()
 }
 
-func (hh *SHost) GetNotReadyGuestsMemorySize() (int, error) {
+func (hh *SHost) GetNotReadyGuestsStat() (*SHostGuestResourceUsage, error) {
 	guests := GuestManager.Query().SubQuery()
 	q := guests.Query(sqlchemy.COUNT("guest_count"),
 		sqlchemy.SUM("guest_vcpu_count", guests.Field("vcpu_count")),
@@ -1650,17 +1676,13 @@ func (hh *SHost) GetNotReadyGuestsMemorySize() (int, error) {
 	stat := SHostGuestResourceUsage{}
 	err := q.First(&stat)
 	if err != nil {
-		return -1, err
+		return nil, err
 	}
-	return stat.GuestVmemSize, nil
+	return &stat, nil
 }
 
-func (hh *SHost) GetRunningGuestMemorySize() int {
-	res := hh.getGuestsResource(api.VM_RUNNING)
-	if res != nil {
-		return res.GuestVmemSize
-	}
-	return -1
+func (hh *SHost) GetRunningGuestResourceUsage() *SHostGuestResourceUsage {
+	return hh.getGuestsResource(api.VM_RUNNING)
 }
 
 func (hh *SHost) GetBaremetalnetworksQuery() *sqlchemy.SQuery {
@@ -1757,11 +1779,15 @@ func (hh *SHost) GetHostDriver() IHostDriver {
 	return GetHostDriver(hh.HostType)
 }
 
-func (manager *SHostManager) getHostsByZoneProvider(zone *SZone, provider *SCloudprovider) ([]SHost, error) {
+func (manager *SHostManager) getHostsByZoneProvider(zone *SZone, region *SCloudregion, provider *SCloudprovider) ([]SHost, error) {
 	hosts := make([]SHost, 0)
 	q := manager.Query()
 	if zone != nil {
 		q = q.Equals("zone_id", zone.Id)
+	}
+	if region != nil {
+		zoneQ := ZoneManager.Query().Equals("cloudregion_id", region.Id).SubQuery()
+		q = q.Join(zoneQ, sqlchemy.Equals(q.Field("zone_id"), zoneQ.Field("id")))
 	}
 	if provider != nil {
 		q = q.Equals("manager_id", provider.Id)
@@ -1777,7 +1803,7 @@ func (manager *SHostManager) getHostsByZoneProvider(zone *SZone, provider *SClou
 	return hosts, nil
 }
 
-func (manager *SHostManager) SyncHosts(ctx context.Context, userCred mcclient.TokenCredential, provider *SCloudprovider, zone *SZone, hosts []cloudprovider.ICloudHost, xor bool) ([]SHost, []cloudprovider.ICloudHost, compare.SyncResult) {
+func (manager *SHostManager) SyncHosts(ctx context.Context, userCred mcclient.TokenCredential, provider *SCloudprovider, zone *SZone, region *SCloudregion, hosts []cloudprovider.ICloudHost, xor bool) ([]SHost, []cloudprovider.ICloudHost, compare.SyncResult) {
 	key := provider.Id
 	if zone != nil {
 		key = fmt.Sprintf("%s-%s", zone.Id, provider.Id)
@@ -1785,15 +1811,16 @@ func (manager *SHostManager) SyncHosts(ctx context.Context, userCred mcclient.To
 	lockman.LockRawObject(ctx, manager.Keyword(), key)
 	defer lockman.ReleaseRawObject(ctx, manager.Keyword(), key)
 
-	localHosts := make([]SHost, 0)
-	remoteHosts := make([]cloudprovider.ICloudHost, 0)
 	syncResult := compare.SyncResult{}
 
-	dbHosts, err := manager.getHostsByZoneProvider(zone, provider)
+	dbHosts, err := manager.getHostsByZoneProvider(zone, region, provider)
 	if err != nil {
 		syncResult.Error(err)
 		return nil, nil, syncResult
 	}
+
+	localHosts := make([]SHost, 0)
+	remoteHosts := make([]cloudprovider.ICloudHost, 0)
 
 	removed := make([]SHost, 0)
 	commondb := make([]SHost, 0)
@@ -1907,8 +1934,7 @@ func (hh *SHost) syncWithCloudHost(ctx context.Context, userCred mcclient.TokenC
 		return nil
 	})
 	if err != nil {
-		log.Errorf("syncWithCloudZone error %s", err)
-		return err
+		return errors.Wrapf(err, "syncWithCloudZone")
 	}
 
 	db.OpsLog.LogSyncUpdate(hh, diff, userCred)
@@ -1924,8 +1950,10 @@ func (hh *SHost) syncWithCloudHost(ctx context.Context, userCred mcclient.TokenC
 		return err
 	}
 
-	if err := HostManager.ClearSchedDescCache(hh.Id); err != nil {
-		log.Errorf("ClearSchedDescCache for host %s error %v", hh.Name, err)
+	if len(diff) > 0 {
+		if err := HostManager.ClearSchedDescCache(hh.Id); err != nil {
+			log.Errorf("ClearSchedDescCache for host %s error %v", hh.Name, err)
+		}
 	}
 
 	return nil
@@ -2318,7 +2346,7 @@ func (hh *SHost) newCloudHostStorage(ctx context.Context, userCred mcclient.Toke
 		return q.Equals("manager_id", provider.Id)
 	})
 	if err != nil {
-		if err == sql.ErrNoRows {
+		if errors.Cause(err) == sql.ErrNoRows {
 			// no cloud storage found, this may happen for on-premise host
 			// create the storage right now
 			zone, _ := hh.GetZone()
@@ -2553,7 +2581,7 @@ func (hh *SHost) SyncHostVMs(ctx context.Context, userCred mcclient.TokenCredent
 			sq := HostManager.Query().SubQuery()
 			return q.Join(sq, sqlchemy.Equals(sq.Field("id"), q.Field("host_id"))).Filter(sqlchemy.Equals(sq.Field("manager_id"), hh.ManagerId))
 		})
-		if err != nil && err != sql.ErrNoRows {
+		if err != nil && errors.Cause(err) != sql.ErrNoRows {
 			log.Errorf("failed to found guest by externalId %s error: %v", added[i].GetGlobalId(), err)
 			continue
 		}
@@ -2659,8 +2687,9 @@ func (hh *SHost) GetNetinterfacesWithIdAndCredential(netId string, userCred mccl
 }
 
 func (hh *SHost) GetNetworkWithId(netId string, reserved bool) (*SNetwork, error) {
-	var q1, q2 *sqlchemy.SQuery
+	var q1, q2, q3 *sqlchemy.SQuery
 	{
+		// classic network
 		networks := NetworkManager.Query()
 		netifs := NetInterfaceManager.Query().SubQuery()
 		hosts := HostManager.Query().SubQuery()
@@ -2671,6 +2700,7 @@ func (hh *SHost) GetNetworkWithId(netId string, reserved bool) (*SNetwork, error
 		q1 = q1.Filter(sqlchemy.Equals(hosts.Field("id"), hh.Id))
 	}
 	{
+		// vpc network
 		networks := NetworkManager.Query()
 		wires := WireManager.Query().SubQuery()
 		vpcs := VpcManager.Query().SubQuery()
@@ -2693,8 +2723,21 @@ func (hh *SHost) GetNetworkWithId(netId string, reserved bool) (*SNetwork, error
 			),
 		)
 	}
+	{
+		// network additional wires
+		networks := NetworkManager.Query()
+		networkAdditionalWires := NetworkAdditionalWireManager.Query().SubQuery()
+		netifs := NetInterfaceManager.Query().SubQuery()
+		hosts := HostManager.Query().SubQuery()
+		q3 = networks
+		q3 = q3.Join(networkAdditionalWires, sqlchemy.Equals(networks.Field("id"), networkAdditionalWires.Field("network_id")))
+		q3 = q3.Join(netifs, sqlchemy.Equals(netifs.Field("wire_id"), networkAdditionalWires.Field("wire_id")))
+		q3 = q3.Join(hosts, sqlchemy.Equals(hosts.Field("id"), netifs.Field("baremetal_id")))
+		q3 = q3.Filter(sqlchemy.Equals(networks.Field("id"), netId))
+		q3 = q3.Filter(sqlchemy.Equals(hosts.Field("id"), hh.Id))
+	}
 
-	q := sqlchemy.Union(q1, q2).Query()
+	q := sqlchemy.Union(q1, q2, q3).Query().Distinct()
 
 	net := SNetwork{}
 	net.SetModelManager(NetworkManager, &net)
@@ -3708,6 +3751,13 @@ func (hh *SHost) ValidateUpdateData(ctx context.Context, userCred mcclient.Token
 		return input, errors.Errorf("host mem is hugepage, cannot update mem_cmtbound")
 	}
 
+	if input.CpuReserved != nil {
+		info := hh.GetMetadata(ctx, api.HOSTMETA_RESERVED_CPUS_INFO, nil)
+		if len(info) > 0 {
+			return input, errors.Wrap(httperrors.ErrInputParameter, "host cpu has been reserved, cannot update cpu_reserved")
+		}
+	}
+
 	input.HostSizeAttributes, err = HostManager.ValidateSizeParams(input.HostSizeAttributes)
 	if err != nil {
 		return input, errors.Wrap(err, "ValidateSizeParams")
@@ -3868,8 +3918,12 @@ func fetchIpmiInfo(data api.HostIpmiAttributes, hostId string) (types.SIPMIInfo,
 	return info, nil
 }
 
-func (hh *SHost) PerformStart(ctx context.Context, userCred mcclient.TokenCredential, query jsonutils.JSONObject,
-	data jsonutils.JSONObject) (jsonutils.JSONObject, error) {
+func (hh *SHost) PerformStart(
+	ctx context.Context,
+	userCred mcclient.TokenCredential,
+	query jsonutils.JSONObject,
+	input api.HostPerformStartInput,
+) (jsonutils.JSONObject, error) {
 	if !hh.IsBaremetal {
 		return nil, httperrors.NewBadRequestError("Cannot start a non-baremetal host")
 	}
@@ -3885,7 +3939,7 @@ func (hh *SHost) PerformStart(ctx context.Context, userCred mcclient.TokenCreden
 		//		return nil, httperrors.NewBadRequestError("Cannot start baremetal with active guest")
 		//	}
 		hh.SetStatus(userCred, api.BAREMETAL_START_MAINTAIN, "")
-		return guest.PerformStart(ctx, userCred, query, data)
+		return guest.PerformStart(ctx, userCred, query, api.GuestPerformStartInput{})
 	}
 	params := jsonutils.NewDict()
 	params.Set("force_reboot", jsonutils.NewBool(false))
@@ -4261,8 +4315,13 @@ func (hh *SHost) PerformReserveCpus(
 		return nil, err
 	}
 
-	if !sets.NewInt(allCores...).HasAll(cs.ToSlice()...) {
+	hSets := sets.NewInt(allCores...)
+	cSlice := cs.ToSlice()
+	if !hSets.HasAll(cSlice...) {
 		return nil, httperrors.NewInputParameterError("Host cores not contains input %v", input.Cpus)
+	}
+	if hSets.Len() == len(cSlice) {
+		return nil, httperrors.NewInputParameterError("Can't reserve host all cpus")
 	}
 
 	if input.Mems != "" {

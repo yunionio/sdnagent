@@ -112,6 +112,10 @@ type SCloudprovider struct {
 	// 云账号的平台信息
 	Provider string `width:"64" charset:"ascii" list:"domain" create:"domain_required"`
 
+	// 云上同步资源是否在本地被更改过配置, local: 更改过, cloud: 未更改过
+	// example: local
+	ProjectSrc string `width:"10" charset:"ascii" nullable:"false" list:"user" default:"cloud" json:"project_src"`
+
 	SProjectMappingResourceBase
 }
 
@@ -467,14 +471,18 @@ func (cprvd *SCloudprovider) syncProject(ctx context.Context, userCred mcclient.
 		return errors.Wrap(err, "getOrCreateTenant")
 	}
 
-	return cprvd.saveProject(userCred, domainId, projectId)
+	return cprvd.saveProject(userCred, domainId, projectId, true)
 }
 
-func (cprvd *SCloudprovider) saveProject(userCred mcclient.TokenCredential, domainId, projectId string) error {
+func (cprvd *SCloudprovider) saveProject(userCred mcclient.TokenCredential, domainId, projectId string, auto bool) error {
 	if projectId != cprvd.ProjectId {
 		diff, err := db.Update(cprvd, func() error {
 			cprvd.DomainId = domainId
 			cprvd.ProjectId = projectId
+			// 自动改变项目时不改变配置，仅在performChangeOnwer（手动更改项目）时改变
+			if !auto {
+				cprvd.ProjectSrc = string(apis.OWNER_SOURCE_LOCAL)
+			}
 			return nil
 		})
 		if err != nil {
@@ -742,7 +750,7 @@ func (cprvd *SCloudprovider) PerformChangeProject(ctx context.Context, userCred 
 		NewDomain:    tenant.Domain,
 	}
 
-	err = cprvd.saveProject(userCred, tenant.DomainId, tenant.Id)
+	err = cprvd.saveProject(userCred, tenant.DomainId, tenant.Id, false)
 	if err != nil {
 		log.Errorf("Update cloudprovider error: %v", err)
 		return nil, httperrors.NewGeneralError(err)
@@ -1465,8 +1473,11 @@ func (provider *SCloudprovider) markProviderDisconnected(ctx context.Context, us
 	if err != nil {
 		return err
 	}
-	provider.SetStatus(userCred, api.CLOUD_PROVIDER_DISCONNECTED, reason)
-	return provider.ClearSchedDescCache()
+	if provider.Status != api.CLOUD_PROVIDER_DISCONNECTED {
+		provider.SetStatus(userCred, api.CLOUD_PROVIDER_DISCONNECTED, reason)
+		return provider.ClearSchedDescCache()
+	}
+	return nil
 }
 
 func (cprvd *SCloudprovider) updateName(ctx context.Context, userCred mcclient.TokenCredential, name, desc string) error {
@@ -1906,8 +1917,8 @@ func (provider *SCloudprovider) GetChangeOwnerCandidateDomainIds() []string {
 }
 
 func (cprvd *SCloudprovider) SyncProject(ctx context.Context, userCred mcclient.TokenCredential, id string) (string, error) {
-	if cprvd.Provider == api.CLOUD_PROVIDER_AZURE {
-		return cprvd.SyncAzureProject(ctx, userCred, id)
+	if cprvd.Provider == api.CLOUD_PROVIDER_AZURE || cprvd.Provider == api.CLOUD_PROVIDER_ALIYUN {
+		return cprvd.SyncManagerProject(ctx, userCred, id)
 	}
 	account, err := cprvd.GetCloudaccount()
 	if err != nil {
@@ -1932,7 +1943,7 @@ func (cprvd *SCloudprovider) GetExternalProjectsByProjectIdOrName(projectId, nam
 	return projects, nil
 }
 
-func (cprvd *SCloudprovider) SyncAzureProject(ctx context.Context, userCred mcclient.TokenCredential, id string) (string, error) {
+func (cprvd *SCloudprovider) SyncManagerProject(ctx context.Context, userCred mcclient.TokenCredential, id string) (string, error) {
 	lockman.LockRawObject(ctx, "projects", cprvd.Id)
 	defer lockman.ReleaseRawObject(ctx, "projects", cprvd.Id)
 
@@ -2002,7 +2013,6 @@ func (cprvd *SCloudprovider) SyncAzureProject(ctx context.Context, userCred mccl
 	}
 
 	return extProj.ExternalId, nil
-
 }
 
 func (cprvd *SCloudprovider) GetSchedtags() []SSchedtag {

@@ -33,8 +33,9 @@ type ComputeOptions struct {
 	DefaultMemoryOvercommitBound  float32 `default:"1.0" help:"Default memory overcommit bound for host, default to 1"`
 	DefaultStorageOvercommitBound float32 `default:"1.0" help:"Default storage overcommit bound for storage, default to 1"`
 
-	DefaultSecurityGroupId      string `help:"Default security rules" default:"default"`
-	DefaultAdminSecurityGroupId string `help:"Default admin security rules" default:""`
+	DefaultSecurityGroupId       string `help:"Default security rules" default:"default"`
+	DefaultAdminSecurityGroupId  string `help:"Default admin security rules" default:""`
+	CleanUselessKvmSecurityGroup bool   `help:"Clean useless kvm security groups when service start"`
 
 	DefaultDiskSizeMB int `default:"10240" help:"Default disk size in MB if not specified, default to 10GiB" json:"default_disk_size"`
 
@@ -132,7 +133,9 @@ type ComputeOptions struct {
 	SnapshotCreateDiskProtocol string `help:"Snapshot create disk protocol" choices:"url|fuse" default:"fuse"`
 
 	HostOfflineMaxSeconds        int `help:"Maximal seconds interval that a host considered offline during which it did not ping region, default is 3 minues" default:"180"`
-	HostOfflineDetectionInterval int `help:"Interval to check offline hosts, defualt is half a minute" default:"30"`
+	HostOfflineDetectionInterval int `help:"Interval to check offline hosts, default is half a minute" default:"30"`
+
+	ManagedHostSyncStatusIntervalSeconds int `help:"interval to automatically sync status of managed hosts, default is 5 minutes" default:"300"`
 
 	MinimalIpAddrReusedIntervalSeconds int `help:"Minimal seconds when a release IP address can be reallocate" default:"30"`
 
@@ -171,8 +174,6 @@ type ComputeOptions struct {
 	common_options.CommonOptions
 	common_options.DBOptions
 
-	EnableAutoMergeSecurityGroup bool `help:"Enable auto merge secgroup when sync security group from cloud, default False" default:"false"`
-	EnableAutoSplitSecurityGroup bool `help:"Enable auto split secgroup when sync security group with diffrent rules from cloud, default False" default:"true"`
 	DeleteSnapshotExpiredRelease bool `help:"Should the virtual machine be automatically deleted when the virtual machine expires?" default:"false"`
 	DeleteEipExpiredRelease      bool `help:"Should the EIP  be automatically deleted when the virtual machine expires?" default:"false"`
 	DeleteDisksExpiredRelease    bool `help:"Should the Disks be automatically deleted when the virtual machine expires?" default:"false"`
