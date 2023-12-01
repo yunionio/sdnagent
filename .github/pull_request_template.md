@@ -1,9 +1,20 @@
-**这个 PR 实现什么功能/修复什么问题**:
+**What this PR does / why we need it**:
 
-**是否需要 backport 到之前的 release 分支**:
 <!--
-如果不需要，填写 "NONE".
-如果需要，就以下面 item 的格式写 release 分支名，并提交对应的 cherry-pick PR:
-- release/2.8.0
-- release/2.6.0
+- [ ] Smoke testing completed
+- [ ] Unit test written
+-->
+
+**Does this PR need to be backport to the previous release branch?**:
+
+<!--
+If no, just write "NONE".
+
+If don't know, write "UNKNOWN", and let the reviewer decide.
+
+If yes, write the release branches name in the below format and submit the related cherry-pick PR:
+- release/3.7
+- release/3.6
+
+Take a look at "https://www.cloudpods.org/en/docs/contribute/contrib/" to learn how to submit a cherry-pick PR. 
 -->
