@@ -1,0 +1,23 @@
+name: Building and test for PR
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened]
+
+jobs:
+  build_and_test:
+    runs-on: ubuntu-latest
+    steps:
+    - uses: actions/checkout@v4
+
+    - name: Setup Go
+      uses: actions/setup-go@v4
+      with:
+        go-version: '1.18'
+
+    - name: Run go test
+      shell: bash
+      run: |
+        set -o xtrace
+        echo $GITHUB_WORKSPACE
+        go test -mod vendor -v ./...
