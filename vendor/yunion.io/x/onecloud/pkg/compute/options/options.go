@@ -28,6 +28,7 @@ type ComputeOptions struct {
 	DNSServer    string   `help:"Address of DNS server"`
 	DNSDomain    string   `help:"Domain suffix for virtual servers"`
 	DNSResolvers []string `help:"Upstream DNS resolvers"`
+	// EnableDefaultDNS bool     `help:"Enable default DNS if dns server not specific" default:"true"`
 
 	DefaultCPUOvercommitBound     float32 `default:"8.0" help:"Default cpu overcommit bound for host, default to 8"`
 	DefaultMemoryOvercommitBound  float32 `default:"1.0" help:"Default memory overcommit bound for host, default to 1"`
@@ -105,9 +106,10 @@ type ComputeOptions struct {
 	DefaultMaxManualSnapshotCount int `default:"2" help:"Per Disk max manual snapshot count, default 2"`
 
 	//snapshot policy options
-	RetentionDaysLimit  int `default:"49" help:"Days of snapshot retention, default 49 days"`
-	TimePointsLimit     int `default:"1" help:"time point of every days, default 1 point"`
-	RepeatWeekdaysLimit int `default:"7" help:"day point of every weekday, default 7 points"`
+	RetentionDaysLimit int `default:"49" help:"Days of snapshot retention, default 49 days"`
+	TimePointsLimit    int `default:"1" help:"time point of every days, default 1 point"`
+
+	ServerStatusSyncIntervalMinutes int `default:"5" help:"Interval to sync server status, defualt is 5 minutes"`
 
 	ServerSkuSyncIntervalMinutes int `default:"60" help:"Interval to sync public cloud server skus, defualt is 1 hour"`
 	SkuBatchSync                 int `default:"5" help:"How many skus can be sync in a batch"`
@@ -123,6 +125,7 @@ type ComputeOptions struct {
 	// cloud image sync
 	CloudImagesSyncIntervalHours int `default:"3" help:"Interval to sync public cloud image, defualt is 3 hour"`
 
+	// 由云管(Cloudpods)负责分配IP地址，默认为false。默认是由对应具备IPAM能力的云平台自主分配IP地址
 	EnablePreAllocateIpAddr bool `help:"Enable private and public cloud private ip pre allocate, default false" default:"false"`
 
 	// 创建虚拟机失败后, 自动使用其他相同配置套餐
@@ -165,9 +168,8 @@ type ComputeOptions struct {
 	SyncStorageCapacityUsedIntervalMinutes int  `help:"interval sync storage capacity used" default:"20"`
 	LockStorageFromCachedimage             bool `help:"must use storage in where selected cachedimage when creating vm"`
 
-	SyncExtDiskSnapshotIntervalMinutes int  `help:"sync snapshot for external disk" default:"20"`
-	AutoReconcileBackupServers         bool `help:"auto reconcile backup servers" default:"false"`
-	SetKVMServerAsDaemonOnCreate       bool `help:"set kvm guest as daemon server on create" default:"false"`
+	AutoReconcileBackupServers   bool `help:"auto reconcile backup servers" default:"false"`
+	SetKVMServerAsDaemonOnCreate bool `help:"set kvm guest as daemon server on create" default:"false"`
 
 	SCapabilityOptions
 	SASControllerOptions
@@ -194,6 +196,8 @@ type ComputeOptions struct {
 	// 弹性伸缩中的ecs一般会有特殊的系统标签，通过指定这些标签可以忽略这部分ecs的同步, 指定多个key需要以 ',' 分隔
 	SkipServerBySysTagKeys  string `help:"skip server,disk sync and create with system tags" default:""`
 	SkipServerByUserTagKeys string `help:"skip server,disk sync and create with user tags" default:""`
+	// 修改标签时不再同步至云上, 云账号同步资源时不会冲掉本地打的标签(key相同的会覆盖), 云账号开启只读同步和此参数效果相同,且仅影响开启只读同步的账号
+	KeepTagLocalization bool `help:"keep tag localization, not synchronized to the cloud" default:"false"`
 
 	EnableMonitorAgent bool `help:"enable public cloud vm monitor agent" default:"false"`
 
@@ -206,7 +210,7 @@ type ComputeOptions struct {
 	ForceUseOriginVnc                 bool   `help:"force openstack use origin vnc console" default:"true"`
 
 	LocalDataDiskMinSizeGB int `help:"Data disk min size when using local storage" default:"10"`
-	LocalDataDiskMaxSizeGB int `help:"Data disk max size when using local storage" default:"40960"`
+	LocalDataDiskMaxSizeGB int `help:"Data disk max size when using local storage" default:"10240"`
 
 	LocalSysDiskMinSizeGB int `help:"System disk min size when using local storage" default:"30"`
 	LocalSysDiskMaxSizeGB int `help:"System disk max size when using local storage" default:"2048"`

@@ -51,6 +51,8 @@ type GuestnetworkShortDesc struct {
 	VpcId string `json:"vpc_id"`
 	// 所属Network
 	NetworkId string `json:"network_id"`
+	// 附属IP
+	SubIps string `json:"sub_ips"`
 }
 
 type GuestnetworkListInput struct {
@@ -112,6 +114,8 @@ type GuestnetworkBaseDesc struct {
 	} `json:"vpc"`
 
 	Networkaddresses jsonutils.JSONObject `json:"networkaddresses"`
+
+	VirtualIps []string `json:"virtual_ips"`
 }
 
 type GuestnetworkJsonDesc struct {
@@ -121,10 +125,9 @@ type GuestnetworkJsonDesc struct {
 	NumQueues int    `json:"num_queues"`
 	Vectors   *int   `json:"vectors"`
 
-	VirtualIps []string `json:"virtual_ips"`
-	ExternalId string   `json:"external_id"`
-	TeamWith   string   `json:"team_with"`
-	Manual     *bool    `json:"manual"`
+	ExternalId string `json:"external_id"`
+	TeamWith   string `json:"team_with"`
+	Manual     *bool  `json:"manual"`
 
 	UpscriptPath   string `json:"upscript_path"`
 	DownscriptPath string `json:"downscript_path"`
@@ -141,4 +144,6 @@ type GuestnetworkJsonDesc struct {
 type SNicTrafficRecord struct {
 	RxTraffic int64
 	TxTraffic int64
+
+	HasBeenSetDown bool
 }

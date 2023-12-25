@@ -12,34 +12,26 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-package compute
+package yunionconf
 
 import (
 	"yunion.io/x/onecloud/pkg/mcclient/modulebase"
 	"yunion.io/x/onecloud/pkg/mcclient/modules"
 )
 
+type ScopedPolicyManager struct {
+	modulebase.ResourceManager
+}
+
 var (
-	SnapshotPolicyDisk  modulebase.JointResourceManager
-	SnapshotPolicyDisk1 modulebase.JointResourceManager
+	ScopedPolicies ScopedPolicyManager
 )
 
 func init() {
-	SnapshotPolicyDisk = modules.NewJointComputeManager(
-		"snapshotpolicydisk",
-		"snapshotpolicydisks",
-		[]string{"Disk_ID", "Snapshotpolicy_ID"},
+	ScopedPolicies = ScopedPolicyManager{modules.NewYunionConfManager(
+		"scopedpolicy", "scopedpolicies",
+		[]string{"id", "name", "category", "policies", "public_scope", "domain_id", "ref_count"},
 		[]string{},
-		&Disks,
-		&SnapshotPoliciy)
-	modules.RegisterCompute(&SnapshotPolicyDisk)
-
-	SnapshotPolicyDisk1 = modules.NewJointComputeManager(
-		"snapshotpolicydisk",
-		"snapshotpolicydisks",
-		[]string{"Disk_ID", "Snapshotpolicy_ID"},
-		[]string{},
-		&SnapshotPoliciy,
-		&Disks)
-	modules.RegisterCompute(&SnapshotPolicyDisk1)
+	)}
+	modules.Register(&ScopedPolicies)
 }

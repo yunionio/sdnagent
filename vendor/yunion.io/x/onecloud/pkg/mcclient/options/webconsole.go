@@ -71,7 +71,8 @@ func (opt *WebConsoleBaremetalOptions) Params() (*jsonutils.JSONDict, error) {
 
 type WebConsoleSshOptions struct {
 	WebConsoleOptions
-	IP           string `help:"IP to connect" json:"-"`
+	ID           string `help:"ID of server" json:"-"`
+	Ip           string `help:"IP to connect if multiple IPs on server"`
 	Port         int    `help:"Remote server port"`
 	Username     string `help:"Remote server username"`
 	KeepUsername bool   `help:"Keep remove username`
@@ -91,4 +92,18 @@ func (opt *WebConsoleSshOptions) Params() (*jsonutils.JSONDict, error) {
 type WebConsoleServerOptions struct {
 	WebConsoleOptions
 	ID string `help:"Server id or name"`
+}
+
+type WebConsoleServerRdpOptions struct {
+	WebConsoleOptions
+	ID string `help:"Server id or name"`
+
+	Host     *string
+	Port     *int
+	Username *string
+	Password *string
+
+	Width  *int
+	Height *int
+	Dpi    *int
 }

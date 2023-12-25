@@ -408,7 +408,8 @@ func (self *SNetwork) GetDNS(zoneName string) string {
 	if len(options.Options.DNSServer) > 0 {
 		return options.Options.DNSServer
 	}
-	return api.DefaultDNSServers
+
+	return ""
 }
 
 func (self *SNetwork) GetNTP() string {
@@ -741,7 +742,7 @@ func (manager *SNetworkManager) newFromCloudNetwork(ctx context.Context, userCre
 	}
 
 	vpc, _ := wire.GetVpc()
-	syncVirtualResourceMetadata(ctx, userCred, &net, extNet)
+	syncVirtualResourceMetadata(ctx, userCred, &net, extNet, false)
 	SyncCloudProject(ctx, userCred, &net, syncOwnerId, extNet, vpc.ManagerId)
 
 	if provider != nil {
@@ -1225,37 +1226,49 @@ func (self *SNetwork) PerformReserveIp(ctx context.Context, userCred mcclient.To
 		duration = bc.Duration()
 	}
 
+	errs := make([]error, 0)
 	for _, ip := range input.Ips {
 		err := self.reserveIpWithDurationAndStatus(ctx, userCred, ip, input.Notes, duration, input.Status)
 		if err != nil {
-			return nil, err
+			errs = append(errs, errors.Wrap(err, "reserveIpWithDurationAndStatus"))
 		}
+	}
+	if len(errs) > 0 {
+		return nil, errors.NewAggregate(errs)
 	}
 	return nil, nil
 }
 
-func (self *SNetwork) reserveIpWithDuration(ctx context.Context, userCred mcclient.TokenCredential, ipstr string, notes string, duration time.Duration) error {
-	return self.reserveIpWithDurationAndStatus(ctx, userCred, ipstr, notes, duration, "")
+func (net *SNetwork) reserveIpWithDuration(ctx context.Context, userCred mcclient.TokenCredential, ipstr string, notes string, duration time.Duration) error {
+	return net.reserveIpWithDurationAndStatus(ctx, userCred, ipstr, notes, duration, "")
 }
 
-func (self *SNetwork) reserveIpWithDurationAndStatus(ctx context.Context, userCred mcclient.TokenCredential, ipstr string, notes string, duration time.Duration, status string) error {
+func (net *SNetwork) reserveIpWithDurationAndStatus(ctx context.Context, userCred mcclient.TokenCredential, ipstr string, notes string, duration time.Duration, status string) error {
 	ipAddr, err := netutils.NewIPV4Addr(ipstr)
 	if err != nil {
 		return httperrors.NewInputParameterError("not a valid ip address %s: %s", ipstr, err)
 	}
-	if !self.IsAddressInRange(ipAddr) {
+	if !net.IsAddressInRange(ipAddr) {
 		return httperrors.NewInputParameterError("Address %s not in network", ipstr)
 	}
-	used, err := self.isAddressUsed(ipstr)
+	used, err := net.isAddressUsed(ipstr)
 	if err != nil {
 		return httperrors.NewInternalServerError("isAddressUsed fail %s", err)
 	}
 	if used {
+		rip := ReservedipManager.getReservedIP(net, ipstr)
+		if rip != nil {
+			err := rip.extendWithDuration(notes, duration, status)
+			if err != nil {
+				return errors.Wrap(err, "extendWithDuration")
+			}
+			return nil
+		}
 		return httperrors.NewConflictError("Address %s has been used", ipstr)
 	}
-	err = ReservedipManager.ReserveIPWithDurationAndStatus(userCred, self, ipstr, notes, duration, status)
+	err = ReservedipManager.ReserveIPWithDurationAndStatus(userCred, net, ipstr, notes, duration, status)
 	if err != nil {
-		return err
+		return errors.Wrap(err, "ReservedipManager.ReserveIPWithDurationAndStatus")
 	}
 	return nil
 }
@@ -2097,56 +2110,48 @@ func (manager *SNetworkManager) ListItemFilter(
 		q = q.In("wire_id", wires).Equals("status", api.NETWORK_STATUS_AVAILABLE)
 	}
 
-	if len(input.HostId)+len(input.HostType) > 0 {
-		type sSimpleHost struct {
-			Id         string
-			OvnVersion string
+	if len(input.HostType) > 0 || len(input.HostId) > 0 {
+		classicWiresIdQ := WireManager.Query("id").Equals("vpc_id", api.DEFAULT_VPC_ID)
+		netifs := NetInterfaceManager.Query("wire_id", "baremetal_id").SubQuery()
+		classicWiresIdQ = classicWiresIdQ.Join(netifs, sqlchemy.Equals(netifs.Field("wire_id"), classicWiresIdQ.Field("id")))
+		hosts := HostManager.Query("id")
+		if len(input.HostType) > 0 {
+			hosts = hosts.Equals("host_type", input.HostType)
 		}
-		hq := HostManager.Query("id", "ovn_version")
-		switch {
-		case len(input.HostId) > 0 && len(input.HostType) > 0:
-			hq = hq.Filter(sqlchemy.OR(
-				sqlchemy.Equals(hq.Field("id"), input.HostId),
-				sqlchemy.Equals(hq.Field("host_type"), input.HostType),
-			))
-		case len(input.HostId) > 0:
-			hq = hq.Equals("id", input.HostId)
-		case len(input.HostType) > 0:
-			hq = hq.Equals("host_type", input.HostType)
+		if len(input.HostId) > 0 {
+			hosts = hosts.In("id", input.HostId)
 		}
-		shs := make([]sSimpleHost, 0)
-		err := hq.All(&shs)
-		if err != nil {
-			return nil, errors.Wrap(err, "unable to filter all host from id and host type")
-		}
-		hostids := make([]string, len(shs))
-		var ovnVersion bool
-		for i := range shs {
-			hostids[i] = shs[i].Id
-			if len(shs[i].OvnVersion) > 0 {
-				ovnVersion = true
+		hostsQ := hosts.SubQuery()
+		classicWiresIdQ = classicWiresIdQ.Join(hostsQ, sqlchemy.Equals(netifs.Field("baremetal_id"), hostsQ.Field("id")))
+
+		wireIdQ := classicWiresIdQ.SubQuery()
+
+		if input.HostType == api.HOST_TYPE_HYPERVISOR {
+			// should consider VPC network
+			vpcHostQ := HostManager.Query().IsNotEmpty("ovn_version")
+			if len(input.HostType) > 0 {
+				vpcHostQ = vpcHostQ.Equals("host_type", input.HostType)
+			}
+			if len(input.HostId) > 0 {
+				vpcHostQ = vpcHostQ.In("id", input.HostId)
+			}
+			vpcHostCnt, err := vpcHostQ.CountWithError()
+			if err != nil {
+				return nil, errors.Wrap(err, "vpcHostQ.CountWithError")
+			}
+			if vpcHostCnt > 0 {
+				vpcWiresIdQ := WireManager.Query("id").NotEquals("vpc_id", api.DEFAULT_VPC_ID)
+
+				wireIdUnion := sqlchemy.Union(classicWiresIdQ, vpcWiresIdQ)
+				wireIdQ = wireIdUnion.Query().SubQuery()
 			}
 		}
-		sq := NetInterfaceManager.Query("wire_id")
-		switch len(hostids) {
-		case 0:
-			// hack for empty hostwire
-			sq = sq.IsTrue("deleted")
-		case 1:
-			sq = sq.Equals("baremetal_id", hostids[0])
-		default:
-			sq = sq.In("baremetal_id", hostids)
-		}
-		if ovnVersion {
-			vpcSub := VpcManager.Query("id").Equals("cloudregion_id", "default").NotEquals("id", api.DEFAULT_VPC_ID).SubQuery()
-			wireQuery := WireManager.Query("id").In("vpc_id", vpcSub)
-			q = q.Filter(sqlchemy.OR(
-				sqlchemy.In(q.Field("wire_id"), wireQuery.SubQuery()),
-				sqlchemy.In(q.Field("wire_id"), sq.SubQuery())),
-			)
-		} else {
-			q = q.Filter(sqlchemy.In(q.Field("wire_id"), sq.SubQuery()))
-		}
+		additionalQ := NetworkAdditionalWireManager.Query("network_id")
+		additionalQ = additionalQ.Join(wireIdQ, sqlchemy.Equals(wireIdQ.Field("id"), additionalQ.Field("wire_id")))
+		q = q.Filter(sqlchemy.OR(
+			sqlchemy.In(q.Field("wire_id"), wireIdQ),
+			sqlchemy.In(q.Field("id"), additionalQ.SubQuery()),
+		))
 	}
 
 	storageStr := input.StorageId

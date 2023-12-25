@@ -172,6 +172,50 @@ func (self *SCloudregion) GetGuestCount() (int, error) {
 	return self.getGuestCountInternal(false)
 }
 
+func (self *SCloudregion) GetManagedGuestsQuery(managerId string) *sqlchemy.SQuery {
+	q := GuestManager.Query().IsNotEmpty("external_id")
+	hosts := HostManager.Query().Equals("manager_id", managerId).SubQuery()
+	zones := ZoneManager.Query().Equals("cloudregion_id", self.Id).SubQuery()
+	q = q.Join(hosts, sqlchemy.Equals(q.Field("host_id"), hosts.Field("id")))
+	q = q.Join(zones, sqlchemy.Equals(hosts.Field("zone_id"), zones.Field("id")))
+	return q
+}
+
+func (self *SCloudregion) GetManagedGuests(managerId string) ([]SGuest, error) {
+	q := self.GetManagedGuestsQuery(managerId)
+	ret := []SGuest{}
+	err := db.FetchModelObjects(GuestManager, q, &ret)
+	if err != nil {
+		return nil, err
+	}
+	return ret, nil
+}
+
+func (self *SCloudregion) GetManagedGuestsCount(managerId string) (int, error) {
+	return self.GetManagedGuestsQuery(managerId).CountWithError()
+}
+
+func (self *SCloudregion) GetManagedLoadbalancerQuery(managerId string) *sqlchemy.SQuery {
+	return LoadbalancerManager.Query().
+		IsNotEmpty("external_id").
+		Equals("cloudregion_id", self.Id).
+		Equals("manager_id", managerId)
+}
+
+func (self *SCloudregion) GetManagedLoadbalancers(managerId string) ([]SLoadbalancer, error) {
+	q := self.GetManagedLoadbalancerQuery(managerId)
+	ret := []SLoadbalancer{}
+	err := db.FetchModelObjects(LoadbalancerManager, q, &ret)
+	if err != nil {
+		return nil, err
+	}
+	return ret, nil
+}
+
+func (self *SCloudregion) GetManagedLoadbalancerCount(managerId string) (int, error) {
+	return self.GetManagedLoadbalancerQuery(managerId).CountWithError()
+}
+
 func (self *SCloudregion) GetGuestIncrementCount() (int, error) {
 	return self.getGuestCountInternal(true)
 }
@@ -217,19 +261,14 @@ func (self *SCloudregion) GetDBInstanceBackups(provider *SCloudprovider, instanc
 
 func (self *SCloudregion) GetElasticcaches(provider *SCloudprovider) ([]SElasticcache, error) {
 	instances := []SElasticcache{}
-	// .IsFalse("pending_deleted")
-	vpcs := VpcManager.Query().SubQuery()
-	q := ElasticcacheManager.Query()
-	q = q.Join(vpcs, sqlchemy.Equals(q.Field("vpc_id"), vpcs.Field("id")))
-	q = q.Filter(sqlchemy.Equals(vpcs.Field("cloudregion_id"), self.Id))
+	q := ElasticcacheManager.Query().Equals("cloudregion_id", self.Id)
 	if provider != nil {
-		q = q.Filter(sqlchemy.Equals(vpcs.Field("manager_id"), provider.Id))
+		q = q.Equals("manager_id", provider.Id)
 	}
 	err := db.FetchModelObjects(ElasticcacheManager, q, &instances)
 	if err != nil {
 		return nil, errors.Wrapf(err, "GetElasticcaches for region %s", self.Id)
 	}
-
 	return instances, nil
 }
 
@@ -521,7 +560,7 @@ func (manager *SCloudregionManager) SyncRegions(
 		if err != nil {
 			syncResult.UpdateError(err)
 		} else {
-			syncMetadata(ctx, userCred, &commondb[i], commonext[i])
+			syncMetadata(ctx, userCred, &commondb[i], commonext[i], false)
 			cpr := CloudproviderRegionManager.FetchByIdsOrCreate(cloudProvider.Id, commondb[i].Id)
 			cpr.setCapabilities(ctx, userCred, commonext[i].GetCapabilities())
 			cloudProviderRegions = append(cloudProviderRegions, *cpr)
@@ -535,7 +574,7 @@ func (manager *SCloudregionManager) SyncRegions(
 		if err != nil {
 			syncResult.AddError(err)
 		} else {
-			syncMetadata(ctx, userCred, new, added[i])
+			syncMetadata(ctx, userCred, new, added[i], false)
 			cpr := CloudproviderRegionManager.FetchByIdsOrCreate(cloudProvider.Id, new.Id)
 			cpr.setCapabilities(ctx, userCred, added[i].GetCapabilities())
 			cloudProviderRegions = append(cloudProviderRegions, *cpr)

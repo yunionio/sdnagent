@@ -537,10 +537,9 @@ func (manager *SSnapshotManager) OnCreateComplete(ctx context.Context, items []d
 func (self *SSnapshot) StartSnapshotCreateTask(ctx context.Context, userCred mcclient.TokenCredential, params *jsonutils.JSONDict, parentTaskId string) error {
 	task, err := taskman.TaskManager.NewTask(ctx, "SnapshotCreateTask", self, userCred, params, parentTaskId, "", nil)
 	if err != nil {
-		return err
+		return errors.Wrapf(err, "NewTask")
 	}
-	task.ScheduleRun(nil)
-	return nil
+	return task.ScheduleRun(nil)
 }
 
 func (self *SSnapshot) GetGuest() (*SGuest, error) {
@@ -995,7 +994,9 @@ func (self *SSnapshot) SyncWithCloudSnapshot(ctx context.Context, userCred mccli
 	}
 	db.OpsLog.LogSyncUpdate(self, diff, userCred)
 
-	syncVirtualResourceMetadata(ctx, userCred, self, ext)
+	if account := self.GetCloudaccount(); account != nil {
+		syncVirtualResourceMetadata(ctx, userCred, self, ext, account.ReadOnly)
+	}
 
 	// bugfix for now:
 	disk, _ := self.GetDisk()
@@ -1049,7 +1050,7 @@ func (manager *SSnapshotManager) newFromCloudSnapshot(ctx context.Context, userC
 		return nil, errors.Wrapf(err, "Insert")
 	}
 
-	syncVirtualResourceMetadata(ctx, userCred, &snapshot, extSnapshot)
+	syncVirtualResourceMetadata(ctx, userCred, &snapshot, extSnapshot, false)
 
 	// bugfix for now:
 	if localDisk != nil {

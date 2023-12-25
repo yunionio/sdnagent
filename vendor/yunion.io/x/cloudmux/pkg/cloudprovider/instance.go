@@ -108,11 +108,12 @@ type SDiskInfo struct {
 }
 
 type GuestDiskCreateOptions struct {
-	SizeMb    int
-	UUID      string
-	Driver    string
-	Idx       int
-	StorageId string
+	SizeMb        int
+	UUID          string
+	Driver        string
+	Idx           int
+	StorageId     string
+	Preallocation string `choices:"off|metadata|full|falloc"`
 }
 
 const (
@@ -174,6 +175,7 @@ type SManagedVMCreateConfig struct {
 
 type SManagedVMChangeConfig struct {
 	Cpu          int
+	CpuSocket    int
 	MemoryMB     int
 	InstanceType string
 }
@@ -334,6 +336,9 @@ type ServerVncOutput struct {
 	Host     string `json:"host"`
 	Protocol string `json:"protocol"`
 	Port     int64  `json:"port"`
+
+	// volcengine
+	Region string `json:"region"`
 
 	Url          string `json:"url"`
 	InstanceId   string `json:"instance_id"`

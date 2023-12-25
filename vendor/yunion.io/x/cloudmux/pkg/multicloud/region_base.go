@@ -67,6 +67,10 @@ func (r *SRegion) GetIStorages() ([]cloudprovider.ICloudStorage, error) {
 	return nil, errors.Wrapf(cloudprovider.ErrNotImplemented, "GetIStorages")
 }
 
+func (r *SRegion) GetIVMs() ([]cloudprovider.ICloudVM, error) {
+	return nil, errors.Wrapf(cloudprovider.ErrNotImplemented, "GetIVMs")
+}
+
 func (r *SRegion) GetIVMById(id string) (cloudprovider.ICloudVM, error) {
 	return nil, errors.Wrapf(cloudprovider.ErrNotImplemented, "GetIVMById")
 }
@@ -75,28 +79,12 @@ func (r *SRegion) CreateSnapshotPolicy(input *cloudprovider.SnapshotPolicyInput)
 	return "", errors.Wrapf(cloudprovider.ErrNotImplemented, "CreateSnapshotPolicy")
 }
 
-func (r *SRegion) UpdateSnapshotPolicy(input *cloudprovider.SnapshotPolicyInput, snapshotPolicyId string) error {
-	return errors.Wrapf(cloudprovider.ErrNotImplemented, "UpdateSnapshotPolicy")
-}
-
 func (r *SRegion) GetISnapshotPolicyById(snapshotPolicyId string) (cloudprovider.ICloudSnapshotPolicy, error) {
 	return nil, errors.Wrapf(cloudprovider.ErrNotImplemented, "GetISnapshotPolicyById")
 }
 
 func (self *SRegion) GetISnapshotPolicies() ([]cloudprovider.ICloudSnapshotPolicy, error) {
 	return nil, errors.Wrapf(cloudprovider.ErrNotImplemented, "GetISnapshotPolicies")
-}
-
-func (self *SRegion) DeleteSnapshotPolicy(string) error {
-	return errors.Wrapf(cloudprovider.ErrNotImplemented, "DeleteSnapshotPolicy")
-}
-
-func (self *SRegion) ApplySnapshotPolicyToDisks(snapshotPolicyId string, diskId string) error {
-	return errors.Wrapf(cloudprovider.ErrNotImplemented, "ApplySnapshotPolicyToDisks")
-}
-
-func (self *SRegion) CancelSnapshotPolicyToDisks(snapshotPolicyId string, diskId string) error {
-	return errors.Wrapf(cloudprovider.ErrNotImplemented, "CancelSnapshotPolicyToDisks")
 }
 
 func (self *SRegion) GetISkus() ([]cloudprovider.ICloudSku, error) {
@@ -403,4 +391,8 @@ func (self *SRegion) GetIModelartsPoolSku() ([]cloudprovider.ICloudModelartsPool
 
 func (self *SRegion) GetIMiscResources() ([]cloudprovider.ICloudMiscResource, error) {
 	return nil, errors.Wrapf(cloudprovider.ErrNotImplemented, "GetIMiscResources")
+}
+
+func (self *SRegion) GetISSLCertificates() ([]cloudprovider.ICloudSSLCertificate, error) {
+	return nil, errors.Wrapf(cloudprovider.ErrNotImplemented, "GetISSLCertificate")
 }

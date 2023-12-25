@@ -19,6 +19,7 @@ import (
 	"database/sql"
 	"fmt"
 	"path"
+	"strconv"
 
 	"yunion.io/x/cloudmux/pkg/cloudprovider"
 	"yunion.io/x/jsonutils"
@@ -129,6 +130,10 @@ func (self *SStorage) ValidateUpdateData(ctx context.Context, userCred mcclient.
 
 func (self *SStorage) PostUpdate(ctx context.Context, userCred mcclient.TokenCredential, query jsonutils.JSONObject, data jsonutils.JSONObject) {
 	self.SEnabledStatusInfrasResourceBase.PostUpdate(ctx, userCred, query, data)
+
+	if err := self.setHardwareInfoByData(ctx, userCred, data); err != nil {
+		log.Errorf("setHardwareInfo when post update eror: %v", err)
+	}
 
 	if data.Contains("cmtbound") || data.Contains("capacity") {
 		hosts, _ := self.GetAttachedHosts()
@@ -258,7 +263,44 @@ func (manager *SStorageManager) ValidateCreateData(
 func (self *SStorage) CustomizeCreate(ctx context.Context, userCred mcclient.TokenCredential, ownerId mcclient.IIdentityProvider, query jsonutils.JSONObject, data jsonutils.JSONObject) error {
 	self.SetEnabled(true)
 	self.SetStatus(userCred, api.STORAGE_UNMOUNT, "CustomizeCreate")
+	if err := self.setHardwareInfoByData(ctx, userCred, data); err != nil {
+		return errors.Wrap(err, "setHardwareInfo")
+	}
 	return self.SEnabledStatusInfrasResourceBase.CustomizeCreate(ctx, userCred, ownerId, query, data)
+}
+
+func (self *SStorage) setHardwareInfoByData(ctx context.Context, userCred mcclient.TokenCredential, data jsonutils.JSONObject) error {
+	var hdInfo *api.StorageHardwareInfo = nil
+	if data.Contains("hardware_info") {
+		hdInfo = new(api.StorageHardwareInfo)
+		data.Unmarshal(hdInfo, "hardware_info")
+	}
+	if err := self.setHardwareInfo(ctx, userCred, hdInfo); err != nil {
+		return errors.Wrap(err, "setHardwareInfo")
+	}
+	return nil
+}
+
+func (self *SStorage) setHardwareInfo(ctx context.Context, userCred mcclient.TokenCredential, info *api.StorageHardwareInfo) error {
+	if info == nil {
+		return nil
+	}
+	for k, v := range map[string]*string{
+		api.STORAGE_METADATA_MODEL:  info.Model,
+		api.STORAGE_METADATA_VENDOR: info.Vendor,
+	} {
+		if v != nil {
+			if err := self.SetMetadata(ctx, k, *v, userCred); err != nil {
+				return errors.Wrapf(err, "set metadata %s = %s", k, *v)
+			}
+		}
+	}
+	if info.Bandwidth != 0 {
+		if err := self.SetMetadata(ctx, api.STORAGE_METADATA_BANDWIDTH, info.Bandwidth, userCred); err != nil {
+			return errors.Wrapf(err, "set metadata %s = %f", api.STORAGE_METADATA_BANDWIDTH, info.Bandwidth)
+		}
+	}
+	return nil
 }
 
 func (self *SStorage) ValidateDeleteCondition(ctx context.Context, info jsonutils.JSONObject) error {
@@ -878,7 +920,6 @@ func (manager *SStorageManager) SyncStorages(ctx context.Context, userCred mccli
 				syncResult.UpdateError(err)
 				continue
 			}
-			syncMetadata(ctx, userCred, &commondb[i], commonext[i])
 		}
 
 		localStorages = append(localStorages, commondb[i])
@@ -886,15 +927,14 @@ func (manager *SStorageManager) SyncStorages(ctx context.Context, userCred mccli
 		syncResult.Update()
 	}
 	for i := 0; i < len(added); i += 1 {
-		new, err := manager.newFromCloudStorage(ctx, userCred, added[i], provider, zone)
+		storage, err := manager.newFromCloudStorage(ctx, userCred, added[i], provider, zone)
 		if err != nil {
 			syncResult.AddError(err)
-		} else {
-			syncMetadata(ctx, userCred, new, added[i])
-			localStorages = append(localStorages, *new)
-			remoteStorages = append(remoteStorages, added[i])
-			syncResult.Add()
+			continue
 		}
+		localStorages = append(localStorages, *storage)
+		remoteStorages = append(remoteStorages, added[i])
+		syncResult.Add()
 	}
 
 	return localStorages, remoteStorages, syncResult
@@ -966,73 +1006,25 @@ func (sm *SStorageManager) SyncCapacityUsedForEsxiStorage(ctx context.Context, u
 	}
 }
 
-func (sm *SStorageManager) SyncCapacityUsedForStorage(ctx context.Context, userCred mcclient.TokenCredential, isStart bool) {
-	cpSubQ := CloudproviderManager.Query("id").In("provider", CapacityUsedCloudStorageProvider).SubQuery()
-	sQ := sm.Query()
-	sQ = sQ.Join(cpSubQ, sqlchemy.Equals(sQ.Field("manager_id"), cpSubQ.Field("id")))
-	storages := make([]SStorage, 0, 5)
-	err := db.FetchModelObjects(sm, sQ, &storages)
-	if err != nil {
-		log.Errorf("unable to fetch storages with sql %q: %v", sQ.String(), err)
-	}
-	for i := range storages {
-		err := storages[i].SyncCapacityUsed(ctx)
-		if err != nil {
-			log.Errorf("unable to sync CapacityUsed for storage %q: %v", storages[i].Id, err)
-		}
-	}
-}
-
-func (s *SStorage) SyncCapacityUsed(ctx context.Context) error {
-	cp := s.GetCloudprovider()
-	if cp == nil {
-		return errors.Wrapf(errors.ErrNotFound, "no cloudprovider for storage %s", s.Id)
-	}
-	if !utils.IsInStringArray(cp.Provider, CapacityUsedCloudStorageProvider) {
-		return nil
-	}
-	icp, err := cp.GetProvider(ctx)
-	if err != nil {
-		return errors.Wrap(err, "GetProvider")
-	}
-	iregion, err := icp.GetOnPremiseIRegion()
-	if err != nil {
-		return errors.Wrap(err, "GetOnPremiseIRegion")
-	}
-	cloudStorage, err := iregion.GetIStorageById(s.ExternalId)
-	if err != nil {
-		return errors.Wrap(err, "GetIStorageById")
-	}
-	capacityUsed := cloudStorage.GetCapacityUsedMB()
-	if s.ActualCapacityUsed == capacityUsed {
-		return nil
-	}
-	_, err = db.UpdateWithLock(ctx, s, func() error {
-		s.ActualCapacityUsed = capacityUsed
-		return nil
-	})
-	return err
-}
-
-func (self *SStorage) syncWithCloudStorage(ctx context.Context, userCred mcclient.TokenCredential, extStorage cloudprovider.ICloudStorage, provider *SCloudprovider) error {
+func (self *SStorage) syncWithCloudStorage(ctx context.Context, userCred mcclient.TokenCredential, ext cloudprovider.ICloudStorage, provider *SCloudprovider) error {
 	diff, err := db.UpdateWithLock(ctx, self, func() error {
 		// self.Name = extStorage.GetName()
-		self.Status = extStorage.GetStatus()
-		self.StorageType = extStorage.GetStorageType()
-		self.MediumType = extStorage.GetMediumType()
-		if capacity := extStorage.GetCapacityMB(); capacity != 0 {
+		self.Status = ext.GetStatus()
+		self.StorageType = ext.GetStorageType()
+		self.MediumType = ext.GetMediumType()
+		if capacity := ext.GetCapacityMB(); capacity != 0 {
 			self.Capacity = capacity
 		}
-		if capacity := extStorage.GetCapacityUsedMB(); capacity != 0 {
+		if capacity := ext.GetCapacityUsedMB(); capacity != 0 {
 			self.ActualCapacityUsed = capacity
 		}
-		self.StorageConf = extStorage.GetStorageConf()
+		self.StorageConf = ext.GetStorageConf()
 
-		self.Enabled = tristate.NewFromBool(extStorage.GetEnabled())
+		self.Enabled = tristate.NewFromBool(ext.GetEnabled())
 
-		self.IsEmulated = extStorage.IsEmulated()
+		self.IsEmulated = ext.IsEmulated()
 
-		self.IsSysDiskStore = tristate.NewFromBool(extStorage.IsSysDiskStore())
+		self.IsSysDiskStore = tristate.NewFromBool(ext.IsSysDiskStore())
 
 		return nil
 	})
@@ -1044,6 +1036,9 @@ func (self *SStorage) syncWithCloudStorage(ctx context.Context, userCred mcclien
 	if provider != nil {
 		SyncCloudDomain(userCred, self, provider.GetOwnerId())
 		self.SyncShareState(ctx, userCred, provider.getAccountShareInfo())
+		if account, _ := provider.GetCloudaccount(); account != nil {
+			syncMetadata(ctx, userCred, self, ext, account.ReadOnly)
+		}
 	}
 
 	db.OpsLog.LogSyncUpdate(self, diff, userCred)
@@ -1088,6 +1083,7 @@ func (manager *SStorageManager) newFromCloudStorage(ctx context.Context, userCre
 	}
 
 	SyncCloudDomain(userCred, &storage, provider.GetOwnerId())
+	syncMetadata(ctx, userCred, &storage, extStorage, false)
 
 	if provider != nil {
 		storage.SyncShareState(ctx, userCred, provider.getAccountShareInfo())
@@ -1408,6 +1404,7 @@ func (self *SStorage) createDisk(ctx context.Context, name string, diskConfig *a
 	disk.IsSystem = isSystem
 	disk.Iops = diskConfig.Iops
 	disk.Throughput = diskConfig.Throughput
+	disk.Preallocation = diskConfig.Preallocation
 
 	if self.MediumType == api.DISK_TYPE_SSD {
 		disk.IsSsd = true
@@ -1986,4 +1983,29 @@ func (storage *SStorage) PerformForceDetachHost(ctx context.Context, userCred mc
 		db.OpsLog.LogDetachEvent(ctx, db.JointMaster(hostStorage), db.JointSlave(hostStorage), userCred, jsonutils.NewString("force detach"))
 	}
 	return nil, err
+}
+
+func (storage *SStorage) GetDetailsHardwareInfo(ctx context.Context, userCred mcclient.TokenCredential, _ jsonutils.JSONObject) (*api.StorageHardwareInfo, error) {
+	info := new(api.StorageHardwareInfo)
+	model := storage.GetMetadata(ctx, api.STORAGE_METADATA_MODEL, userCred)
+	if model != "" {
+		info.Model = &model
+	}
+	vendor := storage.GetMetadata(ctx, api.STORAGE_METADATA_VENDOR, userCred)
+	if vendor != "" {
+		info.Vendor = &vendor
+	}
+	bw := storage.GetMetadata(ctx, api.STORAGE_METADATA_BANDWIDTH, userCred)
+	if bw != "" {
+		bwNum, err := strconv.ParseFloat(bw, 64)
+		if err != nil {
+			return nil, errors.Wrapf(err, "parse bandwidth string: %s", bw)
+		}
+		info.Bandwidth = bwNum
+	}
+	return info, nil
+}
+
+func (storage *SStorage) PerformSetHardwareInfo(ctx context.Context, userCred mcclient.TokenCredential, _ jsonutils.JSONObject, data *api.StorageHardwareInfo) (*api.StorageHardwareInfo, error) {
+	return data, storage.setHardwareInfo(ctx, userCred, data)
 }
