@@ -34,6 +34,7 @@ import (
 	"yunion.io/x/pkg/utils"
 	"yunion.io/x/sqlchemy"
 
+	"yunion.io/x/onecloud/pkg/apis"
 	api "yunion.io/x/onecloud/pkg/apis/compute"
 	"yunion.io/x/onecloud/pkg/cloudcommon/db"
 	"yunion.io/x/onecloud/pkg/cloudcommon/db/lockman"
@@ -742,7 +743,7 @@ func (manager *SServerSkuManager) ListItemFilter(
 	}
 
 	if domainStr := query.ProjectDomainId; len(domainStr) > 0 {
-		domain, err := db.TenantCacheManager.FetchDomainByIdOrName(context.Background(), domainStr)
+		domain, err := db.TenantCacheManager.FetchDomainByIdOrName(ctx, domainStr)
 		if err != nil {
 			if errors.Cause(err) == sql.ErrNoRows {
 				return nil, httperrors.NewResourceNotFoundError2("domains", domainStr)
@@ -759,6 +760,32 @@ func (manager *SServerSkuManager) ListItemFilter(
 		if len(providers) == 1 && utils.IsInStringArray(providers[0], cloudprovider.GetPublicProviders()) {
 			publicCloud = true
 		}
+	}
+
+	conditions := []sqlchemy.ICondition{}
+	for _, arch := range query.CpuArch {
+		if len(arch) == 0 {
+			continue
+		}
+		if arch == apis.OS_ARCH_X86 {
+			conditions = append(conditions, sqlchemy.OR(
+				sqlchemy.Startswith(q.Field("cpu_arch"), arch),
+				sqlchemy.Equals(q.Field("cpu_arch"), apis.OS_ARCH_I386),
+				sqlchemy.IsNullOrEmpty(q.Field("cpu_arch")),
+			))
+		} else if arch == apis.OS_ARCH_ARM {
+			conditions = append(conditions, sqlchemy.OR(
+				sqlchemy.Startswith(q.Field("cpu_arch"), arch),
+				sqlchemy.Equals(q.Field("cpu_arch"), apis.OS_ARCH_AARCH32),
+				sqlchemy.Equals(q.Field("cpu_arch"), apis.OS_ARCH_AARCH64),
+				sqlchemy.IsNullOrEmpty(q.Field("cpu_arch")),
+			))
+		} else {
+			conditions = append(conditions, sqlchemy.Startswith(q.Field("cpu_arch"), arch))
+		}
+	}
+	if len(conditions) > 0 {
+		q = q.Filter(sqlchemy.OR(conditions...))
 	}
 
 	if query.Distinct {
@@ -817,7 +844,7 @@ func (manager *SServerSkuManager) ListItemFilter(
 		q = q.Equals("prepaid_status", query.PrepaidStatus)
 	}
 
-	conditions := []sqlchemy.ICondition{}
+	conditions = []sqlchemy.ICondition{}
 	for _, sizeMb := range query.MemorySizeMb {
 		// 按区间查询内存, 避免0.75G这样的套餐不好过滤
 		if sizeMb > 0 {
@@ -1005,30 +1032,14 @@ func (manager *SServerSkuManager) GetSkus(provider string, cpu, memMB int) ([]SS
 }
 
 // 删除表中zone not found的记录
-func (manager *SServerSkuManager) PendingDeleteInvalidSku() error {
-	sq := ZoneManager.Query("id").Distinct().SubQuery()
-	skus := make([]SServerSku, 0)
-	q := manager.Query()
-	q = q.NotIn("zone_id", sq).IsNotEmpty("zone_id")
-	err := db.FetchModelObjects(manager, q, &skus)
-	if err != nil {
-		log.Errorln(err)
-		return httperrors.NewInternalServerError("query sku list failed.")
-	}
-
-	for i := range skus {
-		sku := skus[i]
-		_, err = db.Update(&sku, func() error {
-			return sku.MarkDelete()
-		})
-
-		if err != nil {
-			log.Errorln(err)
-			return httperrors.NewInternalServerError("delete sku %s failed.", sku.Id)
-		}
-	}
-
-	return nil
+func (manager *SServerSkuManager) DeleteInvalidSkus() error {
+	_, err := sqlchemy.GetDB().Exec(
+		fmt.Sprintf(
+			"delete from %s where length(zone_id) > 0 and zone_id not in (select id from zones_tbl where deleted=0)",
+			manager.TableSpec().Name(),
+		),
+	)
+	return err
 }
 
 func (manager *SServerSkuManager) SyncPrivateCloudSkus(
@@ -1175,9 +1186,10 @@ func (region *SCloudregion) newPublicCloudSku(ctx context.Context, userCred mccl
 	}
 
 	if len(sku.ZoneId) > 0 {
-		zoneId := yunionmeta.GetZoneIdBySuffix(zoneMaps, sku.ZoneId)
-		if len(zoneId) > 0 {
-			sku.ZoneId = zoneId
+		zoneId := sku.ZoneId
+		sku.ZoneId = yunionmeta.GetZoneIdBySuffix(zoneMaps, zoneId)
+		if len(sku.ZoneId) == 0 {
+			return errors.Wrapf(cloudprovider.ErrNotFound, zoneId)
 		}
 	}
 
@@ -1573,6 +1585,10 @@ func fetchSkuSyncCloudregions() []SCloudregion {
 
 // 全量同步sku列表.
 func SyncServerSkus(ctx context.Context, userCred mcclient.TokenCredential, isStart bool) {
+	// 清理无效的sku
+	log.Debugf("DeleteInvalidSkus in processing...")
+	err := ServerSkuManager.DeleteInvalidSkus()
+
 	if isStart {
 		cnt, err := ServerSkuManager.GetPublicCloudSkuCount()
 		if err != nil {
@@ -1583,6 +1599,10 @@ func SyncServerSkus(ctx context.Context, userCred mcclient.TokenCredential, isSt
 			log.Debugf("GetPublicCloudSkuCount synced skus, skip...")
 			return
 		}
+	}
+	cloudregions := fetchSkuSyncCloudregions()
+	if len(cloudregions) == 0 {
+		return
 	}
 
 	meta, err := yunionmeta.FetchYunionmeta(ctx)
@@ -1597,7 +1617,6 @@ func SyncServerSkus(ctx context.Context, userCred mcclient.TokenCredential, isSt
 		return
 	}
 
-	cloudregions := fetchSkuSyncCloudregions()
 	for i := range cloudregions {
 		region := &cloudregions[i]
 
@@ -1618,9 +1637,6 @@ func SyncServerSkus(ctx context.Context, userCred mcclient.TokenCredential, isSt
 		log.Debugf(notes)
 	}
 
-	// 清理无效的sku
-	log.Debugf("DeleteInvalidSkus in processing...")
-	ServerSkuManager.PendingDeleteInvalidSku()
 }
 
 // 同步指定region sku列表

@@ -390,24 +390,25 @@ func (self *SNetwork) GetNetAddr() netutils.IPV4Addr {
 func (self *SNetwork) GetDNS() string {
 	if len(self.GuestDns) > 0 {
 		return self.GuestDns
-	} else {
-		zoneName := ""
-		wire, _ := self.GetWire()
-		if wire != nil {
-			zone, _ := wire.GetZone()
-			if zone != nil {
-				zoneName = zone.Name
-			}
-		}
-		srvs, _ := auth.GetDNSServers(options.Options.Region, zoneName)
-		if len(srvs) > 0 {
-			return strings.Join(srvs, ",")
-		}
-		if len(options.Options.DNSServer) > 0 {
-			return options.Options.DNSServer
-		}
-		return api.DefaultDNSServers
 	}
+	zoneName := ""
+	wire, _ := self.GetWire()
+	if wire != nil {
+		zone, _ := wire.GetZone()
+		if zone != nil {
+			zoneName = zone.Name
+		}
+	}
+
+	srvs, _ := auth.GetDNSServers(options.Options.Region, zoneName)
+	if len(srvs) > 0 {
+		return strings.Join(srvs, ",")
+	}
+	if len(options.Options.DNSServer) > 0 {
+		return options.Options.DNSServer
+	}
+
+	return ""
 }
 
 func (self *SNetwork) GetNTP() string {
@@ -1736,9 +1737,8 @@ func (self *SNetwork) validateUpdateData(ctx context.Context, userCred mcclient.
 
 		usedMap := self.GetUsedAddresses()
 		for usedIpStr := range usedMap {
-			usedIp, _ := netutils.NewIPV4Addr(usedIpStr)
-			if !netRange.Contains(usedIp) {
-				return input, httperrors.NewInputParameterError("Address been assigned out of new range")
+			if usedIp, err := netutils.NewIPV4Addr(usedIpStr); err == nil && !netRange.Contains(usedIp) {
+				return input, httperrors.NewInputParameterError("Address %s been assigned out of new range", usedIpStr)
 			}
 		}
 
