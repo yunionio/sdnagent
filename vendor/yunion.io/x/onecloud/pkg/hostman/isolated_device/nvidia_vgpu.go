@@ -160,7 +160,7 @@ func (dev *sNVIDIAVgpuDevice) GetQemuId() string {
 	return "dev_" + dev.mdevId
 }
 
-func (dev *sNVIDIAVgpuDevice) GetHotPlugOptions(isolatedDev *desc.SGuestIsolatedDevice) ([]*HotPlugOption, error) {
+func (dev *sNVIDIAVgpuDevice) GetHotPlugOptions(isolatedDev *desc.SGuestIsolatedDevice, guestDesc *desc.SGuestDesc) ([]*HotPlugOption, error) {
 	ret := make([]*HotPlugOption, 0)
 
 	var masterDevOpt *HotPlugOption
@@ -209,6 +209,11 @@ func (dev *sNVIDIAVgpuDevice) GetHotUnplugOptions(isolatedDev *desc.SGuestIsolat
 			Id: isolatedDev.VfioDevs[0].Id,
 		},
 	}, nil
+}
+
+// GetPCIEInfo implements IDevice.
+func (dev *sNVIDIAVgpuDevice) GetPCIEInfo() *compute.IsolatedDevicePCIEInfo {
+	return dev.pfDev.PCIEInfo
 }
 
 func NewNvidiaVgpuDevice(dev *PCIDevice, devType, mdevId, model string, profile map[string]string) *sNVIDIAVgpuDevice {

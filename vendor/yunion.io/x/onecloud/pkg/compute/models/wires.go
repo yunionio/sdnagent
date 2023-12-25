@@ -416,7 +416,7 @@ func (swire *SWire) syncWithCloudWire(ctx context.Context, userCred mcclient.Tok
 	} else if swire.IsEmulated {
 		swire.SaveSharedInfo(apis.TOwnerSource(vpc.PublicSrc), ctx, userCred, vpc.GetSharedInfo())
 	}
-	syncMetadata(ctx, userCred, swire, extWire)
+	syncMetadata(ctx, userCred, swire, extWire, false)
 
 	db.OpsLog.LogSyncUpdate(swire, diff, userCred)
 	return err
@@ -443,24 +443,23 @@ func (manager *SWireManager) newFromCloudWire(ctx context.Context, userCred mccl
 	wire.Description = extWire.GetDescription()
 	wire.VpcId = vpc.Id
 	wire.ManagerId = provider.Id
-	region, err := vpc.GetRegion()
-	if err != nil {
-		return nil, errors.Wrapf(err, "GetRegion for vpc %s(%s)", vpc.Name, vpc.Id)
-	}
-	if zone != nil {
-		wire.ZoneId = zone.Id
-	} else if !utils.IsInStringArray(region.Provider, api.REGIONAL_NETWORK_PROVIDERS) {
+	var err error
+	wire.ZoneId, err = func() (string, error) {
+		if zone != nil {
+			return zone.Id, nil
+		}
 		izone := extWire.GetIZone()
 		if gotypes.IsNil(izone) {
-			return nil, fmt.Errorf("missing zone for wire %s(%s)", wire.Name, wire.ExternalId)
+			return "", nil
 		}
 		zone, err := vpc.getZoneByExternalId(izone.GetGlobalId())
 		if err != nil {
-			return nil, errors.Wrapf(err, "newFromCloudWire.getZoneByExternalId")
+			return "", errors.Wrapf(err, "getZoneByExternalId")
 		}
-		wire.ZoneId = zone.Id
-	} else {
-		// regional network, wire belongs to region
+		return zone.Id, nil
+	}()
+	if err != nil {
+		return nil, errors.Wrapf(err, "get zone id")
 	}
 
 	wire.IsEmulated = extWire.IsEmulated()
@@ -491,7 +490,7 @@ func (manager *SWireManager) newFromCloudWire(ctx context.Context, userCred mccl
 		wire.SyncShareState(ctx, userCred, provider.getAccountShareInfo())
 	}
 
-	syncMetadata(ctx, userCred, &wire, extWire)
+	syncMetadata(ctx, userCred, &wire, extWire, false)
 	db.OpsLog.LogEvent(&wire, db.ACT_CREATE, wire.GetShortDesc(ctx), userCred)
 	return &wire, nil
 }

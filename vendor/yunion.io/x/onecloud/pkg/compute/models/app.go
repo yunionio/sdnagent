@@ -33,6 +33,7 @@ import (
 	"yunion.io/x/onecloud/pkg/cloudcommon/db/lockman"
 	"yunion.io/x/onecloud/pkg/cloudcommon/db/taskman"
 	"yunion.io/x/onecloud/pkg/cloudcommon/notifyclient"
+	"yunion.io/x/onecloud/pkg/compute/options"
 	"yunion.io/x/onecloud/pkg/httperrors"
 	"yunion.io/x/onecloud/pkg/mcclient"
 	"yunion.io/x/onecloud/pkg/util/stringutils2"
@@ -295,7 +296,7 @@ func (self *SCloudregion) newFromCloudApp(ctx context.Context, userCred mcclient
 		return &app, errors.Wrap(result.AllError(), "unable to SyncAppEnvironments")
 	}
 	SyncCloudProject(ctx, userCred, &app, provider.GetOwnerId(), ext, provider.Id)
-	syncVirtualResourceMetadata(ctx, userCred, &app, ext)
+	syncVirtualResourceMetadata(ctx, userCred, &app, ext, false)
 
 	db.OpsLog.LogEvent(&app, db.ACT_CREATE, app.GetShortDesc(ctx), userCred)
 	notifyclient.EventNotify(ctx, userCred, notifyclient.SEventNotifyParam{
@@ -372,7 +373,9 @@ func (a *SApp) SyncWithCloudApp(ctx context.Context, userCred mcclient.TokenCred
 			Action: notifyclient.ActionSyncUpdate,
 		})
 	}
-	syncVirtualResourceMetadata(ctx, userCred, a, ext)
+	if account, _ := provider.GetCloudaccount(); account != nil {
+		syncVirtualResourceMetadata(ctx, userCred, a, ext, account.ReadOnly)
+	}
 	return nil
 }
 
@@ -445,7 +448,10 @@ func (self *SApp) StartRemoteUpdateTask(ctx context.Context, userCred mcclient.T
 }
 
 func (self *SApp) OnMetadataUpdated(ctx context.Context, userCred mcclient.TokenCredential) {
-	if len(self.ExternalId) == 0 {
+	if len(self.ExternalId) == 0 || options.Options.KeepTagLocalization {
+		return
+	}
+	if account := self.GetCloudaccount(); account != nil && account.ReadOnly {
 		return
 	}
 	err := self.StartRemoteUpdateTask(ctx, userCred, true, "")

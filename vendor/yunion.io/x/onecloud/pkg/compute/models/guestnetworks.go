@@ -142,27 +142,26 @@ func (manager *SGuestnetworkManager) FetchCustomizeColumns(
 			GuestJointResourceDetails: guestRows[i],
 		}
 		netIds[i] = objs[i].(*SGuestnetwork).NetworkId
+		eipIds[i] = objs[i].(*SGuestnetwork).EipId
 		ipnets, err := NetworkAddressManager.fetchAddressesByGuestnetworkId(objs[i].(*SGuestnetwork).RowId)
 		if err != nil {
-			log.Errorln(err)
+			log.Errorf("NetworkAddressManager.fetchAddressesByGuestnetworkId %s", err)
 		} else if len(ipnets) > 0 {
 			rows[i].NetworkAddresses = ipnets
 		}
-		iNet, _ := NetworkManager.FetchById(netIds[i])
-		net := iNet.(*SNetwork)
-		rows[i].WireId = net.WireId
-		eipIds[i] = objs[i].(*SGuestnetwork).EipId
 	}
 
-	netIdMaps, err := db.FetchIdNameMap2(NetworkManager, netIds)
+	netMap := make(map[string]SNetwork)
+	err := db.FetchModelObjectsByIds(NetworkManager, "id", netIds, netMap)
 	if err != nil {
 		log.Errorf("FetchIdNameMap2 fail %s", err)
 		return rows
 	}
 
 	for i := range rows {
-		if name, ok := netIdMaps[netIds[i]]; ok {
-			rows[i].Network = name
+		if net, ok := netMap[netIds[i]]; ok {
+			rows[i].Network = net.Name
+			rows[i].WireId = net.WireId
 		}
 	}
 
@@ -315,17 +314,24 @@ func (manager *SGuestnetworkManager) newGuestNetwork(
 			// if reuse Ip address, no need to check address availability
 			// assign it anyway
 			gn.IpAddr = address
-		} else if provider == api.CLOUD_PROVIDER_ONECLOUD || options.Options.EnablePreAllocateIpAddr {
-			addrTable := network.GetUsedAddresses()
-			recentAddrTable := manager.getRecentlyReleasedIPAddresses(network.Id, network.getAllocTimoutDuration())
-			ipAddr, err := network.GetFreeIP(ctx, userCred, addrTable, recentAddrTable, address, allocDir, reserved)
-			if err != nil {
-				return nil, err
+		} else {
+			// 如果是不具备IPAM能力的平台（主要是OneCloud和VMware，也就是VPC为ONECLOUD的平台 provider == api.CLOUD_PROVIDER_ONECLOUD ），则需要分配IP地址
+			// 如果是其他云平台（具体IPAM能力的平台），则
+			// * 开启options.Options.EnablePreAllocateIpAddr，也就是把IPAM的任务交给平台的，则需要分配IP地址
+			// * IP地址为空并且 !options.Options.EnablePreAllocateIpAddr 时，不需要分配IP，等创建后自动同步过来
+			// * 否则，还是需要先分配了
+			if provider == api.CLOUD_PROVIDER_ONECLOUD || options.Options.EnablePreAllocateIpAddr || (!options.Options.EnablePreAllocateIpAddr && len(address) > 0) {
+				addrTable := network.GetUsedAddresses()
+				recentAddrTable := manager.getRecentlyReleasedIPAddresses(network.Id, network.getAllocTimoutDuration())
+				ipAddr, err := network.GetFreeIP(ctx, userCred, addrTable, recentAddrTable, address, allocDir, reserved)
+				if err != nil {
+					return nil, err
+				}
+				if len(address) > 0 && ipAddr != address && requiredDesignatedIp {
+					return nil, fmt.Errorf("candidate ip %s is occupied!", address)
+				}
+				gn.IpAddr = ipAddr
 			}
-			if len(address) > 0 && ipAddr != address && requiredDesignatedIp {
-				return nil, fmt.Errorf("candidate ip %s is occupied!", address)
-			}
-			gn.IpAddr = ipAddr
 		}
 
 		if vpc.Id != api.DEFAULT_VPC_ID && provider == api.CLOUD_PROVIDER_ONECLOUD {

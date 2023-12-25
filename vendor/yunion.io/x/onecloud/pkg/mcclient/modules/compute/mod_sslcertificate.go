@@ -15,29 +15,18 @@
 package compute
 
 import (
-	"yunion.io/x/jsonutils"
-
-	"yunion.io/x/onecloud/pkg/apis"
+	"yunion.io/x/onecloud/pkg/mcclient/modulebase"
+	"yunion.io/x/onecloud/pkg/mcclient/modules"
 )
 
-type DnsTrafficPolicyCreateInput struct {
-	apis.EnabledStatusInfrasResourceBaseCreateInput
+var (
+	SslCerticicate modulebase.ResourceManager
+)
 
-	Provider    string `json:"provider"`
-	PolicyType  string `json:"policy_type"`
-	PolicyValue string `json:"policy_value"`
-	// 额外参数
-	Options *jsonutils.JSONDict `json:"options"`
-}
+func init() {
+	SslCerticicate = modules.NewComputeManager("sslcertificate", "sslcertificates",
+		[]string{},
+		[]string{})
 
-type DnsTrafficPolicyDetails struct {
-	apis.EnabledStatusInfrasResourceBaseDetails
-	SDnsTrafficPolicy
-}
-
-type DnsTrafficPolicyListInput struct {
-	apis.EnabledStatusInfrasResourceBaseListInput
-
-	Provider   []string `json:"provider"`
-	PolicyType string   `json:"policy_type"`
+	modules.RegisterCompute(&SslCerticicate)
 }

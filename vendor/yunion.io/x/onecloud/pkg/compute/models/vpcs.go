@@ -712,7 +712,7 @@ func (manager *SVpcManager) newFromCloudVpc(ctx context.Context, userCred mcclie
 		return nil, errors.Wrapf(err, "Insert")
 	}
 
-	syncMetadata(ctx, userCred, &vpc, extVPC)
+	syncMetadata(ctx, userCred, &vpc, extVPC, false)
 	SyncCloudDomain(userCred, &vpc, provider.GetOwnerId())
 
 	if provider != nil {
@@ -1742,7 +1742,7 @@ func (svpc *SVpc) SyncVpcPeeringConnections(
 
 	if !xor {
 		for i := 0; i < len(commondb); i += 1 {
-			err = commondb[i].SyncWithCloudPeerConnection(ctx, userCred, commonext[i], provider)
+			err = commondb[i].SyncWithCloudPeerConnection(ctx, userCred, commonext[i])
 			if err != nil {
 				result.UpdateError(err)
 				continue
@@ -1926,6 +1926,16 @@ func (self *SVpc) CheckSecurityGroupConsistent(secgroup *SSecurityGroup) error {
 		}
 	}
 	return nil
+}
+
+func (self *SVpc) GetSecurityGroups() ([]SSecurityGroup, error) {
+	q := SecurityGroupManager.Query().Equals("vpc_id", self.Id)
+	ret := []SSecurityGroup{}
+	err := db.FetchModelObjects(SecurityGroupManager, q, &ret)
+	if err != nil {
+		return nil, err
+	}
+	return ret, nil
 }
 
 func (self *SVpc) GetDefaultSecurityGroup(ownerId mcclient.IIdentityProvider, filter func(q *sqlchemy.SQuery) *sqlchemy.SQuery) (*SSecurityGroup, error) {

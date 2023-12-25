@@ -532,7 +532,9 @@ func (self *SNatGateway) SyncWithCloudNatGateway(ctx context.Context, userCred m
 		return err
 	}
 
-	syncMetadata(ctx, userCred, self, extNat)
+	if account, _ := provider.GetCloudaccount(); account != nil {
+		syncMetadata(ctx, userCred, self, extNat, account.ReadOnly)
+	}
 	SyncCloudDomain(userCred, self, provider.GetOwnerId())
 
 	db.OpsLog.LogSyncUpdate(self, diff, userCred)
@@ -598,7 +600,7 @@ func (manager *SNatGatewayManager) newFromCloudNatGateway(ctx context.Context, u
 	}
 
 	SyncCloudDomain(userCred, &nat, provider.GetOwnerId())
-	syncMetadata(ctx, userCred, &nat, extNat)
+	syncMetadata(ctx, userCred, &nat, extNat, false)
 
 	db.OpsLog.LogEvent(&nat, db.ACT_CREATE, nat.GetShortDesc(ctx), userCred)
 	notifyclient.EventNotify(ctx, userCred, notifyclient.SEventNotifyParam{
@@ -1110,10 +1112,17 @@ func (self *SNatGateway) StartRemoteUpdateTask(ctx context.Context, userCred mcc
 }
 
 func (self *SNatGateway) OnMetadataUpdated(ctx context.Context, userCred mcclient.TokenCredential) {
-	if len(self.ExternalId) == 0 {
+	if len(self.ExternalId) == 0 || options.Options.KeepTagLocalization {
 		return
 	}
-	err := self.StartRemoteUpdateTask(ctx, userCred, true, "")
+	vpc, err := self.GetVpc()
+	if err != nil {
+		return
+	}
+	if account := vpc.GetCloudaccount(); account != nil && account.ReadOnly {
+		return
+	}
+	err = self.StartRemoteUpdateTask(ctx, userCred, true, "")
 	if err != nil {
 		log.Errorf("StartRemoteUpdateTask fail: %s", err)
 	}
