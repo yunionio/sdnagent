@@ -21,6 +21,7 @@ import (
 	"sort"
 	"strings"
 	"time"
+	"unicode"
 
 	"github.com/vmware/govmomi/nfc"
 	"github.com/vmware/govmomi/object"
@@ -32,6 +33,7 @@ import (
 	"yunion.io/x/jsonutils"
 	"yunion.io/x/log"
 	"yunion.io/x/pkg/errors"
+	"yunion.io/x/pkg/gotypes"
 	"yunion.io/x/pkg/util/billing"
 	"yunion.io/x/pkg/util/imagetools"
 	"yunion.io/x/pkg/util/netutils"
@@ -111,6 +113,10 @@ func (self *SVirtualMachine) GetSecurityGroupIds() ([]string, error) {
 }
 
 func (self *SVirtualMachine) GetTags() (map[string]string, error) {
+	// not support tags
+	if gotypes.IsNil(self.manager.client.ServiceContent.CustomFieldsManager) {
+		return nil, cloudprovider.ErrNotSupported
+	}
 	ret := map[int32]string{}
 	for _, val := range self.object.Entity().ExtensibleManagedObject.AvailableField {
 		ret[val.Key] = val.Name
@@ -159,6 +165,10 @@ func (self *SVirtualMachine) GetSysTags() map[string]string {
 }
 
 func (svm *SVirtualMachine) SetTags(tags map[string]string, replace bool) error {
+	// not support tags
+	if gotypes.IsNil(svm.manager.client.ServiceContent.CustomFieldsManager) {
+		return cloudprovider.ErrNotSupported
+	}
 	oldTags, err := svm.GetTags()
 	if err != nil {
 		return errors.Wrapf(err, "GetTags")
@@ -261,6 +271,12 @@ func (self *SVirtualMachine) Refresh() error {
 	var moObj mo.VirtualMachine
 	err := self.manager.reference2Object(self.object.Reference(), VIRTUAL_MACHINE_PROPS, &moObj)
 	if err != nil {
+		if e := errors.Cause(err); soap.IsSoapFault(e) {
+			_, ok := soap.ToSoapFault(e).VimFault().(types.ManagedObjectNotFound)
+			if ok {
+				return cloudprovider.ErrNotFound
+			}
+		}
 		return err
 	}
 	base.object = &moObj
@@ -1390,20 +1406,30 @@ func (self *SVirtualMachine) DoCustomize(ctx context.Context, params jsonutils.J
 	spec.NicSettingMap = maps
 
 	var (
-		osName string
-		name   = "yunionhost"
+		osName   string
+		name     = "yunionhost"
+		hostname = name
 	)
 	if params.Contains("os_name") {
 		osName, _ = params.GetString("os_name")
 	}
 	if params.Contains("name") {
 		name, _ = params.GetString("name")
+		hostname = name
+	}
+	if params.Contains("hostname") {
+		hostname, _ = params.GetString("hostname")
 	}
 	// avoid spec.identity.hostName error
-	hostname := strings.ReplaceAll(name, "_", "")
-	if len(hostname) > 15 {
-		hostname = hostname[:15]
-	}
+	hostname = func() string {
+		ret := ""
+		for _, s := range hostname {
+			if unicode.IsDigit(s) || unicode.IsLetter(s) || s == '-' {
+				ret += string(s)
+			}
+		}
+		return ret
+	}()
 	if osName == "Linux" {
 		linuxPrep := types.CustomizationLinuxPrep{
 			HostName: &types.CustomizationFixedName{Name: hostname},
@@ -1412,6 +1438,9 @@ func (self *SVirtualMachine) DoCustomize(ctx context.Context, params jsonutils.J
 		}
 		spec.Identity = &linuxPrep
 	} else if osName == "Windows" {
+		if len(hostname) > 15 {
+			hostname = hostname[:15]
+		}
 		sysPrep := types.CustomizationSysprep{
 			GuiUnattended: types.CustomizationGuiUnattended{
 				TimeZone:  210,

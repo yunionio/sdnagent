@@ -1226,20 +1226,14 @@ func (self *SDisk) StartDiskSaveTask(ctx context.Context, userCred mcclient.Toke
 	return nil
 }
 
-func (self *SDisk) ValidateDeleteCondition(ctx context.Context, info jsonutils.JSONObject) error {
-	provider := self.GetCloudprovider()
-	if provider != nil {
-		if !provider.IsAvailable() {
-			return httperrors.NewNotSufficientPrivilegeError("cloud provider %s is not available", provider.GetName())
-		}
-
-		account, _ := provider.GetCloudaccount()
-		if account != nil && !account.IsAvailable() {
-			return httperrors.NewNotSufficientPrivilegeError("cloud account %s is not available", account.GetName())
-		}
+func (self *SDisk) ValidateDeleteCondition(ctx context.Context, info api.DiskDetails) error {
+	if len(info.Guests) > 0 {
+		return httperrors.NewNotEmptyError("Virtual disk %s(%s) used by virtual servers", self.Name, self.Id)
 	}
-
-	return self.validateDeleteCondition(ctx, false)
+	if self.IsNotDeletablePrePaid() {
+		return httperrors.NewForbiddenError("not allow to delete prepaid disk in valid status")
+	}
+	return self.SVirtualResourceBase.ValidateDeleteCondition(ctx, nil)
 }
 
 func (self *SDisk) ValidatePurgeCondition(ctx context.Context) error {
@@ -1432,13 +1426,14 @@ func (manager *SDiskManager) getDisksByStorage(storage *SStorage) ([]SDisk, erro
 }
 
 func (manager *SDiskManager) findOrCreateDisk(ctx context.Context, userCred mcclient.TokenCredential, provider cloudprovider.ICloudProvider, vdisk cloudprovider.ICloudDisk, index int, syncOwnerId mcclient.IIdentityProvider, managerId string) (*SDisk, error) {
-	diskObj, err := db.FetchByExternalIdAndManagerId(manager, vdisk.GetGlobalId(), func(q *sqlchemy.SQuery) *sqlchemy.SQuery {
+	diskId := vdisk.GetGlobalId()
+	diskObj, err := db.FetchByExternalIdAndManagerId(manager, diskId, func(q *sqlchemy.SQuery) *sqlchemy.SQuery {
 		sq := StorageManager.Query().SubQuery()
 		return q.Join(sq, sqlchemy.Equals(sq.Field("id"), q.Field("storage_id"))).Filter(sqlchemy.Equals(sq.Field("manager_id"), managerId))
 	})
 	if err != nil {
 		if errors.Cause(err) != sql.ErrNoRows {
-			return nil, errors.Wrapf(err, "db.FetchByExternalIdAndManagerId")
+			return nil, errors.Wrapf(err, "db.FetchByExternalIdAndManagerId %s", diskId)
 		}
 		vstorage, err := vdisk.GetIStorage()
 		if err != nil {
@@ -1485,6 +1480,10 @@ func (manager *SDiskManager) SyncDisks(ctx context.Context, userCred mcclient.To
 	for i := 0; i < len(removed); i += 1 {
 		err = removed[i].syncRemoveCloudDisk(ctx, userCred)
 		if err != nil {
+			// vm not sync, so skip disk used by vm error
+			if errors.Cause(err) == httperrors.ErrNotEmpty {
+				continue
+			}
 			syncResult.DeleteError(err)
 		} else {
 			syncResult.Delete()
@@ -2215,7 +2214,7 @@ func (self *SDisk) RealDelete(ctx context.Context, userCred mcclient.TokenCreden
 		{manager: SnapshotPolicyDiskManager, key: "row_id", q: diskpolicies},
 	}
 	for i := range pairs {
-		err := pairs[i].purgeAll()
+		err := pairs[i].purgeAll(ctx)
 		if err != nil {
 			return err
 		}

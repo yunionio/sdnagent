@@ -59,6 +59,8 @@ const (
 	ACT_VM_SRC_CHECK                 = "vm_src_check"
 	ACT_VM_START                     = "vm_start"
 	ACT_VM_STOP                      = "vm_stop"
+	ACT_VM_START_RESCUE              = "vm_start_rescue"
+	ACT_VM_STOP_RESCUE               = "vm_stop_rescue"
 	ACT_VM_SUSPEND                   = "vm_suspend"
 	ACT_VM_RESTART                   = "vm_restart"
 	ACT_VM_RESUME                    = "vm_resume"
@@ -226,6 +228,10 @@ const (
 	ACT_MERGE_NETWORK = "merge_network"
 
 	ACT_RESTART_NETWORK = "restart_network"
+
+	ACT_QGA_NETWORK_INPUT   = "qga_network_input"
+	ACT_QGA_STATUS_UPDATE   = "qga_status_update"
+	ACT_QGA_NETWORK_SUCCESS = "qga_network_success"
 
 	ACT_RECOVERY = "recovery"
 	ACT_PACK     = "pack"
