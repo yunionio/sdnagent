@@ -321,19 +321,29 @@ func (model *SStandaloneAnonResourceBase) SetUserMetadataAll(ctx context.Context
 	return nil
 }
 
-func (model *SStandaloneAnonResourceBase) SetCloudMetadataAll(ctx context.Context, dictstore map[string]string, userCred mcclient.TokenCredential) error {
+func (model *SStandaloneAnonResourceBase) SetCloudMetadataAll(ctx context.Context, dictstore map[string]string, userCred mcclient.TokenCredential, readOnly bool) error {
 	var err error
 	dictStore, err := ensurePrefixString(dictstore, CLOUD_TAG_PREFIX)
 	if err != nil {
 		return errors.Wrap(err, "ensurePrefix")
 	}
-	err = Metadata.SetAll(ctx, model, dictStore, userCred, CLOUD_TAG_PREFIX)
-	if err != nil {
-		return errors.Wrap(err, "SetAll")
+	if readOnly {
+		err = Metadata.SetAllWithoutDelelte(ctx, model, dictStore, userCred)
+		if err != nil {
+			return errors.Wrap(err, "SetAll")
+		}
+	} else {
+		err = Metadata.SetAll(ctx, model, dictStore, userCred, CLOUD_TAG_PREFIX)
+		if err != nil {
+			return errors.Wrap(err, "SetAll")
+		}
 	}
 	userTags := map[string]interface{}{}
 	for k, v := range dictstore {
 		userTags[strings.Replace(k, CLOUD_TAG_PREFIX, USER_TAG_PREFIX, 1)] = v
+	}
+	if readOnly {
+		return Metadata.SetAllWithoutDelelte(ctx, model, userTags, userCred)
 	}
 	return Metadata.SetAll(ctx, model, userTags, userCred, USER_TAG_PREFIX)
 }
@@ -494,12 +504,16 @@ func (model *SStandaloneAnonResourceBase) IsInSameClass(ctx context.Context, pMo
 	return IsInSameClass(ctx, model, pModel)
 }
 
-func (model *SStandaloneAnonResourceBase) SetSysCloudMetadataAll(ctx context.Context, dictstore map[string]string, userCred mcclient.TokenCredential) error {
+func (model *SStandaloneAnonResourceBase) SetSysCloudMetadataAll(ctx context.Context, dictstore map[string]string, userCred mcclient.TokenCredential, readOnly bool) error {
 	dictStore, err := ensurePrefixString(dictstore, SYS_CLOUD_TAG_PREFIX)
 	if err != nil {
 		return errors.Wrap(err, "ensurePrefixString")
 	}
-	err = Metadata.SetAll(ctx, model, dictStore, userCred, SYS_CLOUD_TAG_PREFIX)
+	if readOnly {
+		err = Metadata.SetAllWithoutDelelte(ctx, model, dictStore, userCred)
+	} else {
+		err = Metadata.SetAll(ctx, model, dictStore, userCred, SYS_CLOUD_TAG_PREFIX)
+	}
 	if err != nil {
 		return errors.Wrap(err, "SetAll")
 	}
@@ -685,24 +699,21 @@ type sPolicyTags struct {
 func (model *SStandaloneAnonResourceBase) PostUpdate(ctx context.Context, userCred mcclient.TokenCredential, query jsonutils.JSONObject, data jsonutils.JSONObject) {
 	model.SResourceBase.PostUpdate(ctx, userCred, query, data)
 
-	meta := make(map[string]string)
-	err := data.Unmarshal(&meta, "__meta__")
-	if err == nil {
-		model.PerformMetadata(ctx, userCred, nil, meta)
-	}
-
-	model.applyPolicyTags(ctx, userCred, data)
+	model.TrySaveMetadataInput(ctx, userCred, data)
 }
 
 func (model *SStandaloneAnonResourceBase) PostCreate(ctx context.Context, userCred mcclient.TokenCredential, ownerId mcclient.IIdentityProvider, query jsonutils.JSONObject, data jsonutils.JSONObject) {
 	model.SResourceBase.PostCreate(ctx, userCred, ownerId, query, data)
 
+	model.TrySaveMetadataInput(ctx, userCred, data)
+}
+
+func (model *SStandaloneAnonResourceBase) TrySaveMetadataInput(ctx context.Context, userCred mcclient.TokenCredential, data jsonutils.JSONObject) {
 	meta := make(map[string]string)
 	err := data.Unmarshal(&meta, "__meta__")
 	if err == nil {
 		model.PerformMetadata(ctx, userCred, nil, meta)
 	}
-
 	model.applyPolicyTags(ctx, userCred, data)
 }
 

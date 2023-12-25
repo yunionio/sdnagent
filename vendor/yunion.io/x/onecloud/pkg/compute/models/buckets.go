@@ -245,7 +245,7 @@ func (manager *SBucketManager) newFromCloudBucket(
 	})
 	bucket.SyncShareState(ctx, userCred, provider.getAccountShareInfo())
 
-	syncVirtualResourceMetadata(ctx, userCred, &bucket, extBucket)
+	syncVirtualResourceMetadata(ctx, userCred, &bucket, extBucket, false)
 	db.OpsLog.LogEvent(&bucket, db.ACT_CREATE, bucket.GetShortDesc(ctx), userCred)
 
 	return &bucket, nil
@@ -318,7 +318,9 @@ func (bucket *SBucket) syncWithCloudBucket(
 		return errors.Wrap(err, "db.UpdateWithLock")
 	}
 
-	syncVirtualResourceMetadata(ctx, userCred, bucket, extBucket)
+	if account := bucket.GetCloudaccount(); account != nil {
+		syncVirtualResourceMetadata(ctx, userCred, bucket, extBucket, account.ReadOnly)
+	}
 
 	db.OpsLog.LogSyncUpdate(bucket, diff, userCred)
 	if len(diff) > 0 {
@@ -1735,7 +1737,10 @@ func (bucket *SBucket) processObjectsActionInput(ctx context.Context, input api.
 }
 
 func (bucket *SBucket) OnMetadataUpdated(ctx context.Context, userCred mcclient.TokenCredential) {
-	if len(bucket.ExternalId) == 0 {
+	if len(bucket.ExternalId) == 0 || options.Options.KeepTagLocalization {
+		return
+	}
+	if account := bucket.GetCloudaccount(); account != nil && account.ReadOnly {
 		return
 	}
 	iBucket, err := bucket.GetIBucket(ctx)
@@ -1754,7 +1759,11 @@ func (bucket *SBucket) OnMetadataUpdated(ctx context.Context, userCred mcclient.
 	if diff.IsChanged() {
 		logclient.AddSimpleActionLog(bucket, logclient.ACT_UPDATE_TAGS, diff, userCred, true)
 	}
-	syncVirtualResourceMetadata(ctx, userCred, bucket, iBucket)
+	readOnly := false
+	if account := bucket.GetCloudaccount(); account != nil {
+		readOnly = account.ReadOnly
+	}
+	syncVirtualResourceMetadata(ctx, userCred, bucket, iBucket, readOnly)
 }
 
 func (manager *SBucketManager) ListItemExportKeys(ctx context.Context,

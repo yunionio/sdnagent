@@ -80,6 +80,8 @@ type ICloudRegion interface {
 	GetIVpcById(id string) (ICloudVpc, error)
 	GetIZoneById(id string) (ICloudZone, error)
 	GetIEipById(id string) (ICloudEIP, error)
+	// ICoudVM 的 GetGlobalId 接口不能panic
+	GetIVMs() ([]ICloudVM, error)
 	// Esxi没有zone，需要通过region确认vm是否被删除
 	GetIVMById(id string) (ICloudVM, error)
 	GetIDiskById(id string) (ICloudDisk, error)
@@ -97,12 +99,8 @@ type ICloudRegion interface {
 	GetISnapshotById(snapshotId string) (ICloudSnapshot, error)
 
 	CreateSnapshotPolicy(*SnapshotPolicyInput) (string, error)
-	UpdateSnapshotPolicy(*SnapshotPolicyInput, string) error
-	DeleteSnapshotPolicy(string) error
-	ApplySnapshotPolicyToDisks(snapshotPolicyId string, diskId string) error
-	CancelSnapshotPolicyToDisks(snapshotPolicyId string, diskId string) error
 	GetISnapshotPolicies() ([]ICloudSnapshotPolicy, error)
-	GetISnapshotPolicyById(snapshotPolicyId string) (ICloudSnapshotPolicy, error)
+	GetISnapshotPolicyById(id string) (ICloudSnapshotPolicy, error)
 
 	GetIHosts() ([]ICloudHost, error)
 	GetIHostById(id string) (ICloudHost, error)
@@ -201,6 +199,8 @@ type ICloudRegion interface {
 	GetIModelartsPoolSku() ([]ICloudModelartsPoolSku, error)
 
 	GetIMiscResources() ([]ICloudMiscResource, error)
+
+	GetISSLCertificates() ([]ICloudSSLCertificate, error)
 }
 
 type ICloudZone interface {
@@ -305,7 +305,7 @@ type ICloudHost interface {
 	GetMemSizeMB() int
 	GetMemCmtbound() float32
 	GetReservedMemoryMb() int
-	GetStorageSizeMB() int
+	GetStorageSizeMB() int64
 	GetStorageType() string
 	GetHostType() string
 
@@ -344,6 +344,7 @@ type ICloudVM interface {
 
 	GetSerialOutput(port int) (string, error) // 目前仅谷歌云windows机器会使用到此接口
 
+	GetCpuSockets() int
 	GetVcpuCount() int
 	GetVmemSizeMB() int //MB
 	GetBootOrder() string
@@ -542,12 +543,12 @@ type ICloudDisk interface {
 	CreateISnapshot(ctx context.Context, name string, desc string) (ICloudSnapshot, error)
 	GetISnapshots() ([]ICloudSnapshot, error)
 
-	GetExtSnapshotPolicyIds() ([]string, error)
-
 	Resize(ctx context.Context, newSizeMB int64) error
 	Reset(ctx context.Context, snapshotId string) (string, error)
 
 	Rebuild(ctx context.Context) error
+
+	GetPreallocation() string
 }
 
 type ICloudSnapshot interface {
@@ -569,10 +570,13 @@ type ICloudInstanceSnapshot interface {
 type ICloudSnapshotPolicy interface {
 	IVirtualResource
 
-	IsActivated() bool
 	GetRetentionDays() int
 	GetRepeatWeekdays() ([]int, error)
 	GetTimePoints() ([]int, error)
+	Delete() error
+	ApplyDisks(ids []string) error
+	CancelDisks(ids []string) error
+	GetApplyDiskIds() ([]string, error)
 }
 
 type ICloudGlobalVpc interface {
@@ -1678,4 +1682,23 @@ type ICloudMiscResource interface {
 	GetResourceType() string
 
 	GetConfig() jsonutils.JSONObject
+}
+
+type ICloudSSLCertificate interface {
+	IVirtualResource
+
+	GetSans() string
+	GetStartDate() time.Time
+	GetProvince() string
+	GetCommon() string
+	GetCountry() string
+	GetIssuer() string
+	GetExpired() bool
+	GetEndDate() time.Time
+	GetFingerprint() string
+	GetCity() string
+	GetOrgName() string
+	GetIsUpload() bool
+	GetCert() string
+	GetKey() string
 }

@@ -406,7 +406,11 @@ func FetchCheckQueryOwnerScope(
 		ownerId = userCred
 		reqScopeStr, _ := data.GetString("scope")
 		if len(reqScopeStr) > 0 {
-			queryScope = rbacscope.String2Scope(reqScopeStr)
+			if reqScopeStr == "max" || reqScopeStr == "maxallowed" {
+				queryScope = allowScope
+			} else {
+				queryScope = rbacscope.String2Scope(reqScopeStr)
+			}
 		} else if data.Contains("admin") {
 			isAdmin := jsonutils.QueryBoolean(data, "admin", false)
 			if isAdmin && allowScope.HigherThan(rbacscope.ScopeProject) {
@@ -565,8 +569,11 @@ func FetchStandaloneObjectsByIds(modelManager IModelManager, ids []string, targe
 	return FetchModelObjectsByIds(modelManager, "id", ids, targets)
 }
 
-func FetchDistinctField(modelManager IModelManager, field string) ([]string, error) {
-	q := modelManager.Query(field).Distinct()
+func FetchField(modelMan IModelManager, field string, qCallback func(q *sqlchemy.SQuery) *sqlchemy.SQuery) ([]string, error) {
+	q := modelMan.Query(field)
+	if qCallback != nil {
+		q = qCallback(q)
+	}
 	rows, err := q.Rows()
 	if err != nil {
 		if errors.Cause(err) == sql.ErrNoRows {
@@ -588,4 +595,10 @@ func FetchDistinctField(modelManager IModelManager, field string) ([]string, err
 		}
 	}
 	return values, nil
+}
+
+func FetchDistinctField(modelManager IModelManager, field string) ([]string, error) {
+	return FetchField(modelManager, field, func(q *sqlchemy.SQuery) *sqlchemy.SQuery {
+		return q.Distinct()
+	})
 }

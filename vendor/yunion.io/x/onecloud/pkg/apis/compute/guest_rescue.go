@@ -14,23 +14,15 @@
 
 package compute
 
-import (
-	"yunion.io/x/onecloud/pkg/apis"
+// Rescue constants are used for rescue mode
+const (
+	GUEST_RESCUE_RELATIVE_PATH = "rescue" //  serverxxx/rescue
+
+	GUEST_RESCUE_INITRAMFS       = "initramfs"
+	GUEST_RESCUE_KERNEL          = "kernel"
+	GUEST_RESCUE_INITRAMFS_ARM64 = "initramfs_aarch64"
+	GUEST_RESCUE_KERNEL_ARM64    = "kernel_aarch64"
+
+	GUEST_RESCUE_SYS_DISK_NAME = "sys_img"
+	GUEST_RESCUE_SYS_DISK_SIZE = 500 // MB
 )
-
-type SnapshotPolicyDiskDetails struct {
-	apis.VirtualJointResourceBaseDetails
-
-	// 快照策略名称
-	Snapshotpolicy string      `json:"snapshotpolicy"`
-	Disk           DiskDetails `json:"disk"`
-}
-
-type SnapshotPolicyDiskListInput struct {
-	apis.VirtualJointResourceBaseListInput
-	SnapshotPolicyFilterListInput
-	DiskFilterListInput
-
-	// 状态
-	Status []string `json:"status"`
-}

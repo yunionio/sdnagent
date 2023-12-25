@@ -1007,7 +1007,7 @@ func syncHostStorages(ctx context.Context, userCred mcclient.TokenCredential, sy
 
 	newCacheIds := make([]sStoragecacheSyncPair, 0)
 	for i := 0; i < len(localStorages); i += 1 {
-		syncMetadata(ctx, userCred, &localStorages[i], remoteStorages[i])
+		syncMetadata(ctx, userCred, &localStorages[i], remoteStorages[i], false)
 		if !isInCache(storageCachePairs, localStorages[i].StoragecacheId) && !isInCache(newCacheIds, localStorages[i].StoragecacheId) {
 			cachePair, err := syncStorageCaches(ctx, userCred, provider, &localStorages[i], remoteStorages[i], xor)
 			if err != nil {
@@ -1120,7 +1120,10 @@ func syncVMPeripherals(
 	account, _ := provider.GetCloudaccount()
 	if account == nil || account.IsNotSkipSyncResource(ElasticipManager) {
 		err = syncVMEip(ctx, userCred, provider, local, remote)
-		if err != nil && errors.Cause(err) != cloudprovider.ErrNotSupported && errors.Cause(err) != cloudprovider.ErrNotImplemented {
+		if err != nil &&
+			errors.Cause(err) != cloudprovider.ErrNotSupported &&
+			errors.Cause(err) != cloudprovider.ErrNotImplemented &&
+			errors.Cause(err) != cloudprovider.ErrNotFound {
 			logclient.AddSimpleActionLog(local, logclient.ACT_CLOUD_SYNC, errors.Wrapf(err, "syncVMEip"), userCred, false)
 		}
 	}
@@ -2015,7 +2018,7 @@ func syncRegionSnapshotPolicies(
 
 	result := func() compare.SyncResult {
 		defer syncResults.AddSqlCost(SnapshotPolicyManager)()
-		return SnapshotPolicyManager.SyncSnapshotPolicies(ctx, userCred, provider, localRegion, snapshotPolicies, provider.GetOwnerId(), syncRange.Xor)
+		return localRegion.SyncSnapshotPolicies(ctx, userCred, provider, snapshotPolicies, provider.GetOwnerId(), syncRange.Xor)
 	}()
 	syncResults.Add(SnapshotPolicyManager, result)
 	msg := result.Result()
@@ -2169,10 +2172,6 @@ func syncPublicCloudProviderInfo(
 		}
 
 		if syncRange.NeedSyncResource(cloudprovider.CLOUD_CAPABILITY_COMPUTE) {
-			if syncRange.IsNotSkipSyncResource(SnapshotPolicyManager) {
-				// sync snapshot policies before sync disks
-				syncRegionSnapshotPolicies(ctx, userCred, syncResults, provider, localRegion, remoteRegion, syncRange)
-			}
 
 			for j := 0; j < len(localZones); j += 1 {
 
@@ -2189,6 +2188,11 @@ func syncPublicCloudProviderInfo(
 				if len(newPairs) > 0 {
 					storageCachePairs = append(storageCachePairs, newPairs...)
 				}
+			}
+
+			if syncRange.IsNotSkipSyncResource(SnapshotPolicyManager) {
+				// sync snapshot policies after sync disks
+				syncRegionSnapshotPolicies(ctx, userCred, syncResults, provider, localRegion, remoteRegion, syncRange)
 			}
 
 			// sync snapshots after sync disks

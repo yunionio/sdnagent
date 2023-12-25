@@ -1153,6 +1153,15 @@ func (self *SDBInstance) GetShortDesc(ctx context.Context) *jsonutils.JSONDict {
 	desc := self.SVirtualResourceBase.GetShortDesc(ctx)
 	region, _ := self.GetRegion()
 	provider := self.GetCloudprovider()
+
+	ipAddr := func() string {
+		rdsNetwrok := SDBInstanceNetwork{}
+		err := DBInstanceNetworkManager.Query("ip_addr").Equals("dbinstance_id", self.Id).IsNotNull("ip_addr").IsNotEmpty("ip_addr").First(&rdsNetwrok)
+		if err != nil {
+			return ""
+		}
+		return rdsNetwrok.IpAddr
+	}()
 	info := MakeCloudProviderInfo(region, nil, provider)
 	desc.Set("engine", jsonutils.NewString(self.Engine))
 	desc.Set("storage_type", jsonutils.NewString(self.StorageType))
@@ -1161,6 +1170,7 @@ func (self *SDBInstance) GetShortDesc(ctx context.Context) *jsonutils.JSONDict {
 	desc.Set("vmem_size_mb", jsonutils.NewInt(int64(self.VmemSizeMb)))
 	desc.Set("disk_size_gb", jsonutils.NewInt(int64(self.DiskSizeGB)))
 	desc.Set("iops", jsonutils.NewInt(int64(self.Iops)))
+	desc.Set("ip_addr", jsonutils.NewString(ipAddr))
 	desc.Update(jsonutils.Marshal(&info))
 	return desc
 }
@@ -1663,8 +1673,21 @@ func (self *SDBInstance) SyncWithCloudDBInstance(ctx context.Context, userCred m
 		self.Engine = ext.GetEngine()
 		self.EngineVersion = ext.GetEngineVersion()
 		self.InstanceType = ext.GetInstanceType()
-		self.VcpuCount = ext.GetVcpuCount()
-		self.VmemSizeMb = ext.GetVmemSizeMB()
+		cpu := ext.GetVcpuCount()
+		mem := ext.GetVmemSizeMB()
+		if (cpu == 0 || mem == 0) && len(self.InstanceType) > 0 {
+			skus, _ := self.GetAvailableDBInstanceSkus(true)
+			for _, sku := range skus {
+				cpu, mem = sku.VcpuCount, sku.VmemSizeMb
+				break
+			}
+		}
+		if cpu > 0 {
+			self.VcpuCount = cpu
+		}
+		if mem > 0 {
+			self.VmemSizeMb = mem
+		}
 		self.DiskSizeGB = ext.GetDiskSizeGB()
 		self.DiskSizeUsedMB = ext.GetDiskSizeUsedMB()
 		self.StorageType = ext.GetStorageType()
@@ -1735,7 +1758,9 @@ func (self *SDBInstance) SyncWithCloudDBInstance(ctx context.Context, userCred m
 	if err != nil {
 		return err
 	}
-	syncVirtualResourceMetadata(ctx, userCred, self, ext)
+	if account := self.GetCloudaccount(); account != nil {
+		syncVirtualResourceMetadata(ctx, userCred, self, ext, account.ReadOnly)
+	}
 	SyncCloudProject(ctx, userCred, self, provider.GetOwnerId(), ext, provider.Id)
 	db.OpsLog.LogSyncUpdate(self, diff, userCred)
 	if len(diff) > 0 {
@@ -1832,7 +1857,7 @@ func (manager *SDBInstanceManager) newFromCloudDBInstance(ctx context.Context, u
 		return nil, errors.Wrapf(err, "newFromCloudDBInstance.Insert")
 	}
 
-	syncVirtualResourceMetadata(ctx, userCred, &instance, extInstance)
+	syncVirtualResourceMetadata(ctx, userCred, &instance, extInstance, false)
 	SyncCloudProject(ctx, userCred, &instance, provider.GetOwnerId(), extInstance, provider.Id)
 
 	db.OpsLog.LogEvent(&instance, db.ACT_CREATE, instance.GetShortDesc(ctx), userCred)
@@ -2085,7 +2110,10 @@ func (self *SDBInstance) StartRemoteUpdateTask(ctx context.Context, userCred mcc
 }
 
 func (self *SDBInstance) OnMetadataUpdated(ctx context.Context, userCred mcclient.TokenCredential) {
-	if len(self.ExternalId) == 0 {
+	if len(self.ExternalId) == 0 || options.Options.KeepTagLocalization {
+		return
+	}
+	if account := self.GetCloudaccount(); account != nil && account.ReadOnly {
 		return
 	}
 	err := self.StartRemoteUpdateTask(ctx, userCred, true, "")

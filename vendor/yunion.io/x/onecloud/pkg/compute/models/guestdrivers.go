@@ -165,7 +165,7 @@ type IGuestDriver interface {
 
 	AllowReconfigGuest() bool
 	DoGuestCreateDisksTask(ctx context.Context, guest *SGuest, task taskman.ITask) error
-	RequestChangeVmConfig(ctx context.Context, guest *SGuest, task taskman.ITask, instanceType string, vcpuCount, vmemSize int64) error
+	RequestChangeVmConfig(ctx context.Context, guest *SGuest, task taskman.ITask, instanceType string, vcpuCount, cpuSockets, vmemSize int64) error
 
 	NeedRequestGuestHotAddIso(ctx context.Context, guest *SGuest) bool
 	RequestGuestHotAddIso(ctx context.Context, guest *SGuest, path string, boot bool, task taskman.ITask) error
@@ -186,7 +186,7 @@ type IGuestDriver interface {
 	IsSupportPublicIp() bool
 	ValidateCreateEip(ctx context.Context, userCred mcclient.TokenCredential, input api.ServerCreateEipInput) error
 
-	NeedStopForChangeSpec(ctx context.Context, guest *SGuest, cpuChanged, memChanged bool) bool
+	NeedStopForChangeSpec(ctx context.Context, guest *SGuest, addCpu int, addMemMb, addSocket int) bool
 
 	OnGuestChangeCpuMemFailed(ctx context.Context, guest *SGuest, data *jsonutils.JSONDict, task taskman.ITask) error
 	IsSupportGuestClone() bool
@@ -240,10 +240,14 @@ type IGuestDriver interface {
 	QgaRequestGetNetwork(ctx context.Context, userCred mcclient.TokenCredential, body jsonutils.JSONObject, host *SHost, guest *SGuest) (jsonutils.JSONObject, error)
 
 	FetchMonitorUrl(ctx context.Context, guest *SGuest) string
-	RequestResetNicTrafficLimit(ctx context.Context, task taskman.ITask, host *SHost, guest *SGuest, input *api.ServerNicTrafficLimit) error
-	RequestSetNicTrafficLimit(ctx context.Context, task taskman.ITask, host *SHost, guest *SGuest, input *api.ServerNicTrafficLimit) error
+	RequestResetNicTrafficLimit(ctx context.Context, task taskman.ITask, host *SHost, guest *SGuest, input []api.ServerNicTrafficLimit) error
+	RequestSetNicTrafficLimit(ctx context.Context, task taskman.ITask, host *SHost, guest *SGuest, input []api.ServerNicTrafficLimit) error
 
 	SyncOsInfo(ctx context.Context, userCred mcclient.TokenCredential, g *SGuest, extVM cloudprovider.IOSInfo) error
+
+	ValidateSetOSInfo(ctx context.Context, userCred mcclient.TokenCredential, guest *SGuest, input *api.ServerSetOSInfoInput) error
+	RequestStartRescue(ctx context.Context, task taskman.ITask, body jsonutils.JSONObject, host *SHost, guest *SGuest) error
+	RequestStopRescue(ctx context.Context, task taskman.ITask, body jsonutils.JSONObject, host *SHost, guest *SGuest) error
 }
 
 var guestDrivers map[string]IGuestDriver
