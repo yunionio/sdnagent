@@ -286,7 +286,10 @@ func (self *SCDNDomain) SyncWithCloudCDNDomain(ctx context.Context, userCred mcc
 		})
 	}
 
-	syncVirtualResourceMetadata(ctx, userCred, self, ext)
+	if account := self.GetCloudaccount(); account != nil {
+		syncVirtualResourceMetadata(ctx, userCred, self, ext, account.ReadOnly)
+	}
+
 	if provider := self.GetCloudprovider(); provider != nil {
 		SyncCloudProject(ctx, userCred, self, provider.GetOwnerId(), ext, self.ManagerId)
 	}
@@ -319,7 +322,7 @@ func (self *SCloudprovider) newFromCloudCDNDomain(ctx context.Context, userCred 
 		return nil, err
 	}
 
-	syncVirtualResourceMetadata(ctx, userCred, &domain, ext)
+	syncVirtualResourceMetadata(ctx, userCred, &domain, ext, false)
 	SyncCloudProject(ctx, userCred, &domain, self.GetOwnerId(), ext, self.Id)
 
 	db.OpsLog.LogEvent(&domain, db.ACT_CREATE, domain.GetShortDesc(ctx), userCred)
@@ -548,7 +551,7 @@ func (self *SCDNDomain) StartRemoteUpdateTask(ctx context.Context, userCred mccl
 }
 
 func (self *SCDNDomain) OnMetadataUpdated(ctx context.Context, userCred mcclient.TokenCredential) {
-	if len(self.ExternalId) == 0 {
+	if len(self.ExternalId) == 0 || options.Options.KeepTagLocalization {
 		return
 	}
 	err := self.StartRemoteUpdateTask(ctx, userCred, true, "")

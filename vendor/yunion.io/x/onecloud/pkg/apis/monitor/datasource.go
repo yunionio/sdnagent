@@ -12,20 +12,11 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-package compute
+package monitor
 
-import (
-	"yunion.io/x/onecloud/pkg/mcclient/modulebase"
-	"yunion.io/x/onecloud/pkg/mcclient/modules"
+import "yunion.io/x/onecloud/pkg/apis"
+
+const (
+	DataSourceTypeInfluxdb        = apis.SERVICE_TYPE_INFLUXDB
+	DataSourceTypeVictoriaMetrics = apis.SERVICE_TYPE_VICTORIA_METRICS
 )
-
-var SnapshotPolicyCache modulebase.ResourceManager
-
-func init() {
-	SnapshotPolicyCache = modules.NewComputeManager("snapshotpolicycache", "snapshotpolicycaches",
-		[]string{"Snapshotpolicy_Id", "External_Id", "Cloudregion_Id", "Manager_Id"},
-		[]string{},
-	)
-
-	modules.RegisterCompute(&SnapshotPolicyCache)
-}

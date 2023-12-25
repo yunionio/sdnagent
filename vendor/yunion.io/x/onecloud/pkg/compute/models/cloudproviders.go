@@ -53,6 +53,7 @@ import (
 type SCloudproviderManager struct {
 	db.SEnabledStatusStandaloneResourceBaseManager
 	db.SProjectizedResourceBaseManager
+	db.SExternalizedResourceBaseManager
 
 	SProjectMappingResourceBaseManager
 	SSyncableBaseResourceManager
@@ -75,6 +76,7 @@ func init() {
 type SCloudprovider struct {
 	db.SEnabledStatusStandaloneResourceBase
 	db.SProjectizedResourceBase
+	db.SExternalizedResourceBase
 
 	SSyncableBaseResource
 
@@ -96,9 +98,9 @@ type SCloudprovider struct {
 	// Version string `width:"32" charset:"ascii" nullable:"true" list:"domain"` // Column(VARCHAR(32, charset='ascii'), nullable=True)
 	// Sysinfo jsonutils.JSONObject `get:"domain"` // Column(JSONEncodedDict, nullable=True)
 
-	AccessUrl string `width:"64" charset:"ascii" nullable:"true" list:"domain" update:"domain" create:"domain_optional"`
+	AccessUrl string `width:"128" charset:"ascii" nullable:"true" list:"domain" update:"domain" create:"domain_optional"`
 	// 云账号的用户信息，例如用户名，access key等
-	Account string `width:"128" charset:"ascii" nullable:"false" list:"domain" create:"domain_required"`
+	Account string `width:"256" charset:"ascii" nullable:"false" list:"domain" create:"domain_required"`
 	// 云账号的密码信息，例如密码，access key secret等。该字段在数据库加密存储。Google需要存储秘钥证书,需要此字段比较长
 	Secret string `length:"0" charset:"ascii" nullable:"false" list:"domain" create:"domain_required"`
 
@@ -826,7 +828,7 @@ func (cprvd *SCloudprovider) markEndSyncWithLock(ctx context.Context, userCred m
 			return nil
 		}
 
-		if cprvd.getSyncStatus2() != api.CLOUD_PROVIDER_SYNC_STATUS_IDLE {
+		if cprvd.GetSyncStatus2() != api.CLOUD_PROVIDER_SYNC_STATUS_IDLE {
 			return nil
 		}
 
@@ -1341,6 +1343,10 @@ func (manager *SCloudproviderManager) ListItemFilter(
 	if err != nil {
 		return nil, errors.Wrap(err, "SSyncableBaseResourceManager.ListItemFilter")
 	}
+	q, err = manager.SExternalizedResourceBaseManager.ListItemFilter(ctx, q, userCred, query.ExternalizedResourceBaseListInput)
+	if err != nil {
+		return nil, errors.Wrap(err, "SExternalizedResourceBaseManager.ListItemFilter")
+	}
 
 	managerStrs := query.CloudproviderId
 	conditions := []sqlchemy.ICondition{}
@@ -1555,6 +1561,23 @@ func (provider *SCloudprovider) GetRegions() ([]SCloudregion, error) {
 	return ret, db.FetchModelObjects(CloudregionManager, q, &ret)
 }
 
+func (provider *SCloudprovider) GetUsableRegions() ([]SCloudregion, error) {
+	q := CloudregionManager.Query()
+	crcp := CloudproviderRegionManager.Query().SubQuery()
+	q = q.Join(crcp, sqlchemy.Equals(q.Field("id"), crcp.Field("cloudregion_id"))).Filter(
+		sqlchemy.AND(
+			sqlchemy.Equals(crcp.Field("cloudprovider_id"), provider.Id),
+			sqlchemy.IsTrue(crcp.Field("enabled")),
+		),
+	)
+	ret := []SCloudregion{}
+	err := db.FetchModelObjects(CloudregionManager, q, &ret)
+	if err != nil {
+		return nil, err
+	}
+	return ret, nil
+}
+
 func (provider *SCloudprovider) resetAutoSync() {
 	cprs := provider.GetCloudproviderRegions()
 	for i := range cprs {
@@ -1760,7 +1783,7 @@ func (manager *SCloudproviderManager) FilterByOwner(q *sqlchemy.SQuery, man db.F
 	return q
 }
 
-func (cprvd *SCloudprovider) getSyncStatus2() string {
+func (cprvd *SCloudprovider) GetSyncStatus2() string {
 	q := CloudproviderRegionManager.Query()
 	q = q.Equals("cloudprovider_id", cprvd.Id)
 	q = q.NotEquals("sync_status", api.CLOUD_PROVIDER_SYNC_STATUS_IDLE)

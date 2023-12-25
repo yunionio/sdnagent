@@ -256,6 +256,14 @@ type DiskConfig struct {
 
 	// NVNe device
 	NVMEDevice *IsolatedDeviceConfig `json:"nvme_device"`
+
+	// 预分配策略:
+	// off: 关闭预分配，默认关闭
+	// metadata: 精简置备
+	// falloc: 厚置备延迟置零
+	// full: 厚置备快速置零
+	// default: off
+	Preallocation string `json:"preallocation"`
 }
 
 type IsolatedDeviceConfig struct {
@@ -420,6 +428,11 @@ type ServerCreateInput struct {
 	// 虚拟机Cpu大小,若未指定instance_type,此参数为必传项
 	// default: 1
 	VcpuCount int `json:"vcpu_count"`
+
+	// cpu卡槽数
+	// 目前仅vmware支持此参数
+	// default: 1
+	CpuSockets int `json:"cpu_sockets"`
 
 	// 用户自定义启动脚本
 	// 支持 #cloud-config yaml 格式及shell脚本

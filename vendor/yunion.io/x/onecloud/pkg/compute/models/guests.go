@@ -121,9 +121,11 @@ type SGuest struct {
 
 	db.SEncryptedResource
 
-	// CPU大小
+	// CPU插槽(socket)的数量
+	CpuSockets int `nullable:"false" default:"1" list:"user" create:"optional"`
+	// CPU核(core)的数量， VcpuCount = CpuSockets * (cores per socket)，例如 2颗CPU，每颗CPU8核，则 VcpuCount=2*8=16
 	VcpuCount int `nullable:"false" default:"1" list:"user" create:"optional"`
-	// 内存大小, 单位Mb
+	// 内存大小, 单位MB
 	VmemSize int `nullable:"false" list:"user" create:"required"`
 
 	// 启动顺序
@@ -184,6 +186,8 @@ type SGuest struct {
 	QgaStatus string `width:"36" charset:"ascii" nullable:"false" default:"unknown" list:"user" create:"optional"`
 	// power_states limit in [on, off, unknown]
 	PowerStates string `width:"36" charset:"ascii" nullable:"false" default:"unknown" list:"user" create:"optional"`
+	// Used for guest rescue
+	RescueMode bool `nullable:"false" default:"false" list:"user" create:"optional"`
 }
 
 func (manager *SGuestManager) GetPropertyStatistics(ctx context.Context, userCred mcclient.TokenCredential, query jsonutils.JSONObject) (*apis.StatusStatistic, error) {
@@ -586,6 +590,8 @@ func (manager *SGuestManager) ListItemFilter(
 			case "gpu":
 				query.Gpu = &trueVal
 				query.Backup = &falseVal
+				sq := ServerSkuManager.Query("name").IsNotEmpty("gpu_spec").Distinct()
+				conditions = append(conditions, sqlchemy.In(q.Field("instance_type"), sq.SubQuery()))
 			case "backup":
 				query.Gpu = &falseVal
 				query.Backup = &trueVal
@@ -648,6 +654,10 @@ func (manager *SGuestManager) ListItemFilter(
 
 	if len(query.OsType) > 0 {
 		q = q.In("os_type", query.OsType)
+	}
+	if len(query.OsDist) > 0 {
+		metaSQ := db.Metadata.Query().Equals("key", "os_distribution").In("value", query.OsDist).SubQuery()
+		q = q.Join(metaSQ, sqlchemy.Equals(q.Field("id"), metaSQ.Field("obj_id")))
 	}
 	if len(query.VcpuCount) > 0 {
 		q = q.In("vcpu_count", query.VcpuCount)
@@ -735,6 +745,12 @@ func (manager *SGuestManager) OrderByExtraFields(ctx context.Context, q *sqlchem
 		}
 	}
 
+	if db.NeedOrderQuery([]string{query.OrderByOsDist}) {
+		meta := db.Metadata.Query().Equals("key", "os_distribution").SubQuery()
+		q = q.LeftJoin(meta, sqlchemy.Equals(q.Field("id"), meta.Field("obj_id")))
+		db.OrderByFields(q, []string{query.OrderByOsDist}, []sqlchemy.IQueryField{meta.Field("value")})
+	}
+
 	if db.NeedOrderQuery([]string{query.OrderByDisk}) {
 		guestdisks := GuestdiskManager.Query().SubQuery()
 		disks := DiskManager.Query().SubQuery()
@@ -766,6 +782,13 @@ func (manager *SGuestManager) QueryDistinctExtraField(q *sqlchemy.SQuery, field 
 	}
 	q, err = manager.SHostResourceBaseManager.QueryDistinctExtraField(q, field)
 	if err == nil {
+		return q, nil
+	}
+	if field == "os_dist" {
+		metaQuery := db.Metadata.Query("obj_id", "value").Equals("key", "os_distribution").SubQuery()
+		q = q.AppendField(metaQuery.Field("value", field)).Distinct()
+		q = q.Join(metaQuery, sqlchemy.Equals(q.Field("id"), metaQuery.Field("obj_id")))
+		q.GroupBy(metaQuery.Field("value"))
 		return q, nil
 	}
 	guestnets := GuestnetworkManager.Query("guest_id", "network_id").SubQuery()
@@ -2847,11 +2870,6 @@ func (self *SGuest) getAdminSecurityRules() string {
 	return ""
 }
 
-func (self *SGuest) isGpu() bool {
-	devs, _ := self.GetIsolatedDevices()
-	return len(devs) != 0
-}
-
 func (self *SGuest) IsFailureStatus() bool {
 	return strings.Index(self.Status, "fail") >= 0
 }
@@ -2875,7 +2893,7 @@ func (self *SGuest) GetIRegion(ctx context.Context) (cloudprovider.ICloudRegion,
 	return host.GetIRegion(ctx)
 }
 
-func (self *SGuest) syncRemoveCloudVM(ctx context.Context, userCred mcclient.TokenCredential) error {
+func (self *SGuest) SyncRemoveCloudVM(ctx context.Context, userCred mcclient.TokenCredential, check bool) error {
 	lockman.LockObject(ctx, self)
 	defer lockman.ReleaseObject(ctx, self)
 
@@ -2899,32 +2917,43 @@ func (self *SGuest) syncRemoveCloudVM(ctx context.Context, userCred mcclient.Tok
 	if err != nil {
 		return err
 	}
-	if len(self.ExternalId) == 0 {
-		return self.purge(ctx, userCred)
-	}
-	iVM, err := iregion.GetIVMById(self.ExternalId)
-	if err == nil { //漂移归位
-		if hostId := iVM.GetIHostId(); len(hostId) > 0 {
-			host, err := db.FetchByExternalIdAndManagerId(HostManager, hostId, func(q *sqlchemy.SQuery) *sqlchemy.SQuery {
-				host, _ := self.GetHost()
-				if host != nil {
-					return q.Equals("manager_id", host.ManagerId)
-				}
-				return q
-			})
-			if err == nil {
-				_, err = db.Update(self, func() error {
-					self.HostId = host.GetId()
-					self.Status = iVM.GetStatus()
-					self.PowerStates = iVM.GetPowerStates()
-					self.inferPowerStates()
-					return nil
+
+	if check {
+		iVM, err := iregion.GetIVMById(self.ExternalId)
+		if err == nil { //漂移归位
+			if hostId := iVM.GetIHostId(); len(hostId) > 0 {
+				host, err := db.FetchByExternalIdAndManagerId(HostManager, hostId, func(q *sqlchemy.SQuery) *sqlchemy.SQuery {
+					host, _ := self.GetHost()
+					if host != nil {
+						return q.Equals("manager_id", host.ManagerId)
+					}
+					return q
 				})
-				return err
+				if err == nil {
+					_, err = db.Update(self, func() error {
+						self.HostId = host.GetId()
+						self.Status = iVM.GetStatus()
+						self.PowerStates = iVM.GetPowerStates()
+						self.InferPowerStates()
+						return nil
+					})
+					return err
+				}
 			}
+		} else if errors.Cause(err) != cloudprovider.ErrNotFound {
+			return errors.Wrap(err, "GetIVMById")
 		}
-	} else if errors.Cause(err) != cloudprovider.ErrNotFound {
-		return errors.Wrap(err, "GetIVMById")
+	}
+
+	if !lostNamePattern.MatchString(self.Name) {
+		db.Update(self, func() error {
+			self.Name = fmt.Sprintf("%s-lost@%s", self.Name, timeutils.ShortDate(time.Now()))
+			return nil
+		})
+	}
+
+	if self.Status != api.VM_UNKNOWN {
+		self.SetStatus(userCred, api.VM_UNKNOWN, "Sync lost")
 	}
 
 	if options.Options.EnableSyncPurge {
@@ -2939,16 +2968,6 @@ func (self *SGuest) syncRemoveCloudVM(ctx context.Context, userCred mcclient.Tok
 		})
 	}
 
-	if !lostNamePattern.MatchString(self.Name) {
-		db.Update(self, func() error {
-			self.Name = fmt.Sprintf("%s-lost@%s", self.Name, timeutils.ShortDate(time.Now()))
-			return nil
-		})
-	}
-
-	if self.Status != api.VM_UNKNOWN {
-		self.SetStatus(userCred, api.VM_UNKNOWN, "Sync lost")
-	}
 	return nil
 }
 
@@ -3005,10 +3024,11 @@ func (g *SGuest) syncWithCloudVM(ctx context.Context, userCred mcclient.TokenCre
 		if !g.IsFailureStatus() && syncStatus {
 			g.Status = extVM.GetStatus()
 			g.PowerStates = extVM.GetPowerStates()
-			g.inferPowerStates()
+			g.InferPowerStates()
 		}
 
 		g.VcpuCount = extVM.GetVcpuCount()
+		g.CpuSockets = extVM.GetCpuSockets()
 		g.BootOrder = extVM.GetBootOrder()
 		g.Vga = extVM.GetVga()
 		g.Vdi = extVM.GetVdi()
@@ -3078,7 +3098,9 @@ func (g *SGuest) syncWithCloudVM(ctx context.Context, userCred mcclient.TokenCre
 
 	g.SyncOsInfo(ctx, userCred, extVM)
 
-	syncVirtualResourceMetadata(ctx, userCred, g, extVM)
+	if account := host.GetCloudaccount(); account != nil {
+		syncVirtualResourceMetadata(ctx, userCred, g, extVM, account.ReadOnly)
+	}
 	SyncCloudProject(ctx, userCred, g, syncOwnerId, extVM, host.ManagerId)
 
 	if provider.GetFactory().IsSupportPrepaidResources() && recycle {
@@ -3099,9 +3121,10 @@ func (manager *SGuestManager) newCloudVM(ctx context.Context, userCred mcclient.
 
 	guest.Status = extVM.GetStatus()
 	guest.PowerStates = extVM.GetPowerStates()
-	guest.inferPowerStates()
+	guest.InferPowerStates()
 	guest.ExternalId = extVM.GetGlobalId()
 	guest.VcpuCount = extVM.GetVcpuCount()
+	guest.CpuSockets = extVM.GetCpuSockets()
 	guest.BootOrder = extVM.GetBootOrder()
 	guest.Vga = extVM.GetVga()
 	guest.Vdi = extVM.GetVdi()
@@ -3184,7 +3207,7 @@ func (manager *SGuestManager) newCloudVM(ctx context.Context, userCred mcclient.
 
 	guest.SyncOsInfo(ctx, userCred, extVM)
 
-	syncVirtualResourceMetadata(ctx, userCred, &guest, extVM)
+	syncVirtualResourceMetadata(ctx, userCred, &guest, extVM, false)
 	SyncCloudProject(ctx, userCred, &guest, syncOwnerId, extVM, host.ManagerId)
 
 	db.OpsLog.LogEvent(&guest, db.ACT_CREATE, guest.GetShortDesc(ctx), userCred)
@@ -3640,8 +3663,8 @@ func (self *SGuest) SyncVMNics(
 			TryReserved:         true,
 			AllocDir:            api.IPAllocationDefault,
 			RequireDesignatedIP: true,
-			UseDesignatedIP:     false,
-			NicConfs:            []SNicConfig{nicConf},
+			// UseDesignatedIP:     true,
+			NicConfs: []SNicConfig{nicConf},
 		})
 		if err != nil {
 			result.AddError(err)
@@ -4905,6 +4928,7 @@ func (self *SGuest) GetJsonDescAtHypervisor(ctx context.Context, host *SHost) *a
 		UUID:        self.Id,
 		Mem:         self.VmemSize,
 		Cpu:         self.VcpuCount,
+		CpuSockets:  self.CpuSockets,
 		Vga:         self.getVga(),
 		Vdi:         self.GetVdi(),
 		Machine:     self.getMachine(),
@@ -4917,6 +4941,8 @@ func (self *SGuest) GetJsonDescAtHypervisor(ctx context.Context, host *SHost) *a
 		EncryptKeyId: self.EncryptKeyId,
 
 		IsDaemon: self.IsDaemon.Bool(),
+
+		LightMode: self.RescueMode,
 	}
 
 	if len(self.BackupHostId) > 0 {
@@ -5170,16 +5196,15 @@ func (self *SGuest) GetSpec(checkStatus bool) *jsonutils.JSONDict {
 
 	// get isolate device spec
 	guestgpus, _ := self.GetIsolatedDevices()
-	gpuSpecs := jsonutils.NewArray()
+	gpuSpecs := []GpuSpec{}
 	for _, guestgpu := range guestgpus {
 		if strings.HasPrefix(guestgpu.DevType, "GPU") {
-			gs := guestgpu.GetSpec(false)
-			if gs != nil {
-				gpuSpecs.Add(gs)
-			}
+			gs := guestgpu.GetGpuSpec()
+			gpuSpecs = append(gpuSpecs, *gs)
 		}
 	}
-	spec.Set("gpu", gpuSpecs)
+
+	spec.Set("gpu", jsonutils.Marshal(gpuSpecs))
 	return spec
 }
 
@@ -5240,6 +5265,30 @@ func (manager *SGuestManager) GetSpecIdent(spec *jsonutils.JSONDict) []string {
 	return specKeys
 }
 
+func (self *SGuest) GetGpuSpec() *GpuSpec {
+	if len(self.InstanceType) == 0 {
+		return nil
+	}
+	host, err := self.GetHost()
+	if err != nil {
+		return nil
+	}
+	zone, err := host.GetZone()
+	if err != nil {
+		return nil
+	}
+	q := ServerSkuManager.Query().Equals("name", self.InstanceType).Equals("cloudregion_id", zone.CloudregionId).IsNotEmpty("gpu_spec")
+	sku := &SServerSku{}
+	err = q.First(sku)
+	if err != nil {
+		return nil
+	}
+	return &GpuSpec{
+		Model:  sku.GpuSpec,
+		Amount: sku.GpuCount,
+	}
+}
+
 func (self *SGuest) GetShortDesc(ctx context.Context) *jsonutils.JSONDict {
 	desc := self.SVirtualResourceBase.GetShortDesc(ctx)
 	desc.Set("mem", jsonutils.NewInt(int64(self.VmemSize)))
@@ -5249,6 +5298,10 @@ func (self *SGuest) GetShortDesc(ctx context.Context) *jsonutils.JSONDict {
 	desc.Set("shutdown_mode", jsonutils.NewString(self.ShutdownMode))
 	if len(self.InstanceType) > 0 {
 		desc.Set("instance_type", jsonutils.NewString(self.InstanceType))
+	}
+	if gp := self.GetGpuSpec(); gp != nil {
+		desc.Set("gpu_model", jsonutils.NewString(gp.Model))
+		desc.Set("gpu_count", jsonutils.NewString(gp.Amount))
 	}
 
 	address := jsonutils.NewString(strings.Join(self.GetRealIPs(), ","))
@@ -5495,6 +5548,16 @@ func (manager *SGuestManager) CleanPendingDeleteServers(ctx context.Context, use
 			DeleteSnapshots:       options.Options.DeleteSnapshotExpiredRelease,
 			DeleteEip:             options.Options.DeleteEipExpiredRelease,
 			DeleteDisks:           options.Options.DeleteDisksExpiredRelease,
+		}
+		// 跳过单独在云上开机过的虚拟机，避免误清理
+		if len(guests[i].GetExternalId()) > 0 {
+			iVm, err := guests[i].GetIVM(ctx)
+			if err == nil && iVm.GetStatus() == api.VM_RUNNING {
+				if guests[i].Status != api.VM_DELETE_FAIL {
+					guests[i].SetStatus(userCred, api.VM_DELETE_FAIL, "vm status is running")
+				}
+				continue
+			}
 		}
 		guests[i].StartDeleteGuestTask(ctx, userCred, "", opts)
 	}
@@ -6482,10 +6545,17 @@ func (guest *SGuest) StartRemoteUpdateTask(ctx context.Context, userCred mcclien
 }
 
 func (guest *SGuest) OnMetadataUpdated(ctx context.Context, userCred mcclient.TokenCredential) {
-	if len(guest.ExternalId) == 0 {
+	if len(guest.ExternalId) == 0 || options.Options.KeepTagLocalization {
 		return
 	}
-	err := guest.StartRemoteUpdateTask(ctx, userCred, true, "")
+	host, err := guest.GetHost()
+	if err != nil {
+		return
+	}
+	if account := host.GetCloudaccount(); account != nil && account.ReadOnly {
+		return
+	}
+	err = guest.StartRemoteUpdateTask(ctx, userCred, true, "")
 	if err != nil {
 		log.Errorf("StartRemoteUpdateTask fail: %s", err)
 	}
@@ -6504,7 +6574,7 @@ func (self *SGuest) GetAddress() (string, error) {
 	return "", errors.Wrapf(cloudprovider.ErrNotFound, "guest %s address", self.Name)
 }
 
-func (guest *SGuest) inferPowerStates() {
+func (guest *SGuest) InferPowerStates() {
 	if len(guest.PowerStates) == 0 {
 		switch guest.Status {
 		case api.VM_READY:

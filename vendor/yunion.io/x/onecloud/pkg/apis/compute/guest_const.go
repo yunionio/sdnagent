@@ -46,6 +46,12 @@ const (
 	VM_DETACH_DISK           = "detach_disk"
 	VM_UNSYNC                = "unsync"
 
+	VM_START_RESCUE        = "start_rescue"
+	VM_RESCUING            = "rescuing"
+	VM_STOP_RESCUE         = "stop_rescue"
+	VM_START_RESCUE_FAILED = "start_rescue_failed"
+	VM_STOP_RESCUE_FAILED  = "stop_rescue_failed"
+
 	VM_BACKUP_STARTING         = "backup_starting"
 	VM_BACKUP_STOPING          = "backup_stopping"
 	VM_BACKUP_CREATING         = "backup_creating"
@@ -209,6 +215,7 @@ const (
 	HYPERVISOR_BAIDU          = compute.HYPERVISOR_BAIDU
 	HYPERVISOR_CUCLOUD        = compute.HYPERVISOR_CUCLOUD
 	HYPERVISOR_QINGCLOUD      = compute.HYPERVISOR_QINGCLOUD
+	HYPERVISOR_ORACLE         = compute.HYPERVISOR_ORACLE
 
 	//	HYPERVISOR_DEFAULT = HYPERVISOR_KVM
 	HYPERVISOR_DEFAULT = HYPERVISOR_KVM
@@ -287,6 +294,7 @@ var HYPERVISORS = []string{
 	HYPERVISOR_BAIDU,
 	HYPERVISOR_CUCLOUD,
 	HYPERVISOR_QINGCLOUD,
+	HYPERVISOR_ORACLE,
 }
 
 var ONECLOUD_HYPERVISORS = []string{
@@ -311,6 +319,7 @@ var PUBLIC_CLOUD_HYPERVISORS = []string{
 	HYPERVISOR_BAIDU,
 	HYPERVISOR_CUCLOUD,
 	HYPERVISOR_QINGCLOUD,
+	HYPERVISOR_ORACLE,
 }
 
 var PRIVATE_CLOUD_HYPERVISORS = []string{
@@ -364,6 +373,7 @@ var HYPERVISOR_HOSTTYPE = map[string]string{
 	HYPERVISOR_BAIDU:          HOST_TYPE_BAIDU,
 	HYPERVISOR_CUCLOUD:        HOST_TYPE_CUCLOUD,
 	HYPERVISOR_QINGCLOUD:      HOST_TYPE_QINGCLOUD,
+	HYPERVISOR_ORACLE:         HOST_TYPE_ORACLE,
 }
 
 var HOSTTYPE_HYPERVISOR = map[string]string{
@@ -399,6 +409,7 @@ var HOSTTYPE_HYPERVISOR = map[string]string{
 	HOST_TYPE_BAIDU:          HYPERVISOR_BAIDU,
 	HOST_TYPE_CUCLOUD:        HYPERVISOR_CUCLOUD,
 	HOST_TYPE_QINGCLOUD:      HYPERVISOR_QINGCLOUD,
+	HOST_TYPE_ORACLE:         HYPERVISOR_ORACLE,
 }
 
 const (
@@ -422,6 +433,10 @@ const (
 	VM_METADATA_OS_VERSION          = "os_version"
 	VM_METADATA_CGROUP_CPUSET       = "cgroup_cpuset"
 	VM_METADATA_ENABLE_MEMCLEAN     = "enable_memclean"
+	VM_METADATA_HOTPLUG_CPU_MEM     = "hotplug_cpu_mem"
+	VM_METADATA_HOT_REMOVE_NIC      = "hot_remove_nic"
+	VM_METADATA_START_VMEM_MB       = "start_vmem_mb"
+	VM_METADATA_START_VCPU_COUNT    = "start_vcpu_count"
 )
 
 func Hypervisors2HostTypes(hypervisors []string) []string {

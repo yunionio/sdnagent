@@ -150,7 +150,7 @@ type SHost struct {
 	PageSizeKB int `nullable:"false" default:"4" list:"domain" update:"domain" create:"domain_optional"`
 
 	// 存储大小,单位Mb
-	StorageSize int `nullable:"true" list:"domain" update:"domain" create:"domain_optional"`
+	StorageSize int64 `nullable:"true" list:"domain" update:"domain" create:"domain_optional"`
 	// 存储类型
 	StorageType string `width:"20" charset:"ascii" nullable:"true" list:"domain" update:"domain" create:"domain_optional"`
 	// 存储驱动类型
@@ -1943,7 +1943,9 @@ func (hh *SHost) syncWithCloudHost(ctx context.Context, userCred mcclient.TokenC
 		SyncCloudDomain(userCred, hh, provider.GetOwnerId())
 		hh.SyncShareState(ctx, userCred, provider.getAccountShareInfo())
 	}
-	syncMetadata(ctx, userCred, hh, extHost)
+	if account := hh.GetCloudaccount(); account != nil {
+		syncMetadata(ctx, userCred, hh, extHost, account.ReadOnly)
+	}
 
 	if err := hh.syncSchedtags(ctx, userCred, extHost); err != nil {
 		log.Errorf("syncSchedtags fail:  %v", err)
@@ -2502,6 +2504,10 @@ func IsNeedSkipSync(ext cloudprovider.ICloudResource) (bool, string) {
 	return false, ""
 }
 
+func (self *SGuest) Purge(ctx context.Context, userCred mcclient.TokenCredential) error {
+	return self.purge(ctx, userCred)
+}
+
 func (hh *SHost) SyncHostVMs(ctx context.Context, userCred mcclient.TokenCredential, iprovider cloudprovider.ICloudProvider, vms []cloudprovider.ICloudVM, syncOwnerId mcclient.IIdentityProvider, xor bool) ([]SGuestSyncResult, compare.SyncResult) {
 	lockman.LockRawObject(ctx, GuestManager.Keyword(), hh.Id)
 	defer lockman.ReleaseRawObject(ctx, GuestManager.Keyword(), hh.Id)
@@ -2535,7 +2541,7 @@ func (hh *SHost) SyncHostVMs(ctx context.Context, userCred mcclient.TokenCredent
 	}
 
 	for i := 0; i < len(removed); i += 1 {
-		err := removed[i].syncRemoveCloudVM(ctx, userCred)
+		err := removed[i].SyncRemoveCloudVM(ctx, userCred, true)
 		if err != nil {
 			syncResult.DeleteError(err)
 		} else {
@@ -3419,6 +3425,22 @@ func (hh *SHost) PostCreate(
 			hh.StartBaremetalCreateTask(ctx, userCred, kwargs, "")
 		}
 	}
+	if hh.OvnVersion != "" && hh.OvnMappedIpAddr == "" {
+		HostManager.lockAllocOvnMappedIpAddr(ctx)
+		defer HostManager.unlockAllocOvnMappedIpAddr(ctx)
+		addr, err := HostManager.allocOvnMappedIpAddr(ctx)
+		if err != nil {
+			log.Errorf("host %s(%s): alloc vpc mapped addr: %v",
+				hh.Name, hh.Id, err)
+		}
+		if _, err := db.Update(hh, func() error {
+			hh.OvnMappedIpAddr = addr
+			return nil
+		}); err != nil {
+			log.Errorf("host %s(%s): db update vpc mapped addr: %v",
+				hh.Name, hh.Id, err)
+		}
+	}
 
 	keys := GetHostQuotaKeysFromCreateInput(ownerId, input)
 	quota := SInfrasQuota{Host: 1}
@@ -3427,6 +3449,11 @@ func (hh *SHost) PostCreate(
 	if err != nil {
 		log.Errorf("CancelPendingUsage fail %s", err)
 	}
+	hh.SEnabledStatusInfrasResourceBase.PostCreate(ctx, userCred, ownerId, query, data)
+	notifyclient.EventNotify(ctx, userCred, notifyclient.SEventNotifyParam{
+		Obj:    hh,
+		Action: notifyclient.ActionCreate,
+	})
 }
 
 func (hh *SHost) StartBaremetalCreateTask(ctx context.Context, userCred mcclient.TokenCredential, data *jsonutils.JSONDict, parentTaskId string) error {
@@ -3844,6 +3871,14 @@ func (hh *SHost) PostUpdate(ctx context.Context, userCred mcclient.TokenCredenti
 	}
 }
 
+func (hh *SHost) PostDelete(ctx context.Context, userCred mcclient.TokenCredential) {
+	hh.SEnabledStatusInfrasResourceBase.PostDelete(ctx, userCred)
+	notifyclient.EventNotify(ctx, userCred, notifyclient.SEventNotifyParam{
+		Obj:    hh,
+		Action: notifyclient.ActionDelete,
+	})
+}
+
 func (hh *SHost) UpdateDnsRecords(isAdd bool) {
 	for _, netif := range hh.GetHostNetInterfaces() {
 		hh.UpdateDnsRecord(&netif, isAdd)
@@ -4222,7 +4257,7 @@ func (hh *SHost) PerformPing(ctx context.Context, userCred mcclient.TokenCredent
 	}
 	result := jsonutils.NewDict()
 	result.Set("name", jsonutils.NewString(hh.GetName()))
-	dependSvcs := []string{"ntpd", "kafka", "influxdb", "elasticsearch"}
+	dependSvcs := []string{"ntpd", "kafka", apis.SERVICE_TYPE_INFLUXDB, apis.SERVICE_TYPE_VICTORIA_METRICS, "elasticsearch"}
 	catalog := auth.GetCatalogData(dependSvcs, options.Options.Region)
 	if catalog == nil {
 		return nil, fmt.Errorf("Get catalog error")
@@ -4629,6 +4664,7 @@ func (h *SHost) addNetif(ctx context.Context, userCred mcclient.TokenCredential,
 		}
 		// else not found
 		netif = &SNetInterface{}
+		netif.SetModelManager(NetInterfaceManager, netif)
 		netif.Mac = mac
 		netif.VlanId = vlanId
 	}
@@ -4968,6 +5004,7 @@ func (hh *SHost) Attach2Network(
 	}
 	bn := &SHostnetwork{}
 	bn.BaremetalId = hh.Id
+	bn.SetModelManager(HostnetworkManager, bn)
 	bn.NetworkId = net.Id
 	bn.IpAddr = freeIp
 	bn.MacAddr = netif.Mac

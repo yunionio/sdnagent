@@ -2571,14 +2571,11 @@ func (self *SGuest) PerformAttachnetwork(ctx context.Context, userCred mcclient.
 			quotas.CancelPendingUsage(ctx, userCred, pendingUsage, pendingUsage, false)
 			return nil, httperrors.NewBadRequestError("%v", err)
 		}
-		net := gns[0].GetNetwork()
 		if input.Nets[i].SriovDevice != nil {
-			input.Nets[i].SriovDevice.NetworkIndex = &gns[0].Index
-			input.Nets[i].SriovDevice.WireId = net.WireId
-			err = self.createIsolatedDeviceOnHost(ctx, userCred, host, input.Nets[i].SriovDevice, pendingUsageHost)
+			err = self.allocSriovNicDevice(ctx, userCred, host, &gns[0], input.Nets[i], pendingUsageHost)
 			if err != nil {
 				quotas.CancelPendingUsage(ctx, userCred, pendingUsageHost, pendingUsageHost, false)
-				return nil, errors.Wrap(err, "self.createIsolatedDeviceOnHost")
+				return nil, errors.Wrap(err, "self.allocSriovNicDevice")
 			}
 		}
 	}
@@ -2699,14 +2696,15 @@ func (self *SGuest) PerformChangeConfig(ctx context.Context, userCred mcclient.T
 		return nil, errors.Wrapf(err, "GetHost")
 	}
 
-	var addCpu, addMem int
-	var cpuChanged, memChanged bool
+	var addCpu, addMem, addSocket int
+	var cpuChanged, cpuSocketsChanged, memChanged bool
 
 	confs := jsonutils.NewDict()
 	confs.Add(jsonutils.Marshal(map[string]interface{}{
 		"instance_type": self.InstanceType,
 		"vcpu_count":    self.VcpuCount,
 		"vmem_size":     self.VmemSize,
+		"cpu_sockets":   self.CpuSockets,
 	}), "old")
 	if len(input.InstanceType) > 0 {
 		sku, err := ServerSkuManager.FetchSkuByNameAndProvider(input.InstanceType, self.GetDriver().GetProvider(), true)
@@ -2733,30 +2731,62 @@ func (self *SGuest) PerformChangeConfig(ctx context.Context, userCred mcclient.T
 			}
 		}
 	} else {
-		if input.VcpuCount != self.VcpuCount {
+		if input.VcpuCount != nil && *input.VcpuCount != self.VcpuCount {
 			cpuChanged = true
-			addCpu = input.VcpuCount - self.VcpuCount
-			confs.Add(jsonutils.NewInt(int64(input.VcpuCount)), "vcpu_count")
+			addCpu = *input.VcpuCount - self.VcpuCount
+			confs.Add(jsonutils.NewInt(int64(*input.VcpuCount)), "vcpu_count")
 		}
-		if !regutils.MatchSize(input.VmemSize) {
-			return nil, httperrors.NewBadRequestError("Memory size %q must be number[+unit], like 256M, 1G or 256", input.VmemSize)
-		}
-		nVmem, err := fileutils.GetSizeMb(input.VmemSize, 'M', 1024)
-		if err != nil {
-			httperrors.NewBadRequestError("Params vmem_size parse error")
-		}
-		if nVmem != self.VmemSize {
-			memChanged = true
-			addMem = nVmem - self.VmemSize
-			err = confs.Add(jsonutils.NewInt(int64(nVmem)), "vmem_size")
+		if len(input.VmemSize) > 0 {
+			if !regutils.MatchSize(input.VmemSize) {
+				return nil, httperrors.NewBadRequestError("Memory size %q must be number[+unit], like 256M, 1G or 256", input.VmemSize)
+			}
+			nVmem, err := fileutils.GetSizeMb(input.VmemSize, 'M', 1024)
 			if err != nil {
-				return nil, httperrors.NewBadRequestError("Params vmem_size parse error")
+				httperrors.NewBadRequestError("Params vmem_size parse error")
+			}
+			if nVmem != self.VmemSize {
+				memChanged = true
+				addMem = nVmem - self.VmemSize
+				err = confs.Add(jsonutils.NewInt(int64(nVmem)), "vmem_size")
+				if err != nil {
+					return nil, httperrors.NewBadRequestError("Params vmem_size parse error")
+				}
 			}
 		}
 	}
+	if input.CpuSockets != nil && *input.CpuSockets != self.CpuSockets {
+		if *input.CpuSockets > self.VcpuCount+addCpu {
+			return nil, httperrors.NewInputParameterError("The number of cpu sockets cannot be greater than the number of cpus")
+		}
+		cpuSocketsChanged = true
+		addSocket = *input.CpuSockets - self.CpuSockets
+		confs.Set("cpu_sockets", jsonutils.NewInt(int64(*input.CpuSockets)))
+	}
 
-	if self.Status == api.VM_RUNNING && (cpuChanged || memChanged) && self.GetDriver().NeedStopForChangeSpec(ctx, self, cpuChanged, memChanged) {
-		return nil, httperrors.NewInvalidStatusError("cannot change CPU/Memory spec in status %s", self.Status)
+	if self.PowerStates == api.VM_POWER_STATES_ON && (cpuChanged || memChanged || cpuSocketsChanged) && self.GetDriver().NeedStopForChangeSpec(ctx, self, addCpu, addMem, addSocket) {
+		return nil, httperrors.NewInvalidStatusError("cannot change CPU/Memory spec in power status %s", self.PowerStates)
+	}
+
+	for i := range input.ResetTrafficLimits {
+		input.ResetTrafficLimits[i].Mac = strings.ToLower(input.ResetTrafficLimits[i].Mac)
+		_, err := self.GetGuestnetworkByMac(input.ResetTrafficLimits[i].Mac)
+		if err != nil {
+			return nil, errors.Wrap(err, "get guest network by mac")
+		}
+	}
+	if len(input.ResetTrafficLimits) > 0 {
+		confs.Set("reset_traffic_limits", jsonutils.Marshal(input.ResetTrafficLimits))
+	}
+
+	for i := range input.SetTrafficLimits {
+		input.SetTrafficLimits[i].Mac = strings.ToLower(input.SetTrafficLimits[i].Mac)
+		_, err := self.GetGuestnetworkByMac(input.SetTrafficLimits[i].Mac)
+		if err != nil {
+			return nil, errors.Wrap(err, "get guest network by mac")
+		}
+	}
+	if len(input.SetTrafficLimits) > 0 {
+		confs.Set("set_traffic_limits", jsonutils.Marshal(input.SetTrafficLimits))
 	}
 
 	if addCpu < 0 {
@@ -4005,51 +4035,18 @@ func (self *SGuest) PerformRenew(ctx context.Context, userCred mcclient.TokenCre
 	return nil, nil
 }
 
-func (self *SGuest) GetStorages() []*SStorage {
-	disks, _ := self.GetDisks()
-	storageMap := make(map[string]*SStorage)
-	for i := range disks {
-		storage, _ := disks[i].GetStorage()
-		if _, ok := storageMap[storage.GetId()]; !ok {
-			storageMap[storage.GetId()] = storage
-		}
+func (self *SGuest) GetStorages() ([]SStorage, error) {
+	q := StorageManager.Query().Distinct()
+	disks := DiskManager.Query().SubQuery()
+	guestdisks := GuestdiskManager.Query().Equals("guest_id", self.Id).SubQuery()
+	q = q.Join(disks, sqlchemy.Equals(disks.Field("storage_id"), q.Field("id")))
+	q = q.Join(guestdisks, sqlchemy.Equals(guestdisks.Field("disk_id"), disks.Field("id")))
+	ret := []SStorage{}
+	err := db.FetchModelObjects(StorageManager, q, &ret)
+	if err != nil {
+		return nil, err
 	}
-	ret := make([]*SStorage, 0, len(storageMap))
-	for _, s := range storageMap {
-		ret = append(ret, s)
-	}
-	return ret
-}
-
-func (self *SGuest) SyncCapacityUsedForStorage(ctx context.Context, storageIds []string) error {
-	if self.Hypervisor != api.HYPERVISOR_ESXI {
-		return nil
-	}
-	var storages []*SStorage
-	if len(storageIds) == 0 {
-		storages = self.GetStorages()
-	} else {
-		q := StorageManager.Query()
-		if len(storageIds) == 1 {
-			q = q.Equals("id", storageIds[0])
-		} else {
-			q = q.In("id", storageIds[0])
-		}
-		ss := make([]SStorage, 0, len(storageIds))
-		err := db.FetchModelObjects(StorageManager, q, &ss)
-		if err != nil {
-			return errors.Wrap(err, "FetchModelObjects")
-		}
-		storages = make([]*SStorage, len(ss))
-		for i := range ss {
-			storages[i] = &ss[i]
-		}
-	}
-	for _, s := range storages {
-		err := s.SyncCapacityUsed(ctx)
-		return errors.Wrapf(err, "unable to SyncCapacityUsed for storage %q", s.GetId())
-	}
-	return nil
+	return ret, nil
 }
 
 func (self *SGuest) startGuestRenewTask(ctx context.Context, userCred mcclient.TokenCredential, duration string, parentTaskId string) error {
@@ -4880,39 +4877,37 @@ func (self *SGuest) validateCreateInstanceBackup(
 	ctx context.Context,
 	userCred mcclient.TokenCredential,
 	query jsonutils.JSONObject,
-	data jsonutils.JSONObject,
-) error {
+	input api.ServerCreateInstanceBackupInput,
+) (api.ServerCreateInstanceBackupInput, error) {
 	if !utils.IsInStringArray(self.Hypervisor, []string{api.HYPERVISOR_KVM}) {
-		return httperrors.NewBadRequestError("guest hypervisor %s can't create instance snapshot", self.Hypervisor)
+		return input, httperrors.NewBadRequestError("guest hypervisor %s can't create instance snapshot", self.Hypervisor)
 	}
 
 	if len(self.BackupHostId) > 0 {
-		return httperrors.NewBadRequestError("Can't do instance snapshot with backup guest")
+		return input, httperrors.NewBadRequestError("Can't do instance snapshot with backup guest")
 	}
 
 	if !utils.IsInStringArray(self.Status, []string{api.VM_RUNNING, api.VM_READY}) {
-		return httperrors.NewInvalidStatusError("guest can't do snapshot in status %s", self.Status)
+		return input, httperrors.NewInvalidStatusError("guest can't do snapshot in status %s", self.Status)
 	}
 
-	var name string
 	ownerId := self.GetOwnerId()
-	dataDict := data.(*jsonutils.JSONDict)
-	nameHint, err := dataDict.GetString("generate_name")
-	if err == nil {
-		name, err = db.GenerateName(ctx, InstanceBackupManager, ownerId, nameHint)
+	if len(input.GenerateName) > 0 {
+		nameHint := input.GenerateName
+		name, err := db.GenerateName(ctx, InstanceBackupManager, ownerId, nameHint)
 		if err != nil {
-			return err
+			return input, errors.Wrap(err, "db.GenerateName")
 		}
-		dataDict.Set("name", jsonutils.NewString(name))
-	} else if name, err = dataDict.GetString("name"); err != nil {
-		return httperrors.NewMissingParameterError("name")
+		input.Name = name
+	} else if len(input.Name) == 0 {
+		return input, httperrors.NewMissingParameterError("name")
 	}
 
-	err = db.NewNameValidator(InstanceBackupManager, ownerId, name, nil)
+	err := db.NewNameValidator(InstanceBackupManager, ownerId, input.Name, nil)
 	if err != nil {
-		return err
+		return input, errors.Wrap(err, "db.NewNameValidator")
 	}
-	return nil
+	return input, nil
 }
 
 // 1. validate guest status, guest hypervisor
@@ -4960,19 +4955,20 @@ func (self *SGuest) PerformInstanceBackup(
 	ctx context.Context,
 	userCred mcclient.TokenCredential,
 	query jsonutils.JSONObject,
-	data jsonutils.JSONObject,
+	input api.ServerCreateInstanceBackupInput,
 ) (jsonutils.JSONObject, error) {
 	if err := self.ValidateEncryption(ctx, userCred); err != nil {
 		return nil, errors.Wrap(httperrors.ErrForbidden, "encryption key not accessible")
 	}
 	lockman.LockClass(ctx, InstanceSnapshotManager, userCred.GetProjectId())
 	defer lockman.ReleaseClass(ctx, InstanceSnapshotManager, userCred.GetProjectId())
-	err := self.validateCreateInstanceBackup(ctx, userCred, query, data)
+	var err error
+	input, err = self.validateCreateInstanceBackup(ctx, userCred, query, input)
 	if err != nil {
-		return nil, err
+		return nil, errors.Wrap(err, "validateCreateInstanceBackup")
 	}
-	name, _ := data.GetString("name")
-	backupStorageId, _ := data.GetString("backup_storage_id")
+	name := input.Name
+	backupStorageId := input.BackupStorageId
 	if backupStorageId == "" {
 		return nil, httperrors.NewMissingParameterError("backup_storage_id")
 	}
@@ -5930,6 +5926,100 @@ func (self *SGuest) GetDetailsCpusetCores(ctx context.Context, userCred mcclient
 	return resp, nil
 }
 
+func (self *SGuest) GetDetailsHardwareInfo(ctx context.Context, userCred mcclient.TokenCredential, _ *api.ServerGetHardwareInfoInput) (*api.ServerGetHardwareInfoResp, error) {
+	host, err := self.GetHost()
+	if err != nil {
+		return nil, errors.Wrap(err, "GetHost")
+	}
+	hostSpecObj := host.GetSpec(false)
+	hostSpec := new(api.HostSpec)
+	if hostSpecObj != nil {
+		if err := hostSpecObj.Unmarshal(hostSpec); err != nil {
+			return nil, errors.Wrap(err, "unmarshal host spec")
+		}
+	}
+	motherboardInfo := &api.ServerHardwareInfoMotherboard{}
+	if host.SysInfo != nil && host.SysInfo.Contains("motherboard_info") {
+		if err := host.SysInfo.Unmarshal(motherboardInfo, "motherboard_info"); err != nil {
+			return nil, errors.Wrapf(err, "unmarshal motherboard_info from host system info")
+		}
+	}
+	cpuInfo := &api.ServerHardwareInfoCPU{
+		Model: host.CpuDesc,
+		Count: self.VcpuCount,
+	}
+	memInfo := &api.ServerHardwareInfoMemory{
+		SizeMB: self.VmemSize,
+	}
+
+	// fill disks info
+	diskInfos := make([]*api.ServerHardwareInfoDisk, 0)
+	disks, err := self.GetDisks()
+	if err != nil {
+		return nil, errors.Wrap(err, "get disks")
+	}
+	for _, disk := range disks {
+		storage, err := disk.GetStorage()
+		if err != nil {
+			return nil, errors.Wrapf(err, "get disk %s storage", disk.GetId())
+		}
+		hdInfo, err := storage.GetDetailsHardwareInfo(ctx, userCred, nil)
+		if err != nil {
+			return nil, errors.Wrapf(err, "get storage %s hardware info", storage.GetId())
+		}
+		info := &api.ServerHardwareInfoDisk{
+			Id:        disk.GetId(),
+			StorageId: storage.GetId(),
+			SizeMB:    disk.DiskSize,
+			Bandwidth: hdInfo.Bandwidth,
+		}
+		if hdInfo.Vendor != nil {
+			info.Model = *hdInfo.Vendor
+		}
+		if hdInfo.Model != nil {
+			info.Model = fmt.Sprintf("%s %s", info.Model, *hdInfo.Model)
+		}
+		diskInfos = append(diskInfos, info)
+	}
+
+	// fill GPU info
+	devs, err := self.GetIsolatedDevices()
+	if err != nil {
+		return nil, errors.Wrap(err, "get isolated devices")
+	}
+	gpuInfos := make([]*api.ServerHardwareInfoGPU, 0)
+	for _, dev := range devs {
+		if !dev.IsGPU() {
+			continue
+		}
+		info := &api.ServerHardwareInfoGPU{
+			Id:    dev.GetId(),
+			Model: dev.Model,
+		}
+		if dev.PcieInfo != nil {
+			info.PCIEInfo = dev.PcieInfo
+		}
+		modelObj, _ := IsolatedDeviceModelManager.GetByDevModel(dev.Model)
+		if modelObj != nil {
+			hdInfo, err := modelObj.GetDetailsHardwareInfo(ctx, userCred, nil)
+			if err != nil {
+				return nil, errors.Wrapf(err, "get device model %s hardware info", modelObj.GetId())
+			}
+			info.IsolatedDeviceModelHardwareInfo = hdInfo
+		}
+		gpuInfos = append(gpuInfos, info)
+	}
+
+	result := &api.ServerGetHardwareInfoResp{
+		Motherboard: motherboardInfo,
+		CPU:         cpuInfo,
+		Memory:      memInfo,
+		Disks:       diskInfos,
+		GPUs:        gpuInfos,
+	}
+	return result, nil
+}
+
 func (self *SGuest) PerformCalculateRecordChecksum(ctx context.Context, userCred mcclient.TokenCredential, query jsonutils.JSONObject, data jsonutils.JSONObject) (jsonutils.JSONObject, error) {
 	checksum, err := db.CalculateModelChecksum(self)
 	if err != nil {
@@ -5942,4 +6032,32 @@ func (self *SGuest) PerformCalculateRecordChecksum(ctx context.Context, userCred
 
 func (self *SGuest) PerformEnableMemclean(ctx context.Context, userCred mcclient.TokenCredential, query jsonutils.JSONObject, data jsonutils.JSONObject) (jsonutils.JSONObject, error) {
 	return nil, self.SetMetadata(ctx, api.VM_METADATA_ENABLE_MEMCLEAN, "true", userCred)
+}
+
+func (self *SGuest) PerformSetOsInfo(ctx context.Context, userCred mcclient.TokenCredential, query jsonutils.JSONObject, input api.ServerSetOSInfoInput) (jsonutils.JSONObject, error) {
+	if err := self.GetDriver().ValidateSetOSInfo(ctx, userCred, self, &input); err != nil {
+		return nil, err
+	}
+
+	if input.Type != "" {
+		if _, err := db.Update(self, func() error {
+			self.OsType = input.Type
+			return nil
+		}); err != nil {
+			return nil, errors.Wrapf(err, "update os_type")
+		}
+	}
+	for k, v := range map[string]string{
+		api.VM_METADATA_OS_NAME:    input.Type,
+		api.VM_METADATA_OS_VERSION: input.Version,
+		api.VM_METADATA_OS_DISTRO:  input.Distribution,
+	} {
+		if len(v) == 0 {
+			continue
+		}
+		if err := self.SetMetadata(ctx, k, v, userCred); err != nil {
+			return nil, errors.Wrapf(err, "set metadata %s to %s", k, v)
+		}
+	}
+	return nil, nil
 }
