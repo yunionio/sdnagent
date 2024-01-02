@@ -5,7 +5,7 @@ go 1.18
 require (
 	github.com/coreos/go-iptables v0.6.0
 	github.com/digitalocean/go-openvswitch v0.0.0-20190515160856-1141932ed5cf
-	github.com/fsnotify/fsnotify v1.4.9
+	github.com/fsnotify/fsnotify v1.5.4
 	github.com/golang/protobuf v1.5.2
 	github.com/mitchellh/go-homedir v1.1.0
 	github.com/pkg/errors v0.9.1
@@ -19,7 +19,7 @@ require (
 	google.golang.org/protobuf v1.27.1
 	yunion.io/x/jsonutils v1.0.1-0.20230613121553-0f3b41e2ef19
 	yunion.io/x/log v1.0.1-0.20230411060016-feb3f46ab361
-	yunion.io/x/onecloud v0.3.10-0-alpha2.0.20231223034613-08e594819d71
+	yunion.io/x/onecloud v0.3.10-0-alpha2.0.20231231043005-15816b90f55b
 	yunion.io/x/pkg v1.0.1-0.20231101105448-abef64cdc142
 )
 
