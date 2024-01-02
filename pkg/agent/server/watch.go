@@ -16,6 +16,7 @@ package server
 
 import (
 	"context"
+	"fmt"
 	"io/ioutil"
 	"path"
 	"path/filepath"
@@ -100,10 +101,21 @@ const (
 	watchEventTypeDelServer
 )
 
+var watchEventTypeStringMap = []string{
+	"watchEventTypeAddServerDir",
+	"watchEventTypeDelServerDir",
+	"watchEventTypeUpdServer",
+	"watchEventTypeDelServer",
+}
+
 type watchEvent struct {
 	evType    watchEventType
 	guestId   string
 	guestPath string // path to the servers/<uuid> dir
+}
+
+func (w *watchEvent) String() string {
+	return fmt.Sprintf("type: %s guest_id: %s path: %s", watchEventTypeStringMap[w.evType], w.guestId, w.guestPath)
 }
 
 func (w *serversWatcher) scan(ctx context.Context) {
@@ -132,6 +144,9 @@ func (w *serversWatcher) scan(ctx context.Context) {
 // addGuestWatch adds the server with <id> in <path> to watch list.  It returns
 // error when adding watch failed, but it will always return non-nil *Guest
 func (w *serversWatcher) addGuestWatch(id, path string) (*Guest, error) {
+	if g, ok := w.guests[id]; ok {
+		return g, nil
+	}
 	ug := &utils.Guest{
 		Id:         id,
 		Path:       path,
@@ -217,41 +232,46 @@ func (w *serversWatcher) Start(ctx context.Context, agent *AgentServer) {
 			pendingChan = pendingRefreshTicker.C
 		}
 		select {
-		case ev := <-w.watcher.Events:
+		case ev, ok := <-w.watcher.Events:
+			if !ok {
+				log.Errorf("fsnotity.watch.Events error")
+				goto out
+			}
 			wev := w.watchEvent(&ev)
 			if wev == nil {
 				log.Debugf("inotify event ignored: %s", ev)
-				break
-			}
-			guestId := wev.guestId
-			guestPath := wev.guestPath
-			switch wev.evType {
-			case watchEventTypeAddServerDir:
-				log.Infof("received guest path add event: %s", guestPath)
-				g, err := w.addGuestWatch(guestId, guestPath)
-				if err != nil {
-					log.Errorf("watch guest failed: %s: %s", guestPath, err)
-				}
-				g.UpdateSettings(ctx)
-			case watchEventTypeDelServerDir:
-				if g, ok := w.guests[guestId]; ok {
-					// this is needed for containers
-					g.ClearSettings(ctx)
-					delete(w.guests, guestId)
-				}
-				log.Infof("guest path deleted: %s", guestPath)
-			case watchEventTypeUpdServer:
-				if g, ok := w.guests[guestId]; ok {
+			} else {
+				log.Debugf("to handle inotify event %s %s", ev, wev)
+				guestId := wev.guestId
+				guestPath := wev.guestPath
+				switch wev.evType {
+				case watchEventTypeAddServerDir:
+					log.Infof("received guest path add event: %s", guestPath)
+					g, err := w.addGuestWatch(guestId, guestPath)
+					if err != nil {
+						log.Errorf("watch guest failed: %s: %s", guestPath, err)
+					}
 					g.UpdateSettings(ctx)
-				} else {
-					log.Warningf("unexpected guest update event: %s", guestPath)
-				}
-			case watchEventTypeDelServer:
-				if g, ok := w.guests[guestId]; ok {
-					log.Infof("remove guest settings %s", guestId)
-					g.ClearSettings(ctx)
-				} else {
-					log.Warningf("unexpected guest down event: %s", guestPath)
+				case watchEventTypeDelServerDir:
+					if g, ok := w.guests[guestId]; ok {
+						// this is needed for containers
+						g.ClearSettings(ctx)
+						delete(w.guests, guestId)
+					}
+					log.Infof("guest path deleted: %s", guestPath)
+				case watchEventTypeUpdServer:
+					if g, ok := w.guests[guestId]; ok {
+						g.UpdateSettings(ctx)
+					} else {
+						log.Warningf("unexpected guest update event: %s", guestPath)
+					}
+				case watchEventTypeDelServer:
+					if g, ok := w.guests[guestId]; ok {
+						log.Infof("remove guest settings %s", guestId)
+						g.ClearSettings(ctx)
+					} else {
+						log.Warningf("unexpected guest down event: %s", guestPath)
+					}
 				}
 			}
 		case <-pendingChan:
@@ -267,11 +287,16 @@ func (w *serversWatcher) Start(ctx context.Context, agent *AgentServer) {
 			log.Infof("watcher refresh time ;)")
 			w.withWait(ctx, func(ctx context.Context) {
 				w.hostLocal.UpdateSettings(ctx)
-				for _, g := range w.guests {
-					g.UpdateSettings(ctx)
-				}
+				w.scan(ctx)
+				// for _, g := range w.guests {
+				//	g.UpdateSettings(ctx)
+				// }
 			})
-		case err := <-w.watcher.Errors:
+		case err, ok := <-w.watcher.Errors:
+			if !ok {
+				log.Errorf("fsnotity.watch.Errors error")
+				goto out
+			}
 			// fail fast and recover fresh
 			panic("watcher error: %s" + err.Error())
 			return

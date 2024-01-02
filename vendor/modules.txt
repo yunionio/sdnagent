@@ -41,8 +41,8 @@ github.com/digitalocean/go-openvswitch/ovs
 # github.com/fatih/color v1.13.0
 ## explicit; go 1.13
 github.com/fatih/color
-# github.com/fsnotify/fsnotify v1.4.9
-## explicit; go 1.13
+# github.com/fsnotify/fsnotify v1.5.4
+## explicit; go 1.16
 github.com/fsnotify/fsnotify
 # github.com/ghodss/yaml v1.0.0
 ## explicit
@@ -671,7 +671,7 @@ sigs.k8s.io/structured-merge-diff/v4/value
 # sigs.k8s.io/yaml v1.2.0
 ## explicit; go 1.12
 sigs.k8s.io/yaml
-# yunion.io/x/cloudmux v0.3.10-0-alpha.1.0.20231222093659-799fff1d62a1
+# yunion.io/x/cloudmux v0.3.10-0-alpha.1.0.20231229064730-739383d4356c
 ## explicit; go 1.18
 yunion.io/x/cloudmux/pkg/apis
 yunion.io/x/cloudmux/pkg/apis/billing
@@ -692,7 +692,7 @@ yunion.io/x/jsonutils
 ## explicit; go 1.12
 yunion.io/x/log
 yunion.io/x/log/hooks
-# yunion.io/x/onecloud v0.0.0-20231225063626-a1ab937ef72a
+# yunion.io/x/onecloud v0.0.0-20231231043024-486aa4edf48b
 ## explicit; go 1.18
 yunion.io/x/onecloud/locales
 yunion.io/x/onecloud/pkg/apihelper
@@ -743,7 +743,6 @@ yunion.io/x/onecloud/pkg/compute/models
 yunion.io/x/onecloud/pkg/compute/options
 yunion.io/x/onecloud/pkg/compute/sshkeys
 yunion.io/x/onecloud/pkg/devtool/utils
-yunion.io/x/onecloud/pkg/esxi/options
 yunion.io/x/onecloud/pkg/hostman/guestman/desc
 yunion.io/x/onecloud/pkg/hostman/guestman/forwarder/api
 yunion.io/x/onecloud/pkg/hostman/hostinfo/hostbridge
