@@ -679,6 +679,14 @@ type ServerDetachnetworkInput struct {
 	IpAddr string `json:"ip_addr"`
 	// 通过Mac解绑网卡, 优先级低于ip_addr
 	Mac string `json:"mac"`
+	// 解绑后不立即同步配置
+	DisableSyncConfig *bool `json:"disable_sync_config"`
+	// 强制卸载，无论虚拟机的状态，仅更新数据库
+	Force *bool `json:"force"`
+}
+
+func (input ServerDetachnetworkInput) IsForce() bool {
+	return input.Force != nil && *input.Force
 }
 
 type ServerMigrateForecastInput struct {
@@ -734,6 +742,11 @@ type ServerDeployInputBase struct {
 	ResetPassword bool `json:"reset_password"`
 	// 重置指定密码
 	Password string `json:"password"`
+	// 用户自定义启动脚本
+	// 支持 #cloud-config yaml 格式及shell脚本
+	// 支持特殊user data平台: Aliyun, Qcloud, Azure, Apsara, Ucloud
+	// required: false
+	UserData string `json:"user_data"`
 
 	// swagger: ignore
 	Restart bool `json:"restart"`
@@ -1201,4 +1214,5 @@ type ServerSetOSInfoInput struct {
 	Distribution string `json:"distribution" help:"OS distribution, e.g.: CentOS, Ubuntu, Windows Server 2016 Datacenter"`
 	// OS version, e.g: 7.9, 22.04, 6.3
 	Version string `json:"version" help:"OS version, e.g.: 7.9, 22.04, 6.3"`
+	Arch    string `json:"arch" help:"OS arch, e.g.: x86_64, aarch64"`
 }

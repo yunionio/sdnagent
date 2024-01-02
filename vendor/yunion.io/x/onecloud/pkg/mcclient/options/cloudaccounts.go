@@ -300,7 +300,7 @@ func (opts *SOpenStackCloudAccountCreateOptions) Params() (jsonutils.JSONObject,
 
 type SHuaweiCloudAccountCreateOptions struct {
 	SCloudAccountCreateBaseOptions
-	SAccessKeyCredentialWithEnvironment
+	SAccessKeyCredential
 }
 
 func (opts *SHuaweiCloudAccountCreateOptions) Params() (jsonutils.JSONObject, error) {
@@ -755,10 +755,29 @@ func (opts *SAzureCloudAccountUpdateOptions) Params() (jsonutils.JSONObject, err
 
 type SQcloudCloudAccountUpdateOptions struct {
 	SCloudAccountUpdateBaseOptions
+
+	OptionsBillingReportBucket       string `help:"update Aliyun S3 bucket that stores account billing report" json:"-"`
+	RemoveOptionsBillingReportBucket bool   `help:"remove Aliyun S3 bucket that stores account billing report" json:"-"`
 }
 
 func (opts *SQcloudCloudAccountUpdateOptions) Params() (jsonutils.JSONObject, error) {
-	return jsonutils.Marshal(opts), nil
+	params := jsonutils.Marshal(opts).(*jsonutils.JSONDict)
+
+	options := jsonutils.NewDict()
+	if len(opts.OptionsBillingReportBucket) > 0 {
+		options.Add(jsonutils.NewString(opts.OptionsBillingReportBucket), "billing_report_bucket")
+	}
+	if options.Size() > 0 {
+		params.Add(options, "options")
+	}
+	removeOptions := make([]string, 0)
+	if opts.RemoveOptionsBillingReportBucket {
+		removeOptions = append(removeOptions, "billing_report_bucket")
+	}
+	if len(removeOptions) > 0 {
+		params.Add(jsonutils.NewStringArray(removeOptions), "remove_options")
+	}
+	return params, nil
 }
 
 type SGoogleCloudAccountUpdateOptions struct {
