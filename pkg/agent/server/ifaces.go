@@ -136,6 +136,8 @@ func (ij *ifaceJanitor) scan(ctx context.Context) error {
 		}
 		wantMap.mergeWith(serversMap)
 	}
+	// log.Debugf("got Map: %s", jsonutils.Marshal(gotMap))
+	// log.Debugf("want Map: %s", jsonutils.Marshal(wantMap))
 	for br, ifaces := range gotMap {
 		for iface, _ := range ifaces {
 			if !wantMap.has(br, iface) {

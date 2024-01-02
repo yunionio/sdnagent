@@ -85,16 +85,19 @@ func (fm *FlowMan) doCheck() {
 	}
 	defer log.Infof("flowman %s: check done", fm.bridge)
 	var err error
+	// fs0: current flows
 	fs0, err := fm.doDumpFlows()
 	if err != nil {
+		log.Errorf("FlowMan doCheck doDumpFlows fail %s", err)
 		return
 	}
 	fsAdd := utils.NewFlowSet()
 	fsDel := utils.NewFlowSet()
-	flows1 := []*ovs.Flow{}
+	// flows1: flows to install
+	// flows1 := []*ovs.Flow{}
 	for _, fs1 := range fm.flowSets {
 		for _, f1 := range fs1.Flows() {
-			flows1 = append(flows1, f1)
+			// flows1 = append(flows1, f1)
 			if !fs0.Contains(f1) {
 				fsAdd.Add(f1)
 			}

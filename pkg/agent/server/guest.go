@@ -249,7 +249,10 @@ func (g *Guest) UpdateSettings(ctx context.Context) {
 			g.watcher.agent.HostId(g.HostId)
 		}
 	case errNotRunning, errPortNotReady, errVolatileHost:
+		log.Debugf("guest %s(%s) ClearSettings due to g.refresh %s", g.Name, g.Id, err)
 		g.ClearSettings(ctx)
+	default:
+		log.Errorf("guest %s(%s) g.refresh error %s", g.Name, g.Id, err)
 	}
 }
 
