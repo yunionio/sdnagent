@@ -1030,6 +1030,7 @@ func (disk *SDisk) doResize(ctx context.Context, userCred mcclient.TokenCredenti
 	if storage == nil {
 		return httperrors.NewInternalServerError("disk has no valid storage")
 	}
+
 	var guestdriver IGuestDriver
 	if host, _ := storage.GetMasterHost(); host != nil {
 		if err := host.GetHostDriver().ValidateDiskSize(storage, sizeMb>>10); err != nil {
@@ -1353,7 +1354,11 @@ func (self *SDisk) GetPathAtHost(host *SHost) string {
 	return ""
 }
 
-func (self *SDisk) GetMasterHost() (*SHost, error) {
+func (self *SDisk) GetMasterHost(storage *SStorage) (*SHost, error) {
+	if storage.MasterHost != "" {
+		return storage.GetMasterHost()
+	}
+
 	hosts := HostManager.Query().SubQuery()
 	hoststorages := HoststorageManager.Query().SubQuery()
 
@@ -1714,7 +1719,9 @@ func (self *SDisk) syncWithCloudDisk(ctx context.Context, userCred mcclient.Toke
 	}
 
 	if len(guests) == 0 {
-		SyncCloudProject(ctx, userCred, self, syncOwnerId, extDisk, storage.ManagerId)
+		if provider := storage.GetCloudprovider(); provider != nil {
+			SyncCloudProject(ctx, userCred, self, syncOwnerId, extDisk, provider)
+		}
 	} else {
 		self.SyncCloudProjectId(userCred, guests[0].GetOwnerId())
 	}
@@ -1780,7 +1787,9 @@ func (manager *SDiskManager) newFromCloudDisk(ctx context.Context, userCred mccl
 
 	syncVirtualResourceMetadata(ctx, userCred, &disk, extDisk, false)
 
-	SyncCloudProject(ctx, userCred, &disk, syncOwnerId, extDisk, storage.ManagerId)
+	if provider := storage.GetCloudprovider(); provider != nil {
+		SyncCloudProject(ctx, userCred, &disk, syncOwnerId, extDisk, provider)
+	}
 
 	db.OpsLog.LogEvent(&disk, db.ACT_CREATE, disk.GetShortDesc(ctx), userCred)
 

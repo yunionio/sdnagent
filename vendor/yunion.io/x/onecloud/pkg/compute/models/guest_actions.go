@@ -31,7 +31,6 @@ import (
 	"yunion.io/x/pkg/errors"
 	"yunion.io/x/pkg/tristate"
 	"yunion.io/x/pkg/util/billing"
-	"yunion.io/x/pkg/util/fileutils"
 	"yunion.io/x/pkg/util/httputils"
 	"yunion.io/x/pkg/util/osprofile"
 	"yunion.io/x/pkg/util/rand"
@@ -1507,7 +1506,7 @@ func (self *SGuest) fixFakeServerInfo(ctx context.Context, userCred mcclient.Tok
 		network := networks[i].GetNetwork()
 		if network != nil {
 			db.Update(&networks[i], func() error {
-				networks[i].IpAddr, _ = network.GetFreeIP(ctx, userCred, nil, nil, "", api.IPAllocationRadnom, false)
+				networks[i].IpAddr, _ = network.GetFreeIP(ctx, userCred, nil, nil, "", api.IPAllocationRandom, false, api.AddressTypeIPv4)
 				return nil
 			})
 		}
@@ -1516,7 +1515,7 @@ func (self *SGuest) fixFakeServerInfo(ctx context.Context, userCred mcclient.Tok
 		db.Update(eip, func() error {
 			if len(eip.NetworkId) > 0 {
 				if network, _ := eip.GetNetwork(); network != nil {
-					eip.IpAddr, _ = network.GetFreeIP(ctx, userCred, nil, nil, "", api.IPAllocationRadnom, false)
+					eip.IpAddr, _ = network.GetFreeIP(ctx, userCred, nil, nil, "", api.IPAllocationRandom, false, api.AddressTypeIPv4)
 					return nil
 				}
 			}
@@ -2242,21 +2241,30 @@ func (self *SGuest) startIsolatedDevicesSyncTask(ctx context.Context, userCred m
 	}
 }
 
-func (self *SGuest) findGuestnetworkByInfo(ipStr string, macStr string, index int64) (*SGuestnetwork, error) {
-	if len(ipStr) > 0 {
-		gn, err := self.GetGuestnetworkByIp(ipStr)
+func (self *SGuest) findGuestnetworkByInfo(info api.ServerNetworkInfo) (*SGuestnetwork, error) {
+	if len(info.IpAddr) > 0 {
+		gn, err := self.GetGuestnetworkByIp(info.IpAddr)
 		if err != nil {
-			if err == sql.ErrNoRows {
-				return nil, httperrors.NewNotFoundError("ip %s not found", ipStr)
+			if errors.Cause(err) == sql.ErrNoRows {
+				return nil, httperrors.NewNotFoundError("ip %s not found", info.IpAddr)
 			}
 			return nil, httperrors.NewGeneralError(err)
 		}
 		return gn, nil
-	} else if len(macStr) > 0 {
-		gn, err := self.GetGuestnetworkByMac(macStr)
+	} else if len(info.Ip6Addr) > 0 {
+		gn, err := self.GetGuestnetworkByIp6(info.Ip6Addr)
 		if err != nil {
-			if err == sql.ErrNoRows {
-				return nil, httperrors.NewNotFoundError("mac %s not found", macStr)
+			if errors.Cause(err) == sql.ErrNoRows {
+				return nil, httperrors.NewNotFoundError("ipv6 %s not found", info.Ip6Addr)
+			}
+			return nil, httperrors.NewGeneralError(err)
+		}
+		return gn, nil
+	} else if len(info.Mac) > 0 {
+		gn, err := self.GetGuestnetworkByMac(info.Mac)
+		if err != nil {
+			if errors.Cause(err) == sql.ErrNoRows {
+				return nil, httperrors.NewNotFoundError("mac %s not found", info.Mac)
 			}
 			return nil, httperrors.NewGeneralError(err)
 		}
@@ -2266,10 +2274,10 @@ func (self *SGuest) findGuestnetworkByInfo(ipStr string, macStr string, index in
 		if err != nil {
 			return nil, httperrors.NewGeneralError(err)
 		}
-		if index >= 0 && index < int64(len(gns)) {
-			return &gns[index], nil
+		if info.Index >= 0 && info.Index < len(gns) {
+			return &gns[info.Index], nil
 		}
-		return nil, httperrors.NewInputParameterError("no either ip_addr or mac specified")
+		return nil, httperrors.NewInputParameterError("no either ip_addr, ip6_addr, mac or index specified")
 	}
 }
 
@@ -2290,30 +2298,36 @@ func (self *SGuest) getReuseAddr(gn *SGuestnetwork) string {
 // Change IPaddress of a guestnetwork
 // first detach the network, then attach a network with identity mac address but different IP configurations
 // TODO change IP address of a teaming NIC may fail!!
-func (self *SGuest) PerformChangeIpaddr(ctx context.Context, userCred mcclient.TokenCredential, query jsonutils.JSONObject, data jsonutils.JSONObject) (jsonutils.JSONObject, error) {
+func (self *SGuest) PerformChangeIpaddr(
+	ctx context.Context,
+	userCred mcclient.TokenCredential,
+	query jsonutils.JSONObject,
+	input api.ServerChangeIpaddrInput,
+) (jsonutils.JSONObject, error) {
 	if self.Status != api.VM_READY && self.Status != api.VM_RUNNING && self.Status != api.VM_BLOCK_STREAM {
 		return nil, httperrors.NewInvalidStatusError("Cannot change network ip_addr in status %s", self.Status)
 	}
 
-	reserve := jsonutils.QueryBoolean(data, "reserve", false)
+	reserve := (input.Reserve != nil && *input.Reserve)
 
-	ipStr, _ := data.GetString("ip_addr")
-	macStr, _ := data.GetString("mac")
-	index, _ := data.Int("index")
-
-	gn, err := self.findGuestnetworkByInfo(ipStr, macStr, index)
+	gn, err := self.findGuestnetworkByInfo(input.ServerNetworkInfo)
 	if err != nil {
 		return nil, err
 	}
 
-	netDesc, err := data.Get("net_desc")
-	if err != nil {
-		return nil, httperrors.NewMissingParameterError("net_desc")
+	var conf *api.NetworkConfig
+	if input.NetConf != nil {
+		conf = input.NetConf
+	} else if len(input.NetDesc) > 0 {
+		netConf, err := cmdline.ParseNetworkConfigByJSON(jsonutils.NewString(input.NetDesc), -1)
+		if err != nil {
+			return nil, httperrors.NewInputParameterError("fail to parse net_desc %s: %s", input.NetDesc, err)
+		}
+		conf = netConf
+	} else {
+		return nil, httperrors.NewMissingParameterError("net_desc/net_conf")
 	}
-	conf, err := cmdline.ParseNetworkConfigByJSON(netDesc, -1)
-	if err != nil {
-		return nil, err
-	}
+
 	if conf.BwLimit == 0 {
 		conf.BwLimit = gn.BwLimit
 	}
@@ -2322,12 +2336,13 @@ func (self *SGuest) PerformChangeIpaddr(ctx context.Context, userCred mcclient.T
 	}
 	conf, err = parseNetworkInfo(ctx, userCred, conf)
 	if err != nil {
-		return nil, err
+		return nil, httperrors.NewInputParameterError("parseNetworkInfo fail: %s", err)
 	}
 	err = isValidNetworkInfo(ctx, userCred, conf, self.getReuseAddr(gn))
 	if err != nil {
-		return nil, err
+		return nil, httperrors.NewInputParameterError("isValidNetworkInfo fail: %s", err)
 	}
+
 	host, _ := self.GetHost()
 
 	ngn, err := func() ([]SGuestnetwork, error) {
@@ -2348,19 +2363,25 @@ func (self *SGuest) PerformChangeIpaddr(ctx context.Context, userCred mcclient.T
 				if cnt > 0 {
 					return nil, httperrors.NewConflictError("mac addr %s has been occupied", conf.Mac)
 				}
-			} else {
-				if conf.Address == gn.IpAddr { // ip addr is the same, noop
-					return nil, nil
-				}
 			}
 		} else {
 			conf.Mac = gn.MacAddr
 		}
 
+		if conf.Mac == gn.MacAddr && conf.Address == gn.IpAddr {
+			if len(gn.Ip6Addr) == 0 && len(conf.Address6) == 0 && !conf.RequireIPv6 {
+				return nil, nil
+			} else if len(gn.Ip6Addr) > 0 && conf.Address6 == gn.Ip6Addr {
+				return nil, nil
+			}
+			reserve = true
+		}
+
 		err = self.detachNetworks(ctx, userCred, []SGuestnetwork{*gn}, reserve)
 		if err != nil {
-			return nil, err
+			return nil, errors.Wrap(err, "detachNetworks")
 		}
+
 		conf.Ifname = gn.Ifname
 		ngn, err := self.attach2NetworkDesc(ctx, userCred, host, conf, nil, nil)
 		if err != nil {
@@ -2390,6 +2411,10 @@ func (self *SGuest) PerformChangeIpaddr(ctx context.Context, userCred mcclient.T
 		return nil, err
 	}
 
+	if len(ngn) == 0 {
+		return nil, nil
+	}
+
 	//Get the detailed description of the NIC
 	networkJsonDesc := ngn[0].getJsonDesc()
 	newIpAddr := networkJsonDesc.Ip
@@ -2398,7 +2423,7 @@ func (self *SGuest) PerformChangeIpaddr(ctx context.Context, userCred mcclient.T
 	newGateway := networkJsonDesc.Gateway
 	ipMask := fmt.Sprintf("%s/%d", newIpAddr, newMaskLen)
 
-	notes := jsonutils.NewDict()
+	notes := gn.GetShortDesc(ctx)
 	if gn != nil {
 		notes.Add(jsonutils.NewString(gn.IpAddr), "prev_ip")
 	}
@@ -2407,7 +2432,7 @@ func (self *SGuest) PerformChangeIpaddr(ctx context.Context, userCred mcclient.T
 	}
 	logclient.AddActionLogWithContext(ctx, self, logclient.ACT_VM_CHANGE_NIC, notes, userCred, true)
 
-	restartNetwork, _ := data.Bool("restart_network")
+	restartNetwork := (input.RestartNetwork != nil && *input.RestartNetwork)
 
 	taskData := jsonutils.NewDict()
 	if self.Hypervisor == api.HYPERVISOR_KVM && restartNetwork && (self.Status == api.VM_RUNNING || self.Status == api.VM_BLOCK_STREAM) {
@@ -2561,22 +2586,36 @@ func (self *SGuest) PerformAttachnetwork(
 	if !utils.IsInStringArray(self.Status, []string{api.VM_READY, api.VM_RUNNING}) {
 		return nil, httperrors.NewBadRequestError("Cannot attach network in status %s", self.Status)
 	}
-	count := len(input.Nets)
-	if count == 0 {
-		return nil, httperrors.NewMissingParameterError("nets")
+	// count := len(input.Nets)
+	if len(input.Nets) == 0 {
+		if len(input.NetDesc) > 0 {
+			for _, netDesc := range input.NetDesc {
+				netConf, err := cmdline.ParseNetworkConfigByJSON(jsonutils.NewString(netDesc), -1)
+				if err != nil {
+					return nil, httperrors.NewInputParameterError("fail to parse net_desc %s: %s", netDesc, err)
+				}
+				input.Nets = append(input.Nets, netConf)
+			}
+		}
+		if len(input.Nets) == 0 {
+			return nil, httperrors.NewMissingParameterError("nets/net_desc")
+		}
 	}
 	var inicCnt, enicCnt, isolatedDevCount, defaultGwCnt int
-	for i := 0; i < count; i++ {
+	for i := range input.Nets {
 		err := isValidNetworkInfo(ctx, userCred, input.Nets[i], "")
 		if err != nil {
 			return nil, err
 		}
 		if IsExitNetworkInfo(userCred, input.Nets[i]) {
-			enicCnt = count
+			enicCnt += 1
 			// ebw = input.BwLimit
 		} else {
-			inicCnt = count
+			inicCnt += 1
 			// ibw = input.BwLimit
+		}
+		if input.Nets[i].BwLimit == 0 {
+			input.Nets[i].BwLimit = options.Options.DefaultBandwidth
 		}
 		if input.Nets[i].SriovDevice != nil {
 			if self.BackupHostId != "" {
@@ -2633,7 +2672,7 @@ func (self *SGuest) PerformAttachnetwork(
 	defer host.ClearSchedDescCache()
 
 	var defaultGwGn *SGuestnetwork
-	for i := 0; i < count; i++ {
+	for i := range input.Nets {
 		gns, err := self.attach2NetworkDesc(ctx, userCred, host, input.Nets[i], pendingUsage, nil)
 		logclient.AddSimpleActionLog(self, logclient.ACT_ATTACH_NETWORK, input.Nets[i], userCred, err == nil)
 		if err != nil {
@@ -2685,22 +2724,24 @@ func (self *SGuest) PerformAttachnetwork(
 	return nil, nil
 }
 
-func (self *SGuest) PerformChangeBandwidth(ctx context.Context, userCred mcclient.TokenCredential, query jsonutils.JSONObject, data jsonutils.JSONObject) (jsonutils.JSONObject, error) {
+func (self *SGuest) PerformChangeBandwidth(
+	ctx context.Context,
+	userCred mcclient.TokenCredential,
+	query jsonutils.JSONObject,
+	input api.ServerChangeBandwidthInput,
+) (jsonutils.JSONObject, error) {
 	if !utils.IsInStringArray(self.Status, []string{api.VM_READY, api.VM_RUNNING}) {
 		return nil, httperrors.NewBadRequestError("Cannot change bandwidth in status %s", self.Status)
 	}
 
-	bandwidth, err := data.Int("bandwidth")
-	if err != nil || bandwidth < 0 {
+	bandwidth := input.Bandwidth
+	if bandwidth < 0 {
 		return nil, httperrors.NewBadRequestError("Bandwidth must be non-negative")
 	}
 
-	ipStr, _ := data.GetString("ip_addr")
-	macStr, _ := data.GetString("mac")
-	index, _ := data.Int("index")
-	guestnic, err := self.findGuestnetworkByInfo(ipStr, macStr, index)
+	guestnic, err := self.findGuestnetworkByInfo(input.ServerNetworkInfo)
 	if err != nil {
-		return nil, err
+		return nil, errors.Wrap(err, "findGuestnetworkByInfo")
 	}
 
 	if guestnic.BwLimit != int(bandwidth) {
@@ -2786,199 +2827,32 @@ func (self *SGuest) PerformChangeConfig(ctx context.Context, userCred mcclient.T
 
 	_, err = self.GetHost()
 	if err != nil {
-		return nil, errors.Wrapf(err, "GetHost")
+		return nil, httperrors.NewInvalidStatusError("no valid host")
 	}
 
-	var addCpu, addMem, addSocket int
-	var cpuChanged, cpuSocketsChanged, memChanged bool
-
-	confs := jsonutils.NewDict()
-	confs.Add(jsonutils.Marshal(map[string]interface{}{
-		"instance_type": self.InstanceType,
-		"vcpu_count":    self.VcpuCount,
-		"vmem_size":     self.VmemSize,
-		"cpu_sockets":   self.CpuSockets,
-	}), "old")
-	if len(input.InstanceType) > 0 {
-		sku, err := ServerSkuManager.FetchSkuByNameAndProvider(input.InstanceType, self.GetDriver().GetProvider(), true)
-		if err != nil {
-			return nil, err
-		}
-
-		if self.GetDriver().GetProvider() == api.CLOUD_PROVIDER_UCLOUD && !strings.HasPrefix(self.InstanceType, sku.InstanceTypeFamily) {
-			return nil, httperrors.NewInputParameterError("Cannot change config with different instance family")
-		}
-
-		if sku.GetName() != self.InstanceType {
-			confs.Add(jsonutils.NewString(sku.GetName()), "instance_type")
-			confs.Add(jsonutils.NewInt(int64(sku.CpuCoreCount)), "vcpu_count")
-			confs.Add(jsonutils.NewInt(int64(sku.MemorySizeMB)), "vmem_size")
-
-			if sku.CpuCoreCount != int(self.VcpuCount) {
-				cpuChanged = true
-				addCpu = sku.CpuCoreCount - int(self.VcpuCount)
-			}
-			if sku.MemorySizeMB != self.VmemSize {
-				memChanged = true
-				addMem = sku.MemorySizeMB - self.VmemSize
-			}
-		}
-	} else {
-		if input.VcpuCount != nil && *input.VcpuCount != self.VcpuCount {
-			cpuChanged = true
-			addCpu = *input.VcpuCount - self.VcpuCount
-			confs.Add(jsonutils.NewInt(int64(*input.VcpuCount)), "vcpu_count")
-		}
-		if len(input.VmemSize) > 0 {
-			if !regutils.MatchSize(input.VmemSize) {
-				return nil, httperrors.NewBadRequestError("Memory size %q must be number[+unit], like 256M, 1G or 256", input.VmemSize)
-			}
-			nVmem, err := fileutils.GetSizeMb(input.VmemSize, 'M', 1024)
-			if err != nil {
-				httperrors.NewBadRequestError("Params vmem_size parse error")
-			}
-			if nVmem != self.VmemSize {
-				memChanged = true
-				addMem = nVmem - self.VmemSize
-				err = confs.Add(jsonutils.NewInt(int64(nVmem)), "vmem_size")
-				if err != nil {
-					return nil, httperrors.NewBadRequestError("Params vmem_size parse error")
-				}
-			}
-		}
-	}
-	if input.CpuSockets != nil && *input.CpuSockets != self.CpuSockets {
-		if *input.CpuSockets > self.VcpuCount+addCpu {
-			return nil, httperrors.NewInputParameterError("The number of cpu sockets cannot be greater than the number of cpus")
-		}
-		cpuSocketsChanged = true
-		addSocket = *input.CpuSockets - self.CpuSockets
-		confs.Set("cpu_sockets", jsonutils.NewInt(int64(*input.CpuSockets)))
-	}
-
-	if self.PowerStates == api.VM_POWER_STATES_ON && (cpuChanged || memChanged || cpuSocketsChanged) && self.GetDriver().NeedStopForChangeSpec(ctx, self, addCpu, addMem, addSocket) {
-		return nil, httperrors.NewInvalidStatusError("cannot change CPU/Memory spec in power status %s", self.PowerStates)
-	}
-
-	for i := range input.ResetTrafficLimits {
-		input.ResetTrafficLimits[i].Mac = strings.ToLower(input.ResetTrafficLimits[i].Mac)
-		_, err := self.GetGuestnetworkByMac(input.ResetTrafficLimits[i].Mac)
-		if err != nil {
-			return nil, errors.Wrap(err, "get guest network by mac")
-		}
-	}
-	if len(input.ResetTrafficLimits) > 0 {
-		confs.Set("reset_traffic_limits", jsonutils.Marshal(input.ResetTrafficLimits))
-	}
-
-	for i := range input.SetTrafficLimits {
-		input.SetTrafficLimits[i].Mac = strings.ToLower(input.SetTrafficLimits[i].Mac)
-		_, err := self.GetGuestnetworkByMac(input.SetTrafficLimits[i].Mac)
-		if err != nil {
-			return nil, errors.Wrap(err, "get guest network by mac")
-		}
-	}
-	if len(input.SetTrafficLimits) > 0 {
-		confs.Set("set_traffic_limits", jsonutils.Marshal(input.SetTrafficLimits))
-	}
-
-	if addCpu < 0 {
-		addCpu = 0
-	}
-	if addMem < 0 {
-		addMem = 0
-	}
-
-	disks, err := self.GetGuestDisks()
+	confs, err := self.GetDriver().ValidateGuestChangeConfigInput(ctx, self, input)
 	if err != nil {
-		return nil, err
+		return nil, errors.Wrap(err, "ValidateGuestChangeConfigInput")
 	}
-	var addDisk int
-	var newDiskIdx = 0
-	var newDisks = make([]*api.DiskConfig, 0)
-	var resizeDisks = jsonutils.NewArray()
 
-	var schedInputDisks = make([]*api.DiskConfig, 0)
-	var diskIdx = 1
-	for i := range input.Disks {
-		disk := input.Disks[i]
-		if len(disk.SnapshotId) > 0 {
-			snapObj, err := SnapshotManager.FetchById(disk.SnapshotId)
-			if err != nil {
-				return nil, httperrors.NewResourceNotFoundError("snapshot %s not found", disk.SnapshotId)
-			}
-			snap := snapObj.(*SSnapshot)
-			disk.Storage = snap.StorageId
+	if self.PowerStates == api.VM_POWER_STATES_ON && (confs.CpuChanged() || confs.MemChanged()) {
+		confs, err = self.GetDriver().ValidateGuestHotChangeConfigInput(ctx, self, confs)
+		if err != nil {
+			return nil, httperrors.NewInvalidStatusError("cannot change CPU/Memory spec in power status %s: %s", self.PowerStates, err)
 		}
-		if len(disk.Backend) == 0 && len(disk.Storage) == 0 {
-			disk.Backend = self.getDefaultStorageType()
-		}
-		if disk.SizeMb > 0 {
-			if diskIdx >= len(disks) {
-				newDisks = append(newDisks, &disk)
-				newDiskIdx += 1
-				addDisk += disk.SizeMb
-				schedInputDisks = append(schedInputDisks, &disk)
-			} else {
-				gDisk := disks[diskIdx].GetDisk()
-				oldSize := gDisk.DiskSize
-				if disk.SizeMb < oldSize {
-					return nil, httperrors.NewInputParameterError("Cannot reduce disk size")
-				}
-				if disk.SizeMb > oldSize {
-					arr := jsonutils.NewArray(jsonutils.NewString(disks[diskIdx].DiskId), jsonutils.NewInt(int64(disk.SizeMb)))
-					resizeDisks.Add(arr)
-					addDisk += disk.SizeMb - oldSize
-					storage, _ := disks[diskIdx].GetDisk().GetStorage()
-					schedInputDisks = append(schedInputDisks, &api.DiskConfig{
-						SizeMb:  addDisk,
-						Index:   disk.Index,
-						Storage: storage.Id,
-					})
-				}
-			}
-		}
-		diskIdx += 1
 	}
 
-	if resizeDisks.Length() > 0 {
-		confs.Add(resizeDisks, "resize")
-	}
-	if self.Status != api.VM_RUNNING && input.AutoStart {
-		confs.Add(jsonutils.NewBool(true), "auto_start")
-	}
-	if self.Status == api.VM_RUNNING {
-		confs.Set("guest_online", jsonutils.JSONTrue)
-	}
-
-	err = self.GetDriver().ValidateChangeConfig(ctx, userCred, self, cpuChanged, memChanged, newDisks)
-	if err != nil {
-		return nil, err
-	}
-
-	// schedulr forecast
-	schedDesc := self.changeConfToSchedDesc(addCpu, addMem, schedInputDisks)
-	confs.Set("sched_desc", jsonutils.Marshal(schedDesc))
-	s := auth.GetAdminSession(ctx, options.Options.Region)
-	canChangeConf, res, err := scheduler.SchedManager.DoScheduleForecast(s, schedDesc, 1)
-	if err != nil {
-		return nil, err
-	}
-	if !canChangeConf {
-		return nil, httperrors.NewInsufficientResourceError(res.String())
-	}
-
-	log.Debugf("%s", confs.String())
+	log.Debugf("%s", jsonutils.Marshal(confs).String())
 
 	pendingUsage := &SQuota{}
-	if addCpu > 0 {
-		pendingUsage.Cpu = addCpu
+	if added := confs.AddedCpu(); added > 0 {
+		pendingUsage.Cpu = added
 	}
-	if addMem > 0 {
-		pendingUsage.Memory = addMem
+	if added := confs.AddedMem(); added > 0 {
+		pendingUsage.Memory = added
 	}
-	if addDisk > 0 {
-		pendingUsage.Storage = addDisk
+	if added := confs.AddedDisk(); added > 0 {
+		pendingUsage.Storage = added
 	}
 
 	keys, err := self.GetQuotaKeys()
@@ -2989,18 +2863,15 @@ func (self *SGuest) PerformChangeConfig(ctx context.Context, userCred mcclient.T
 	log.Debugf("ChangeConfig pendingUsage %s", jsonutils.Marshal(pendingUsage))
 	err = quotas.CheckSetPendingQuota(ctx, userCred, pendingUsage)
 	if err != nil {
-		return nil, err
+		return nil, errors.Wrap(err, "CheckSetPendingQuota")
 	}
 
-	if len(newDisks) > 0 {
-		confs.Add(jsonutils.Marshal(newDisks), "create")
-	}
-	logclient.AddActionLogWithContext(ctx, self, logclient.ACT_CHANGE_CONFIG, confs, userCred, true)
+	// logclient.AddActionLogWithContext(ctx, self, logclient.ACT_CHANGE_CONFIG, confs, userCred, true)
 	self.StartChangeConfigTask(ctx, userCred, confs, "", pendingUsage)
 	return nil, nil
 }
 
-func (self *SGuest) changeConfToSchedDesc(addCpu, addMem int, schedInputDisks []*api.DiskConfig) *schedapi.ScheduleInput {
+func (self *SGuest) ChangeConfToSchedDesc(addCpu, addMem int, schedInputDisks []*api.DiskConfig) *schedapi.ScheduleInput {
 	devs, _ := self.GetIsolatedDevices()
 	desc := &schedapi.ScheduleInput{
 		ServerConfig: schedapi.ServerConfig{
@@ -3022,9 +2893,9 @@ func (self *SGuest) changeConfToSchedDesc(addCpu, addMem int, schedInputDisks []
 }
 
 func (self *SGuest) StartChangeConfigTask(ctx context.Context, userCred mcclient.TokenCredential,
-	data *jsonutils.JSONDict, parentTaskId string, pendingUsage quotas.IQuota) error {
+	confs *api.ServerChangeConfigSettings, parentTaskId string, pendingUsage quotas.IQuota) error {
 	self.SetStatus(userCred, api.VM_CHANGE_FLAVOR, "")
-	task, err := taskman.TaskManager.NewTask(ctx, "GuestChangeConfigTask", self, userCred, data, parentTaskId, "", pendingUsage)
+	task, err := taskman.TaskManager.NewTask(ctx, "GuestChangeConfigTask", self, userCred, jsonutils.Marshal(confs).(*jsonutils.JSONDict), parentTaskId, "", pendingUsage)
 	if err != nil {
 		return err
 	}
@@ -3142,7 +3013,12 @@ func (self *SGuest) SetStatus(userCred mcclient.TokenCredential, status, reason 
 		}
 	}
 
-	return self.SVirtualResourceBase.SetStatus(userCred, status, reason)
+	err := self.SVirtualResourceBase.SetStatus(userCred, status, reason)
+	if err != nil {
+		return errors.Wrap(err, "setStatus")
+	}
+	db.CallUpdateNotifyHook(context.Background(), userCred, self)
+	return nil
 }
 
 func (self *SGuest) SetPowerStates(powerStates string) error {
@@ -4566,16 +4442,19 @@ func (self *SGuest) PerformSyncFixNics(ctx context.Context,
 		return nil, httperrors.NewInputParameterError("empty ip list")
 	}
 	for _, ip := range iplist {
+		if !regutils.MatchIP4Addr(ip) {
+			return nil, httperrors.NewInputParameterError("invalid IPv4 address %s", ip)
+		}
 		// ip is reachable on host
 		net, err := host.getNetworkOfIPOnHost(ip)
 		if err != nil {
 			return nil, httperrors.NewInputParameterError("Unreachable IP %s: %s", ip, err)
 		}
 		// check ip is reserved or free
-		rip := ReservedipManager.GetReservedIP(net, ip)
+		rip := ReservedipManager.GetReservedIP(net, ip, api.AddressTypeIPv4)
 		if rip == nil {
 			// check ip is free
-			nip, err := net.GetFreeIPWithLock(ctx, userCred, nil, nil, ip, "", false)
+			nip, err := net.GetFreeIPWithLock(ctx, userCred, nil, nil, ip, "", false, api.AddressTypeIPv4)
 			if err != nil {
 				return nil, httperrors.NewInputParameterError("Unavailable IP %s: occupied", ip)
 			}
