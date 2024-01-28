@@ -23,6 +23,7 @@ import (
 	"github.com/vishvananda/netlink"
 
 	"yunion.io/x/log"
+	"yunion.io/x/pkg/errors"
 )
 
 type FlowSource interface {
@@ -32,6 +33,7 @@ type FlowSource interface {
 
 func F(table, priority int, matches, actions string) *ovs.Flow {
 	txt := fmt.Sprintf("table=%d,priority=%d,%s,actions=%s", table, priority, matches, actions)
+	log.Debugln(txt)
 	of := &ovs.Flow{}
 	err := of.UnmarshalText([]byte(txt))
 	if err != nil {
@@ -73,12 +75,14 @@ func (h *HostLocal) FlowsMap() (map[string][]*ovs.Flow, error) {
 	}
 	T := t(m)
 	flows := []*ovs.Flow{
-		F(0, 40000, "ipv6", "drop"),
+		// F(0, 40000, "ipv6", "drop"),
 	}
 	flows = append(flows,
 		F(0, 29310, "in_port=LOCAL,tcp,nw_dst=169.254.169.254,tp_dst=80", T("normal")),
 		F(0, 27200, "in_port=LOCAL", "normal"),
 		F(0, 26900, T("in_port={{.PortNoPhy}},dl_dst={{.MAC}}"), "normal"),
+		// allow any IPv6 link local multicast
+		F(0, 40000, T("dl_dst=01:00:00:00:00:00/01:00:00:00:00:00,icmp6,ipv6_dst=ff02::/64"), "normal"),
 	)
 	// NOTE we do not do check of existence of a "switch" guest and
 	// silently "AllowSwitchVMs" here.  That could be deemed as unexpected
@@ -163,126 +167,192 @@ func (g *Guest) getMetadataInfo(nic *GuestNIC) (mdIP string, mdMAC string, mdPor
 	return
 }
 
+func (g *Guest) FlowsMapForNic(nic *GuestNIC) ([]*ovs.Flow, error) {
+	if nic.PortNo <= 0 {
+		return nil, errors.Wrap(errors.ErrInvalidStatus, "nic.PortNo <= 0")
+	}
+	hcn := g.HostConfig.HostNetworkConfig(nic.Bridge)
+	if hcn == nil {
+		log.Warningf("guest %s port %s: no host network config for %s",
+			g.Id, nic.IfnameHost, nic.Bridge)
+		return nil, errors.Wrapf(errors.ErrInvalidStatus, "guest %s port %s: no host network config for %s", g.Id, nic.IfnameHost, nic.Bridge)
+	}
+	ps, err := DumpPort(nic.Bridge, hcn.Ifname)
+	if err != nil {
+		log.Warningf("fetch phy port_no of %s,%s failed: %s",
+			nic.Bridge, hcn.Ifname, err)
+		return nil, errors.Wrapf(err, "fetch phy port_no of %s,%s failed", nic.Bridge, hcn.Ifname)
+	}
+	portNoPhy := ps.PortID
+	m := nic.Map()
+	m["DHCPServerPort"] = g.HostConfig.DhcpServerPort
+	m["DHCPServerPort6"] = g.HostConfig.DhcpServerPort
+	m["PortNoPhy"] = portNoPhy
+	{
+		var mdPortAction string
+		var mdInPort string
+		mdIP, mdMAC, mdPortNo, useLOCAL, err := g.getMetadataInfo(nic)
+		if useLOCAL {
+			if err != nil {
+				log.Warningf("find metadata: %v", err)
+			}
+			{
+				ip, mac, err := hcn.IPMAC()
+				if err != nil {
+					log.Warningf("host network find ip mac: %v", err)
+					return nil, errors.Wrap(err, "host network find ip mac")
+				}
+				mdIP = ip.String()
+				mdMAC = mac.String()
+			}
+			// mdPortNo = portNoPhy
+			mdInPort = "LOCAL"
+			mdPortAction = "LOCAL"
+		} else {
+			mdInPort = fmt.Sprintf("%d", mdPortNo)
+			mdPortAction = fmt.Sprintf("output:%d", mdPortNo)
+		}
+		m["MetadataServerPort"] = g.HostConfig.MetadataPort()
+		m["MetadataServerIP"] = mdIP
+		m["MetadataServerMAC"] = mdMAC
+		m["MetadataPortInPort"] = mdInPort
+		m["MetadataPortAction"] = mdPortAction
+	}
+	T := t(m)
+	if nic.VLAN > 1 {
+		m["_dl_vlan"] = T("dl_vlan={{.VLAN}}")
+	} else {
+		m["_dl_vlan"] = T("vlan_tci={{.VLANTci}}")
+	}
+	flows := []*ovs.Flow{}
+	flows = append(flows,
+		// from host metadata to VM
+		F(0, 29200,
+			T("in_port={{.MetadataPortInPort}},tcp,nw_dst={{.IP}},tp_src={{.MetadataServerPort}}"),
+			T("mod_dl_dst:{{.MAC}},mod_nw_src:169.254.169.254,mod_tp_src:80,output:{{.PortNo}}")),
+		// from VM to host metadata
+		F(0, 29300, T("in_port={{.PortNo}},tcp,nw_dst=169.254.169.254,tp_dst=80"),
+			T("mod_dl_dst:{{.MetadataServerMAC}},mod_nw_dst:{{.MetadataServerIP}},mod_tp_dst:{{.MetadataServerPort}},{{.MetadataPortAction}}")),
+		// dhcpv4 from VM to host
+		F(0, 28400, T("in_port={{.PortNo}},ip,udp,tp_src=68,tp_dst=67"), T("mod_tp_dst:{{.DHCPServerPort}},local")),
+		// dhcpv4 from host to VM
+		F(0, 28300, T("in_port=LOCAL,dl_dst={{.MAC}},ip,udp,tp_src={{.DHCPServerPort}},tp_dst=68"), T("mod_tp_src:67,output:{{.PortNo}}")),
+		// dhcpv6 from VM to host
+		F(0, 28400, T("in_port={{.PortNo}},ipv6,udp6,tp_src=546,tp_dst=547"), T("mod_tp_dst:{{.DHCPServerPort6}},local")),
+		// dhcpv6 from host to VM
+		F(0, 28300, T("in_port=LOCAL,dl_dst={{.MAC}},ipv6,udp6,tp_src={{.DHCPServerPort6}},tp_dst=546"), T("mod_tp_src:547,output:{{.PortNo}}")),
+		// ra from VM to host
+		// ra advertisement from host to VM
+		// allow any other traffic from host to vm
+		F(0, 26700, T("in_port={{.PortNoPhy}},dl_dst={{.MAC}},{{._dl_vlan}}"), "normal"),
+	)
+	if !g.SrcMacCheck() {
+		// allow anything from vm port
+		flows = append(flows, F(0, 24670, T("in_port={{.PortNo}}"), "normal"))
+		if nic.EnableIPv6() {
+			flows = append(flows,
+				F(0, 27770, T("in_port={{.PortNo}},ipv6,icmp6,icmp_type=135"), "normal"),
+				F(0, 27770, T("in_port={{.PortNo}},ipv6,icmp6,icmp_type=136"), "normal"),
+			)
+		}
+	} else {
+		if !g.SrcIpCheck() {
+			// allow any ARP from VM mac
+			flows = append(flows,
+				F(0, 27770, T("in_port={{.PortNo}},arp,dl_src={{.MAC}},arp_sha={{.MAC}}"), "normal"),
+			)
+			if nic.EnableIPv6() {
+				// allow any ICMPv6 from VM mac
+				flows = append(flows,
+					F(0, 27770, T("in_port={{.PortNo}},ipv6,icmp6,dl_src={{.MAC}},icmp_type=135"), "normal"),
+					F(0, 27770, T("in_port={{.PortNo}},ipv6,icmp6,dl_src={{.MAC}},icmp_type=136"), "normal"),
+				)
+			}
+		} else {
+			// allow arp from VM src IP
+			g.eachIP(m, func(T2 func(string) string) {
+				flows = append(flows,
+					F(0, 27770, T2("in_port={{.PortNo}},arp,dl_src={{.MAC}},arp_sha={{.MAC}},arp_spa={{.IP}}"), "normal"),
+				)
+			})
+			if nic.EnableIPv6() {
+				// allow ICMPv6 from VM src IP
+				flows = append(flows,
+					F(0, 27770, T("in_port={{.PortNo}},dl_src={{.MAC}},icmp6,ipv6_src={{.IP6}},icmp_type=135"), "normal"),
+					F(0, 27770, T("in_port={{.PortNo}},dl_src={{.MAC}},icmp6,ipv6_src={{.IP6}},icmp_type=136"), "normal"),
+				)
+			}
+		}
+		if g.HostConfig.DisableSecurityGroup {
+			if !g.SrcIpCheck() {
+				flows = append(flows,
+					F(0, 26870, T("in_port={{.PortNoPhy}},dl_dst={{.MAC}},{{._dl_vlan}},ip"), "normal"),
+					F(0, 25870, T("in_port={{.PortNo}},dl_src={{.MAC}},ip"), "normal"),
+					F(0, 24770, T("dl_dst={{.MAC}},ip"), "normal"),
+				)
+				if nic.EnableIPv6() {
+					flows = append(flows,
+						F(0, 26870, T("in_port={{.PortNoPhy}},dl_dst={{.MAC}},{{._dl_vlan}},ipv6"), "normal"),
+						F(0, 25870, T("in_port={{.PortNo}},dl_src={{.MAC}},ipv6"), "normal"),
+						F(0, 24770, T("dl_dst={{.MAC}},ipv6"), "normal"),
+					)
+				}
+			} else {
+				g.eachIP(m, func(T2 func(string) string) {
+					// allow anythin from local ip
+					flows = append(flows,
+						F(0, 26870, T2("in_port={{.PortNoPhy}},dl_dst={{.MAC}},{{._dl_vlan}},ip,nw_dst={{.IP}}"), "normal"),
+						F(0, 25870, T2("in_port={{.PortNo}},dl_src={{.MAC}},ip,nw_src={{.IP}}"), "normal"),
+						F(0, 24770, T2("dl_dst={{.MAC}},ip,nw_dst={{.IP}}"), "normal"),
+					)
+				})
+				// drop others
+				flows = append(flows,
+					F(0, 26860, T("in_port={{.PortNoPhy}},dl_dst={{.MAC}},{{._dl_vlan}},ip"), "drop"),
+					F(0, 25860, T("in_port={{.PortNo}},dl_src={{.MAC}},ip"), "drop"),
+					F(0, 24760, T("dl_dst={{.MAC}},ip"), "drop"),
+				)
+				if nic.EnableIPv6() {
+					flows = append(flows,
+						// allow for ipv6 IP
+						F(0, 26870, T("in_port={{.PortNoPhy}},dl_dst={{.MAC}},{{._dl_vlan}},ipv6,ipv6_dst={{.IP6}}"), "normal"),
+						F(0, 25870, T("in_port={{.PortNo}},dl_src={{.MAC}},ipv6,ipv6_src={{.IP6}}"), "normal"),
+						F(0, 24770, T("dl_dst={{.MAC}},ipv6,ipv6_dst={{.IP6}}"), "normal"),
+						// allow for link local IP
+						F(0, 26870, T("in_port={{.PortNoPhy}},dl_dst={{.MAC}},{{._dl_vlan}},ipv6,ipv6_dst=fe80::/64"), "normal"),
+						F(0, 25870, T("in_port={{.PortNo}},dl_src={{.MAC}},ipv6,ipv6_src=fe80::/64"), "normal"),
+						F(0, 24770, T("dl_dst={{.MAC}},ipv6,ipv6_dst=fe80::/64"), "normal"),
+						// drop others
+						F(0, 26860, T("in_port={{.PortNoPhy}},dl_dst={{.MAC}},{{._dl_vlan}},ipv6"), "drop"),
+						F(0, 25860, T("in_port={{.PortNo}},dl_src={{.MAC}},ipv6"), "drop"),
+						F(0, 24760, T("dl_dst={{.MAC}},ipv6"), "drop"),
+					)
+				}
+			}
+			// flows = append(flows,
+			//	F(0, 23600, T("in_port={{.PortNo}},dl_src={{.MAC}}"), "normal"),
+			// )
+		}
+		flows = append(flows,
+			F(0, 25760, T("in_port={{.PortNo}},arp"), "drop"),
+			F(0, 24660, T("in_port={{.PortNo}}"), "drop"),
+		)
+	}
+	if !g.HostConfig.DisableSecurityGroup {
+		flows = append(flows, g.SecurityRules.Flows(g, nic, m)...)
+	}
+	return flows, nil
+}
+
 func (g *Guest) FlowsMap() (map[string][]*ovs.Flow, error) {
 	r := map[string][]*ovs.Flow{}
 	allGood := true
-	disableSecgrp := g.HostConfig.DisableSecurityGroup
 	for _, nic := range g.NICs {
-		if nic.PortNo <= 0 {
-			allGood = false
-			continue
-		}
-		hcn := g.HostConfig.HostNetworkConfig(nic.Bridge)
-		if hcn == nil {
-			log.Warningf("guest %s port %s: no host network config for %s",
-				g.Id, nic.IfnameHost, nic.Bridge)
-			allGood = false
-			continue
-		}
-		ps, err := DumpPort(nic.Bridge, hcn.Ifname)
+		flows, err := g.FlowsMapForNic(nic)
 		if err != nil {
-			log.Warningf("fetch phy port_no of %s,%s failed: %s",
-				nic.Bridge, hcn.Ifname, err)
+			log.Warningf("FlowsMapForNic %s fail: %s", nic.MAC, err)
 			allGood = false
 			continue
-		}
-		portNoPhy := ps.PortID
-		m := nic.Map()
-		m["DHCPServerPort"] = g.HostConfig.DhcpServerPort
-		m["PortNoPhy"] = portNoPhy
-		{
-			var mdPortAction string
-			var mdInPort string
-			mdIP, mdMAC, mdPortNo, useLOCAL, err := g.getMetadataInfo(nic)
-			if useLOCAL {
-				if err != nil {
-					log.Warningf("find metadata: %v", err)
-				}
-				{
-					ip, mac, err := hcn.IPMAC()
-					if err != nil {
-						log.Warningf("host network find ip mac: %v", err)
-						continue
-					}
-					mdIP = ip.String()
-					mdMAC = mac.String()
-				}
-				mdPortNo = portNoPhy
-				mdInPort = "LOCAL"
-				mdPortAction = "LOCAL"
-			} else {
-				mdInPort = fmt.Sprintf("%d", mdPortNo)
-				mdPortAction = fmt.Sprintf("output:%d", mdPortNo)
-			}
-			m["MetadataServerPort"] = g.HostConfig.MetadataPort()
-			m["MetadataServerIP"] = mdIP
-			m["MetadataServerMAC"] = mdMAC
-			m["MetadataPortInPort"] = mdInPort
-			m["MetadataPortAction"] = mdPortAction
-		}
-		T := t(m)
-		if nic.VLAN > 1 {
-			m["_dl_vlan"] = T("dl_vlan={{.VLAN}}")
-		} else {
-			m["_dl_vlan"] = T("vlan_tci={{.VLANTci}}")
-		}
-		flows := []*ovs.Flow{}
-		flows = append(flows,
-			F(0, 29200,
-				T("in_port={{.MetadataPortInPort}},tcp,nw_dst={{.IP}},tp_src={{.MetadataServerPort}}"),
-				T("mod_dl_dst:{{.MAC}},mod_nw_src:169.254.169.254,mod_tp_src:80,output:{{.PortNo}}")),
-			F(0, 29300, T("in_port={{.PortNo}},tcp,nw_dst=169.254.169.254,tp_dst=80"),
-				T("mod_dl_dst:{{.MetadataServerMAC}},mod_nw_dst:{{.MetadataServerIP}},mod_tp_dst:{{.MetadataServerPort}},{{.MetadataPortAction}}")),
-			F(0, 28400, T("in_port={{.PortNo}},udp,tp_src=68,tp_dst=67"), T("mod_tp_dst:{{.DHCPServerPort}},local")),
-			F(0, 28300, T("in_port=LOCAL,dl_dst={{.MAC}},udp,tp_src={{.DHCPServerPort}},tp_dst=68"), T("mod_tp_src:67,output:{{.PortNo}}")),
-			F(0, 26700, T("in_port={{.PortNoPhy}},dl_dst={{.MAC}},{{._dl_vlan}}"), "normal"),
-		)
-		if !g.SrcMacCheck() {
-			flows = append(flows, F(0, 24670, T("in_port={{.PortNo}}"), "normal"))
-		} else {
-			if !g.SrcIpCheck() {
-				flows = append(flows,
-					F(0, 25770, T("in_port={{.PortNo}},arp,dl_src={{.MAC}},arp_sha={{.MAC}}"), "normal"),
-				)
-			} else {
-				g.eachIP(m, func(T2 func(string) string) {
-					flows = append(flows,
-						F(0, 25770, T2("in_port={{.PortNo}},arp,dl_src={{.MAC}},arp_sha={{.MAC}},arp_spa={{.IP}}"), "normal"),
-					)
-				})
-			}
-			if disableSecgrp {
-				if !g.SrcIpCheck() {
-					flows = append(flows,
-						F(0, 26870, T("in_port={{.PortNoPhy}},dl_dst={{.MAC}},{{._dl_vlan}},ip"), "normal"),
-						F(0, 25870, T("in_port={{.PortNo}},dl_src={{.MAC}},ip"), "normal"),
-						F(0, 24770, T("dl_dst={{.MAC}},ip"), "normal"),
-					)
-				} else {
-					g.eachIP(m, func(T2 func(string) string) {
-						flows = append(flows,
-							F(0, 26870, T2("in_port={{.PortNoPhy}},dl_dst={{.MAC}},{{._dl_vlan}},ip,nw_dst={{.IP}}"), "normal"),
-							F(0, 25870, T2("in_port={{.PortNo}},dl_src={{.MAC}},ip,nw_src={{.IP}}"), "normal"),
-							F(0, 24770, T2("dl_dst={{.MAC}},ip,nw_dst={{.IP}}"), "normal"),
-						)
-					})
-					flows = append(flows,
-						F(0, 26860, T("in_port={{.PortNoPhy}},dl_dst={{.MAC}},{{._dl_vlan}},ip"), "drop"),
-						F(0, 25860, T("in_port={{.PortNo}},dl_src={{.MAC}},ip"), "drop"),
-						F(0, 24760, T("dl_dst={{.MAC}},ip"), "drop"),
-					)
-				}
-				flows = append(flows,
-					F(0, 25600, T("in_port={{.PortNo}},dl_src={{.MAC}}"), "normal"),
-				)
-			}
-			flows = append(flows,
-				F(0, 25760, T("in_port={{.PortNo}},arp"), "drop"),
-				F(0, 24660, T("in_port={{.PortNo}}"), "drop"),
-			)
-		}
-		if !disableSecgrp {
-			flows = append(flows, g.SecurityRules.Flows(g, m)...)
 		}
 		if fs, ok := r[nic.Bridge]; ok {
 			flows = append(fs, flows...)
@@ -309,7 +379,17 @@ func (g *Guest) eachIP(data map[string]interface{}, cb func(func(string) string)
 	}
 }
 
-func (sr *SecurityRules) Flows(g *Guest, data map[string]interface{}) []*ovs.Flow {
+func (sr *SecurityRules) Flows(g *Guest, nic *GuestNIC, data map[string]interface{}) []*ovs.Flow {
+	if len(nic.IP) > 0 {
+		data["IP"] = nic.IP
+	} else {
+		delete(data, "IP")
+	}
+	if len(nic.IP6) > 0 {
+		data["IP6"] = nic.IP6
+	} else {
+		delete(data, "IP6")
+	}
 	T := t(data)
 	data["_in_port_vm"] = "reg0=0x10000/0x10000"
 	data["_in_port_not_vm"] = "reg0=0x0/0x10000"
@@ -328,9 +408,10 @@ func (sr *SecurityRules) Flows(g *Guest, data map[string]interface{}) []*ovs.Flo
 	// table 0
 	// table 1 sec_CT
 	flows = append(flows,
-		F(0, 27300, T("in_port=LOCAL,dl_dst={{.MAC}},ip"),
-			loadZone+T(",ct(table=1,zone={{.CT_ZONE}})")),
+		F(0, 27300, T("in_port=LOCAL,dl_dst={{.MAC}},ip"), loadZone+T(",ct(table=1,zone={{.CT_ZONE}})")),
+		F(0, 27300, T("in_port=LOCAL,dl_dst={{.MAC}},ipv6"), loadZone+T(",ct(table=1,zone={{.CT_ZONE}})")),
 	)
+
 	if !g.SrcIpCheck() {
 		flows = append(flows,
 			F(0, 26870, T("in_port={{.PortNoPhy}},dl_dst={{.MAC}},{{._dl_vlan}},ip"),
@@ -340,6 +421,15 @@ func (sr *SecurityRules) Flows(g *Guest, data map[string]interface{}) []*ovs.Flo
 			F(0, 24770, T("dl_dst={{.MAC}},ip"),
 				loadZone+T(",ct(table=1,zone={{.CT_ZONE}})")),
 		)
+		flows = append(flows,
+			F(0, 26870, T("in_port={{.PortNoPhy}},dl_dst={{.MAC}},{{._dl_vlan}},ipv6"),
+				loadZone+T(",ct(table=1,zone={{.CT_ZONE}})")),
+			F(0, 25870, T("in_port={{.PortNo}},dl_src={{.MAC}},ipv6"),
+				loadReg0BitVm+","+loadZone+T(",ct(table=1,zone={{.CT_ZONE}})")),
+			F(0, 24770, T("dl_dst={{.MAC}},ipv6"),
+				loadZone+T(",ct(table=1,zone={{.CT_ZONE}})")),
+		)
+
 	} else {
 		g.eachIP(data, func(T2 func(string) string) {
 			flows = append(flows,
@@ -356,6 +446,22 @@ func (sr *SecurityRules) Flows(g *Guest, data map[string]interface{}) []*ovs.Flo
 			F(0, 25860, T("in_port={{.PortNo}},dl_src={{.MAC}},ip"), "drop"),
 			F(0, 24760, T("dl_dst={{.MAC}},ip"), "drop"),
 		)
+
+		if len(nic.IP6) > 0 {
+			flows = append(flows,
+				F(0, 26870, T("in_port={{.PortNoPhy}},dl_dst={{.MAC}},{{._dl_vlan}},ipv6,ipv6_dst={{.IP6}}"),
+					loadZone+T(",ct(table=1,zone={{.CT_ZONE}})")),
+				F(0, 25870, T("in_port={{.PortNo}},dl_src={{.MAC}},ipv6,ipv6_src={{.IP6}}"),
+					loadReg0BitVm+","+loadZone+T(",ct(table=1,zone={{.CT_ZONE}})")),
+				F(0, 24770, T("dl_dst={{.MAC}},ipv6,ipv6_dst={{.IP6}}"),
+					loadZone+T(",ct(table=1,zone={{.CT_ZONE}})")),
+			)
+			flows = append(flows,
+				F(0, 26860, T("in_port={{.PortNoPhy}},dl_dst={{.MAC}},{{._dl_vlan}},ipv6"), "drop"),
+				F(0, 25860, T("in_port={{.PortNo}},dl_src={{.MAC}},ipv6"), "drop"),
+				F(0, 24760, T("dl_dst={{.MAC}},ipv6"), "drop"),
+			)
+		}
 	}
 	flows = append(flows,
 		F(0, 25600, T("in_port={{.PortNo}},dl_src={{.MAC}}"), "normal"),
@@ -365,19 +471,27 @@ func (sr *SecurityRules) Flows(g *Guest, data map[string]interface{}) []*ovs.Flo
 		// ct_state= flags order matters
 		flows = append(flows,
 			F(1, 7900, "ip,ct_state=+inv+trk", "drop"),
+			F(1, 7900, "ipv6,ct_state=+inv+trk", "drop"),
 		)
 	} else {
 		flows = append(flows,
 			F(1, 7650, T("ip,ct_state=+inv+trk,{{._in_port_not_vm}}"), "resubmit(,3)"),
+			F(1, 7650, T("ipv6,ct_state=+inv+trk,{{._in_port_not_vm}}"), "resubmit(,3)"),
 			F(1, 7640, T("ip,ct_state=+inv+trk,{{._in_port_vm}}"), "resubmit(,2)"),
+			F(1, 7640, T("ipv6,ct_state=+inv+trk,{{._in_port_vm}}"), "resubmit(,2)"),
 		)
 	}
 	flows = append(flows,
 		F(1, 7800, T("ip,ct_state=+new+trk,{{._in_port_not_vm}}"), "resubmit(,3)"),
+		F(1, 7800, T("ipv6,ct_state=+new+trk,{{._in_port_not_vm}}"), "resubmit(,3)"),
 		F(1, 7700, T("ip,ct_state=+new+trk,{{._in_port_vm}}"), "resubmit(,2)"),
+		F(1, 7700, T("ipv6,ct_state=+new+trk,{{._in_port_vm}}"), "resubmit(,2)"),
 		F(1, 7600, "ip", "resubmit(,4)"),
+		F(1, 7600, "ipv6", "resubmit(,4)"),
 		F(4, 5600, T("ip,dl_dst={{.MAC}}"), loadZoneDstVM+",resubmit(,5),"),
+		F(4, 5600, T("ipv6,dl_dst={{.MAC}}"), loadZoneDstVM+",resubmit(,5),"),
 		F(4, 5500, "ip", "ct(commit,zone=NXM_NX_REG0[0..15]),normal"),
+		F(4, 5500, "ipv6", "ct(commit,zone=NXM_NX_REG0[0..15]),normal"),
 	)
 
 	// table sec_CT_OUT
@@ -422,9 +536,13 @@ func (sr *SecurityRules) Flows(g *Guest, data map[string]interface{}) []*ovs.Flo
 	// rule in_port=PORT_VM.  The following rule are for VM accessing hosts
 	// other than locally managed VMs
 	flows = append(flows, F(3, 30, "ip", "ct(commit,zone=NXM_NX_REG0[0..15]),normal"))
+	flows = append(flows, F(3, 30, "ipv6", "ct(commit,zone=NXM_NX_REG0[0..15]),normal"))
+
 	flows = append(flows,
 		F(5, 20, T("ip,{{._in_port_not_vm}}"), "ct(commit,zone=NXM_NX_REG1[0..15]),normal"),
+		F(5, 20, T("ipv6,{{._in_port_not_vm}}"), "ct(commit,zone=NXM_NX_REG1[0..15]),normal"),
 		F(5, 10, T("ip,{{._in_port_vm}}"), "ct(commit,zone=NXM_NX_REG1[0..15]),ct(commit,zone=NXM_NX_REG0[0..15]),normal"),
+		F(5, 10, T("ipv6,{{._in_port_vm}}"), "ct(commit,zone=NXM_NX_REG1[0..15]),ct(commit,zone=NXM_NX_REG0[0..15]),normal"),
 	)
 	return flows
 }
