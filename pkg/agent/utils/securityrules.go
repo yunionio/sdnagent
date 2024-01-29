@@ -18,6 +18,7 @@ import (
 	"fmt"
 	"strings"
 
+	"yunion.io/x/pkg/util/regutils"
 	"yunion.io/x/pkg/util/secrules"
 )
 
@@ -43,7 +44,10 @@ func (sr *SecurityRule) OvsMatches() []string {
 	if sr.ovsMatches != nil {
 		return sr.ovsMatches
 	}
+
+	var nwProto string
 	var nwField string
+	var v6Field string
 	var tpField string
 	var protoMatch string
 	var nwMatch string
@@ -52,22 +56,40 @@ func (sr *SecurityRule) OvsMatches() []string {
 	r := sr.r
 	switch r.Direction {
 	case secrules.DIR_IN:
-		nwField = "nw_src="
+		nwField = "ip,nw_src="
+		v6Field = "ipv6,ipv6_src="
 		tpField = "tp_dst="
 	case secrules.DIR_OUT:
-		nwField = "nw_dst="
+		nwField = "ip,nw_dst="
+		v6Field = "ipv6,ipv6_dst="
 		tpField = "tp_dst="
 	}
-	if net := r.IPNet.String(); net != "0.0.0.0/0" {
-		if ones, bits := r.IPNet.Mask.Size(); ones == 32 && bits == 32 {
-			nwMatch = nwField + r.IPNet.IP.String()
+	if r.IPNet != nil {
+		netStr := r.IPNet.String()
+		if regutils.MatchCIDR6(netStr) {
+			// ipv6
+			nwProto = "ipv6"
+			if ones, bits := r.IPNet.Mask.Size(); ones == 128 && bits == 128 {
+				nwMatch = v6Field + r.IPNet.IP.String()
+			} else {
+				nwMatch = v6Field + netStr
+			}
 		} else {
-			nwMatch = nwField + net
+			// ipv4
+			nwProto = "ip"
+			if ones, bits := r.IPNet.Mask.Size(); ones == 32 && bits == 32 {
+				nwMatch = nwField + r.IPNet.IP.String()
+			} else {
+				nwMatch = nwField + netStr
+			}
 		}
 	}
 	switch r.Protocol {
 	case secrules.PROTO_ANY:
-		protoMatch = "ip"
+		if len(nwMatch) == 0 {
+			tpMatch = append(tpMatch, "ipv6", "ip")
+		}
+		// protoMatch = "ip"
 	case secrules.PROTO_TCP, secrules.PROTO_UDP:
 		if len(r.Ports) > 0 {
 			for _, p := range r.Ports {
@@ -94,23 +116,38 @@ func (sr *SecurityRule) OvsMatches() []string {
 				}
 			}
 		}
-		fallthrough
+		protoMatch = r.Protocol
+	case secrules.PROTO_ICMP:
+		if nwProto == "ipv6" {
+			protoMatch = "icmp6"
+		} else if nwProto == "ip" {
+			protoMatch = "icmp"
+		} else {
+			tpMatch = append(tpMatch, "icmp", "icmp6")
+		}
 	default:
 		protoMatch = r.Protocol
 	}
 
 	var m string
 	if len(nwMatch) > 0 {
-		m = protoMatch + "," + nwMatch
-	} else {
-		m = protoMatch
+		m = nwMatch
+	}
+	if len(protoMatch) > 0 {
+		if len(m) > 0 {
+			m += ","
+		}
+		m += protoMatch
 	}
 	if len(tpMatch) == 0 {
 		sr.ovsMatches = []string{m}
 	} else {
 		ms := []string{}
 		for _, tpm := range tpMatch {
-			ms = append(ms, m+","+tpm)
+			if len(m) > 0 {
+				tpm = m + "," + tpm
+			}
+			ms = append(ms, tpm)
 		}
 		sr.ovsMatches = ms
 	}

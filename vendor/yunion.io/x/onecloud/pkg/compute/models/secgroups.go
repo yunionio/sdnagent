@@ -713,7 +713,7 @@ func (self *SSecurityGroup) PerformClone(ctx context.Context, userCred mcclient.
 	return input, nil
 }
 
-func (self *SSecurityGroup) GetAllowList() (secrules.SecurityRuleSet, secrules.SecurityRuleSet, error) {
+/*func (self *SSecurityGroup) GetAllowList() (secrules.SecurityRuleSet, secrules.SecurityRuleSet, error) {
 	in := secrules.SecurityRuleSet{}
 	out := secrules.SecurityRuleSet{}
 	rules, err := self.GetSecurityRules()
@@ -731,7 +731,7 @@ func (self *SSecurityGroup) GetAllowList() (secrules.SecurityRuleSet, secrules.S
 	in = append(in, *secrules.MustParseSecurityRule("in:deny any"))
 	out = append(out, *secrules.MustParseSecurityRule("out:allow any"))
 	return in.AllowList(), out.AllowList(), nil
-}
+}*/
 
 func (self *SSecurityGroup) clearRules() error {
 	_, err := sqlchemy.GetDB().Exec(
@@ -1265,7 +1265,9 @@ func (self *SSecurityGroup) SyncWithCloudSecurityGroup(
 		syncVirtualResourceMetadata(ctx, userCred, self, ext, account.ReadOnly)
 	}
 
-	SyncCloudProject(ctx, userCred, self, syncOwnerId, ext, self.ManagerId)
+	if provider, _ := self.GetCloudprovider(); provider != nil {
+		SyncCloudProject(ctx, userCred, self, syncOwnerId, ext, provider)
+	}
 
 	if !syncRule {
 		return nil
@@ -1331,7 +1333,7 @@ func (self *SCloudregion) newFromCloudSecurityGroup(
 	}
 
 	syncVirtualResourceMetadata(ctx, userCred, ret, ext, false)
-	SyncCloudProject(ctx, userCred, ret, syncOwnerId, ext, ret.ManagerId)
+	SyncCloudProject(ctx, userCred, ret, syncOwnerId, ext, provider)
 
 	rules, err := ext.GetRules()
 	if err != nil {
