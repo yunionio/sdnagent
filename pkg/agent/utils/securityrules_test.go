@@ -14,11 +14,11 @@
 
 package utils
 
-import "testing"
 import (
 	"fmt"
 	"reflect"
 	"strings"
+	"testing"
 )
 
 func TestSecurityRuleOvsMatches(t *testing.T) {
@@ -33,9 +33,33 @@ func TestSecurityRuleOvsMatches(t *testing.T) {
 			},
 		},
 		{
+			in: `in:allow 0.0.0.0/0 tcp 3389`,
+			matches: []string{
+				`ip,nw_src=0.0.0.0/0,tcp,tp_dst=3389`,
+			},
+		},
+		{
+			in: `in:allow ::/0 tcp 3389`,
+			matches: []string{
+				`ipv6,ipv6_src=::/0,tcp,tp_dst=3389`,
+			},
+		},
+		{
 			in: `in:allow tcp 3389-3389`,
 			matches: []string{
 				`tcp,tp_dst=3389`,
+			},
+		},
+		{
+			in: `in:allow 192.168.22.0/24 tcp 3389-3389`,
+			matches: []string{
+				`ip,nw_src=192.168.22.0/24,tcp,tp_dst=3389`,
+			},
+		},
+		{
+			in: `in:allow fd:3ffe:3200:fd::/64 tcp 3389-3389`,
+			matches: []string{
+				`ipv6,ipv6_src=fd:3ffe:3200:fd::/64,tcp,tp_dst=3389`,
 			},
 		},
 		{

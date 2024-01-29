@@ -12,30 +12,18 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-package cloudprovider
+package sortutils
 
-type SAccessGroup struct {
-	Name           string
-	NetworkType    string
-	FileSystemType string
-	Desc           string
-}
+import "strings"
 
-type TRWAccessType string
-type TUserAccessType string
+type CompareResult int
 
 const (
-	RWAccessTypeRW = TRWAccessType("RW")
-	RWAccessTypeR  = TRWAccessType("R")
-
-	UserAccessTypeNoRootSquash = TUserAccessType("no_root_squash")
-	UserAccessTypeRootSquash   = TUserAccessType("root_squash")
-	UserAccessTypeAllSquash    = TUserAccessType("all_squash")
+	Equal = CompareResult(0)
+	Less  = CompareResult(-1)
+	More  = CompareResult(1)
 )
 
-type AccessGroupRule struct {
-	Priority       int
-	RWAccessType   TRWAccessType
-	UserAccessType TUserAccessType
-	Source         string
+func CompareString(str1, str2 string) CompareResult {
+	return CompareResult(strings.Compare(str1, str2))
 }

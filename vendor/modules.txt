@@ -671,7 +671,7 @@ sigs.k8s.io/structured-merge-diff/v4/value
 # sigs.k8s.io/yaml v1.2.0
 ## explicit; go 1.12
 sigs.k8s.io/yaml
-# yunion.io/x/cloudmux v0.3.10-0-alpha.1.0.20231229064726-2667f17e2b91
+# yunion.io/x/cloudmux v0.3.10-0-alpha.1.0.20240124090015-c54324169864
 ## explicit; go 1.18
 yunion.io/x/cloudmux/pkg/apis
 yunion.io/x/cloudmux/pkg/apis/billing
@@ -692,7 +692,7 @@ yunion.io/x/jsonutils
 ## explicit; go 1.12
 yunion.io/x/log
 yunion.io/x/log/hooks
-# yunion.io/x/onecloud v0.0.0-20231231043031-ed79e40429ee
+# yunion.io/x/onecloud v0.0.0-20240127101631-8569204cf472
 ## explicit; go 1.18
 yunion.io/x/onecloud/locales
 yunion.io/x/onecloud/pkg/apihelper
@@ -812,7 +812,7 @@ yunion.io/x/onecloud/pkg/util/tagutils
 yunion.io/x/onecloud/pkg/util/yunionmeta
 yunion.io/x/onecloud/pkg/vpcagent/models
 yunion.io/x/onecloud/pkg/vpcagent/ovn/mac
-# yunion.io/x/pkg v1.0.1-0.20231101105448-abef64cdc142
+# yunion.io/x/pkg v1.10.1-0.20240127153242-cdf9dc071f4f
 ## explicit; go 1.18
 yunion.io/x/pkg/appctx
 yunion.io/x/pkg/errors
@@ -849,6 +849,7 @@ yunion.io/x/pkg/util/seclib
 yunion.io/x/pkg/util/secrules
 yunion.io/x/pkg/util/sets
 yunion.io/x/pkg/util/signalutils
+yunion.io/x/pkg/util/sortutils
 yunion.io/x/pkg/util/streamutils
 yunion.io/x/pkg/util/stringutils
 yunion.io/x/pkg/util/timeutils
@@ -859,7 +860,7 @@ yunion.io/x/pkg/utils
 # yunion.io/x/s3cli v0.0.0-20190917004522-13ac36d8687e
 ## explicit; go 1.12
 yunion.io/x/s3cli
-# yunion.io/x/sqlchemy v1.1.3-0.20231219103237-8264e6ead2fc
+# yunion.io/x/sqlchemy v1.1.3-0.20240103021517-2be4fb49bd3b
 ## explicit; go 1.17
 yunion.io/x/sqlchemy
 yunion.io/x/sqlchemy/backends/clickhouse

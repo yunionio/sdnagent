@@ -787,7 +787,9 @@ type ServerChangeConfigInput struct {
 	// cpu卡槽数
 	// vmware 若开机调整配置时,需要保证调整前及调整后 vcpu_count / cpu_sockets 保持不变
 	// vmware开机调整配置同样需要注意 https://kb.vmware.com/s/article/2008405
-	CpuSockets *int `json:"cpu_sockets"`
+	// swagger: ignore
+	// CpuSockets *int `json:"cpu_sockets"`
+
 	// cpu大小
 	VcpuCount *int `json:"vcpu_count"`
 	// 内存大小, 1024M, 1G
@@ -796,6 +798,7 @@ type ServerChangeConfigInput struct {
 	// 调整完配置后是否自动启动
 	AutoStart bool `json:"auto_start"`
 
+	// disks start from index 1, i.e. cannot change size of system disk(1st disk)
 	Disks []DiskConfig `json:"disks"`
 
 	SetTrafficLimits   []ServerNicTrafficLimit
@@ -1171,8 +1174,8 @@ type ServerNicTrafficLimit struct {
 }
 
 type GuestAddSubIpsInput struct {
-	Mac    string   `json:"mac"`
-	IpAddr string   `json:"ip_addr"`
+	ServerNetworkInfo
+
 	Count  int      `json:"count"`
 	SubIps []string `json:"sub_ips"`
 
@@ -1215,4 +1218,96 @@ type ServerSetOSInfoInput struct {
 	// OS version, e.g: 7.9, 22.04, 6.3
 	Version string `json:"version" help:"OS version, e.g.: 7.9, 22.04, 6.3"`
 	Arch    string `json:"arch" help:"OS arch, e.g.: x86_64, aarch64"`
+}
+
+type ServerNetworkInfo struct {
+	Index   int    `json:"index"`
+	Mac     string `json:"mac"`
+	IpAddr  string `json:"ip_addr"`
+	Ip6Addr string `json:"ip6_addr"`
+}
+
+type ServerChangeIpaddrInput struct {
+	ServerNetworkInfo
+
+	NetDesc string         `json:"net_desc"`
+	NetConf *NetworkConfig `json:"net_conf"`
+
+	Reserve *bool `json:"reserve"`
+
+	RestartNetwork *bool `json:"restart_network"`
+}
+
+type ServerChangeBandwidthInput struct {
+	ServerNetworkInfo
+
+	Bandwidth int `json:"bandwidth"`
+}
+
+type ServerChangeConfigSpecs struct {
+	CpuSockets   int    `json:"cpu_sockets"`
+	VcpuCount    int    `json:"vcpu_count"`
+	VmemSize     int    `json:"vmem_size"`
+	InstanceType string `json:"instance_type"`
+}
+
+type DiskResizeSpec struct {
+	DiskId    string
+	SizeMb    int
+	OldSizeMb int
+}
+
+type ServerChangeConfigSettings struct {
+	Old ServerChangeConfigSpecs `json:"old"`
+
+	ServerChangeConfigSpecs
+
+	InstanceTypeFamily string `json:"instance_type_family"`
+	// disks to resize
+	Resize []*DiskResizeSpec `json:"resize"`
+	// disks to create
+	Create []*DiskConfig `json:"create"`
+
+	AutoStart   bool `json:"auto_start"`
+	GuestOnline bool `json:"guest_online"`
+
+	SetTrafficLimits   []ServerNicTrafficLimit `json:"set_traffic_limits"`
+	ResetTrafficLimits []ServerNicTrafficLimit `json:"reset_traffic_limits"`
+
+	SchedDesc jsonutils.JSONObject `json:"sched_desc"`
+}
+
+func (conf ServerChangeConfigSettings) CpuChanged() bool {
+	return conf.VcpuCount != conf.Old.VcpuCount
+}
+
+func (conf ServerChangeConfigSettings) AddedCpu() int {
+	addCpu := conf.VcpuCount - conf.Old.VcpuCount
+	if addCpu < 0 {
+		addCpu = 0
+	}
+	return addCpu
+}
+
+func (conf ServerChangeConfigSettings) MemChanged() bool {
+	return conf.VmemSize != conf.Old.VmemSize
+}
+
+func (conf ServerChangeConfigSettings) AddedMem() int {
+	addMem := conf.VmemSize - conf.Old.VmemSize
+	if addMem < 0 {
+		addMem = 0
+	}
+	return addMem
+}
+
+func (conf ServerChangeConfigSettings) AddedDisk() int {
+	var size int
+	for _, resize := range conf.Resize {
+		size += resize.SizeMb - resize.OldSizeMb
+	}
+	for _, create := range conf.Create {
+		size += create.SizeMb
+	}
+	return size
 }

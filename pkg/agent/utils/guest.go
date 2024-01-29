@@ -75,11 +75,19 @@ type GuestNIC struct {
 	HostId     string      `json:"host_id"`
 	Vpc        GuestNICVpc `json:"vpc"`
 
+	IP6      string `json:"ip6"`
+	Gateway6 string `json:"gateway6"`
+	Masklen6 int    `json:"masklen6"`
+
 	CtZoneId    uint16 `json:"-"`
 	CtZoneIdSet bool   `json:"-"`
 	PortNo      int    `json:"-"`
 
 	NetworkAddresses []GuestNICNetworkAddress `json:"networkaddresses"`
+}
+
+func (nic *GuestNIC) EnableIPv6() bool {
+	return len(nic.IP6) > 0
 }
 
 type GuestNICNetworkAddress struct {
@@ -111,6 +119,10 @@ func (n *GuestNIC) Map() map[string]interface{} {
 		"VLAN":    n.VLAN & 0xfff,
 		"CT_ZONE": n.CtZoneId,
 		"PortNo":  n.PortNo,
+	}
+	if len(n.IP6) > 0 {
+		m["IP6"] = n.IP6
+		m["IP6LOCAL"] = "fe80::/64"
 	}
 	vlanTci := n.VLAN & 0xfff
 	if n.VLAN > 1 {
