@@ -36,6 +36,7 @@ import (
 
 const ErrStorageInUse = errors.Error("StorageInUse")
 
+// +onecloud:swagger-gen-ignore
 type SHoststorageManager struct {
 	SHostJointsManager
 	SStorageResourceBaseManager
@@ -60,6 +61,7 @@ func init() {
 	})
 }
 
+// +onecloud:model-api-gen
 type SHoststorage struct {
 	SHostJointsBase
 
@@ -144,18 +146,23 @@ func (self *SHoststorage) GetStorage() *SStorage {
 }
 
 func (manager *SHoststorageManager) ValidateCreateData(ctx context.Context, userCred mcclient.TokenCredential, ownerId mcclient.IIdentityProvider, query jsonutils.JSONObject, input api.HostStorageCreateInput) (api.HostStorageCreateInput, error) {
-	storageObj, err := validators.ValidateModel(userCred, StorageManager, &input.StorageId)
+	storageObj, err := validators.ValidateModel(ctx, userCred, StorageManager, &input.StorageId)
 	if err != nil {
 		return input, err
 	}
 	storage := storageObj.(*SStorage)
-	hostObj, err := validators.ValidateModel(userCred, HostManager, &input.HostId)
+	hostObj, err := validators.ValidateModel(ctx, userCred, HostManager, &input.HostId)
 	if err != nil {
 		return input, err
 	}
 	host := hostObj.(*SHost)
 
-	input, err = host.GetHostDriver().ValidateAttachStorage(ctx, userCred, host, storage, input)
+	driver, err := host.GetHostDriver()
+	if err != nil {
+		return input, errors.Wrapf(err, "GetHostDriver")
+	}
+
+	input, err = driver.ValidateAttachStorage(ctx, userCred, host, storage, input)
 	if err != nil {
 		return input, err
 	}
@@ -230,10 +237,10 @@ func (self *SHoststorage) StartHostStorageDetachTask(ctx context.Context, userCr
 
 func (self *SHoststorage) PostDelete(ctx context.Context, userCred mcclient.TokenCredential) {
 	self.StartHostStorageDetachTask(ctx, userCred)
-	self.SyncStorageStatus(userCred)
+	self.SyncStorageStatus(ctx, userCred)
 }
 
-func (self *SHoststorage) SyncStorageStatus(userCred mcclient.TokenCredential) {
+func (self *SHoststorage) SyncStorageStatus(ctx context.Context, userCred mcclient.TokenCredential) {
 	storage := self.GetStorage()
 	status := api.STORAGE_OFFLINE
 	hosts, _ := storage.GetAttachedHosts()
@@ -243,7 +250,7 @@ func (self *SHoststorage) SyncStorageStatus(userCred mcclient.TokenCredential) {
 		}
 	}
 	if status != storage.Status {
-		storage.SetStatus(userCred, status, "SyncStorageStatus")
+		storage.SetStatus(ctx, userCred, status, "SyncStorageStatus")
 	}
 }
 
@@ -312,12 +319,22 @@ func (self *SHoststorage) Detach(ctx context.Context, userCred mcclient.TokenCre
 	return db.DetachJoint(ctx, userCred, self)
 }
 
-func (manager *SHoststorageManager) GetStorages(hostId string) ([]SHoststorage, error) {
+func (manager *SHoststorageManager) GetHostStoragesByHostId(hostId string) ([]SHoststorage, error) {
 	hoststorage := make([]SHoststorage, 0)
-	hoststorages := HoststorageManager.Query().SubQuery()
-	err := hoststorages.Query().Equals("host_id", hostId).All(&hoststorage)
+	hoststoragesQ := HoststorageManager.Query().Equals("host_id", hostId)
+	err := db.FetchModelObjects(manager, hoststoragesQ, &hoststorage)
 	if err != nil {
-		return nil, err
+		return nil, errors.Wrap(err, "FetchModelObjects")
+	}
+	return hoststorage, nil
+}
+
+func (manager *SHoststorageManager) GetHostStoragesByStorageId(storageId string) ([]SHoststorage, error) {
+	hoststorage := make([]SHoststorage, 0)
+	hoststoragesQ := HoststorageManager.Query().Equals("storage_id", storageId)
+	err := db.FetchModelObjects(manager, hoststoragesQ, &hoststorage)
+	if err != nil {
+		return nil, errors.Wrap(err, "FetchModelObjects")
 	}
 	return hoststorage, nil
 }

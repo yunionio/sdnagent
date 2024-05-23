@@ -647,6 +647,7 @@ func (svpc *SVpc) SyncWithCloudVpc(ctx context.Context, userCred mcclient.TokenC
 		}
 		svpc.Status = extVPC.GetStatus()
 		svpc.CidrBlock = extVPC.GetCidrBlock()
+		svpc.CidrBlock6 = extVPC.GetCidrBlock6()
 		svpc.IsDefault = extVPC.GetIsDefault()
 		svpc.ExternalId = extVPC.GetGlobalId()
 
@@ -744,13 +745,13 @@ func (manager *SVpcManager) newFromCloudVpc(ctx context.Context, userCred mcclie
 	return &vpc, nil
 }
 
-func (svpc *SVpc) markAllNetworksUnknown(userCred mcclient.TokenCredential) error {
+func (svpc *SVpc) markAllNetworksUnknown(ctx context.Context, userCred mcclient.TokenCredential) error {
 	wires, _ := svpc.GetWires()
 	if wires == nil || len(wires) == 0 {
 		return nil
 	}
 	for i := 0; i < len(wires); i += 1 {
-		wires[i].markNetworkUnknown(userCred)
+		wires[i].markNetworkUnknown(ctx, userCred)
 	}
 	return nil
 }
@@ -920,16 +921,13 @@ func (manager *SVpcManager) ValidateCreateData(
 	query jsonutils.JSONObject,
 	input api.VpcCreateInput,
 ) (api.VpcCreateInput, error) {
-	regionObj, err := validators.ValidateModel(userCred, CloudregionManager, &input.CloudregionId)
+	regionObj, err := validators.ValidateModel(ctx, userCred, CloudregionManager, &input.CloudregionId)
 	if err != nil {
 		return input, err
 	}
 	region := regionObj.(*SCloudregion)
 	if region.isManaged() {
-		if len(region.ManagerId) > 0 {
-			input.CloudproviderId = region.ManagerId
-		}
-		_, err := validators.ValidateModel(userCred, CloudproviderManager, &input.CloudproviderId)
+		_, err := validators.ValidateModel(ctx, userCred, CloudproviderManager, &input.CloudproviderId)
 		if err != nil {
 			return input, err
 		}
@@ -1004,7 +1002,7 @@ func (svpc *SVpc) PostCreate(ctx context.Context, userCred mcclient.TokenCredent
 	}
 	task, err := taskman.TaskManager.NewTask(ctx, "VpcCreateTask", svpc, userCred, nil, "", "", nil)
 	if err != nil {
-		svpc.SetStatus(userCred, api.VPC_STATUS_FAILED, errors.Wrapf(err, "NewTask").Error())
+		svpc.SetStatus(ctx, userCred, api.VPC_STATUS_FAILED, errors.Wrapf(err, "NewTask").Error())
 		return
 	}
 	task.ScheduleRun(nil)
@@ -1052,7 +1050,7 @@ func (svpc *SVpc) GetIVpc(ctx context.Context) (cloudprovider.ICloudVpc, error) 
 
 func (svpc *SVpc) Delete(ctx context.Context, userCred mcclient.TokenCredential) error {
 	log.Infof("SVpc delete do nothing")
-	svpc.SetStatus(userCred, api.VPC_STATUS_START_DELETE, "")
+	svpc.SetStatus(ctx, userCred, api.VPC_STATUS_START_DELETE, "")
 	return nil
 }
 
@@ -1066,7 +1064,7 @@ func (svpc *SVpc) CustomizeDelete(ctx context.Context, userCred mcclient.TokenCr
 
 func (svpc *SVpc) RealDelete(ctx context.Context, userCred mcclient.TokenCredential) error {
 	db.OpsLog.LogEvent(svpc, db.ACT_DELOCATE, svpc.GetShortDesc(ctx), userCred)
-	svpc.SetStatus(userCred, api.VPC_STATUS_DELETED, "real delete")
+	svpc.SetStatus(ctx, userCred, api.VPC_STATUS_DELETED, "real delete")
 
 	return svpc.purge(ctx, userCred)
 }
@@ -1199,7 +1197,7 @@ func (manager *SVpcManager) ListItemFilter(
 	}
 
 	if len(query.DnsZoneId) > 0 {
-		dnsZone, err := DnsZoneManager.FetchByIdOrName(userCred, query.DnsZoneId)
+		dnsZone, err := DnsZoneManager.FetchByIdOrName(ctx, userCred, query.DnsZoneId)
 		if err != nil {
 			if errors.Cause(err) == sql.ErrNoRows {
 				return nil, httperrors.NewResourceNotFoundError2("dns_zone", query.DnsZoneId)
@@ -1211,7 +1209,7 @@ func (manager *SVpcManager) ListItemFilter(
 	}
 
 	if len(query.UsableForInterVpcNetworkId) > 0 {
-		_interVpc, err := validators.ValidateModel(userCred, InterVpcNetworkManager, &query.UsableForInterVpcNetworkId)
+		_interVpc, err := validators.ValidateModel(ctx, userCred, InterVpcNetworkManager, &query.UsableForInterVpcNetworkId)
 		if err != nil {
 			return nil, err
 		}
@@ -1239,7 +1237,7 @@ func (manager *SVpcManager) ListItemFilter(
 	}
 
 	if len(query.InterVpcNetworkId) > 0 {
-		vpcNetwork, err := InterVpcNetworkManager.FetchByIdOrName(userCred, query.InterVpcNetworkId)
+		vpcNetwork, err := InterVpcNetworkManager.FetchByIdOrName(ctx, userCred, query.InterVpcNetworkId)
 		if err != nil {
 			if errors.Cause(err) == sql.ErrNoRows {
 				return nil, httperrors.NewResourceNotFoundError2("inter_vpc_network", query.InterVpcNetworkId)
@@ -1282,7 +1280,7 @@ func (manager *SVpcManager) ListItemFilter(
 	}
 
 	if len(query.ZoneId) > 0 {
-		zoneObj, err := validators.ValidateModel(userCred, ZoneManager, &query.ZoneId)
+		zoneObj, err := validators.ValidateModel(ctx, userCred, ZoneManager, &query.ZoneId)
 		if err != nil {
 			return nil, err
 		}
@@ -1312,6 +1310,10 @@ func (manager *SVpcManager) ListItemFilter(
 	}
 	if len(query.CidrBlock) > 0 {
 		q = q.In("cidr_block", query.CidrBlock)
+	}
+
+	if len(query.CidrBlock6) > 0 {
+		q = q.In("cidr_block6", query.CidrBlock6)
 	}
 
 	return q, nil
@@ -1519,6 +1521,7 @@ func (vpc *SVpc) GetUsages() []db.IUsage {
 }
 
 func (manager *SVpcManager) totalCount(
+	ctx context.Context,
 	ownerId mcclient.IIdentityProvider,
 	scope rbacscope.TRbacScope,
 	rangeObjs []db.IStandaloneModel,
@@ -1671,7 +1674,7 @@ func (vpc *SVpc) PerformPrivate(ctx context.Context, userCred mcclient.TokenCred
 	wires, _ := vpc.GetWires()
 	for i := range wires {
 		if wires[i].DomainId == vpc.DomainId {
-			nets, _ := wires[i].getNetworks(nil, nil, rbacscope.ScopeNone)
+			nets, _ := wires[i].getNetworks(ctx, nil, nil, rbacscope.ScopeNone)
 			for j := range nets {
 				if nets[j].DomainId != vpc.DomainId {
 					emptyNets = false
@@ -1688,7 +1691,7 @@ func (vpc *SVpc) PerformPrivate(ctx context.Context, userCred mcclient.TokenCred
 	}
 	if emptyNets {
 		for i := range wires {
-			nets, _ := wires[i].getNetworks(nil, nil, rbacscope.ScopeNone)
+			nets, _ := wires[i].getNetworks(ctx, nil, nil, rbacscope.ScopeNone)
 			netfail := false
 			for j := range nets {
 				if nets[j].IsPublic && nets[j].GetPublicScope().HigherEqual(rbacscope.ScopeDomain) {
@@ -1963,7 +1966,7 @@ func (svpc *SVpc) GetDetailsTopology(ctx context.Context, userCred mcclient.Toke
 			}
 			wire.Hosts = append(wire.Hosts, host)
 		}
-		networks, err := wires[i].GetNetworks(nil, nil, rbacscope.ScopeSystem)
+		networks, err := wires[i].GetNetworks(ctx, nil, nil, rbacscope.ScopeSystem)
 		if err != nil {
 			return nil, errors.Wrapf(err, "GetNetworks")
 		}
@@ -1979,7 +1982,7 @@ func (svpc *SVpc) GetDetailsTopology(ctx context.Context, userCred mcclient.Toke
 				// Address:      []api.SNetworkUsedAddress{},
 			}
 
-			network.GetNetworkAddressesOutput, err = networks[j].fetchAddressDetails(userCred, userCred, rbacscope.ScopeSystem)
+			network.GetNetworkAddressesOutput, err = networks[j].fetchAddressDetails(ctx, userCred, userCred, rbacscope.ScopeSystem)
 			if err != nil {
 				return nil, errors.Wrapf(err, "fetchAddressDetails")
 			}

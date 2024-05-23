@@ -549,7 +549,7 @@ func (self *SStoragecache) PerformUncacheImage(ctx context.Context, userCred mcc
 
 	var imageId string
 
-	imgObj, err := CachedimageManager.FetchByIdOrName(nil, imageStr)
+	imgObj, err := CachedimageManager.FetchByIdOrName(ctx, nil, imageStr)
 	if err != nil {
 		if err == sql.ErrNoRows {
 			return nil, httperrors.NewResourceNotFoundError2(CachedimageManager.Keyword(), imageStr)
@@ -754,7 +754,14 @@ func (self *SStoragecache) IsReachCapacityLimit(imageId string) bool {
 		}
 	}
 	host, _ := self.GetMasterHost()
-	return host.GetHostDriver().IsReachStoragecacheCapacityLimit(host, cachedImages)
+	if host == nil {
+		return false
+	}
+	driver, _ := host.GetHostDriver()
+	if driver == nil {
+		return false
+	}
+	return driver.IsReachStoragecacheCapacityLimit(host, cachedImages)
 }
 
 func (self *SStoragecache) GetStoragecachedimages() ([]SStoragecachedimage, error) {

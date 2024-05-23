@@ -15,14 +15,17 @@
 package fileutils2
 
 import (
+	"archive/tar"
 	"bufio"
 	"bytes"
+	"compress/gzip"
 	"fmt"
 	"io/ioutil"
 	"os"
 	"path"
 	"path/filepath"
 	"regexp"
+	"strconv"
 	"strings"
 
 	"yunion.io/x/log"
@@ -220,6 +223,18 @@ func FileGetContents(file string) (string, error) {
 	return string(content), nil
 }
 
+func FileGetIntContent(file string) (int, error) {
+	content, err := FileGetContents(file)
+	if err != nil {
+		return -1, errors.Wrap(err, "FileGetContents")
+	}
+	val, err := strconv.Atoi(strings.TrimSpace(content))
+	if err != nil {
+		return -1, errors.Wrapf(err, "convert %s to int", content)
+	}
+	return val, nil
+}
+
 func GetFsFormat(diskPath string) string {
 	ret, err := procutils.NewCommand("blkid", "-o", "value", "-s", "TYPE", diskPath).Output()
 	if err != nil {
@@ -388,4 +403,24 @@ func IsIsoFile(sPath string) bool {
 		return false
 	}
 	return bytes.Equal(buffer, []byte("CD001"))
+}
+
+func IsTarGzipFile(fPath string) bool {
+	f, err := os.Open(fPath)
+	if err != nil {
+		return false
+	}
+	defer f.Close()
+
+	gzf, err := gzip.NewReader(f)
+	if err != nil {
+		return false
+	}
+
+	tarReader := tar.NewReader(gzf)
+	_, err = tarReader.Next()
+	if err != nil {
+		return false
+	}
+	return true
 }

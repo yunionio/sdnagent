@@ -156,15 +156,19 @@ func isExitAddress(ip string) bool {
 }
 
 func AddNicRoutes(routes [][]string, nicDesc *types.SServerNic, mainIp string, nicCnt int) [][]string {
-	if mainIp == nicDesc.Ip {
-		return routes
-	}
+	// always add static routes, even if this is the default NIC
+	// if mainIp == nicDesc.Ip {
+	// 	return routes
+	// }
 	if len(nicDesc.Routes) > 0 {
 		routes = extendRoutes(routes, nicDesc.Routes)
 	} else if len(nicDesc.Gateway) > 0 && !isExitAddress(nicDesc.Ip) &&
 		nicCnt == 2 && nicDesc.Ip != mainIp && isExitAddress(mainIp) {
 		for _, pref := range netutils.GetPrivateIPRanges() {
-			routes = addRoute(routes, pref.String(), nicDesc.Gateway)
+			prefs := pref.ToPrefixes()
+			for _, p := range prefs {
+				routes = addRoute(routes, p.String(), nicDesc.Gateway)
+			}
 		}
 	}
 	return routes

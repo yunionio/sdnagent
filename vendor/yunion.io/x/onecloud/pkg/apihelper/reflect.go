@@ -23,7 +23,6 @@ import (
 	"yunion.io/x/log"
 	"yunion.io/x/pkg/errors"
 	"yunion.io/x/pkg/util/printutils"
-	"yunion.io/x/pkg/util/timeutils"
 
 	"yunion.io/x/onecloud/pkg/cloudcommon/db"
 	mcclient "yunion.io/x/onecloud/pkg/mcclient"
@@ -41,7 +40,6 @@ type GetModelsOptions struct {
 	ModelSet      IModelSet
 
 	BatchListSize        int
-	MinUpdatedAt         time.Time
 	IncludeDetails       bool
 	IncludeEmulated      bool
 	InCludeOtherCloudEnv bool
@@ -51,56 +49,12 @@ func GetModels(opts *GetModelsOptions) error {
 	man := opts.ModelManager
 	manKeyPlural := man.KeyString()
 
-	minUpdatedAt := opts.MinUpdatedAt
-	minUpdatedAtFilter := func(time time.Time) string {
-		// TODO add GE
-		tstr := timeutils.MysqlTime(time)
-		return fmt.Sprintf("updated_at.ge('%s')", tstr)
-	}
-	setNextListParams := func(params *jsonutils.JSONDict, lastUpdatedAt time.Time, lastResult *printutils.ListResult) (time.Time, error) {
+	minUpdatedAt := PseudoZeroTime
+	setNextListParams := func(params *jsonutils.JSONDict, lastResult *printutils.ListResult) error {
 		// NOTE: the updated_at field has second-level resolution.
 		// If they all have the same date...
-		var max time.Time
-		nmax := 0
-		n := len(lastResult.Data)
-
-		// find out the max updated_at date in the result set, and how
-		// many in the set has this date
-		for i := n - 1; i >= 0; i-- {
-			j := lastResult.Data[i]
-			updatedAt, err := j.GetTime("updated_at")
-			if err != nil {
-				log.Warningf("%s: updated_at field: %s, %s",
-					manKeyPlural, err, j.String())
-				continue
-			}
-			if max.IsZero() {
-				max = updatedAt
-			}
-			if max.Equal(updatedAt) {
-				nmax += 1
-			}
-		}
-		// error if we do not have valid date
-		if max.IsZero() {
-			return time.Time{}, fmt.Errorf("%s: cannot find next updated_at after '%q'",
-				manKeyPlural, lastUpdatedAt)
-		}
-
-		var newTime time.Time
-		var newOffset int
-		// if not all updated_at date are the same, then we can
-		// continue to the next age.
-		if nmax < n || (!max.Equal(lastUpdatedAt) && !max.Equal(PseudoZeroTime)) {
-			newTime = max
-			newOffset = nmax
-		} else {
-			newTime = lastUpdatedAt
-			newOffset = lastResult.Offset + n
-		}
-		params.Set("filter.0", jsonutils.NewString(minUpdatedAtFilter(newTime)))
-		params.Set("offset", jsonutils.NewInt(int64(newOffset)))
-		return newTime, nil
+		params.Set("offset", jsonutils.NewInt(int64(lastResult.Offset+len(lastResult.Data))))
+		return nil
 	}
 
 	listOptions := options.BaseListOptions{
@@ -109,13 +63,11 @@ func GetModels(opts *GetModelsOptions) error {
 		Scope:        "system",
 		Details:      options.Bool(opts.IncludeDetails),
 		ShowEmulated: options.Bool(opts.IncludeEmulated),
-		Filter: []string{
-			minUpdatedAtFilter(minUpdatedAt), // order matters, filter.0
-		},
-		OrderBy: []string{"updated_at"},
-		Order:   "asc",
-		Limit:   options.Int(opts.BatchListSize),
-		Offset:  options.Int(0),
+		Filter:       []string{},
+		OrderBy:      []string{"updated_at", "created_at", "id"},
+		Order:        "asc",
+		Limit:        options.Int(opts.BatchListSize),
+		Offset:       options.Int(0),
 	}
 	if !opts.InCludeOtherCloudEnv {
 		listOptions.Filter = append(listOptions.Filter,
@@ -160,7 +112,7 @@ func GetModels(opts *GetModelsOptions) error {
 		if listResult.Offset+len(listResult.Data) >= listResult.Total {
 			break
 		}
-		minUpdatedAt, err = setNextListParams(params, minUpdatedAt, listResult)
+		err = setNextListParams(params, listResult)
 		if err != nil {
 			return fmt.Errorf("%s: %s", manKeyPlural, err)
 		}
@@ -184,8 +136,7 @@ func InitializeModelSetFromJSON(set IModelSet, entriesJson []jsonutils.JSONObjec
 	manKeyPlural := set.ModelManager().KeyString()
 	for _, entryJson := range entriesJson {
 		m := set.NewModel()
-		var err error
-		err = entryJson.Unmarshal(m)
+		err := entryJson.Unmarshal(m)
 		if err != nil {
 			return fmt.Errorf("%s: unmarshal: %v: %s", manKeyPlural, err, entryJson.String())
 		}
@@ -282,6 +233,13 @@ func ModelSetApplyUpdates(aSet, bSet IModelSet) *ModelSetUpdateResult {
 			}
 			// oops, new member
 			aSetRv.SetMapIndex(kRv, bMRv)
+			r.Changed = true
+		}
+	}
+	for _, kRv := range aSetRv.MapKeys() {
+		bMRv := bSetRv.MapIndex(kRv)
+		if !bMRv.IsValid() { // alread deleted
+			aSetRv.SetMapIndex(kRv, reflect.Value{})
 			r.Changed = true
 		}
 	}

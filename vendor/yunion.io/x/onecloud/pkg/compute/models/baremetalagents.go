@@ -48,7 +48,7 @@ type SBaremetalagent struct {
 
 	AgentType string `width:"32" charset:"ascii" nullable:"true" default:"baremetal" list:"admin" update:"admin" create:"admin_optional"`
 
-	Version string `width:"64" charset:"ascii" list:"admin" update:"admin" create:"admin_optional"` // Column(VARCHAR(64, charset='ascii'))
+	Version string `width:"128" charset:"ascii" list:"admin" update:"admin" create:"admin_optional"` // Column(VARCHAR(64, charset='ascii'))
 
 	StoragecacheId    string `width:"36" charset:"ascii" nullable:"true" list:"admin" get:"admin" update:"admin" create:"admin_optional"`
 	DisableImageCache bool   `default:"false" list:"admin" create:"admin_optional" update:"admin"`
@@ -94,7 +94,7 @@ func (self *SBaremetalagent) ValidateUpdateData(ctx context.Context, userCred mc
 		}
 	}
 	if len(input.ZoneId) > 0 {
-		_, input.ZoneResourceInput, err = ValidateZoneResourceInput(userCred, input.ZoneResourceInput)
+		_, input.ZoneResourceInput, err = ValidateZoneResourceInput(ctx, userCred, input.ZoneResourceInput)
 		if err != nil {
 			return input, errors.Wrap(err, "ValidateZoneResourceInput")
 		}
@@ -122,7 +122,7 @@ func (manager *SBaremetalagentManager) ValidateCreateData(ctx context.Context, u
 	if len(input.ZoneId) == 0 {
 		return input, errors.Wrap(httperrors.ErrMissingParameter, "zone/zone_id")
 	}
-	_, input.ZoneResourceInput, err = ValidateZoneResourceInput(userCred, input.ZoneResourceInput)
+	_, input.ZoneResourceInput, err = ValidateZoneResourceInput(ctx, userCred, input.ZoneResourceInput)
 	if err != nil {
 		return input, errors.Wrap(err, "ValidateZoneResourceInput")
 	}
