@@ -87,7 +87,7 @@ func (manager *SExternalProjectManager) ValidateCreateData(
 	if len(input.CloudaccountId) == 0 {
 		return input, httperrors.NewMissingParameterError("cloudaccount_id")
 	}
-	_account, err := validators.ValidateModel(userCred, CloudaccountManager, &input.CloudaccountId)
+	_account, err := validators.ValidateModel(ctx, userCred, CloudaccountManager, &input.CloudaccountId)
 	if err != nil {
 		return input, err
 	}
@@ -97,7 +97,7 @@ func (manager *SExternalProjectManager) ValidateCreateData(
 		if len(input.ManagerId) == 0 {
 			return input, httperrors.NewMissingParameterError("manager_id")
 		}
-		_, err := validators.ValidateModel(userCred, CloudproviderManager, &input.ManagerId)
+		_, err := validators.ValidateModel(ctx, userCred, CloudproviderManager, &input.ManagerId)
 		if err != nil {
 			return input, err
 		}
@@ -138,7 +138,7 @@ func (extProj *SExternalProject) RemoteCreateProject(ctx context.Context, userCr
 	if err == nil {
 		return nil
 	}
-	extProj.SetStatus(userCred, api.EXTERNAL_PROJECT_STATUS_UNAVAILABLE, err.Error())
+	extProj.SetStatus(ctx, userCred, api.EXTERNAL_PROJECT_STATUS_UNAVAILABLE, err.Error())
 
 	return errors.Wrap(err, "remoteCreateProjectInternal")
 }
@@ -205,7 +205,7 @@ func (extProj *SExternalProject) PostCreate(
 }
 
 func (extProj *SExternalProject) startExternalProjectCreateTask(ctx context.Context, userCred mcclient.TokenCredential) error {
-	extProj.SetStatus(userCred, api.EXTERNAL_PROJECT_STATUS_CREATING, "")
+	extProj.SetStatus(ctx, userCred, api.EXTERNAL_PROJECT_STATUS_CREATING, "")
 	params := jsonutils.NewDict()
 	task, err := taskman.TaskManager.NewTask(ctx, "ExternalProjectCreateTask", extProj, userCred, params, "", "", nil)
 	if err != nil {
@@ -297,7 +297,7 @@ func (manager *SExternalProjectManager) SyncProjects(ctx context.Context, userCr
 
 	for i := 0; i < len(removed); i++ {
 		if removed[i].Source == apis.EXTERNAL_RESOURCE_SOURCE_LOCAL {
-			removed[i].SetStatus(userCred, api.EXTERNAL_PROJECT_STATUS_UNKNOWN, "sync delete")
+			removed[i].SetStatus(ctx, userCred, api.EXTERNAL_PROJECT_STATUS_UNKNOWN, "sync delete")
 		} else {
 			err = removed[i].syncRemoveCloudProject(ctx, userCred)
 			if err != nil {
@@ -366,6 +366,15 @@ func (self *SExternalProject) GetProjectCount() (int, error) {
 	return ExternalProjectManager.Query().Equals("tenant_id", self.ProjectId).CountWithError()
 }
 
+func (self *SExternalProject) IsMaxPriority() bool {
+	project := &SExternalProject{}
+	err := ExternalProjectManager.Query().Equals("tenant_id", self.ProjectId).Equals("cloudaccount_id", self.CloudaccountId).Desc("priority").First(project)
+	if err != nil {
+		return false
+	}
+	return project.Priority == self.Priority
+}
+
 func (self *SExternalProject) SyncWithCloudProject(ctx context.Context, userCred mcclient.TokenCredential, account *SCloudaccount, ext cloudprovider.ICloudProject) error {
 	s := auth.GetAdminSession(ctx, consts.GetRegion())
 	providers := account.GetCloudproviders()
@@ -393,30 +402,34 @@ func (self *SExternalProject) SyncWithCloudProject(ctx context.Context, userCred
 	}
 
 	pm, _ := account.GetProjectMapping()
-	if pm != nil && pm.Enabled.IsTrue() && pm.IsNeedProjectSync() && self.ProjectSrc != string(apis.OWNER_SOURCE_LOCAL) {
-		extTags, err := ext.GetTags()
-		if err != nil {
-			return errors.Wrapf(err, "extModel.GetTags")
-		}
+	if self.ProjectSrc != string(apis.OWNER_SOURCE_LOCAL) {
 		find := false
-		if pm.Rules != nil {
-			for _, rule := range *pm.Rules {
-				var newProj string
-				var isMatch bool
-				domainId, projectId, newProj, isMatch = rule.IsMatchTags(extTags)
-				if isMatch && len(newProj) > 0 {
-					domainId, projectId, err = account.getOrCreateTenant(ctx, newProj, "", "", "auto create from tag")
-					if err != nil {
-						log.Errorf("getOrCreateTenant(%s) error: %v", newProj, err)
-						continue
+		if pm != nil && pm.Enabled.IsTrue() && pm.IsNeedProjectSync() {
+			extTags, err := ext.GetTags()
+			if err != nil {
+				return errors.Wrapf(err, "extModel.GetTags")
+			}
+			if pm.Rules != nil {
+				for _, rule := range *pm.Rules {
+					var newProj string
+					var isMatch bool
+					domainId, projectId, newProj, isMatch = rule.IsMatchTags(extTags)
+					if isMatch && len(newProj) > 0 {
+						domainId, projectId, err = account.getOrCreateTenant(ctx, newProj, "", "", "auto create from tag")
+						if err != nil {
+							log.Errorf("getOrCreateTenant(%s) error: %v", newProj, err)
+							continue
+						}
+						find = true
+						break
 					}
-					find = true
-					break
 				}
 			}
 		}
 		if !find && account.AutoCreateProject {
+			domainId, projectId = account.DomainId, account.ProjectId
 			desc := fmt.Sprintf("auto create from cloud project %s (%s)", self.Name, self.ExternalId)
+			var err error
 			domainId, projectId, err = account.getOrCreateTenant(ctx, self.Name, self.DomainId, "", desc)
 			if err != nil {
 				return errors.Wrapf(err, "getOrCreateTenant")
@@ -469,10 +482,13 @@ func (self *SExternalProject) SyncWithCloudProject(ctx context.Context, userCred
 		return errors.Wrapf(err, "db.UpdateWithLock")
 	}
 
-	tags, _ := ext.GetTags()
-	if len(tags) > 0 {
-		identity.Projects.PerformAction(s, self.ProjectId, "user-metadata", jsonutils.Marshal(tags))
+	if self.IsMaxPriority() {
+		tags, _ := ext.GetTags()
+		if len(tags) > 0 {
+			identity.Projects.PerformAction(s, self.ProjectId, "user-metadata", jsonutils.Marshal(tags))
+		}
 	}
+
 	syncMetadata(ctx, userCred, self, ext, account.ReadOnly)
 	db.OpsLog.LogSyncUpdate(self, diff, userCred)
 	return nil
@@ -537,6 +553,7 @@ func (manager *SExternalProjectManager) newFromCloudProject(ctx context.Context,
 	project.DomainId = account.DomainId
 	project.ProjectId = account.ProjectId
 	project.ExternalDomainId = extProject.GetDomainId()
+	project.ProjectSrc = string(apis.OWNER_SOURCE_CLOUD)
 
 	providers := account.GetCloudproviders()
 	providerMaps := map[string]string{}
@@ -610,10 +627,12 @@ func (manager *SExternalProjectManager) newFromCloudProject(ctx context.Context,
 		return nil, errors.Wrapf(err, "Insert")
 	}
 
-	tags, _ := extProject.GetTags()
-	if len(tags) > 0 {
-		s := auth.GetAdminSession(ctx, consts.GetRegion())
-		identity.Projects.PerformAction(s, project.ProjectId, "user-metadata", jsonutils.Marshal(tags))
+	if project.IsMaxPriority() {
+		tags, _ := extProject.GetTags()
+		if len(tags) > 0 {
+			s := auth.GetAdminSession(ctx, consts.GetRegion())
+			identity.Projects.PerformAction(s, project.ProjectId, "user-metadata", jsonutils.Marshal(tags))
+		}
 	}
 
 	syncMetadata(ctx, userCred, &project, extProject, account.ReadOnly)
@@ -684,6 +703,7 @@ func (self *SExternalProject) PerformChangeProject(ctx context.Context, userCred
 	_, err = db.Update(self, func() error {
 		self.ProjectId = tenant.Id
 		self.DomainId = tenant.DomainId
+		self.ProjectSrc = string(apis.OWNER_SOURCE_LOCAL)
 		return nil
 	})
 	if err != nil {
@@ -718,7 +738,7 @@ func (manager *SExternalProjectManager) ListItemFilter(
 		if len(managerStr) == 0 {
 			continue
 		}
-		providerObj, err := manager.FetchByIdOrName(userCred, managerStr)
+		providerObj, err := manager.FetchByIdOrName(ctx, userCred, managerStr)
 		if err != nil {
 			if err == sql.ErrNoRows {
 				return nil, httperrors.NewResourceNotFoundError2(CloudproviderManager.Keyword(), managerStr)
@@ -736,7 +756,7 @@ func (manager *SExternalProjectManager) ListItemFilter(
 	if len(query.CloudaccountId) > 0 {
 		accountIds := []string{}
 		for _, _account := range query.CloudaccountId {
-			account, err := CloudaccountManager.FetchByIdOrName(userCred, _account)
+			account, err := CloudaccountManager.FetchByIdOrName(ctx, userCred, _account)
 			if err != nil {
 				if errors.Cause(err) == sql.ErrNoRows {
 					return nil, httperrors.NewResourceNotFoundError2("cloudaccount", _account)

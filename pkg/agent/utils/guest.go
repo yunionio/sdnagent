@@ -24,6 +24,7 @@ import (
 
 	"yunion.io/x/jsonutils"
 	"yunion.io/x/pkg/errors"
+	"yunion.io/x/pkg/util/netutils"
 
 	"yunion.io/x/onecloud/pkg/hostman/guestman/desc"
 )
@@ -122,7 +123,8 @@ func (n *GuestNIC) Map() map[string]interface{} {
 	}
 	if len(n.IP6) > 0 {
 		m["IP6"] = n.IP6
-		m["IP6LOCAL"] = "fe80::/64"
+		linkLocal, _ := netutils.Mac2LinkLocal(n.MAC)
+		m["IP6LOCAL"] = linkLocal.String() // "fe80::/64"
 	}
 	vlanTci := n.VLAN & 0xfff
 	if n.VLAN > 1 {

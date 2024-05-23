@@ -155,8 +155,12 @@ func normalizeIpv6Addr(addrStr string) ([8]uint16, error) {
 		}
 	} else {
 		for i := 0; i < len(parts); i++ {
+			partStr := strings.TrimSpace(parts[i])
+			if len(partStr) == 0 {
+				continue
+			}
 			var err error
-			addr[i], err = hex2Number(strings.TrimSpace(parts[i]))
+			addr[i], err = hex2Number(partStr)
 			if err != nil {
 				return addr, errors.Wrapf(err, "hex2Number %s", addrStr)
 			}
@@ -312,7 +316,7 @@ func (addr IPV6Addr) String() string {
 			maxZeroLen = maxZeroEnd - maxZeroStart + 1
 		}
 	}
-	if maxZeroLen > 0 {
+	if maxZeroLen > 1 {
 		return strings.Join(hexStrs[:maxZeroStart], ":") + "::" + strings.Join(hexStrs[maxZeroEnd+1:], ":")
 	} else {
 		return strings.Join(hexStrs, ":")

@@ -4,7 +4,7 @@ go 1.18
 
 require (
 	github.com/coreos/go-iptables v0.6.0
-	github.com/digitalocean/go-openvswitch v0.0.0-20190515160856-1141932ed5cf
+	github.com/digitalocean/go-openvswitch v0.0.0-20240130171624-c0f7d42efe24
 	github.com/fsnotify/fsnotify v1.5.4
 	github.com/golang/protobuf v1.5.2
 	github.com/mitchellh/go-homedir v1.1.0
@@ -17,10 +17,10 @@ require (
 	golang.org/x/net v0.9.0
 	google.golang.org/grpc v1.38.0
 	google.golang.org/protobuf v1.27.1
-	yunion.io/x/jsonutils v1.0.1-0.20230613121553-0f3b41e2ef19
-	yunion.io/x/log v1.0.1-0.20230411060016-feb3f46ab361
-	yunion.io/x/onecloud v0.0.0-20240127101642-9442b445d036
-	yunion.io/x/pkg v1.10.1-0.20240127153242-cdf9dc071f4f
+	yunion.io/x/jsonutils v1.0.1-0.20240203102553-4096f103b401
+	yunion.io/x/log v1.0.1-0.20240305175729-7cf2d6cd5a91
+	yunion.io/x/onecloud v0.0.0-20240522123750-f5cf42a511ae
+	yunion.io/x/pkg v1.10.1-0.20240523064807-c920e765a118
 )
 
 require (
@@ -80,7 +80,7 @@ require (
 	github.com/tklauser/numcpus v0.4.0 // indirect
 	github.com/tredoe/osutil/v2 v2.0.0-rc.16 // indirect
 	github.com/ugorji/go/codec v1.1.7 // indirect
-	github.com/vmware/govmomi v0.20.1 // indirect
+	github.com/vmware/govmomi v0.37.1 // indirect
 	github.com/yusufpapurcu/wmi v1.2.2 // indirect
 	go.etcd.io/etcd/api/v3 v3.5.0 // indirect
 	go.etcd.io/etcd/client/pkg/v3 v3.5.0 // indirect
@@ -110,15 +110,15 @@ require (
 	moul.io/http2curl/v2 v2.3.0 // indirect
 	sigs.k8s.io/structured-merge-diff/v4 v4.0.1 // indirect
 	sigs.k8s.io/yaml v1.2.0 // indirect
-	yunion.io/x/cloudmux v0.3.10-0-alpha.1.0.20240124090018-b46efa81820a // indirect
+	yunion.io/x/cloudmux v0.3.10-0-alpha.1.0.20240522122302-b27cdcdc15cb // indirect
 	yunion.io/x/executor v0.0.0-20230705125604-c5ac3141db32 // indirect
 	yunion.io/x/s3cli v0.0.0-20190917004522-13ac36d8687e // indirect
-	yunion.io/x/sqlchemy v1.1.3-0.20240103021517-2be4fb49bd3b // indirect
+	yunion.io/x/sqlchemy v1.1.3-0.20240417115142-4f4271cd8305 // indirect
 	yunion.io/x/structarg v0.0.0-20231017124457-df4d5009457c // indirect
 )
 
 replace (
-	github.com/digitalocean/go-openvswitch => github.com/yousong/go-openvswitch v0.0.0-20200422025222-6b2d502be872
+	github.com/digitalocean/go-openvswitch => yunion.io/x/go-openvswitch v0.0.0-20240505033048-be7a14d52fb2
 	github.com/go-logr/logr => github.com/go-logr/logr v0.4.0
 	github.com/jaypipes/ghw => github.com/zexi/ghw v0.9.1
 )

@@ -71,6 +71,7 @@ type HostListInput struct {
 
 	StorageFilterListInput
 	UsableResourceListInput
+	BackupstorageFilterListInput
 
 	// filter by ResourceType
 	ResourceType string `json:"resource_type"`
@@ -506,6 +507,8 @@ type HostUpdateInput struct {
 
 	// 主机启动模式, 可能值位PXE和ISO
 	BootMode string `json:"boot_mode"`
+
+	EnableNumaAllocate *bool `json:"enable_numa_allocate"`
 }
 
 type HostOfflineInput struct {
@@ -561,7 +564,7 @@ type HostAddNetifInput struct {
 
 	NicType cloudmux.TNicType `json:"nic_type"`
 
-	Index int8 `json:"index"`
+	Index int `json:"index"`
 
 	LinkUp string `json:"link_up"`
 

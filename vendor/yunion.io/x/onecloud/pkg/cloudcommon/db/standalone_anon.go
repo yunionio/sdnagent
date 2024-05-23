@@ -100,13 +100,13 @@ func (manager *SStandaloneAnonResourceBaseManager) FilterByNotId(q *sqlchemy.SQu
 	return q.NotEquals("id", idStr)
 }
 
-func (manager *SStandaloneAnonResourceBaseManager) FilterByOwner(q *sqlchemy.SQuery, man FilterByOwnerProvider, userCred mcclient.TokenCredential, owner mcclient.IIdentityProvider, scope rbacscope.TRbacScope) *sqlchemy.SQuery {
+func (manager *SStandaloneAnonResourceBaseManager) FilterByOwner(ctx context.Context, q *sqlchemy.SQuery, man FilterByOwnerProvider, userCred mcclient.TokenCredential, owner mcclient.IIdentityProvider, scope rbacscope.TRbacScope) *sqlchemy.SQuery {
 	if userCred != nil {
 		result := policy.PolicyManager.Allow(scope, userCred, consts.GetServiceType(), man.KeywordPlural(), policy.PolicyActionList)
 		if !result.ObjectTags.IsEmpty() {
 			policyTagFilters := tagutils.STagFilters{}
 			policyTagFilters.AddFilters(result.ObjectTags)
-			q = ObjectIdQueryWithTagFilters(q, "id", man.Keyword(), policyTagFilters)
+			q = ObjectIdQueryWithTagFilters(ctx, q, "id", man.Keyword(), policyTagFilters)
 		}
 	}
 	return q
@@ -153,7 +153,7 @@ func (manager *SStandaloneAnonResourceBaseManager) ListItemFilter(
 		q = q.In("id", input.Ids)
 	}
 
-	q = manager.SMetadataResourceBaseModelManager.ListItemFilter(manager.GetIModelManager(), q, input.MetadataResourceListInput)
+	q = manager.SMetadataResourceBaseModelManager.ListItemFilter(ctx, manager.GetIModelManager(), q, input.MetadataResourceListInput)
 
 	return q, nil
 }
@@ -260,19 +260,6 @@ func (model *SStandaloneAnonResourceBase) SetAllMetadata(ctx context.Context, di
 	return nil
 }
 
-func (model *SStandaloneAnonResourceBase) SetUserMetadataValues(ctx context.Context, dictstore map[string]string, userCred mcclient.TokenCredential) error {
-	dictStore, err := ensurePrefixString(dictstore, USER_TAG_PREFIX)
-	if err != nil {
-		return errors.Wrapf(err, "ensurePrefixString %s", USER_TAG_PREFIX)
-	}
-	err = Metadata.SetValuesWithLog(ctx, model, dictStore, userCred)
-	if err != nil {
-		return errors.Wrap(err, "SetValuesWithLog")
-	}
-	model.GetIStandaloneModel().OnMetadataUpdated(ctx, userCred)
-	return nil
-}
-
 func ensurePrefix(input map[string]interface{}, prefix string) (map[string]interface{}, error) {
 	dictStore := make(map[string]interface{}, len(input))
 	for k, v := range input {
@@ -307,6 +294,22 @@ func ensurePrefixString(input map[string]string, prefix string) (map[string]inte
 	return dictStore, nil
 }
 
+func (model *SStandaloneAnonResourceBase) SetUserMetadataValues(ctx context.Context, dictstore map[string]string, userCred mcclient.TokenCredential) error {
+	dictStore, err := ensurePrefixString(dictstore, USER_TAG_PREFIX)
+	if err != nil {
+		return errors.Wrapf(err, "ensurePrefixString %s", USER_TAG_PREFIX)
+	}
+	err = Metadata.SetValuesWithLog(ctx, model, dictStore, userCred)
+	if err != nil {
+		return errors.Wrap(err, "SetValuesWithLog")
+	}
+	{
+		model.GetModelManager().TableSpec().InformUpdate(ctx, model, jsonutils.Marshal(model).(*jsonutils.JSONDict))
+	}
+	model.GetIStandaloneModel().OnMetadataUpdated(ctx, userCred)
+	return nil
+}
+
 func (model *SStandaloneAnonResourceBase) SetUserMetadataAll(ctx context.Context, dictstore map[string]string, userCred mcclient.TokenCredential) error {
 	var err error
 	dictStore, err := ensurePrefixString(dictstore, USER_TAG_PREFIX)
@@ -316,6 +319,9 @@ func (model *SStandaloneAnonResourceBase) SetUserMetadataAll(ctx context.Context
 	err = Metadata.SetAll(ctx, model, dictStore, userCred, USER_TAG_PREFIX)
 	if err != nil {
 		return errors.Wrap(err, "SetAll")
+	}
+	{
+		model.GetModelManager().TableSpec().InformUpdate(ctx, model, jsonutils.Marshal(model).(*jsonutils.JSONDict))
 	}
 	model.GetIStandaloneModel().OnMetadataUpdated(ctx, userCred)
 	return nil
@@ -722,12 +728,12 @@ func (model *SStandaloneAnonResourceBase) applyPolicyTags(ctx context.Context, u
 	data.Unmarshal(&tags)
 	log.Debugf("applyPolicyTags: %s", jsonutils.Marshal(tags))
 	if len(tags.PolicyObjectTags) > 0 {
-		model.PerformMetadata(ctx, userCred, nil, tagutils.Tagset2MapString(tags.PolicyObjectTags.Flattern()))
+		model.PerformMetadata(ctx, userCred, nil, tagutils.TagsetMap2MapString(tags.PolicyObjectTags.Flattern()))
 	}
 	if model.Keyword() == "project" && len(tags.PolicyProjectTags) > 0 {
-		model.PerformMetadata(ctx, userCred, nil, tagutils.Tagset2MapString(tags.PolicyProjectTags.Flattern()))
+		model.PerformMetadata(ctx, userCred, nil, tagutils.TagsetMap2MapString(tags.PolicyProjectTags.Flattern()))
 	} else if model.Keyword() == "domain" && len(tags.PolicyDomainTags) > 0 {
-		model.PerformMetadata(ctx, userCred, nil, tagutils.Tagset2MapString(tags.PolicyDomainTags.Flattern()))
+		model.PerformMetadata(ctx, userCred, nil, tagutils.TagsetMap2MapString(tags.PolicyDomainTags.Flattern()))
 	}
 }
 
@@ -944,6 +950,7 @@ func (manager *SStandaloneAnonResourceBaseManager) GetPropertyTagValueTree(
 		manager.GetIStandaloneModelManager(),
 		manager.Keyword(),
 		"id",
+		"",
 		ctx,
 		userCred,
 		query,
@@ -954,6 +961,7 @@ func GetPropertyTagValueTree(
 	manager IModelManager,
 	tagObjType string,
 	tagIdField string,
+	sumField string,
 	ctx context.Context,
 	userCred mcclient.TokenCredential,
 	query jsonutils.JSONObject,
@@ -964,7 +972,7 @@ func GetPropertyTagValueTree(
 		return nil, errors.Wrap(err, "Unmarshal")
 	}
 
-	valueMap, err := GetTagValueCountMap(manager, tagObjType, tagIdField, input.Keys, ctx, userCred, query)
+	valueMap, err := GetTagValueCountMap(manager, tagObjType, tagIdField, sumField, input.Keys, ctx, userCred, query)
 	if err != nil {
 		return nil, errors.Wrap(err, "AllStringAmp")
 	}
@@ -981,21 +989,36 @@ func GetTagValueCountMap(
 	manager IModelManager,
 	tagObjType string,
 	tagIdField string,
+	sumField string,
 	keys []string,
 	ctx context.Context,
 	userCred mcclient.TokenCredential,
 	query jsonutils.JSONObject,
 ) ([]map[string]string, error) {
 	var err error
-	objSubQ := manager.Query().SubQuery()
-	objQ := objSubQ.Query(objSubQ.Field(tagIdField), sqlchemy.COUNT("_sub_count_"))
+	objQ := manager.NewQuery(ctx, userCred, query, false)
 	objQ, err = ListItemQueryFilters(manager, ctx, objQ, userCred, query, policy.PolicyActionList)
 	if err != nil {
 		return nil, errors.Wrap(err, "ListItemQueryFilters")
 	}
-	objQ = objQ.GroupBy(objSubQ.Field(tagIdField))
-	q := objQ.SubQuery().Query(sqlchemy.SUM(tagValueCountKey, objQ.Field("_sub_count_")))
-	metadataSQ := Metadata.Query().Equals("obj_type", tagObjType).In("key", keys).SubQuery()
+	objSubQ := objQ.SubQuery().Query()
+	objSubQ = objSubQ.AppendField(objSubQ.Field(tagIdField))
+	objSubQ = objSubQ.GroupBy(objSubQ.Field(tagIdField))
+	var sumFieldQ sqlchemy.IQueryField
+	if len(sumField) > 0 {
+		sumFieldQ = sqlchemy.SUM("_sub_count_", objSubQ.Field(sumField))
+	} else {
+		sumFieldQ = sqlchemy.COUNT("_sub_count_")
+	}
+	objSubQ = objSubQ.AppendField(sumFieldQ)
+
+	objSubQ.DebugQuery2("GetTagValueCountMap objSubQ")
+
+	q := objSubQ.SubQuery().Query()
+	q = q.AppendField(sqlchemy.SUM(tagValueCountKey, q.Field("_sub_count_")))
+
+	metadataMan := GetMetadaManagerInContext(ctx)
+	metadataSQ := metadataMan.Query().Equals("obj_type", tagObjType).In("key", keys).SubQuery()
 	groupBy := make([]interface{}, 0)
 	for i, key := range keys {
 		valueFieldName := TagValueKey(i)
@@ -1005,11 +1028,15 @@ func GetTagValueCountMap(
 			sqlchemy.NewFunction(
 				sqlchemy.NewCase().When(sqlchemy.IsNull(subq.Field("value")), sqlchemy.NewStringField(tagutils.NoValue)).Else(subq.Field("value")),
 				valueFieldName,
+				false,
 			),
 		)
 		groupBy = append(groupBy, q.Field(valueFieldName))
 	}
 	q = q.GroupBy(groupBy...)
+
+	q.DebugQuery2("GetTagValueCountMap")
+
 	valueMap, err := q.AllStringMap()
 	if err != nil {
 		return nil, errors.Wrap(err, "AllStringAmp")

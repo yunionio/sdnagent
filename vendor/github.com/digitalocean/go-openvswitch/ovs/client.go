@@ -30,8 +30,14 @@ type Client struct {
 	// OpenFlow wraps functionality of the 'ovs-ofctl' binary.
 	OpenFlow *OpenFlowService
 
+	// App wraps functionality of the 'ovs-appctl' binary
+	App *AppService
+
 	// VSwitch wraps functionality of the 'ovs-vsctl' binary.
 	VSwitch *VSwitchService
+
+	// DataPath wraps functionality of the 'ovs-dpctl' binary
+	DataPath *DataPathService
 
 	// Additional flags applied to all OVS actions, such as timeouts
 	// or retries.
@@ -231,6 +237,17 @@ func New(options ...OptionFunc) *Client {
 		c: c,
 	}
 	c.OpenFlow = ofs
+
+	app := &AppService{
+		c: c,
+	}
+	c.App = app
+
+	c.DataPath = &DataPathService{
+		CLI: &DpCLI{
+			c: c,
+		},
+	}
 
 	return c
 }
