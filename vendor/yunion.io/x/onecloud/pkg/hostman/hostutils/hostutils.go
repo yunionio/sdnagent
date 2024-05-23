@@ -38,10 +38,12 @@ import (
 	"yunion.io/x/onecloud/pkg/httperrors"
 	"yunion.io/x/onecloud/pkg/mcclient"
 	"yunion.io/x/onecloud/pkg/mcclient/auth"
+	"yunion.io/x/onecloud/pkg/mcclient/modulebase"
 	modules "yunion.io/x/onecloud/pkg/mcclient/modules/compute"
 	"yunion.io/x/onecloud/pkg/mcclient/modules/k8s"
 	"yunion.io/x/onecloud/pkg/util/cgrouputils/cpuset"
 	"yunion.io/x/onecloud/pkg/util/fileutils2"
+	"yunion.io/x/onecloud/pkg/util/pod"
 )
 
 type IHost interface {
@@ -51,11 +53,13 @@ type IHost interface {
 	GetCpuArchitecture() string
 	GetKernelVersion() string
 	IsAarch64() bool
+	IsX8664() bool
 	GetHostTopology() *hostapi.HostTopology
 	GetReservedCpusInfo() *cpuset.CPUSet
 
 	IsHugepagesEnabled() bool
 	HugepageSizeKb() int
+	IsNumaAllocateEnabled() bool
 
 	IsKvmSupport() bool
 	IsNestedVirtualization() bool
@@ -69,6 +73,12 @@ type IHost interface {
 	// SyncRootPartitionUsedCapacity() error
 
 	GetKubeletConfig() kubelet.KubeletConfig
+
+	// containerd related methods
+	IsContainerHost() bool
+	GetContainerRuntimeEndpoint() string
+	GetCRI() pod.CRI
+	GetContainerCPUMap() *pod.HostContainerCPUMap
 }
 
 func GetComputeSession(ctx context.Context) *mcclient.ClientSession {
@@ -109,7 +119,7 @@ func TaskComplete(ctx context.Context, params jsonutils.JSONObject) {
 
 func K8sTaskFailed(ctx context.Context, reason string) {
 	if taskId := ctx.Value(appctx.APP_CONTEXT_KEY_TASK_ID); taskId != nil {
-		k8s.KubeTasks.TaskFailed(GetK8sSession(ctx), taskId.(string), reason)
+		k8s.KubeTasks.TaskFailed2(GetK8sSession(ctx), taskId.(string), reason)
 	} else {
 		log.Errorf("Reqeuest k8s task failed missing task id, with reason(%s)", reason)
 	}
@@ -151,8 +161,16 @@ func RemoteStoragecacheCacheImage(ctx context.Context, storagecacheId, imageId, 
 		storagecacheId, imageId, query, params)
 }
 
+func UpdateResourceStatus(ctx context.Context, man modulebase.IResourceManager, id string, statusInput *apis.PerformStatusInput) (jsonutils.JSONObject, error) {
+	return man.PerformAction(GetComputeSession(ctx), id, "status", jsonutils.Marshal(statusInput))
+}
+
+func UpdateContainerStatus(ctx context.Context, cid string, statusInput *apis.PerformStatusInput) (jsonutils.JSONObject, error) {
+	return UpdateResourceStatus(ctx, &modules.Containers, cid, statusInput)
+}
+
 func UpdateServerStatus(ctx context.Context, sid string, statusInput *apis.PerformStatusInput) (jsonutils.JSONObject, error) {
-	return modules.Servers.PerformAction(GetComputeSession(ctx), sid, "status", jsonutils.Marshal(statusInput))
+	return UpdateResourceStatus(ctx, &modules.Servers, sid, statusInput)
 }
 
 func UpdateServerProgress(ctx context.Context, sid string, progress, progressMbps float64) (jsonutils.JSONObject, error) {

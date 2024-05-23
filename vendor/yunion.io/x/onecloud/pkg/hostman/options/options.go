@@ -36,7 +36,7 @@ type SHostBaseOptions struct {
 	LiveMigrateCpuThrottleMax int64 `default:"99" help:"live migrate auto converge cpu throttle max"`
 
 	DefaultQemuVersion string `help:"Default qemu version" default:"4.2.0"`
-	NoHpet             bool   `help:"disable qemu hpet timer" default:"false"`
+	NoHpet             bool   `help:"Disable qemu hpet timer" default:"true"`
 
 	CdromCount  int `help:"cdrom count" default:"1"`
 	FloppyCount int `help:"floppy count" default:"1"`
@@ -45,6 +45,14 @@ type SHostBaseOptions struct {
 
 	DhcpLeaseTime   int `default:"100663296" help:"DHCP lease time in seconds"`
 	DhcpRenewalTime int `default:"67108864" help:"DHCP renewal time in seconds"`
+
+	Ext4LargefileSizeGb int `default:"4096" help:"Use largefile options when the ext4 fs greater than this size"`
+	Ext4HugefileSizeGb  int `default:"512" help:"Use huge options when the ext4 fs greater than this size"`
+
+	ImageCacheExpireDays        int  `help:"Image cache expire duration in days" default:"30"`
+	ImageCacheCleanupPercentage int  `help:"The cleanup threshold ratio of image cache size v.s. total storage size" default:"12"`
+	ImageCacheCleanupOnStartup  bool `help:"Cleanup image cache on host startup" default:"false"`
+	ImageCacheCleanupDryRun     bool `help:"Dry run cleanup image cache" default:"true"`
 }
 
 type SHostOptions struct {
@@ -55,7 +63,7 @@ type SHostOptions struct {
 	CommonConfigFile string `help:"common config file for container"`
 	LocalConfigFile  string `help:"local config file" default:"/etc/yunion/host_local.conf"`
 
-	HostType        string   `help:"Host server type, either hypervisor or kubelet" default:"hypervisor"`
+	HostType        string   `help:"Host server type, either hypervisor or container" default:"hypervisor" choices:"hypervisor|container"`
 	ListenInterface string   `help:"Master address of host server"`
 	BridgeDriver    string   `help:"Bridge driver, bridge or openvswitch" default:"openvswitch"`
 	Networks        []string `help:"Network interface information"`
@@ -203,6 +211,17 @@ type SHostOptions struct {
 	MaxHotplugVCpuCount int  `help:"maximal possible vCPU count that the platform kvm supports"`
 	PcieRootPortCount   int  `help:"pcie root port count" default:"2"`
 	EnableQemuDebugLog  bool `help:"enable qemu debug logs" default:"false"`
+
+	// container related endpoint
+	// EnableContainerRuntime   bool   `help:"enable container runtime" default:"false"`
+	ContainerRuntimeEndpoint  string `help:"endpoint of container runtime service" default:"unix:///var/run/onecloud/containerd/containerd.sock"`
+	ContainerDeviceConfigFile string `help:"container device configuration file path"`
+	LxcfsPath                 string `help:"lxcfs directory path" default:"/var/lib/lxcfs"`
+
+	EnableCudaMPS        bool   `help:"enable cuda mps" default:"false"`
+	CudaMPSPipeDirectory string `help:"cuda mps pipe dir" default:"/tmp/nvidia-mps/pipe"`
+	CudaMPSLogDirectory  string `help:"cuda mps log dir" default:"/tmp/nvidia-mps/log"`
+	CudaMPSReplicas      int    `help:"cuda mps replias" default:"10"`
 }
 
 var (

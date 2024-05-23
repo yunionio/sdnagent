@@ -20,6 +20,7 @@ import (
 
 	"yunion.io/x/cloudmux/pkg/cloudprovider"
 	"yunion.io/x/jsonutils"
+	"yunion.io/x/log"
 	"yunion.io/x/pkg/errors"
 	"yunion.io/x/pkg/util/compare"
 	"yunion.io/x/pkg/util/rbacscope"
@@ -183,7 +184,7 @@ func (manager *SLoadbalancerListenerManager) FetchOwnerId(ctx context.Context, d
 	return db.FetchProjectInfo(ctx, data)
 }
 
-func (man *SLoadbalancerListenerManager) FilterByOwner(q *sqlchemy.SQuery, manager db.FilterByOwnerProvider, userCred mcclient.TokenCredential, ownerId mcclient.IIdentityProvider, scope rbacscope.TRbacScope) *sqlchemy.SQuery {
+func (man *SLoadbalancerListenerManager) FilterByOwner(ctx context.Context, q *sqlchemy.SQuery, manager db.FilterByOwnerProvider, userCred mcclient.TokenCredential, ownerId mcclient.IIdentityProvider, scope rbacscope.TRbacScope) *sqlchemy.SQuery {
 	if ownerId != nil {
 		sq := LoadbalancerManager.Query("id")
 		switch scope {
@@ -219,7 +220,7 @@ func (man *SLoadbalancerListenerManager) ListItemFilter(
 	}
 
 	if len(query.BackendGroup) > 0 {
-		_, err := validators.ValidateModel(userCred, LoadbalancerBackendGroupManager, &query.BackendGroup)
+		_, err := validators.ValidateModel(ctx, userCred, LoadbalancerBackendGroupManager, &query.BackendGroup)
 		if err != nil {
 			return nil, err
 		}
@@ -319,12 +320,12 @@ func (manager *SLoadbalancerListenerManager) FilterByUniqValues(q *sqlchemy.SQue
 }
 
 func (man *SLoadbalancerListenerManager) ValidateCreateData(ctx context.Context, userCred mcclient.TokenCredential, ownerId mcclient.IIdentityProvider, query jsonutils.JSONObject, input *api.LoadbalancerListenerCreateInput) (*api.LoadbalancerListenerCreateInput, error) {
-	lbObj, err := validators.ValidateModel(userCred, LoadbalancerManager, &input.LoadbalancerId)
+	lbObj, err := validators.ValidateModel(ctx, userCred, LoadbalancerManager, &input.LoadbalancerId)
 	if err != nil {
 		return nil, err
 	}
 	lb := lbObj.(*SLoadbalancer)
-	lbbgObj, err := validators.ValidateModel(userCred, LoadbalancerBackendGroupManager, &input.BackendGroupId)
+	lbbgObj, err := validators.ValidateModel(ctx, userCred, LoadbalancerBackendGroupManager, &input.BackendGroupId)
 	if err != nil {
 		return nil, err
 	}
@@ -350,7 +351,7 @@ func (man *SLoadbalancerListenerManager) ValidateCreateData(ctx context.Context,
 		if len(input.AclId) == 0 {
 			return nil, httperrors.NewMissingParameterError("acl_id")
 		}
-		_, err := validators.ValidateModel(userCred, LoadbalancerAclManager, &input.AclId)
+		_, err := validators.ValidateModel(ctx, userCred, LoadbalancerAclManager, &input.AclId)
 		if err != nil {
 			return nil, err
 		}
@@ -359,7 +360,7 @@ func (man *SLoadbalancerListenerManager) ValidateCreateData(ctx context.Context,
 		if len(input.CertificateId) == 0 {
 			return nil, httperrors.NewMissingParameterError("certificate_id")
 		}
-		_, err := validators.ValidateModel(userCred, LoadbalancerCertificateManager, &input.CertificateId)
+		_, err := validators.ValidateModel(ctx, userCred, LoadbalancerCertificateManager, &input.CertificateId)
 		if err != nil {
 			return nil, err
 		}
@@ -442,13 +443,13 @@ func (lblis *SLoadbalancerListener) ValidateUpdateData(ctx context.Context, user
 		if input.AclId == nil {
 			return nil, httperrors.NewMissingParameterError("acl_id")
 		}
-		_, err = validators.ValidateModel(userCred, LoadbalancerAclManager, input.AclId)
+		_, err = validators.ValidateModel(ctx, userCred, LoadbalancerAclManager, input.AclId)
 		if err != nil {
 			return nil, err
 		}
 	}
 	if lblis.ListenerType == api.LB_LISTENER_TYPE_HTTPS && input.CertificateId != nil && len(*input.CertificateId) > 0 {
-		_, err = validators.ValidateModel(userCred, LoadbalancerCertificateManager, input.CertificateId)
+		_, err = validators.ValidateModel(ctx, userCred, LoadbalancerCertificateManager, input.CertificateId)
 		if err != nil {
 			return nil, err
 		}
@@ -474,7 +475,7 @@ func (lblis *SLoadbalancerListener) PostUpdate(ctx context.Context, userCred mcc
 
 func (lblis *SLoadbalancerListener) StartLoadBalancerListenerSyncTask(ctx context.Context, userCred mcclient.TokenCredential, data jsonutils.JSONObject, parentTaskId string) error {
 	params := data.(*jsonutils.JSONDict)
-	lblis.SetStatus(userCred, api.LB_SYNC_CONF, "")
+	lblis.SetStatus(ctx, userCred, api.LB_SYNC_CONF, "")
 	task, err := taskman.TaskManager.NewTask(ctx, "LoadbalancerListenerSyncTask", lblis, userCred, params, parentTaskId, "", nil)
 	if err != nil {
 		return err
@@ -545,7 +546,7 @@ func (lblis *SLoadbalancerListener) PostCreate(ctx context.Context, userCred mcc
 
 func (lblis *SLoadbalancerListener) StartLoadBalancerListenerCreateTask(ctx context.Context, userCred mcclient.TokenCredential, data *jsonutils.JSONDict, parentTaskId string) {
 	err := func() error {
-		lblis.SetStatus(userCred, api.LB_CREATING, "")
+		lblis.SetStatus(ctx, userCred, api.LB_CREATING, "")
 		task, err := taskman.TaskManager.NewTask(ctx, "LoadbalancerListenerCreateTask", lblis, userCred, data, parentTaskId, "", nil)
 		if err != nil {
 			return errors.Wrapf(err, "NewTask")
@@ -553,7 +554,7 @@ func (lblis *SLoadbalancerListener) StartLoadBalancerListenerCreateTask(ctx cont
 		return task.ScheduleRun(nil)
 	}()
 	if err != nil {
-		lblis.SetStatus(userCred, api.LB_CREATE_FAILED, err.Error())
+		lblis.SetStatus(ctx, userCred, api.LB_CREATE_FAILED, err.Error())
 	}
 }
 
@@ -574,13 +575,13 @@ func (lblis *SLoadbalancerListener) StartLoadBalancerListenerDeleteTask(ctx cont
 		return task.ScheduleRun(nil)
 	}()
 	if err != nil {
-		lblis.SetStatus(userCred, api.LB_STATUS_DELETE_FAILED, err.Error())
+		lblis.SetStatus(ctx, userCred, api.LB_STATUS_DELETE_FAILED, err.Error())
 	}
 	return err
 }
 
 func (lblis *SLoadbalancerListener) CustomizeDelete(ctx context.Context, userCred mcclient.TokenCredential, query jsonutils.JSONObject, data jsonutils.JSONObject) error {
-	lblis.SetStatus(userCred, api.LB_STATUS_DELETING, "")
+	lblis.SetStatus(ctx, userCred, api.LB_STATUS_DELETING, "")
 	return lblis.StartLoadBalancerListenerDeleteTask(ctx, userCred, jsonutils.NewDict(), "")
 }
 
@@ -832,12 +833,12 @@ func (lblis *SLoadbalancerListener) constructFieldsFromCloudListener(userCred mc
 	}
 
 	lblis.AclType = extListener.GetAclType()
-	if aclID := extListener.GetAclId(); len(aclID) > 0 {
-		if _acl, err := db.FetchByExternalIdAndManagerId(CachedLoadbalancerAclManager, aclID, func(q *sqlchemy.SQuery) *sqlchemy.SQuery {
+	if aclId := extListener.GetAclId(); len(aclId) > 0 {
+		if _acl, err := db.FetchByExternalIdAndManagerId(LoadbalancerAclManager, aclId, func(q *sqlchemy.SQuery) *sqlchemy.SQuery {
 			return q.Equals("manager_id", lb.ManagerId)
 		}); err == nil {
-			acl := _acl.(*SCachedLoadbalancerAcl)
-			lblis.AclId = acl.AclId
+			acl := _acl.(*SLoadbalancerAcl)
+			lblis.AclId = acl.Id
 		}
 	} else {
 		lblis.AclId = ""
@@ -884,14 +885,15 @@ func (lblis *SLoadbalancerListener) constructFieldsFromCloudListener(userCred mc
 		lblis.TLSCipherPolicy = extListener.GetTLSCipherPolicy()
 		lblis.EnableHttp2 = extListener.HTTP2Enabled()
 		if certificateId := extListener.GetCertificateId(); len(certificateId) > 0 {
-			if _cert, err := db.FetchByExternalIdAndManagerId(CachedLoadbalancerCertificateManager, certificateId, func(q *sqlchemy.SQuery) *sqlchemy.SQuery {
+			cert, err := db.FetchByExternalIdAndManagerId(LoadbalancerCertificateManager, certificateId, func(q *sqlchemy.SQuery) *sqlchemy.SQuery {
 				return q.Equals("manager_id", lb.ManagerId)
-			}); err == nil {
-				cert := _cert.(*SCachedLoadbalancerCertificate)
-				lblis.CertificateId = cert.CertificateId
+			})
+			if err != nil {
+				log.Errorf("fetch cert %s error: %v", certificateId, err)
+			} else {
+				lblis.CertificateId = cert.GetId()
 			}
 		}
-		fallthrough
 	case api.LB_LISTENER_TYPE_HTTP:
 		if len(extListener.GetStickySessionType()) > 0 {
 			if lblis.GetProviderName() == api.CLOUD_PROVIDER_QCLOUD && utils.IsInStringArray(lblis.ListenerType, []string{api.LB_LISTENER_TYPE_HTTP, api.LB_LISTENER_TYPE_HTTPS}) {
@@ -945,7 +947,7 @@ func (lblis *SLoadbalancerListener) syncRemoveCloudLoadbalancerListener(ctx cont
 
 	err := lblis.ValidateDeleteCondition(ctx, nil)
 	if err != nil { // cannot delete
-		return lblis.SetStatus(userCred, api.LB_STATUS_UNKNOWN, "sync to delete")
+		return lblis.SetStatus(ctx, userCred, api.LB_STATUS_UNKNOWN, "sync to delete")
 	}
 	notifyclient.EventNotify(ctx, userCred, notifyclient.SEventNotifyParam{
 		Obj:    lblis,

@@ -62,10 +62,10 @@ func ValidateScheduleCreateData(ctx context.Context, userCred mcclient.TokenCred
 	}
 
 	// base validate_create_data
-	if (input.PreferHost != "") && hypervisor != api.HYPERVISOR_CONTAINER {
+	if (input.PreferHost != "") && hypervisor != api.HYPERVISOR_POD {
 
 		bmName := input.PreferHost
-		bmObj, err := HostManager.FetchByIdOrName(nil, bmName)
+		bmObj, err := HostManager.FetchByIdOrName(ctx, nil, bmName)
 		if err != nil {
 			if err == sql.ErrNoRows {
 				return nil, httperrors.NewResourceNotFoundError("Host %s not found", bmName)
@@ -84,24 +84,34 @@ func ValidateScheduleCreateData(ctx context.Context, userCred mcclient.TokenCred
 			return nil, httperrors.NewInvalidStatusError("Baremetal %s not enabled", bmName)
 		}
 
-		if len(hypervisor) > 0 && hypervisor != api.HOSTTYPE_HYPERVISOR[baremetal.HostType] {
+		hostDriver, err := baremetal.GetHostDriver()
+		if err != nil {
+			return nil, errors.Wrapf(err, "GetHostDriver")
+		}
+
+		if len(hypervisor) > 0 && hypervisor != hostDriver.GetHypervisor() {
 			return nil, httperrors.NewInputParameterError("cannot run hypervisor %s on specified host with type %s", hypervisor, baremetal.HostType)
 		}
 
 		if len(hypervisor) == 0 {
-			hypervisor = api.HOSTTYPE_HYPERVISOR[baremetal.HostType]
+			hypervisor = hostDriver.GetHypervisor()
 		}
 
 		if len(hypervisor) == 0 {
 			hypervisor = api.HYPERVISOR_DEFAULT
 		}
 
-		_, err = GetDriver(hypervisor).ValidateCreateDataOnHost(ctx, userCred, bmName, baremetal, input)
+		driver, err := GetDriver(hypervisor, input.Provider)
 		if err != nil {
 			return nil, err
 		}
 
-		defaultStorage, err := GetDriver(hypervisor).ChooseHostStorage(baremetal, nil, &api.DiskConfig{}, nil)
+		_, err = driver.ValidateCreateDataOnHost(ctx, userCred, bmName, baremetal, input)
+		if err != nil {
+			return nil, err
+		}
+
+		defaultStorage, err := driver.ChooseHostStorage(baremetal, nil, &api.DiskConfig{}, nil)
 		if err != nil {
 			return nil, errors.Wrap(err, "ChooseHostStorage")
 		}
@@ -117,7 +127,7 @@ func ValidateScheduleCreateData(ctx context.Context, userCred mcclient.TokenCred
 		input.PreferRegion = region.Id
 	} else {
 		if len(input.Schedtags) > 0 {
-			input.Schedtags, err = SchedtagManager.ValidateSchedtags(userCred, input.Schedtags)
+			input.Schedtags, err = SchedtagManager.ValidateSchedtags(ctx, userCred, input.Schedtags)
 			if err != nil {
 				return nil, httperrors.NewInputParameterError("invalid aggregate_strategy: %s", err)
 			}
@@ -125,7 +135,7 @@ func ValidateScheduleCreateData(ctx context.Context, userCred mcclient.TokenCred
 
 		if input.PreferWire != "" {
 			wireStr := input.PreferWire
-			wireObj, err := WireManager.FetchByIdOrName(userCred, wireStr)
+			wireObj, err := WireManager.FetchByIdOrName(ctx, userCred, wireStr)
 			if err != nil {
 				if err == sql.ErrNoRows {
 					return nil, httperrors.NewResourceNotFoundError("Wire %s not found", wireStr)
@@ -141,7 +151,7 @@ func ValidateScheduleCreateData(ctx context.Context, userCred mcclient.TokenCred
 			input.PreferRegion = region.Id
 		} else if input.PreferZone != "" {
 			zoneStr := input.PreferZone
-			zoneObj, err := ZoneManager.FetchByIdOrName(userCred, zoneStr)
+			zoneObj, err := ZoneManager.FetchByIdOrName(ctx, userCred, zoneStr)
 			if err != nil {
 				if err == sql.ErrNoRows {
 					return nil, httperrors.NewResourceNotFoundError("Zone %s not found", zoneStr)
@@ -155,7 +165,7 @@ func ValidateScheduleCreateData(ctx context.Context, userCred mcclient.TokenCred
 			input.PreferRegion = region.Id
 		} else if input.PreferRegion != "" {
 			regionStr := input.PreferRegion
-			regionObj, err := CloudregionManager.FetchByIdOrName(userCred, regionStr)
+			regionObj, err := CloudregionManager.FetchByIdOrName(ctx, userCred, regionStr)
 			if err != nil {
 				if err == sql.ErrNoRows {
 					return nil, httperrors.NewResourceNotFoundError("Region %s not found", regionStr)

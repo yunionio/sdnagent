@@ -1,3 +1,7 @@
+# github.com/Azure/go-ansiterm v0.0.0-20230124172434-306776ec8161
+## explicit; go 1.16
+github.com/Azure/go-ansiterm
+github.com/Azure/go-ansiterm/winterm
 # github.com/ClickHouse/clickhouse-go v1.5.4
 ## explicit; go 1.12
 github.com/ClickHouse/clickhouse-go
@@ -35,9 +39,17 @@ github.com/coreos/go-systemd/v22/journal
 # github.com/davecgh/go-spew v1.1.1
 ## explicit
 github.com/davecgh/go-spew/spew
-# github.com/digitalocean/go-openvswitch v0.0.0-20190515160856-1141932ed5cf => github.com/yousong/go-openvswitch v0.0.0-20200422025222-6b2d502be872
-## explicit
+# github.com/digitalocean/go-openvswitch v0.0.0-20240130171624-c0f7d42efe24 => yunion.io/x/go-openvswitch v0.0.0-20240505033048-be7a14d52fb2
+## explicit; go 1.16
 github.com/digitalocean/go-openvswitch/ovs
+# github.com/docker/docker v17.12.0-ce-rc1.0.20200916142827-bd33bbf0497b+incompatible
+## explicit
+github.com/docker/docker/pkg/term
+github.com/docker/docker/pkg/term/windows
+# github.com/docker/spdystream v0.0.0-20160310174837-449fdfce4d96
+## explicit
+github.com/docker/spdystream
+github.com/docker/spdystream/spdy
 # github.com/fatih/color v1.13.0
 ## explicit; go 1.13
 github.com/fatih/color
@@ -109,6 +121,8 @@ github.com/google/gofuzz
 github.com/googleapis/gnostic/compiler
 github.com/googleapis/gnostic/extensions
 github.com/googleapis/gnostic/openapiv2
+# github.com/gotestyourself/gotestyourself v1.4.0
+## explicit
 # github.com/hako/durafmt v0.0.0-20180520121703-7b7ae1e72ead
 ## explicit
 github.com/hako/durafmt
@@ -177,6 +191,9 @@ github.com/minio/minio-go/v6/pkg/set
 # github.com/mitchellh/go-homedir v1.1.0
 ## explicit
 github.com/mitchellh/go-homedir
+# github.com/mitchellh/go-wordwrap v1.0.1
+## explicit; go 1.14
+github.com/mitchellh/go-wordwrap
 # github.com/mitchellh/mapstructure v1.1.2
 ## explicit
 github.com/mitchellh/mapstructure
@@ -257,22 +274,29 @@ github.com/ugorji/go/codec
 ## explicit; go 1.12
 github.com/vishvananda/netlink
 github.com/vishvananda/netlink/nl
-# github.com/vishvananda/netns v0.0.0-20211101163701-50045581ed74
-## explicit; go 1.12
+# github.com/vishvananda/netns v0.0.5-0.20240412164733-9469873f4601
+## explicit; go 1.17
 github.com/vishvananda/netns
-# github.com/vmware/govmomi v0.20.1
-## explicit
+# github.com/vmware/govmomi v0.37.1
+## explicit; go 1.19
 github.com/vmware/govmomi
+github.com/vmware/govmomi/history
+github.com/vmware/govmomi/internal
+github.com/vmware/govmomi/internal/version
 github.com/vmware/govmomi/nfc
 github.com/vmware/govmomi/object
 github.com/vmware/govmomi/ovf
 github.com/vmware/govmomi/performance
 github.com/vmware/govmomi/property
 github.com/vmware/govmomi/session
+github.com/vmware/govmomi/session/keepalive
 github.com/vmware/govmomi/task
+github.com/vmware/govmomi/vapi/internal
+github.com/vmware/govmomi/vapi/rest
 github.com/vmware/govmomi/view
 github.com/vmware/govmomi/vim25
 github.com/vmware/govmomi/vim25/debug
+github.com/vmware/govmomi/vim25/json
 github.com/vmware/govmomi/vim25/methods
 github.com/vmware/govmomi/vim25/mo
 github.com/vmware/govmomi/vim25/progress
@@ -430,6 +454,7 @@ google.golang.org/grpc/binarylog/grpc_binarylog_v1
 google.golang.org/grpc/codes
 google.golang.org/grpc/connectivity
 google.golang.org/grpc/credentials
+google.golang.org/grpc/credentials/insecure
 google.golang.org/grpc/encoding
 google.golang.org/grpc/encoding/proto
 google.golang.org/grpc/grpclog
@@ -510,6 +535,8 @@ gopkg.in/ini.v1
 # gopkg.in/yaml.v2 v2.4.0
 ## explicit; go 1.15
 gopkg.in/yaml.v2
+# gotest.tools v1.4.0
+## explicit
 # k8s.io/api v0.19.3
 ## explicit; go 1.15
 k8s.io/api/admissionregistration/v1
@@ -577,6 +604,7 @@ k8s.io/apimachinery/pkg/types
 k8s.io/apimachinery/pkg/util/clock
 k8s.io/apimachinery/pkg/util/errors
 k8s.io/apimachinery/pkg/util/framer
+k8s.io/apimachinery/pkg/util/httpstream
 k8s.io/apimachinery/pkg/util/intstr
 k8s.io/apimachinery/pkg/util/json
 k8s.io/apimachinery/pkg/util/naming
@@ -589,6 +617,7 @@ k8s.io/apimachinery/pkg/util/wait
 k8s.io/apimachinery/pkg/util/yaml
 k8s.io/apimachinery/pkg/version
 k8s.io/apimachinery/pkg/watch
+k8s.io/apimachinery/third_party/forked/golang/netutil
 k8s.io/apimachinery/third_party/forked/golang/reflect
 # k8s.io/client-go v0.19.3
 ## explicit; go 1.15
@@ -656,10 +685,13 @@ k8s.io/client-go/util/workqueue
 ## explicit; go 1.15
 k8s.io/cluster-bootstrap/token/api
 k8s.io/cluster-bootstrap/token/util
+# k8s.io/cri-api v0.22.17
+## explicit; go 1.16
+k8s.io/cri-api/pkg/apis/runtime/v1
 # k8s.io/klog/v2 v2.2.0
 ## explicit; go 1.13
 k8s.io/klog/v2
-# k8s.io/utils v0.0.0-20200729134348-d5654de09c73
+# k8s.io/utils v0.0.0-20201110183641-67b214c5f920
 ## explicit; go 1.12
 k8s.io/utils/integer
 # moul.io/http2curl/v2 v2.3.0
@@ -671,7 +703,7 @@ sigs.k8s.io/structured-merge-diff/v4/value
 # sigs.k8s.io/yaml v1.2.0
 ## explicit; go 1.12
 sigs.k8s.io/yaml
-# yunion.io/x/cloudmux v0.3.10-0-alpha.1.0.20240124090015-c54324169864
+# yunion.io/x/cloudmux v0.3.10-0-alpha.1.0.20240523082917-4977738de7e0
 ## explicit; go 1.18
 yunion.io/x/cloudmux/pkg/apis
 yunion.io/x/cloudmux/pkg/apis/billing
@@ -685,14 +717,14 @@ yunion.io/x/cloudmux/pkg/multicloud/esxi/vcenter
 ## explicit; go 1.12
 yunion.io/x/executor/apis
 yunion.io/x/executor/client
-# yunion.io/x/jsonutils v1.0.1-0.20230613121553-0f3b41e2ef19
+# yunion.io/x/jsonutils v1.0.1-0.20240203102553-4096f103b401
 ## explicit; go 1.18
 yunion.io/x/jsonutils
-# yunion.io/x/log v1.0.1-0.20230411060016-feb3f46ab361
+# yunion.io/x/log v1.0.1-0.20240305175729-7cf2d6cd5a91
 ## explicit; go 1.12
 yunion.io/x/log
 yunion.io/x/log/hooks
-# yunion.io/x/onecloud v0.0.0-20240127101631-8569204cf472
+# yunion.io/x/onecloud v0.0.0-20240522123740-fabf28086058
 ## explicit; go 1.18
 yunion.io/x/onecloud/locales
 yunion.io/x/onecloud/pkg/apihelper
@@ -701,7 +733,6 @@ yunion.io/x/onecloud/pkg/apis/ansible
 yunion.io/x/onecloud/pkg/apis/billing
 yunion.io/x/onecloud/pkg/apis/cloudcommon/db
 yunion.io/x/onecloud/pkg/apis/cloudcommon/proxy
-yunion.io/x/onecloud/pkg/apis/cloudid
 yunion.io/x/onecloud/pkg/apis/cloudproxy
 yunion.io/x/onecloud/pkg/apis/compute
 yunion.io/x/onecloud/pkg/apis/host
@@ -763,7 +794,6 @@ yunion.io/x/onecloud/pkg/mcclient/modulebase
 yunion.io/x/onecloud/pkg/mcclient/modules
 yunion.io/x/onecloud/pkg/mcclient/modules/ansible
 yunion.io/x/onecloud/pkg/mcclient/modules/apimap
-yunion.io/x/onecloud/pkg/mcclient/modules/cloudid
 yunion.io/x/onecloud/pkg/mcclient/modules/cloudproxy
 yunion.io/x/onecloud/pkg/mcclient/modules/compute
 yunion.io/x/onecloud/pkg/mcclient/modules/identity
@@ -773,6 +803,7 @@ yunion.io/x/onecloud/pkg/mcclient/modules/logger
 yunion.io/x/onecloud/pkg/mcclient/modules/monitor
 yunion.io/x/onecloud/pkg/mcclient/modules/notify
 yunion.io/x/onecloud/pkg/mcclient/modules/scheduler
+yunion.io/x/onecloud/pkg/mcclient/modules/tasks
 yunion.io/x/onecloud/pkg/mcclient/modules/yunionconf
 yunion.io/x/onecloud/pkg/mcclient/options
 yunion.io/x/onecloud/pkg/mcclient/options/identity
@@ -791,7 +822,10 @@ yunion.io/x/onecloud/pkg/util/ctx
 yunion.io/x/onecloud/pkg/util/dbutils
 yunion.io/x/onecloud/pkg/util/fileutils2
 yunion.io/x/onecloud/pkg/util/hashcache
+yunion.io/x/onecloud/pkg/util/httpstream
+yunion.io/x/onecloud/pkg/util/httpstream/spdy
 yunion.io/x/onecloud/pkg/util/influxdb
+yunion.io/x/onecloud/pkg/util/interrupt
 yunion.io/x/onecloud/pkg/util/iproute2
 yunion.io/x/onecloud/pkg/util/k8s/kubeadm
 yunion.io/x/onecloud/pkg/util/k8s/tokens
@@ -800,6 +834,10 @@ yunion.io/x/onecloud/pkg/util/netutils2
 yunion.io/x/onecloud/pkg/util/nopanic
 yunion.io/x/onecloud/pkg/util/ovnutils
 yunion.io/x/onecloud/pkg/util/ovsutils
+yunion.io/x/onecloud/pkg/util/pod
+yunion.io/x/onecloud/pkg/util/pod/remotecommand
+yunion.io/x/onecloud/pkg/util/pod/remotecommand/spdy
+yunion.io/x/onecloud/pkg/util/pod/term
 yunion.io/x/onecloud/pkg/util/procutils
 yunion.io/x/onecloud/pkg/util/rbacutils
 yunion.io/x/onecloud/pkg/util/regutils2
@@ -812,7 +850,7 @@ yunion.io/x/onecloud/pkg/util/tagutils
 yunion.io/x/onecloud/pkg/util/yunionmeta
 yunion.io/x/onecloud/pkg/vpcagent/models
 yunion.io/x/onecloud/pkg/vpcagent/ovn/mac
-# yunion.io/x/pkg v1.10.1-0.20240127153242-cdf9dc071f4f
+# yunion.io/x/pkg v1.10.1-0.20240510032728-8203b24857a2
 ## explicit; go 1.18
 yunion.io/x/pkg/appctx
 yunion.io/x/pkg/errors
@@ -860,13 +898,13 @@ yunion.io/x/pkg/utils
 # yunion.io/x/s3cli v0.0.0-20190917004522-13ac36d8687e
 ## explicit; go 1.12
 yunion.io/x/s3cli
-# yunion.io/x/sqlchemy v1.1.3-0.20240103021517-2be4fb49bd3b
+# yunion.io/x/sqlchemy v1.1.3-0.20240417115142-4f4271cd8305
 ## explicit; go 1.17
 yunion.io/x/sqlchemy
 yunion.io/x/sqlchemy/backends/clickhouse
 # yunion.io/x/structarg v0.0.0-20231017124457-df4d5009457c
 ## explicit; go 1.12
 yunion.io/x/structarg
-# github.com/digitalocean/go-openvswitch => github.com/yousong/go-openvswitch v0.0.0-20200422025222-6b2d502be872
+# github.com/digitalocean/go-openvswitch => yunion.io/x/go-openvswitch v0.0.0-20240505033048-be7a14d52fb2
 # github.com/go-logr/logr => github.com/go-logr/logr v0.4.0
 # github.com/jaypipes/ghw => github.com/zexi/ghw v0.9.1

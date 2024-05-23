@@ -75,6 +75,8 @@ type SHostManager struct {
 	SZoneResourceBaseManager
 	SManagedResourceBaseManager
 	SHostnameResourceBaseManager
+
+	SBackupstorageResourceBaseManager
 }
 
 var HostManager *SHostManager
@@ -147,7 +149,8 @@ type SHost struct {
 	// 内存超分比
 	MemCmtbound float32 `nullable:"true" default:"1" list:"domain" update:"domain" create:"domain_optional"`
 	// 页大小
-	PageSizeKB int `nullable:"false" default:"4" list:"domain" update:"domain" create:"domain_optional"`
+	PageSizeKB         int  `nullable:"false" default:"4" list:"domain" update:"domain" create:"domain_optional"`
+	EnableNumaAllocate bool `nullable:"true" default:"false" list:"domain" update:"domain" create:"domain_optional"`
 
 	// 存储大小,单位Mb
 	StorageSize int64 `nullable:"true" list:"domain" update:"domain" create:"domain_optional"`
@@ -206,6 +209,9 @@ type SHost struct {
 
 	// UEFI详情
 	UefiInfo jsonutils.JSONObject `nullable:"true" get:"domain" update:"domain" create:"domain_optional"`
+
+	// 公网Ip地址
+	PublicIp string `width:"16" charset:"ascii" nullable:"true" list:"domain" update:"domain"`
 }
 
 func (manager *SHostManager) GetContextManagers() [][]db.IModelManager {
@@ -297,7 +303,7 @@ func (manager *SHostManager) ListItemFilter(
 
 	schedTagStr := query.SchedtagId
 	if len(schedTagStr) > 0 {
-		schedTag, _ := SchedtagManager.FetchByIdOrName(nil, schedTagStr)
+		schedTag, _ := SchedtagManager.FetchByIdOrName(ctx, nil, schedTagStr)
 		if schedTag == nil {
 			return nil, httperrors.NewResourceNotFoundError("Schedtag %s not found", schedTagStr)
 		}
@@ -308,7 +314,7 @@ func (manager *SHostManager) ListItemFilter(
 
 	wireStr := query.WireId
 	if len(wireStr) > 0 {
-		wire, _ := WireManager.FetchByIdOrName(nil, wireStr)
+		wire, _ := WireManager.FetchByIdOrName(ctx, nil, wireStr)
 		if wire == nil {
 			return nil, httperrors.NewResourceNotFoundError("Wire %s not found", wireStr)
 		}
@@ -319,7 +325,7 @@ func (manager *SHostManager) ListItemFilter(
 
 	storageStr := query.StorageId
 	if len(storageStr) > 0 {
-		storage, _ := StorageManager.FetchByIdOrName(nil, storageStr)
+		storage, _ := StorageManager.FetchByIdOrName(ctx, nil, storageStr)
 		if storage == nil {
 			return nil, httperrors.NewResourceNotFoundError("Storage %s not found", storageStr)
 		}
@@ -330,6 +336,22 @@ func (manager *SHostManager) ListItemFilter(
 			q = q.In("id", scopeQuery)
 		} else {
 			q = q.NotIn("id", scopeQuery)
+		}
+	}
+
+	if len(query.BackupstorageId) > 0 {
+		hbsQ := HostBackupstorageManager.Query("host_id", "backupstorage_id")
+		hbsQ, err = manager.SBackupstorageResourceBaseManager.ListItemFilter(ctx, hbsQ, userCred, query.BackupstorageFilterListInput)
+		if err != nil {
+			return q, errors.Wrap(err, "SBackupStorageResouceBaseManager.ListItemFiled")
+		}
+		hbsSubQ := hbsQ.SubQuery()
+		q = q.LeftJoin(hbsSubQ, sqlchemy.Equals(q.Field("id"), hbsSubQ.Field("host_id")))
+		notAttached := (query.StorageNotAttached != nil && *query.StorageNotAttached)
+		if !notAttached {
+			q = q.Filter(sqlchemy.IsNotNull(hbsSubQ.Field("backupstorage_id")))
+		} else {
+			q = q.Filter(sqlchemy.IsNull(hbsSubQ.Field("backupstorage_id")))
 		}
 	}
 
@@ -344,11 +366,7 @@ func (manager *SHostManager) ListItemFilter(
 
 	hypervisorStr := query.Hypervisor
 	if len(hypervisorStr) > 0 {
-		hostType, ok := api.HYPERVISOR_HOSTTYPE[hypervisorStr]
-		if !ok {
-			return nil, httperrors.NewInputParameterError("not supported hypervisor %s", hypervisorStr)
-		}
-		q = q.Filter(sqlchemy.Equals(q.Field("host_type"), hostType))
+		q = q.Filter(sqlchemy.In(q.Field("host_type"), Hypervisors2HostTypes([]string{query.Hypervisor})))
 	}
 
 	usable := (query.Usable != nil && *query.Usable)
@@ -476,7 +494,10 @@ func (manager *SHostManager) ListItemFilter(
 			if len(nets) > 0 {
 				wires := []string{}
 				for i := 0; i < len(nets); i++ {
-					net := nets[i].GetNetwork()
+					net, _ := nets[i].GetNetwork()
+					if net == nil {
+						continue
+					}
 					vpc, _ := net.GetVpc()
 					if vpc.Id != api.DEFAULT_VPC_ID {
 						q = q.IsNotEmpty("ovn_version")
@@ -708,11 +729,15 @@ func (hh *SHost) GetZone() (*SZone, error) {
 }
 
 func (hh *SHost) GetRegion() (*SCloudregion, error) {
-	zone, err := hh.GetZone()
+	zones := ZoneManager.Query("cloudregion_id").Equals("id", hh.ZoneId).SubQuery()
+	q := CloudregionManager.Query().In("id", zones)
+	ret := &SCloudregion{}
+	ret.SetModelManager(CloudregionManager, ret)
+	err := q.First(ret)
 	if err != nil {
 		return nil, err
 	}
-	return zone.GetRegion()
+	return ret, nil
 }
 
 func (hh *SHost) GetCpuCount() int {
@@ -771,10 +796,6 @@ func (hh *SHost) ValidateDeleteCondition(ctx context.Context, info api.HostDetai
 		return httperrors.NewNotEmptyError("Not an empty host")
 	}
 	return hh.SEnabledStatusInfrasResourceBase.ValidateDeleteCondition(ctx, nil)
-}
-
-func (hh *SHost) ValidatePurgeCondition(ctx context.Context) error {
-	return hh.validateDeleteCondition(ctx, true)
 }
 
 func (hh *SHost) validateDeleteCondition(ctx context.Context, purge bool) error {
@@ -1090,11 +1111,11 @@ func (hh *SHost) _getAttachedStorages(isBaremetal tristate.TriState, enabled tri
 	return ret
 }
 
-func (hh *SHost) SyncAttachedStorageStatus() {
+func (hh *SHost) SyncAttachedStorageStatus(ctx context.Context) {
 	storages := hh.GetAttachedEnabledHostStorages(nil)
 	if storages != nil {
 		for _, storage := range storages {
-			storage.SyncStatusWithHosts()
+			storage.SyncStatusWithHosts(ctx)
 		}
 		hh.ClearSchedDescCache()
 	}
@@ -1199,7 +1220,7 @@ func (hh *SHostManager) GetPropertyHostTypeCount(ctx context.Context, userCred m
 	hcso := sqlchemy.Equals(hosts.Field("host_type"), api.HOST_TYPE_HCSO)
 	cs.When(hcso, sqlchemy.COUNT("", sqlchemy.DISTINCT("", hosts.Field("external_id"))))
 	cs.Else(sqlchemy.COUNT("", hosts.Field("id")))
-	q := hosts.Query(hosts.Field("host_type"), sqlchemy.NewFunction(cs, "count"))
+	q := hosts.Query(hosts.Field("host_type"), sqlchemy.NewFunction(cs, "count", true))
 	return hh.getCount(ctx, userCred, q, query)
 }
 
@@ -1530,8 +1551,69 @@ func (hh *SHost) getAttachedWires() []SWire {
 	return ret
 }
 
-func (hh *SHostManager) GetEnabledKvmHost() (*SHost, error) {
-	hostq := HostManager.Query().IsTrue("enabled").Equals("host_status", api.HOST_ONLINE).In("host_type", []string{api.HOST_TYPE_HYPERVISOR, api.HOST_TYPE_KVM})
+func (hh *SHostManager) GetEnabledKvmHostForBackupStorage(bs *SBackupStorage) (*SHost, error) {
+	hbs, err := HostBackupstorageManager.GetBackupStoragesByBackup(bs.Id)
+	if err != nil {
+		return nil, errors.Wrap(err, "GetBackupStoragesByBackup")
+	}
+	candidates := make([]string, 0)
+	for i := range hbs {
+		candidates = append(candidates, hbs[i].HostId)
+	}
+	host, err := HostManager.GetEnabledKvmHost(candidates)
+	if err != nil {
+		return nil, errors.Wrap(err, "GetEnabledKvmHost")
+	}
+	return host, nil
+}
+
+func (hh *SHostManager) GetEnabledKvmHostForDiskBackup(backup *SDiskBackup) (*SHost, error) {
+	bs, err := backup.GetBackupStorage()
+	if err != nil {
+		return nil, errors.Wrap(err, "unable to get backupStorage")
+	}
+	storage, err := backup.GetStorage()
+	if err != nil {
+		return nil, errors.Wrap(err, "unable to get storage of diskbackup")
+	}
+
+	hbs, err := HostBackupstorageManager.GetBackupStoragesByBackup(bs.Id)
+	if err != nil {
+		return nil, errors.Wrap(err, "HostBackupstorageManager.GetBackupStoragesByBackup")
+	}
+	hbsCandidates := stringutils2.NewSortedStrings(nil)
+	for i := range hbs {
+		hbsCandidates = hbsCandidates.Append(hbs[i].HostId)
+	}
+	hss, err := HoststorageManager.GetHostStoragesByStorageId(storage.Id)
+	if err != nil {
+		return nil, errors.Wrap(err, "HoststorageManager.GetStorages")
+	}
+	hssCandidates := stringutils2.NewSortedStrings(nil)
+	for i := range hss {
+		hssCandidates = hssCandidates.Append(hss[i].HostId)
+	}
+	var candidates []string
+	if len(hbsCandidates) == 0 {
+		candidates = []string(hssCandidates)
+	} else {
+		candidates = []string(stringutils2.Intersect(hbsCandidates, hssCandidates))
+	}
+
+	host, err := HostManager.GetEnabledKvmHost(candidates)
+	if err != nil {
+		return nil, errors.Wrap(err, "GetEnabledKvmHost")
+	}
+	return host, nil
+}
+
+func (hh *SHostManager) GetEnabledKvmHost(candidates []string) (*SHost, error) {
+	hostq := HostManager.Query().IsTrue("enabled")
+	hostq = hostq.Equals("host_status", api.HOST_ONLINE)
+	hostq = hostq.In("host_type", []string{api.HOST_TYPE_HYPERVISOR, api.HOST_TYPE_KVM})
+	if len(candidates) > 0 {
+		hostq = hostq.In("id", candidates)
+	}
 	host := SHost{}
 	err := hostq.First(&host)
 	if err != nil {
@@ -1654,7 +1736,7 @@ func (hh *SHost) GetGuestCount() (int, error) {
 
 func (hh *SHost) GetContainerCount(status []string) (int, error) {
 	q := hh.GetGuestsQuery()
-	q = q.Filter(sqlchemy.Equals(q.Field("hypervisor"), api.HYPERVISOR_CONTAINER))
+	q = q.Filter(sqlchemy.Equals(q.Field("hypervisor"), api.HYPERVISOR_POD))
 	if len(status) > 0 {
 		q = q.In("status", status)
 	}
@@ -1671,6 +1753,13 @@ func (hh *SHost) GetRunningGuestCount() (int, error) {
 	q := hh.GetGuestsQuery()
 	q = q.In("status", api.VM_RUNNING_STATUS)
 	return q.CountWithError()
+}
+
+func (host *SHost) hasUnknownGuests() bool {
+	q := host.GetGuestsQuery()
+	q = q.Equals("status", api.VM_UNKNOWN)
+	cnt, _ := q.CountWithError()
+	return cnt > 0
 }
 
 func (hh *SHost) GetNotReadyGuestsStat() (*SHostGuestResourceUsage, error) {
@@ -1738,7 +1827,12 @@ func (h *SHost) getNetInterfacesInternal(wireId string, nicTypes []compute.TNicT
 		q = q.Equals("wire_id", wireId)
 	}
 	if len(nicTypes) > 0 {
-		q = q.In("nic_type", nicTypes)
+		//q.IsNullOrEmpty()
+		if ok, _ := utils.InArray(compute.NIC_TYPE_NORMAL, nicTypes); ok {
+			q = q.Filter(sqlchemy.OR(sqlchemy.In(q.Field("nic_type"), nicTypes), sqlchemy.IsNull(q.Field("nic_type"))))
+		} else {
+			q = q.In("nic_type", nicTypes)
+		}
 	}
 	q = q.Asc("index")
 	q = q.Asc("vlan_id")
@@ -1781,11 +1875,15 @@ func (hh *SHost) DeleteBaremetalnetwork(ctx context.Context, userCred mcclient.T
 	}
 }
 
-func (hh *SHost) GetHostDriver() IHostDriver {
-	if !utils.IsInStringArray(hh.HostType, api.HOST_TYPES) {
-		log.Fatalf("Unsupported host type %s", hh.HostType)
+func (hh *SHost) GetHostDriver() (IHostDriver, error) {
+	if len(hh.HostType) == 0 {
+		hh.HostType = api.HOST_TYPE_DEFAULT
 	}
-	return GetHostDriver(hh.HostType)
+	region, err := hh.GetRegion()
+	if err != nil {
+		return nil, errors.Wrapf(err, "GetRegion")
+	}
+	return GetHostDriver(hh.HostType, region.Provider)
 }
 
 func (manager *SHostManager) getHostsByZoneProvider(zone *SZone, region *SCloudregion, provider *SCloudprovider) ([]SHost, error) {
@@ -1855,7 +1953,7 @@ func (manager *SHostManager) SyncHosts(ctx context.Context, userCred mcclient.To
 	}
 	for i := 0; i < len(commondb); i += 1 {
 		if !xor {
-			err = commondb[i].syncWithCloudHost(ctx, userCred, commonext[i], provider)
+			err = commondb[i].SyncWithCloudHost(ctx, userCred, commonext[i])
 			if err != nil {
 				syncResult.UpdateError(err)
 			}
@@ -1882,7 +1980,7 @@ func (hh *SHost) syncRemoveCloudHost(ctx context.Context, userCred mcclient.Toke
 	lockman.LockObject(ctx, hh)
 	defer lockman.ReleaseObject(ctx, hh)
 
-	err := hh.ValidatePurgeCondition(ctx)
+	err := hh.validateDeleteCondition(ctx, true)
 	if err != nil {
 		err = hh.purge(ctx, userCred)
 		if err != nil {
@@ -1894,7 +1992,7 @@ func (hh *SHost) syncRemoveCloudHost(ctx context.Context, userCred mcclient.Toke
 	return err
 }
 
-func (hh *SHost) syncWithCloudHost(ctx context.Context, userCred mcclient.TokenCredential, extHost cloudprovider.ICloudHost, provider *SCloudprovider) error {
+func (hh *SHost) SyncWithCloudHost(ctx context.Context, userCred mcclient.TokenCredential, extHost cloudprovider.ICloudHost) error {
 	diff, err := db.UpdateWithLock(ctx, hh, func() error {
 		// hh.Name = extHost.GetName()
 
@@ -1916,6 +2014,10 @@ func (hh *SHost) syncWithCloudHost(ctx context.Context, userCred mcclient.TokenC
 		hh.StorageSize = extHost.GetStorageSizeMB()
 		hh.StorageType = extHost.GetStorageType()
 		hh.HostType = extHost.GetHostType()
+		if hh.HostType == api.HOST_TYPE_BAREMETAL {
+			hh.IsBaremetal = true
+		}
+		hh.StorageInfo = extHost.GetStorageInfo()
 		hh.OvnVersion = extHost.GetOvnVersion()
 
 		if cpuCmt := extHost.GetCpuCmtbound(); cpuCmt > 0 {
@@ -1948,6 +2050,7 @@ func (hh *SHost) syncWithCloudHost(ctx context.Context, userCred mcclient.TokenC
 
 	db.OpsLog.LogSyncUpdate(hh, diff, userCred)
 
+	provider := hh.GetCloudprovider()
 	if provider != nil {
 		SyncCloudDomain(userCred, hh, provider.GetOwnerId())
 		hh.SyncShareState(ctx, userCred, provider.getAccountShareInfo())
@@ -2145,6 +2248,11 @@ func (manager *SHostManager) NewFromCloudHost(ctx context.Context, userCred mccl
 	host.ZoneId = izone.Id
 
 	host.HostType = extHost.GetHostType()
+	if host.HostType == api.HOST_TYPE_BAREMETAL {
+		host.IsBaremetal = true
+	}
+	host.StorageInfo = extHost.GetStorageInfo()
+
 	host.OvnVersion = extHost.GetOvnVersion()
 
 	host.Status = extHost.GetStatus()
@@ -2264,7 +2372,7 @@ func (hh *SHost) SyncHostStorages(ctx context.Context, userCred mcclient.TokenCr
 		log.Infof("host %s not connected with %s any more, to detach...", hh.Id, removed[i].Id)
 		err := hh.syncRemoveCloudHostStorage(ctx, userCred, &removed[i])
 		if errors.Cause(err) == ErrStorageInUse && removed[i].StorageType == api.STORAGE_LOCAL {
-			removed[i].SetStatus(userCred, api.STORAGE_OFFLINE, "the only host used this local storage has detached")
+			removed[i].SetStatus(ctx, userCred, api.STORAGE_OFFLINE, "the only host used this local storage has detached")
 			// prevent generating a delete error for syncResult
 			continue
 		}
@@ -2659,10 +2767,10 @@ func (hh *SHost) SyncHostVMs(ctx context.Context, userCred mcclient.TokenCredent
 	return syncVMPairs, syncResult
 }
 
-func (hh *SHost) getNetworkOfIPOnHost(ipAddr string) (*SNetwork, error) {
+func (hh *SHost) getNetworkOfIPOnHost(ctx context.Context, ipAddr string) (*SNetwork, error) {
 	netInterfaces := hh.GetHostNetInterfaces()
 	for _, netInterface := range netInterfaces {
-		network, err := netInterface.GetCandidateNetworkForIp(nil, nil, rbacscope.ScopeNone, ipAddr)
+		network, err := netInterface.GetCandidateNetworkForIp(ctx, nil, nil, rbacscope.ScopeNone, ipAddr)
 		if err == nil && network != nil {
 			return network, nil
 		}
@@ -2798,6 +2906,7 @@ func (manager *SHostManager) FetchHostByHostname(hostname string) *SHost {
 }
 
 func (manager *SHostManager) totalCountQ(
+	ctx context.Context,
 	userCred mcclient.IIdentityProvider,
 	scope rbacscope.TRbacScope,
 	rangeObjs []db.IStandaloneModel,
@@ -2848,7 +2957,7 @@ func (manager *SHostManager) totalCountQ(
 		}
 	}
 
-	q = db.ObjectIdQueryWithPolicyResult(q, HostManager, policyResult)
+	q = db.ObjectIdQueryWithPolicyResult(ctx, q, HostManager, policyResult)
 
 	isolatedDevices := IsolatedDeviceManager.Query().SubQuery()
 	iq := isolatedDevices.Query(
@@ -2970,6 +3079,7 @@ func (manager *SHostManager) calculateCount(q *sqlchemy.SQuery) HostsCountStat {
 }
 
 func (manager *SHostManager) TotalCount(
+	ctx context.Context,
 	userCred mcclient.IIdentityProvider,
 	scope rbacscope.TRbacScope,
 	rangeObjs []db.IStandaloneModel,
@@ -2982,6 +3092,7 @@ func (manager *SHostManager) TotalCount(
 ) HostsCountStat {
 	return manager.calculateCount(
 		manager.totalCountQ(
+			ctx,
 			userCred,
 			scope,
 			rangeObjs,
@@ -3207,7 +3318,7 @@ func (manager *SHostManager) FetchGuestCnt(hostIds []string) map[string]*sGuestC
 		return ret
 	}
 	guests := []SGuest{}
-	err := GuestManager.RawQuery().IsFalse("deleted").In("host_id", hostIds).NotEquals("hypervisor", api.HYPERVISOR_CONTAINER).All(&guests)
+	err := GuestManager.RawQuery().IsFalse("deleted").In("host_id", hostIds).NotEquals("hypervisor", api.HYPERVISOR_POD).All(&guests)
 	if err != nil {
 		log.Errorf("query host %s guests error: %v", hostIds, err)
 	}
@@ -3234,7 +3345,7 @@ func (manager *SHostManager) FetchGuestCnt(hostIds []string) map[string]*sGuestC
 		}
 	}
 
-	GuestManager.RawQuery().IsFalse("deleted").In("backup_host_id", hostIds).NotEquals("hypervisor", api.HYPERVISOR_CONTAINER).All(&guests)
+	GuestManager.RawQuery().IsFalse("deleted").In("backup_host_id", hostIds).NotEquals("hypervisor", api.HYPERVISOR_POD).All(&guests)
 	for _, guest := range guests {
 		_, ok := ret[guest.BackupHostId]
 		if !ok {
@@ -3584,7 +3695,7 @@ func (manager *SHostManager) ValidateCreateData(
 	var err error
 
 	if len(input.ZoneId) > 0 {
-		_, input.ZoneResourceInput, err = ValidateZoneResourceInput(userCred, input.ZoneResourceInput)
+		_, input.ZoneResourceInput, err = ValidateZoneResourceInput(ctx, userCred, input.ZoneResourceInput)
 		if err != nil {
 			return input, errors.Wrap(err, "ValidateZoneResourceInput")
 		}
@@ -3665,7 +3776,7 @@ func (manager *SHostManager) ValidateCreateData(
 		} else {
 			accessNetStr := input.AccessNet // data.GetString("access_net")
 			if len(accessNetStr) > 0 {
-				netObj, err := NetworkManager.FetchByIdOrName(userCred, accessNetStr)
+				netObj, err := NetworkManager.FetchByIdOrName(ctx, userCred, accessNetStr)
 				if err != nil {
 					if errors.Cause(err) == sql.ErrNoRows {
 						return input, httperrors.NewResourceNotFoundError2("network", accessNetStr)
@@ -3677,7 +3788,7 @@ func (manager *SHostManager) ValidateCreateData(
 			} else {
 				accessWireStr := input.AccessWire // data.GetString("access_wire")
 				if len(accessWireStr) > 0 {
-					wireObj, err := WireManager.FetchByIdOrName(userCred, accessWireStr)
+					wireObj, err := WireManager.FetchByIdOrName(ctx, userCred, accessWireStr)
 					if err != nil {
 						if errors.Cause(err) == sql.ErrNoRows {
 							return input, httperrors.NewResourceNotFoundError2("wire", accessWireStr)
@@ -3688,7 +3799,7 @@ func (manager *SHostManager) ValidateCreateData(
 					wire := wireObj.(*SWire)
 					lockman.LockObject(ctx, wire)
 					defer lockman.ReleaseObject(ctx, wire)
-					net, err := wire.GetCandidatePrivateNetwork(userCred, userCred, NetworkManager.AllowScope(userCred), false, []string{api.NETWORK_TYPE_PXE, api.NETWORK_TYPE_BAREMETAL, api.NETWORK_TYPE_GUEST})
+					net, err := wire.GetCandidatePrivateNetwork(ctx, userCred, userCred, NetworkManager.AllowScope(userCred), false, []string{api.NETWORK_TYPE_PXE, api.NETWORK_TYPE_BAREMETAL, api.NETWORK_TYPE_GUEST})
 					if err != nil {
 						return input, httperrors.NewGeneralError(err)
 					}
@@ -3841,6 +3952,13 @@ func (hh *SHost) ValidateUpdateData(ctx context.Context, userCred mcclient.Token
 	if len(input.Name) > 0 {
 		hh.UpdateDnsRecords(false)
 	}
+	if input.EnableNumaAllocate != nil {
+		if cnt, err := hh.GetRunningGuestCount(); err != nil {
+			return input, errors.Wrap(err, "GetRunningGuestCount")
+		} else if cnt > 0 {
+			return input, errors.Errorf("Host has running guest, can't enable/disable numa allocate")
+		}
+	}
 	return input, nil
 }
 
@@ -3992,7 +4110,7 @@ func (hh *SHost) PerformStart(
 		//	if !utils.IsInStringArray(guest.Status, []string{VM_ADMIN}) {
 		//		return nil, httperrors.NewBadRequestError("Cannot start baremetal with active guest")
 		//	}
-		hh.SetStatus(userCred, api.BAREMETAL_START_MAINTAIN, "")
+		hh.SetStatus(ctx, userCred, api.BAREMETAL_START_MAINTAIN, "")
 		return guest.PerformStart(ctx, userCred, query, api.GuestPerformStartInput{})
 	}
 	params := jsonutils.NewDict()
@@ -4027,7 +4145,7 @@ func (hh *SHost) PerformStop(ctx context.Context, userCred mcclient.TokenCredent
 			if utils.ToBool(guest.GetMetadata(ctx, "is_fake_baremetal_server", userCred)) {
 				return nil, hh.InitializedGuestStop(ctx, userCred, guest)
 			}
-			hh.SetStatus(userCred, api.BAREMETAL_START_MAINTAIN, "")
+			hh.SetStatus(ctx, userCred, api.BAREMETAL_START_MAINTAIN, "")
 			input := api.ServerStopInput{}
 			data.Unmarshal(&input)
 			return guest.PerformStop(ctx, userCred, query, input)
@@ -4041,8 +4159,7 @@ func (hh *SHost) InitializedGuestStart(ctx context.Context, userCred mcclient.To
 	if err != nil {
 		return err
 	}
-	task.ScheduleRun(nil)
-	return nil
+	return task.ScheduleRun(nil)
 }
 
 func (hh *SHost) InitializedGuestStop(ctx context.Context, userCred mcclient.TokenCredential, guest *SGuest) error {
@@ -4067,7 +4184,7 @@ func (hh *SHost) PerformMaintenance(ctx context.Context, userCred mcclient.Token
 		if guest.Status == api.VM_RUNNING {
 			params.Set("guest_running", jsonutils.NewBool(true))
 		}
-		guest.SetStatus(userCred, api.VM_ADMIN, "")
+		guest.SetStatus(ctx, userCred, api.VM_ADMIN, "")
 	}
 	if hh.Status == api.BAREMETAL_RUNNING && jsonutils.QueryBoolean(data, "force_reboot", false) {
 		params.Set("force_reboot", jsonutils.NewBool(true))
@@ -4077,13 +4194,12 @@ func (hh *SHost) PerformMaintenance(ctx context.Context, userCred mcclient.Token
 		action, _ = data.GetString("action")
 	}
 	params.Set("action", jsonutils.NewString(action))
-	hh.SetStatus(userCred, api.BAREMETAL_START_MAINTAIN, "")
+	hh.SetStatus(ctx, userCred, api.BAREMETAL_START_MAINTAIN, "")
 	task, err := taskman.TaskManager.NewTask(ctx, "BaremetalMaintenanceTask", hh, userCred, params, "", "", nil)
 	if err != nil {
 		return nil, err
 	}
-	task.ScheduleRun(nil)
-	return nil, nil
+	return nil, task.ScheduleRun(nil)
 }
 
 func (hh *SHost) PerformUnmaintenance(ctx context.Context, userCred mcclient.TokenCredential, query jsonutils.JSONObject, data jsonutils.JSONObject) (jsonutils.JSONObject, error) {
@@ -4107,7 +4223,7 @@ func (hh *SHost) PerformUnmaintenance(ctx context.Context, userCred mcclient.Tok
 }
 
 func (hh *SHost) StartBaremetalUnmaintenanceTask(ctx context.Context, userCred mcclient.TokenCredential, startGuest bool, action string) error {
-	hh.SetStatus(userCred, api.BAREMETAL_START_MAINTAIN, "")
+	hh.SetStatus(ctx, userCred, api.BAREMETAL_START_MAINTAIN, "")
 	params := jsonutils.NewDict()
 	params.Set("guest_running", jsonutils.NewBool(startGuest))
 	if len(action) == 0 {
@@ -4129,10 +4245,9 @@ func (hh *SHost) StartSyncstatus(ctx context.Context, userCred mcclient.TokenCre
 	}
 	task, err := taskman.TaskManager.NewTask(ctx, "BaremetalSyncStatusTask", hh, userCred, nil, parentTaskId, "", nil)
 	if err != nil {
-		return err
+		return errors.Wrapf(err, "NewTask")
 	}
-	task.ScheduleRun(nil)
-	return nil
+	return task.ScheduleRun(nil)
 }
 
 func (hh *SHost) PerformOffline(ctx context.Context, userCred mcclient.TokenCredential, query jsonutils.JSONObject, input *api.HostOfflineInput) (jsonutils.JSONObject, error) {
@@ -4157,7 +4272,7 @@ func (hh *SHost) PerformOffline(ctx context.Context, userCred mcclient.TokenCred
 			ndata.Add(jsonutils.NewString(input.Reason), "reason")
 		}
 		notifyclient.SystemExceptionNotify(ctx, napi.ActionOffline, HostManager.Keyword(), ndata)
-		hh.SyncAttachedStorageStatus()
+		hh.SyncAttachedStorageStatus(ctx)
 	}
 	return nil, nil
 }
@@ -4181,7 +4296,7 @@ func (hh *SHost) PerformOnline(ctx context.Context, userCred mcclient.TokenCrede
 		}
 		db.OpsLog.LogEvent(hh, db.ACT_ONLINE, "", userCred)
 		logclient.AddActionLogWithContext(ctx, hh, logclient.ACT_ONLINE, data, userCred, true)
-		hh.SyncAttachedStorageStatus()
+		hh.SyncAttachedStorageStatus(ctx)
 		hh.StartSyncAllGuestsStatusTask(ctx, userCred)
 	}
 	return nil, nil
@@ -4273,6 +4388,9 @@ func (hh *SHost) PerformPing(ctx context.Context, userCred mcclient.TokenCredent
 			hh.LastPingAt = time.Now()
 			return nil
 		})
+		if hh.hasUnknownGuests() {
+			hh.StartSyncAllGuestsStatusTask(ctx, userCred)
+		}
 	}
 	result := jsonutils.NewDict()
 	result.Set("name", jsonutils.NewString(hh.GetName()))
@@ -4465,7 +4583,7 @@ func (hh *SHost) StartPrepareTask(ctx context.Context, userCred mcclient.TokenCr
 	if len(onfinish) > 0 {
 		data.Set("on_finish", jsonutils.NewString(onfinish))
 	}
-	hh.SetStatus(userCred, api.BAREMETAL_PREPARE, "start prepare task")
+	hh.SetStatus(ctx, userCred, api.BAREMETAL_PREPARE, "start prepare task")
 	if task, err := taskman.TaskManager.NewTask(ctx, "BaremetalPrepareTask", hh, userCred, data, parentTaskId, "", nil); err != nil {
 		log.Errorln(err)
 		return err
@@ -4484,7 +4602,7 @@ func (hh *SHost) PerformIpmiProbe(ctx context.Context, userCred mcclient.TokenCr
 
 func (hh *SHost) StartIpmiProbeTask(ctx context.Context, userCred mcclient.TokenCredential, parentTaskId string) error {
 	data := jsonutils.NewDict()
-	hh.SetStatus(userCred, api.BAREMETAL_START_PROBE, "start ipmi-probe task")
+	hh.SetStatus(ctx, userCred, api.BAREMETAL_START_PROBE, "start ipmi-probe task")
 	if task, err := taskman.TaskManager.NewTask(ctx, "BaremetalIpmiProbeTask", hh, userCred, data, parentTaskId, "", nil); err != nil {
 		log.Errorln(err)
 		return err
@@ -4508,7 +4626,7 @@ func (hh *SHost) PerformInitialize(
 	if err != nil || hh.GetBaremetalServer() != nil {
 		return nil, nil
 	}
-	err = db.NewNameValidator(GuestManager, userCred, name, nil)
+	err = db.NewNameValidator(ctx, GuestManager, userCred, name, nil)
 	if err != nil {
 		return nil, err
 	}
@@ -4542,7 +4660,7 @@ func (hh *SHost) PerformInitialize(
 	if err != nil {
 		log.Errorf("Host perform initialize failed on create disk %s", err)
 	}
-	net, err := hh.getNetworkOfIPOnHost(hh.AccessIp)
+	net, err := hh.getNetworkOfIPOnHost(ctx, hh.AccessIp)
 	if err != nil {
 		log.Errorf("host perfrom initialize failed fetch net of access ip %s", err)
 	} else {
@@ -4593,7 +4711,7 @@ func (h *SHost) PerformAddNetif(
 
 	wire := input.WireId
 	if len(input.WireId) > 0 {
-		wireObj, err := WireManager.FetchByIdOrName(userCred, input.WireId)
+		wireObj, err := WireManager.FetchByIdOrName(ctx, userCred, input.WireId)
 		if err != nil {
 			if errors.Cause(err) == sql.ErrNoRows {
 				return nil, httperrors.NewResourceNotFoundError2(WireManager.Keyword(), input.WireId)
@@ -4627,20 +4745,20 @@ func (h *SHost) PerformAddNetif(
 		}
 	}
 
-	err = h.addNetif(ctx, userCred, mac, vlan, wire, ipAddr, int(rate), nicType, int8(index), isLinkUp,
+	err = h.addNetif(ctx, userCred, mac, vlan, wire, ipAddr, int(rate), nicType, index, isLinkUp,
 		int16(mtu), reset, netIf, bridge, reserve, requireDesignatedIp)
 	return nil, errors.Wrap(err, "addNetif")
 }
 
 func (h *SHost) addNetif(ctx context.Context, userCred mcclient.TokenCredential,
 	mac string, vlanId int, wire string, ipAddr string,
-	rate int, nicType compute.TNicType, index int8, linkUp tristate.TriState, mtu int16,
+	rate int, nicType compute.TNicType, index int, linkUp tristate.TriState, mtu int16,
 	reset bool, strInterface *string, strBridge *string,
 	reserve bool, requireDesignatedIp bool,
 ) error {
 	var sw *SWire
 	if len(wire) > 0 {
-		iWire, err := WireManager.FetchByIdOrName(userCred, wire)
+		iWire, err := WireManager.FetchByIdOrName(ctx, userCred, wire)
 		if err != nil {
 			if err == sql.ErrNoRows {
 				return httperrors.NewResourceNotFoundError2(WireManager.Keyword(), wire)
@@ -4655,7 +4773,7 @@ func (h *SHost) addNetif(ctx context.Context, userCred mcclient.TokenCredential,
 				return httperrors.NewInputParameterError("invalid ipaddr %s", ipAddr)
 			}
 			findAddr := false
-			swNets, err := sw.getNetworks(userCred, userCred, NetworkManager.AllowScope(userCred))
+			swNets, err := sw.getNetworks(ctx, userCred, userCred, NetworkManager.AllowScope(userCred))
 			if err != nil {
 				return httperrors.NewInputParameterError("no networks on wire %s", wire)
 			}
@@ -4710,7 +4828,7 @@ func (h *SHost) addNetif(ctx context.Context, userCred mcclient.TokenCredential,
 	if nicType != "" && nicType != netif.NicType {
 		netif.NicType = nicType
 	}
-	if index >= 0 && index != netif.Index {
+	if index >= 0 {
 		netif.Index = index
 	}
 	if !linkUp.IsNone() && linkUp.Bool() != netif.LinkUp {
@@ -4724,6 +4842,28 @@ func (h *SHost) addNetif(ctx context.Context, userCred mcclient.TokenCredential,
 	}
 	if strBridge != nil {
 		netif.Bridge = *strBridge
+	}
+	// ensure index is unique on host
+	{
+		ifs := h.GetHostNetInterfaces()
+		dupIdx := false
+		var maxIdx int
+		for i := range ifs {
+			if ifs[i].Mac == netif.Mac && ifs[i].VlanId == netif.VlanId {
+				// find self, skip
+				continue
+			}
+			if netif.Index == ifs[i].Index {
+				// duplicate nic index
+				dupIdx = true
+			}
+			if maxIdx < ifs[i].Index {
+				maxIdx = ifs[i].Index
+			}
+		}
+		if dupIdx {
+			netif.Index = maxIdx + 1
+		}
 	}
 	err = NetInterfaceManager.TableSpec().InsertOrUpdate(ctx, netif)
 	if err != nil {
@@ -4808,7 +4948,7 @@ func (h *SHost) EnableNetif(ctx context.Context, userCred mcclient.TokenCredenti
 	var net *SNetwork
 	var err error
 	if len(ipAddr) > 0 {
-		net, err = netif.GetCandidateNetworkForIp(userCred, userCred, NetworkManager.AllowScope(userCred), ipAddr)
+		net, err = netif.GetCandidateNetworkForIp(ctx, userCred, userCred, NetworkManager.AllowScope(userCred), ipAddr)
 		if net != nil {
 			log.Infof("find network %s for ip %s", net.GetName(), ipAddr)
 		} else if requireDesignatedIp {
@@ -4833,7 +4973,7 @@ func (h *SHost) EnableNetif(ctx context.Context, userCred mcclient.TokenCredenti
 	}
 	if net == nil {
 		if len(network) > 0 {
-			iNet, err := NetworkManager.FetchByIdOrName(userCred, network)
+			iNet, err := NetworkManager.FetchByIdOrName(ctx, userCred, network)
 			if err != nil {
 				return fmt.Errorf("Network %s not found: %s", network, err)
 			}
@@ -4848,12 +4988,12 @@ func (h *SHost) EnableNetif(ctx context.Context, userCred mcclient.TokenCredenti
 			} else {
 				netTypes = []string{api.NETWORK_TYPE_BAREMETAL}
 			}
-			net, err = wire.GetCandidatePrivateNetwork(userCred, userCred, NetworkManager.AllowScope(userCred), false, netTypes)
+			net, err = wire.GetCandidatePrivateNetwork(ctx, userCred, userCred, NetworkManager.AllowScope(userCred), false, netTypes)
 			if err != nil {
 				return fmt.Errorf("fail to find private network %s", err)
 			}
 			if net == nil {
-				net, err = wire.GetCandidateAutoAllocNetwork(userCred, userCred, NetworkManager.AllowScope(userCred), false, netTypes)
+				net, err = wire.GetCandidateAutoAllocNetwork(ctx, userCred, userCred, NetworkManager.AllowScope(userCred), false, netTypes)
 				if err != nil {
 					return fmt.Errorf("fail to find public network %s", err)
 				}
@@ -5003,7 +5143,7 @@ func (hh *SHost) Attach2Network(
 	lockman.LockObject(ctx, net)
 	defer lockman.ReleaseObject(ctx, net)
 
-	usedAddrs := net.GetUsedAddresses()
+	usedAddrs := net.GetUsedAddresses(ctx)
 	if ipAddr != "" {
 		// converted baremetal can resuse related guest network ip
 		if err := hh.IsIpAddrWithinConvertedGuest(ctx, userCred, ipAddr, netif); err == nil {
@@ -5103,7 +5243,7 @@ func (hh *SHost) PerformSyncstatus(ctx context.Context, userCred mcclient.TokenC
 	if hh.HostType != api.HOST_TYPE_BAREMETAL {
 		return nil, httperrors.NewBadRequestError("Cannot sync status a non-baremetal host")
 	}
-	hh.SetStatus(userCred, api.BAREMETAL_SYNCING_STATUS, "")
+	hh.SetStatus(ctx, userCred, api.BAREMETAL_SYNCING_STATUS, "")
 	return nil, hh.StartSyncstatus(ctx, userCred, "")
 }
 
@@ -5151,7 +5291,7 @@ func (hh *SHost) PerformEnable(
 		if err != nil {
 			return nil, errors.Wrap(err, "SEnabledStatusInfrasResourceBase.PerformEnable")
 		}
-		hh.SyncAttachedStorageStatus()
+		hh.SyncAttachedStorageStatus(ctx)
 		hh.updateNotify(ctx, userCred)
 	}
 	return nil, nil
@@ -5163,7 +5303,7 @@ func (hh *SHost) PerformDisable(ctx context.Context, userCred mcclient.TokenCred
 		if err != nil {
 			return nil, errors.Wrap(err, "SEnabledStatusInfrasResourceBase.PerformDisable")
 		}
-		hh.SyncAttachedStorageStatus()
+		hh.SyncAttachedStorageStatus(ctx)
 		hh.updateNotify(ctx, userCred)
 	}
 	return nil, nil
@@ -5240,9 +5380,9 @@ func (hh *SHost) PerformConvertHypervisor(ctx context.Context, userCred mcclient
 	} else {
 		ownerId = userCred
 	}
-	driver := GetHostDriver(hostType)
-	if driver == nil {
-		return nil, httperrors.NewNotAcceptableError("Unsupport driver type %s", hostType)
+	driver, err := GetHostDriver(hostType, api.CLOUD_PROVIDER_ONECLOUD)
+	if err != nil {
+		return nil, errors.Wrapf(err, "GetHostDriver")
 	}
 	if data.Contains("name") {
 		name, _ := data.GetString("name")
@@ -5294,7 +5434,7 @@ func (hh *SHost) PerformConvertHypervisor(ctx context.Context, userCred mcclient
 	}
 	task.ScheduleRun(nil)
 
-	hh.SetStatus(userCred, api.BAREMETAL_START_CONVERT, "")
+	hh.SetStatus(ctx, userCred, api.BAREMETAL_START_CONVERT, "")
 	return nil, nil
 }
 
@@ -5311,11 +5451,11 @@ func (hh *SHost) PerformUndoConvert(ctx context.Context, userCred mcclient.Token
 	if !utils.IsInStringArray(hh.Status, []string{api.BAREMETAL_READY, api.BAREMETAL_RUNNING}) {
 		return nil, httperrors.NewNotAcceptableError("Cannot unconvert in status %s", hh.Status)
 	}
-	driver := hh.GetDriverWithDefault()
-	if driver == nil {
-		return nil, httperrors.NewNotAcceptableError("Unsupport driver type %s", hh.HostType)
+	driver, err := hh.GetHostDriver()
+	if err != nil {
+		return nil, errors.Wrapf(err, "GetHostDriver")
 	}
-	err := driver.PrepareUnconvert(hh)
+	err = driver.PrepareUnconvert(hh)
 	if err != nil {
 		return nil, httperrors.NewNotAcceptableError("%v", err)
 	}
@@ -5343,14 +5483,6 @@ func (hh *SHost) PerformUndoConvert(ctx context.Context, userCred mcclient.Token
 	}
 	task.ScheduleRun(nil)
 	return nil, nil
-}
-
-func (hh *SHost) GetDriverWithDefault() IHostDriver {
-	hostType := hh.HostType
-	if len(hostType) == 0 {
-		hostType = api.HOST_TYPE_DEFAULT
-	}
-	return GetHostDriver(hostType)
 }
 
 func (hh *SHost) UpdateDiskConfig(userCred mcclient.TokenCredential, layouts []baremetal.Layout) error {
@@ -5619,7 +5751,7 @@ func (host *SHost) SyncHostExternalNics(ctx context.Context, userCred mcclient.T
 			}
 		}
 		err = host.addNetif(ctx, userCred, extNic.GetMac(), extNic.GetVlanId(), wireId, extNic.GetIpAddr(), 0,
-			compute.TNicType(extNic.GetNicType()), extNic.GetIndex(),
+			compute.TNicType(extNic.GetNicType()), int(extNic.GetIndex()),
 			extNic.IsLinkUp(), int16(extNic.GetMtu()), false, strNetIf, strBridge, true, true)
 		if err != nil {
 			result.AddError(err)
@@ -5755,10 +5887,10 @@ func (hh *SHost) GetShortDesc(ctx context.Context) *jsonutils.JSONDict {
 	return desc
 }
 
-func (hh *SHost) MarkGuestUnknown(userCred mcclient.TokenCredential) {
+func (hh *SHost) MarkGuestUnknown(ctx context.Context, userCred mcclient.TokenCredential) {
 	guests, _ := hh.GetGuests()
 	for _, guest := range guests {
-		guest.SetStatus(userCred, api.VM_UNKNOWN, "host offline")
+		guest.SetStatus(ctx, userCred, api.VM_UNKNOWN, "host offline")
 	}
 	guests2 := hh.GetGuestsBackupOnThisHost()
 	for _, guest := range guests2 {
@@ -5786,7 +5918,7 @@ func (manager *SHostManager) PingDetectionTask(ctx context.Context, userCred mcc
 			lockman.LockObject(ctx, &hosts[i])
 			defer lockman.ReleaseObject(ctx, &hosts[i])
 			hosts[i].PerformOffline(ctx, userCred, nil, &api.HostOfflineInput{UpdateHealthStatus: &updateHealthStatus, Reason: fmt.Sprintf("last ping detection at %s", deadline)})
-			hosts[i].MarkGuestUnknown(userCred)
+			hosts[i].MarkGuestUnknown(ctx, userCred)
 		}()
 	}
 }
@@ -5820,7 +5952,7 @@ func (host *SHost) PerformHostExitMaintenance(ctx context.Context, userCred mccl
 	if !utils.IsInStringArray(host.Status, []string{api.BAREMETAL_MAINTAIN_FAIL, api.BAREMETAL_MAINTAINING}) {
 		return nil, httperrors.NewInvalidStatusError("host status %s can't exit maintenance", host.Status)
 	}
-	err := host.SetStatus(userCred, api.HOST_STATUS_RUNNING, "exit maintenance")
+	err := host.SetStatus(ctx, userCred, api.HOST_STATUS_RUNNING, "exit maintenance")
 	if err != nil {
 		return nil, err
 	}
@@ -5838,7 +5970,7 @@ func (host *SHost) PerformHostMaintenance(ctx context.Context, userCred mcclient
 	var preferHostId string
 	preferHost, _ := data.GetString("prefer_host")
 	if len(preferHost) > 0 {
-		iHost, _ := HostManager.FetchByIdOrName(userCred, preferHost)
+		iHost, _ := HostManager.FetchByIdOrName(ctx, userCred, preferHost)
 		if iHost == nil {
 			return nil, httperrors.NewBadRequestError("Host %s not found", preferHost)
 		}
@@ -5873,7 +6005,7 @@ func (host *SHost) PerformHostMaintenance(ctx context.Context, userCred mcclient
 			RescueMode:  guests[i].Status == api.VM_UNKNOWN,
 			OldStatus:   guests[i].Status,
 		}
-		guests[i].SetStatus(userCred, api.VM_START_MIGRATE, "host maintainence")
+		guests[i].SetStatus(ctx, userCred, api.VM_START_MIGRATE, "host maintainence")
 		hostGuests = append(hostGuests, bmp)
 	}
 
@@ -6017,7 +6149,7 @@ func (host *SHost) MigrateSharedStorageServers(ctx context.Context, userCred mcc
 				RescueMode:  true,
 				OldStatus:   guests[i].Status,
 			}
-			guests[i].SetStatus(userCred, api.VM_START_MIGRATE, "host down")
+			guests[i].SetStatus(ctx, userCred, api.VM_START_MIGRATE, "host down")
 			hostGuests = append(hostGuests, bmp)
 			migGuests = append(migGuests, &guests[i])
 		}
@@ -6027,21 +6159,17 @@ func (host *SHost) MigrateSharedStorageServers(ctx context.Context, userCred mcc
 	return GuestManager.StartHostGuestsMigrateTask(ctx, userCred, migGuests, kwargs, "")
 }
 
-func (host *SHost) SetStatus(userCred mcclient.TokenCredential, status string, reason string) error {
-	err := host.SEnabledStatusInfrasResourceBase.SetStatus(userCred, status, reason)
+func (host *SHost) SetStatus(ctx context.Context, userCred mcclient.TokenCredential, status string, reason string) error {
+	err := host.SEnabledStatusInfrasResourceBase.SetStatus(ctx, userCred, status, reason)
 	if err != nil {
 		return err
 	}
 	host.ClearSchedDescCache()
-	notifyclient.EventNotify(context.Background(), userCred, notifyclient.SEventNotifyParam{
-		Obj:    host,
-		Action: notifyclient.ActionUpdate,
-	})
 	return nil
 }
 
 func (host *SHost) StartMaintainTask(ctx context.Context, userCred mcclient.TokenCredential, data *jsonutils.JSONDict) error {
-	host.SetStatus(userCred, api.BAREMETAL_START_MAINTAIN, "start maintenance")
+	host.SetStatus(ctx, userCred, api.BAREMETAL_START_MAINTAIN, "start maintenance")
 	if task, err := taskman.TaskManager.NewTask(ctx, "HostMaintainTask", host, userCred, data, "", "", nil); err != nil {
 		log.Errorln(err)
 		return err
@@ -6209,7 +6337,7 @@ func (hh *SHost) StartInsertIsoTask(ctx context.Context, userCred mcclient.Token
 		data.Add(jsonutils.JSONTrue, "boot")
 	}
 	data.Add(jsonutils.NewString(api.BAREMETAL_CDROM_ACTION_INSERT), "action")
-	hh.SetStatus(userCred, api.BAREMETAL_START_INSERT_ISO, "start insert iso task")
+	hh.SetStatus(ctx, userCred, api.BAREMETAL_START_INSERT_ISO, "start insert iso task")
 	if task, err := taskman.TaskManager.NewTask(ctx, "BaremetalCdromTask", hh, userCred, data, parentTaskId, "", nil); err != nil {
 		log.Errorln(err)
 		return err
@@ -6229,7 +6357,7 @@ func (hh *SHost) PerformEjectIso(ctx context.Context, userCred mcclient.TokenCre
 func (hh *SHost) StartEjectIsoTask(ctx context.Context, userCred mcclient.TokenCredential, parentTaskId string) error {
 	data := jsonutils.NewDict()
 	data.Add(jsonutils.NewString(api.BAREMETAL_CDROM_ACTION_EJECT), "action")
-	hh.SetStatus(userCred, api.BAREMETAL_START_EJECT_ISO, "start eject iso task")
+	hh.SetStatus(ctx, userCred, api.BAREMETAL_START_EJECT_ISO, "start eject iso task")
 	if task, err := taskman.TaskManager.NewTask(ctx, "BaremetalCdromTask", hh, userCred, data, parentTaskId, "", nil); err != nil {
 		log.Errorln(err)
 		return err
@@ -6243,7 +6371,7 @@ func (hh *SHost) PerformSyncConfig(ctx context.Context, userCred mcclient.TokenC
 	if hh.HostType != api.HOST_TYPE_BAREMETAL {
 		return nil, httperrors.NewBadRequestError("Cannot sync config a non-baremetal host")
 	}
-	hh.SetStatus(userCred, api.BAREMETAL_SYNCING_STATUS, "")
+	hh.SetStatus(ctx, userCred, api.BAREMETAL_SYNCING_STATUS, "")
 	return nil, hh.StartSyncConfig(ctx, userCred, "")
 }
 
@@ -6258,8 +6386,7 @@ func (hh *SHost) startSyncConfig(ctx context.Context, userCred mcclient.TokenCre
 	if err != nil {
 		return err
 	}
-	task.ScheduleRun(nil)
-	return nil
+	return task.ScheduleRun(nil)
 }
 
 func (model *SHost) CustomizeCreate(ctx context.Context, userCred mcclient.TokenCredential, ownerId mcclient.IIdentityProvider, query jsonutils.JSONObject, data jsonutils.JSONObject) error {
@@ -6498,7 +6625,11 @@ func (manager *SHostManager) InitializeData() error {
 }
 
 func (hh *SHost) PerformProbeIsolatedDevices(ctx context.Context, userCred mcclient.TokenCredential, query jsonutils.JSONObject, data jsonutils.JSONObject) (jsonutils.JSONObject, error) {
-	return hh.GetHostDriver().RequestProbeIsolatedDevices(ctx, userCred, hh, data)
+	driver, err := hh.GetHostDriver()
+	if err != nil {
+		return nil, errors.Wrapf(err, "GetHostDriver")
+	}
+	return driver.RequestProbeIsolatedDevices(ctx, userCred, hh, data)
 }
 
 func (hh *SHost) GetPinnedCpusetCores(ctx context.Context, userCred mcclient.TokenCredential) (map[string][]int, error) {

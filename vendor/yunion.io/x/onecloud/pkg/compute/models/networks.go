@@ -27,6 +27,7 @@ import (
 	"yunion.io/x/jsonutils"
 	"yunion.io/x/log"
 	"yunion.io/x/pkg/errors"
+	"yunion.io/x/pkg/gotypes"
 	"yunion.io/x/pkg/tristate"
 	"yunion.io/x/pkg/util/billing"
 	"yunion.io/x/pkg/util/compare"
@@ -258,10 +259,10 @@ func (manager *SNetworkManager) GetOrCreateClassicNetwork(ctx context.Context, w
 	return &network, nil
 }
 
-func (snet *SNetwork) GetUsedAddresses() map[string]bool {
+func (snet *SNetwork) GetUsedAddresses(ctx context.Context) map[string]bool {
 	used := make(map[string]bool)
 
-	q := snet.getUsedAddressQuery(nil, nil, rbacscope.ScopeSystem, true)
+	q := snet.getUsedAddressQuery(ctx, nil, nil, rbacscope.ScopeSystem, true)
 	results, err := q.AllStringMap()
 	if err != nil {
 		log.Errorf("GetUsedAddresses fail %s", err)
@@ -273,10 +274,10 @@ func (snet *SNetwork) GetUsedAddresses() map[string]bool {
 	return used
 }
 
-func (snet *SNetwork) GetUsedAddresses6() map[string]bool {
+func (snet *SNetwork) GetUsedAddresses6(ctx context.Context) map[string]bool {
 	used := make(map[string]bool)
 
-	q := snet.getUsedAddressQuery6(nil, nil, rbacscope.ScopeSystem, true)
+	q := snet.getUsedAddressQuery6(ctx, nil, nil, rbacscope.ScopeSystem, true)
 	results, err := q.AllStringMap()
 	if err != nil {
 		log.Errorf("GetUsedAddresses fail %s", err)
@@ -333,6 +334,9 @@ func isIpUsed(ipstr string, addrTable map[string]bool, recentUsedAddrTable map[s
 }
 
 func (snet *SNetwork) getFreeIP6(addrTable map[string]bool, recentUsedAddrTable map[string]bool, candidate string) (string, error) {
+	if !snet.IsSupportIPv6() {
+		return "", errors.Wrapf(cloudprovider.ErrNotSupported, "ipv6")
+	}
 	iprange := snet.getIPRange6()
 	// Try candidate first
 	if len(candidate) > 0 {
@@ -341,7 +345,7 @@ func (snet *SNetwork) getFreeIP6(addrTable map[string]bool, recentUsedAddrTable 
 			return "", errors.Wrap(err, "NewIPV6Addr")
 		}
 		if !iprange.Contains(candIP) {
-			return "", httperrors.NewInputParameterError("candidate %s out of range", candidate)
+			return "", httperrors.NewInputParameterError("candidate %s out of range %s", candidate, iprange.String())
 		}
 		if _, ok := addrTable[candidate]; !ok {
 			return candidate, nil
@@ -368,7 +372,7 @@ func (snet *SNetwork) getFreeIP(addrTable map[string]bool, recentUsedAddrTable m
 			return "", err
 		}
 		if !iprange.Contains(candIP) {
-			return "", httperrors.NewInputParameterError("candidate %s out of range", candidate)
+			return "", httperrors.NewInputParameterError("candidate %s out of range %s", candidate, iprange.String())
 		}
 		if _, ok := addrTable[candidate]; !ok {
 			return candidate, nil
@@ -434,7 +438,7 @@ func (snet *SNetwork) GetFreeIP(ctx context.Context, userCred mcclient.TokenCred
 
 	if addrType == api.AddressTypeIPv6 {
 		if addrTable == nil {
-			addrTable = snet.GetUsedAddresses6()
+			addrTable = snet.GetUsedAddresses6(ctx)
 		}
 		if recentUsedAddrTable == nil {
 			recentUsedAddrTable = GuestnetworkManager.getRecentlyReleasedIPAddresses6(snet.Id, snet.getAllocTimoutDuration())
@@ -446,7 +450,7 @@ func (snet *SNetwork) GetFreeIP(ctx context.Context, userCred mcclient.TokenCred
 		return cand, nil
 	} else {
 		if addrTable == nil {
-			addrTable = snet.GetUsedAddresses()
+			addrTable = snet.GetUsedAddresses(ctx)
 		}
 		if recentUsedAddrTable == nil {
 			recentUsedAddrTable = GuestnetworkManager.getRecentlyReleasedIPAddresses(snet.Id, snet.getAllocTimoutDuration())
@@ -534,7 +538,9 @@ func (snet *SNetwork) GetRoutes() []types.SRoute {
 
 func (snet *SNetwork) updateDnsRecord(nic *SGuestnetwork, isAdd bool) {
 	guest := nic.GetGuest()
-	snet._updateDnsRecord(guest.Name, nic.IpAddr, isAdd)
+	if !gotypes.IsNil(guest) {
+		snet._updateDnsRecord(guest.Name, nic.IpAddr, isAdd)
+	}
 }
 
 func (snet *SNetwork) _updateDnsRecord(name string, ipAddr string, isAdd bool) {
@@ -609,19 +615,11 @@ func (snet *SNetwork) GetGuestIpv4StartAddress() netutils.IPV4Addr {
 }
 
 func (snet *SNetwork) IsExitNetwork() bool {
-	return netutils.IsExitAddress(snet.GetGuestIpv4StartAddress())
+	return len(snet.ExternalId) == 0 && netutils.IsExitAddress(snet.GetGuestIpv4StartAddress())
 }
 
-func (manager *SNetworkManager) getNetworksByWire(wire *SWire) ([]SNetwork, error) {
-	return wire.getNetworks(nil, nil, rbacscope.ScopeNone)
-	/* nets := make([]SNetwork, 0)
-	q := manager.Query().Equals("wire_id", wire.Id)
-	err := db.FetchModelObjects(manager, q, &nets)
-	if err != nil {
-		log.Errorf("getNetworkByWire fail %s", err)
-		return nil, err
-	}
-	return nets, nil */
+func (manager *SNetworkManager) getNetworksByWire(ctx context.Context, wire *SWire) ([]SNetwork, error) {
+	return wire.getNetworks(ctx, nil, nil, rbacscope.ScopeNone)
 }
 
 func (manager *SNetworkManager) SyncNetworks(
@@ -641,7 +639,7 @@ func (manager *SNetworkManager) SyncNetworks(
 	remoteNets := make([]cloudprovider.ICloudNetwork, 0)
 	syncResult := compare.SyncResult{}
 
-	dbNets, err := manager.getNetworksByWire(wire)
+	dbNets, err := manager.getNetworksByWire(ctx, wire)
 	if err != nil {
 		syncResult.Error(err)
 		return nil, nil, syncResult
@@ -675,7 +673,7 @@ func (manager *SNetworkManager) SyncNetworks(
 	}
 	if !xor {
 		for i := 0; i < len(commondb); i += 1 {
-			err = commondb[i].SyncWithCloudNetwork(ctx, userCred, commonext[i], syncOwnerId, provider)
+			err = commondb[i].SyncWithCloudNetwork(ctx, userCred, commonext[i])
 			if err != nil {
 				syncResult.UpdateError(err)
 				continue
@@ -709,7 +707,7 @@ func (snet *SNetwork) syncRemoveCloudNetwork(ctx context.Context, userCred mccli
 
 	err := snet.ValidateDeleteCondition(ctx, nil)
 	if err != nil { // cannot delete
-		err = snet.SetStatus(userCred, api.NETWORK_STATUS_UNKNOWN, "Sync to remove")
+		err = snet.SetStatus(ctx, userCred, api.NETWORK_STATUS_UNKNOWN, "Sync to remove")
 	} else {
 		err = snet.RealDelete(ctx, userCred)
 		if err == nil {
@@ -722,7 +720,7 @@ func (snet *SNetwork) syncRemoveCloudNetwork(ctx context.Context, userCred mccli
 	return err
 }
 
-func (snet *SNetwork) SyncWithCloudNetwork(ctx context.Context, userCred mcclient.TokenCredential, extNet cloudprovider.ICloudNetwork, syncOwnerId mcclient.IIdentityProvider, provider *SCloudprovider) error {
+func (snet *SNetwork) SyncWithCloudNetwork(ctx context.Context, userCred mcclient.TokenCredential, extNet cloudprovider.ICloudNetwork) error {
 	diff, err := db.UpdateWithLock(ctx, snet, func() error {
 		if options.Options.EnableSyncName {
 			newName, _ := db.GenerateAlterName(snet, extNet.GetName())
@@ -737,6 +735,11 @@ func (snet *SNetwork) SyncWithCloudNetwork(ctx context.Context, userCred mcclien
 		snet.GuestIpMask = extNet.GetIpMask()
 		snet.GuestGateway = extNet.GetGateway()
 		snet.ServerType = extNet.GetServerType()
+
+		snet.GuestIp6Start = extNet.GetIp6Start()
+		snet.GuestIp6End = extNet.GetIp6End()
+		snet.GuestIp6Mask = extNet.GetIp6Mask()
+		snet.GuestGateway6 = extNet.GetGateway6()
 
 		snet.AllocTimoutSeconds = extNet.GetAllocTimeoutSeconds()
 
@@ -758,10 +761,19 @@ func (snet *SNetwork) SyncWithCloudNetwork(ctx context.Context, userCred mcclien
 		})
 	}
 
-	//syncVirtualResourceMetadata(ctx, userCred, snet, extNet)
+	vpc, err := snet.GetVpc()
+	if err != nil {
+		return errors.Wrapf(err, "GetVpc")
+	}
+
+	provider := vpc.GetCloudprovider()
 
 	if provider != nil {
-		SyncCloudProject(ctx, userCred, snet, syncOwnerId, extNet, provider)
+		if account, _ := provider.GetCloudaccount(); account != nil {
+			syncVirtualResourceMetadata(ctx, userCred, snet, extNet, account.ReadOnly)
+		}
+
+		SyncCloudProject(ctx, userCred, snet, provider.GetOwnerId(), extNet, provider)
 
 		shareInfo := provider.getAccountShareInfo()
 		if utils.IsInStringArray(provider.Provider, api.PRIVATE_CLOUD_PROVIDERS) && extNet.GetPublicScope() == rbacscope.ScopeNone {
@@ -777,8 +789,8 @@ func (snet *SNetwork) SyncWithCloudNetwork(ctx context.Context, userCred mcclien
 }
 
 func (manager *SNetworkManager) newFromCloudNetwork(ctx context.Context, userCred mcclient.TokenCredential, extNet cloudprovider.ICloudNetwork, wire *SWire, syncOwnerId mcclient.IIdentityProvider, provider *SCloudprovider) (*SNetwork, error) {
-	net := SNetwork{}
-	net.SetModelManager(manager, &net)
+	net := &SNetwork{}
+	net.SetModelManager(manager, net)
 
 	net.Status = extNet.GetStatus()
 	net.ExternalId = extNet.GetGlobalId()
@@ -788,6 +800,11 @@ func (manager *SNetworkManager) newFromCloudNetwork(ctx context.Context, userCre
 	net.GuestIpMask = extNet.GetIpMask()
 	net.GuestGateway = extNet.GetGateway()
 	net.ServerType = extNet.GetServerType()
+	net.GuestIp6Start = extNet.GetIp6Start()
+	net.GuestIp6End = extNet.GetIp6End()
+	net.GuestIp6Mask = extNet.GetIp6Mask()
+	net.GuestGateway6 = extNet.GetGateway6()
+
 	// net.IsPublic = extNet.GetIsPublic()
 	// extScope := extNet.GetPublicScope()
 	// if extScope == rbacutils.ScopeDomain && !consts.GetNonDefaultDomainProjects() {
@@ -811,16 +828,16 @@ func (manager *SNetworkManager) newFromCloudNetwork(ctx context.Context, userCre
 		}
 		net.Name = newName
 
-		return manager.TableSpec().Insert(ctx, &net)
+		return manager.TableSpec().Insert(ctx, net)
 	}()
 	if err != nil {
 		return nil, errors.Wrapf(err, "Insert")
 	}
 
-	syncVirtualResourceMetadata(ctx, userCred, &net, extNet, false)
+	syncVirtualResourceMetadata(ctx, userCred, net, extNet, false)
 
 	if provider != nil {
-		SyncCloudProject(ctx, userCred, &net, syncOwnerId, extNet, provider)
+		SyncCloudProject(ctx, userCred, net, syncOwnerId, extNet, provider)
 		shareInfo := provider.getAccountShareInfo()
 		if utils.IsInStringArray(provider.Provider, api.PRIVATE_CLOUD_PROVIDERS) && extNet.GetPublicScope() == rbacscope.ScopeNone {
 			shareInfo = apis.SAccountShareInfo{
@@ -831,13 +848,13 @@ func (manager *SNetworkManager) newFromCloudNetwork(ctx context.Context, userCre
 		net.SyncShareState(ctx, userCred, shareInfo)
 	}
 
-	db.OpsLog.LogEvent(&net, db.ACT_CREATE, net.GetShortDesc(ctx), userCred)
+	db.OpsLog.LogEvent(net, db.ACT_CREATE, net.GetShortDesc(ctx), userCred)
 	notifyclient.EventNotify(ctx, userCred, notifyclient.SEventNotifyParam{
-		Obj:    &net,
+		Obj:    net,
 		Action: notifyclient.ActionSyncCreate,
 	})
 
-	return &net, nil
+	return net, nil
 }
 
 func (net *SNetwork) IsAddressInRange(address netutils.IPV4Addr) bool {
@@ -856,8 +873,8 @@ func (net *SNetwork) IsAddressInNet(address netutils.IPV4Addr) bool {
 	return net.getNetRange().Contains(address)
 }
 
-func (snet *SNetwork) isAddressUsed(address string) (bool, error) {
-	q := snet.getUsedAddressQuery(nil, nil, rbacscope.ScopeSystem, true)
+func (snet *SNetwork) isAddressUsed(ctx context.Context, address string) (bool, error) {
+	q := snet.getUsedAddressQuery(ctx, nil, nil, rbacscope.ScopeSystem, true)
 	q = q.Equals("ip_addr", address)
 	count, err := q.CountWithError()
 	if err != nil && errors.Cause(err) != sql.ErrNoRows {
@@ -870,8 +887,8 @@ func (snet *SNetwork) isAddressUsed(address string) (bool, error) {
 	}
 }
 
-func (snet *SNetwork) isAddress6Used(address string) (bool, error) {
-	q := snet.getUsedAddressQuery6(nil, nil, rbacscope.ScopeSystem, true)
+func (snet *SNetwork) isAddress6Used(ctx context.Context, address string) (bool, error) {
+	q := snet.getUsedAddressQuery6(ctx, nil, nil, rbacscope.ScopeSystem, true)
 	q = q.Equals("ip6_addr", address)
 	count, err := q.CountWithError()
 	if err != nil && errors.Cause(err) != sql.ErrNoRows {
@@ -938,6 +955,7 @@ func (manager *SNetworkManager) allNetworksQ(providers []string, brands []string
 }
 
 func (manager *SNetworkManager) totalPortCountQ(
+	ctx context.Context,
 	scope rbacscope.TRbacScope,
 	userCred mcclient.IIdentityProvider,
 	providers []string,
@@ -954,7 +972,7 @@ func (manager *SNetworkManager) totalPortCountQ(
 	case rbacscope.ScopeProject:
 		q = q.Equals("tenant_id", userCred.GetProjectId())
 	}
-	q = db.ObjectIdQueryWithPolicyResult(q, manager, policyResult)
+	q = db.ObjectIdQueryWithPolicyResult(ctx, q, manager, policyResult)
 	return manager.Query().In("id", q.Distinct().SubQuery())
 }
 
@@ -964,6 +982,7 @@ type NetworkPortStat struct {
 }
 
 func (manager *SNetworkManager) TotalPortCount(
+	ctx context.Context,
 	scope rbacscope.TRbacScope,
 	userCred mcclient.IIdentityProvider,
 	providers []string, brands []string, cloudEnv string,
@@ -972,6 +991,7 @@ func (manager *SNetworkManager) TotalPortCount(
 ) map[string]NetworkPortStat {
 	nets := make([]SNetwork, 0)
 	err := manager.totalPortCountQ(
+		ctx,
 		scope,
 		userCred,
 		providers, brands, cloudEnv,
@@ -1011,13 +1031,13 @@ func (manager *SNetworkManager) TotalPortCount(
 
 type SNicConfig struct {
 	Mac    string
-	Index  int8
+	Index  int
 	Ifname string
 }
 
 func parseNetworkInfo(ctx context.Context, userCred mcclient.TokenCredential, info *api.NetworkConfig) (*api.NetworkConfig, error) {
 	if info.Network != "" {
-		netObj, err := NetworkManager.FetchByIdOrName(userCred, info.Network)
+		netObj, err := NetworkManager.FetchByIdOrName(ctx, userCred, info.Network)
 		if err != nil {
 			if err == sql.ErrNoRows {
 				return nil, httperrors.NewResourceNotFoundError2(NetworkManager.Keyword(), info.Network)
@@ -1076,7 +1096,7 @@ func (snet *SNetwork) getFreeAddress6Count() (int, error) {
 
 func isValidNetworkInfo(ctx context.Context, userCred mcclient.TokenCredential, netConfig *api.NetworkConfig, reuseAddr string) error {
 	if len(netConfig.Network) > 0 {
-		netObj, err := NetworkManager.FetchByIdOrName(userCred, netConfig.Network)
+		netObj, err := NetworkManager.FetchByIdOrName(ctx, userCred, netConfig.Network)
 		if err != nil {
 			return httperrors.NewResourceNotFoundError("Network %s not found: %v", netConfig.Network, err)
 		}
@@ -1103,7 +1123,7 @@ func isValidNetworkInfo(ctx context.Context, userCred mcclient.TokenCredential, 
 					return httperrors.NewInputParameterError("Address %s not reserved", netConfig.Address)
 				}
 			} else {
-				used, err := net.isAddressUsed(netConfig.Address)
+				used, err := net.isAddressUsed(ctx, netConfig.Address)
 				if err != nil {
 					return httperrors.NewInternalServerError("isAddressUsed fail %s", err)
 				}
@@ -1133,7 +1153,7 @@ func isValidNetworkInfo(ctx context.Context, userCred mcclient.TokenCredential, 
 					return httperrors.NewInputParameterError("Address v6 %s not reserved", netConfig.Address6)
 				}
 			} else {
-				used, err := net.isAddress6Used(netConfig.Address6)
+				used, err := net.isAddress6Used(ctx, netConfig.Address6)
 				if err != nil {
 					return httperrors.NewInternalServerError("isAddress6Used fail %s", err)
 				}
@@ -1172,9 +1192,9 @@ func isValidNetworkInfo(ctx context.Context, userCred mcclient.TokenCredential, 
 	return nil
 }
 
-func IsExitNetworkInfo(userCred mcclient.TokenCredential, netConfig *api.NetworkConfig) bool {
+func IsExitNetworkInfo(ctx context.Context, userCred mcclient.TokenCredential, netConfig *api.NetworkConfig) bool {
 	if len(netConfig.Network) > 0 {
-		netObj, _ := NetworkManager.FetchByIdOrName(userCred, netConfig.Network)
+		netObj, _ := NetworkManager.FetchByIdOrName(ctx, userCred, netConfig.Network)
 		net := netObj.(*SNetwork)
 		if net.IsExitNetwork() {
 			return true
@@ -1415,7 +1435,7 @@ func (net *SNetwork) reserveIpWithDurationAndStatus(ctx context.Context, userCre
 		if !net.IsAddress6InRange(addr6) {
 			return httperrors.NewInputParameterError("Address %s not in network", ipstr)
 		}
-		used, err = net.isAddress6Used(addr6.String())
+		used, err = net.isAddress6Used(ctx, addr6.String())
 		if err != nil {
 			return httperrors.NewInternalServerError("isAddress6Used fail %s", err)
 		}
@@ -1429,7 +1449,7 @@ func (net *SNetwork) reserveIpWithDurationAndStatus(ctx context.Context, userCre
 		if !net.IsAddressInRange(ipAddr) {
 			return httperrors.NewInputParameterError("Address %s not in network", ipstr)
 		}
-		used, err = net.isAddressUsed(ipstr)
+		used, err = net.isAddressUsed(ctx, ipstr)
 		if err != nil {
 			return httperrors.NewInternalServerError("isAddressUsed fail %s", err)
 		}
@@ -1600,7 +1620,7 @@ func (manager *SNetworkManager) newIfnameHint(hint string) (string, error) {
 }
 
 func (manager *SNetworkManager) validateEnsureWire(ctx context.Context, userCred mcclient.TokenCredential, input api.NetworkCreateInput) (w *SWire, v *SVpc, cr *SCloudregion, err error) {
-	wObj, err := WireManager.FetchByIdOrName(userCred, input.Wire)
+	wObj, err := WireManager.FetchByIdOrName(ctx, userCred, input.Wire)
 	if err != nil {
 		err = errors.Wrapf(err, "wire %s", input.Wire)
 		return
@@ -1617,13 +1637,13 @@ func (manager *SNetworkManager) validateEnsureWire(ctx context.Context, userCred
 }
 
 func (manager *SNetworkManager) validateEnsureZoneVpc(ctx context.Context, userCred mcclient.TokenCredential, input api.NetworkCreateInput) (*SWire, *SVpc, *SCloudregion, error) {
-	zObj, err := validators.ValidateModel(userCred, ZoneManager, &input.Zone)
+	zObj, err := validators.ValidateModel(ctx, userCred, ZoneManager, &input.Zone)
 	if err != nil {
 		return nil, nil, nil, err
 	}
 	z := zObj.(*SZone)
 
-	vObj, err := validators.ValidateModel(userCred, VpcManager, &input.Vpc)
+	vObj, err := validators.ValidateModel(ctx, userCred, VpcManager, &input.Vpc)
 	if err != nil {
 		return nil, nil, nil, err
 	}
@@ -2053,7 +2073,7 @@ func (snet *SNetwork) validateUpdateData(ctx context.Context, userCred mcclient.
 			return input, httperrors.NewInputParameterError("Network not in range of VPC cidrblock %s", vpc.CidrBlock)
 		}
 
-		usedMap := snet.GetUsedAddresses()
+		usedMap := snet.GetUsedAddresses(ctx)
 		for usedIpStr := range usedMap {
 			if usedIp, err := netutils.NewIPV4Addr(usedIpStr); err == nil && !netRange.Contains(usedIp) {
 				return input, httperrors.NewInputParameterError("Address %s been assigned out of new range", usedIpStr)
@@ -2113,7 +2133,7 @@ func (snet *SNetwork) validateUpdateData(ctx context.Context, userCred mcclient.
 			return input, httperrors.NewInputParameterError("Network not in range of VPC v6 cidrblock %s", vpc.CidrBlock6)
 		}
 
-		usedMap := snet.GetUsedAddresses6()
+		usedMap := snet.GetUsedAddresses6(ctx)
 		for usedIpStr := range usedMap {
 			if usedIp, err := netutils.NewIPV6Addr(usedIpStr); err == nil && !netRange.Contains(usedIp) {
 				return input, httperrors.NewInputParameterError("v6 address %s been assigned out of new range", usedIpStr)
@@ -2331,7 +2351,7 @@ func (net *SNetwork) PostCreate(ctx context.Context, userCred mcclient.TokenCred
 				log.Errorf("syncAdditionalWires error: %s", err)
 			}
 		}
-		net.SetStatus(userCred, api.NETWORK_STATUS_AVAILABLE, "")
+		net.SetStatus(ctx, userCred, api.NETWORK_STATUS_AVAILABLE, "")
 		if err := net.ClearSchedDescCache(); err != nil {
 			log.Errorf("network post create clear schedcache error: %v", err)
 		}
@@ -2370,7 +2390,7 @@ func (snet *SNetwork) GetPrefix() (netutils.IPV4Prefix, error) {
 
 func (snet *SNetwork) Delete(ctx context.Context, userCred mcclient.TokenCredential) error {
 	log.Infof("SNetwork delete do nothing")
-	snet.SetStatus(userCred, api.NETWORK_STATUS_START_DELETE, "")
+	snet.SetStatus(ctx, userCred, api.NETWORK_STATUS_START_DELETE, "")
 	return nil
 }
 
@@ -2385,7 +2405,7 @@ func (snet *SNetwork) CustomizeDelete(ctx context.Context, userCred mcclient.Tok
 func (snet *SNetwork) RealDelete(ctx context.Context, userCred mcclient.TokenCredential) error {
 	DeleteResourceJointSchedtags(snet, ctx, userCred)
 	db.OpsLog.LogEvent(snet, db.ACT_DELOCATE, snet.GetShortDesc(ctx), userCred)
-	snet.SetStatus(userCred, api.NETWORK_STATUS_DELETED, "real delete")
+	snet.SetStatus(ctx, userCred, api.NETWORK_STATUS_DELETED, "real delete")
 	networkinterfaces, err := snet.GetNetworkInterfaces()
 	if err != nil {
 		return errors.Wrap(err, "GetNetworkInterfaces")
@@ -2502,7 +2522,7 @@ func (manager *SNetworkManager) ListItemFilter(
 			return nil, errors.Wrap(err, "SWireResourceBaseManager.ListItemFilter")
 		}
 		if len(wireFilter.WireId) > 0 {
-			wireObj, err := WireManager.FetchByIdOrName(userCred, wireFilter.WireId)
+			wireObj, err := WireManager.FetchByIdOrName(ctx, userCred, wireFilter.WireId)
 			if err != nil {
 				if errors.Cause(err) == sql.ErrNoRows {
 					return nil, httperrors.NewResourceNotFoundError2(WireManager.Keyword(), wireFilter.WireId)
@@ -2587,7 +2607,7 @@ func (manager *SNetworkManager) ListItemFilter(
 
 	storageStr := input.StorageId
 	if len(storageStr) > 0 {
-		storage, err := StorageManager.FetchByIdOrName(userCred, storageStr)
+		storage, err := StorageManager.FetchByIdOrName(ctx, userCred, storageStr)
 		if err != nil {
 			return nil, errors.Wrapf(err, "unable to fetch storage %q", storageStr)
 		}
@@ -2618,38 +2638,60 @@ func (manager *SNetworkManager) ListItemFilter(
 
 	if len(ips) > 0 {
 		conditions := []sqlchemy.ICondition{}
-		for _, ip := range ips {
-			if len(ip) == 0 {
+		for _, ipstr := range ips {
+			if len(ipstr) == 0 {
 				continue
 			}
-			ipIa, err := parseIpToIntArray(ip)
-			if err != nil {
-				return nil, err
-			}
-
-			ipSa := []string{"0", "0", "0", "0"}
-			for i := range ipIa {
-				ipSa[i] = strconv.Itoa(ipIa[i])
-			}
-			fullIp := strings.Join(ipSa, ".")
-
-			ipField := sqlchemy.INET_ATON(sqlchemy.NewStringField(fullIp))
-			ipStart := sqlchemy.INET_ATON(q.Field("guest_ip_start"))
-			ipEnd := sqlchemy.INET_ATON(q.Field("guest_ip_end"))
 
 			var ipCondtion sqlchemy.ICondition
-			if exactIpMatch {
-				ipCondtion = sqlchemy.Between(ipField, ipStart, ipEnd)
+			if ip4Addr, err := netutils.NewIPV4Addr(ipstr); err == nil {
+				// ipv4 address, exactly
+				ipStart := sqlchemy.INET_ATON(q.Field("guest_ip_start"))
+				ipEnd := sqlchemy.INET_ATON(q.Field("guest_ip_end"))
+
+				ipCondtion = sqlchemy.AND(
+					sqlchemy.GE(ipEnd, uint32(ip4Addr)),
+					sqlchemy.LE(ipStart, uint32(ip4Addr)),
+				)
+				if !exactIpMatch {
+					ipCondtion = sqlchemy.OR(
+						ipCondtion,
+						sqlchemy.Contains(q.Field("guest_ip_start"), ipstr),
+						sqlchemy.Contains(q.Field("guest_ip_end"), ipstr),
+					)
+				}
+			} else if ip6Addr, err := netutils.NewIPV6Addr(ipstr); err == nil {
+				// ipv6 address, exactly
+				ipStart := q.Field("guest_ip6_start")
+				ipEnd := q.Field("guest_ip6_end")
+
+				ipCondtion = sqlchemy.AND(
+					sqlchemy.GE(ipEnd, ip6Addr.String()),
+					sqlchemy.LE(ipStart, ip6Addr.String()),
+				)
+				if !exactIpMatch {
+					ipCondtion = sqlchemy.OR(
+						ipCondtion,
+						sqlchemy.Contains(q.Field("guest_ip6_start"), ipstr),
+						sqlchemy.Contains(q.Field("guest_ip6_end"), ipstr),
+					)
+				}
 			} else {
-				ipCondtion = sqlchemy.OR(sqlchemy.Between(ipField, ipStart, ipEnd), sqlchemy.Contains(q.Field("guest_ip_start"), ip), sqlchemy.Contains(q.Field("guest_ip_end"), ip))
+				ipCondtion = sqlchemy.OR(
+					sqlchemy.Contains(q.Field("guest_ip_start"), ipstr),
+					sqlchemy.Contains(q.Field("guest_ip_end"), ipstr),
+					sqlchemy.Contains(q.Field("guest_ip6_start"), ipstr),
+					sqlchemy.Contains(q.Field("guest_ip6_end"), ipstr),
+				)
 			}
+
 			conditions = append(conditions, ipCondtion)
 		}
 		q = q.Filter(sqlchemy.OR(conditions...))
 	}
 
 	if len(input.SchedtagId) > 0 {
-		schedTag, err := SchedtagManager.FetchByIdOrName(nil, input.SchedtagId)
+		schedTag, err := SchedtagManager.FetchByIdOrName(ctx, nil, input.SchedtagId)
 		if err != nil {
 			if errors.Cause(err) == sql.ErrNoRows {
 				return nil, httperrors.NewResourceNotFoundError2(SchedtagManager.Keyword(), input.SchedtagId)
@@ -2739,7 +2781,7 @@ func (manager *SNetworkManager) ListItemFilter(
 	}
 
 	if len(input.HostSchedtagId) > 0 {
-		schedTagObj, err := SchedtagManager.FetchByIdOrName(userCred, input.HostSchedtagId)
+		schedTagObj, err := SchedtagManager.FetchByIdOrName(ctx, userCred, input.HostSchedtagId)
 		if err != nil {
 			if errors.Cause(err) == sql.ErrNoRows {
 				return nil, errors.Wrapf(httperrors.ErrResourceNotFound, "%s %s", SchedtagManager.Keyword(), input.HostSchedtagId)
@@ -2921,7 +2963,7 @@ func (snet *SNetwork) PerformMerge(ctx context.Context, userCred mcclient.TokenC
 	if len(input.Target) == 0 {
 		return nil, httperrors.NewMissingParameterError("target")
 	}
-	iNet, err := NetworkManager.FetchByIdOrName(userCred, input.Target)
+	iNet, err := NetworkManager.FetchByIdOrName(ctx, userCred, input.Target)
 	if err == sql.ErrNoRows {
 		err = httperrors.NewNotFoundError("Network %s not found", input.Target)
 		logclient.AddActionLogWithContext(ctx, snet, logclient.ACT_MERGE, err.Error(), userCred, false)
@@ -3099,7 +3141,7 @@ func (snet *SNetwork) PerformSplit(ctx context.Context, userCred mcclient.TokenC
 		defer lockman.ReleaseRawObject(ctx, NetworkManager.Keyword(), "name")
 
 		if len(input.Name) > 0 {
-			if err := db.NewNameValidator(NetworkManager, userCred, input.Name, nil); err != nil {
+			if err := db.NewNameValidator(ctx, NetworkManager, userCred, input.Name, nil); err != nil {
 				return httperrors.NewInputParameterError("Duplicate name %s", input.Name)
 			}
 		} else {
@@ -3177,7 +3219,7 @@ func (manager *SNetworkManager) PerformTryCreateNetwork(ctx context.Context, use
 	if err != nil {
 		return nil, errors.Wrap(err, "query.Unmarshal")
 	}
-	q, err = managedResourceFilterByAccount(q, listQuery.ManagedResourceListInput, "wire_id", func() *sqlchemy.SQuery {
+	q, err = managedResourceFilterByAccount(ctx, q, listQuery.ManagedResourceListInput, "wire_id", func() *sqlchemy.SQuery {
 		wires := WireManager.Query().SubQuery()
 		vpcs := VpcManager.Query().SubQuery()
 		subq := wires.Query(wires.Field("id"))
@@ -3326,7 +3368,8 @@ func (network *SNetwork) PerformChangeOwner(ctx context.Context, userCred mcclie
 	return ret, nil
 }
 
-func (network *SNetwork) getUsedAddressQuery(userCred mcclient.TokenCredential, owner mcclient.IIdentityProvider, scope rbacscope.TRbacScope, addrOnly bool) *sqlchemy.SQuery {
+func (network *SNetwork) getUsedAddressQuery(ctx context.Context, userCred mcclient.TokenCredential, owner mcclient.IIdentityProvider, scope rbacscope.TRbacScope, addrOnly bool) *sqlchemy.SQuery {
+	usedAddressQueryProviders := getUsedAddressQueryProviders()
 	var (
 		args = &usedAddressQueryArgs{
 			network:  network,
@@ -3340,12 +3383,14 @@ func (network *SNetwork) getUsedAddressQuery(userCred mcclient.TokenCredential, 
 	)
 
 	for _, provider := range usedAddressQueryProviders {
-		queries = append(queries, provider.usedAddressQuery(args))
+		q := provider.usedAddressQuery(ctx, args)
+		queries = append(queries, q)
 	}
 	return sqlchemy.Union(queries...).Query()
 }
 
-func (network *SNetwork) getUsedAddressQuery6(userCred mcclient.TokenCredential, owner mcclient.IIdentityProvider, scope rbacscope.TRbacScope, addrOnly bool) *sqlchemy.SQuery {
+func (network *SNetwork) getUsedAddressQuery6(ctx context.Context, userCred mcclient.TokenCredential, owner mcclient.IIdentityProvider, scope rbacscope.TRbacScope, addrOnly bool) *sqlchemy.SQuery {
+	usedAddress6QueryProviders := getUsedAddress6QueryProviders()
 	var (
 		args = &usedAddressQueryArgs{
 			network:  network,
@@ -3359,7 +3404,8 @@ func (network *SNetwork) getUsedAddressQuery6(userCred mcclient.TokenCredential,
 	)
 
 	for _, provider := range usedAddress6QueryProviders {
-		queries = append(queries, provider.usedAddressQuery(args))
+		q := provider.usedAddressQuery(ctx, args)
+		queries = append(queries, q)
 	}
 	return sqlchemy.Union(queries...).Query()
 }
@@ -3404,7 +3450,7 @@ func (network *SNetwork) GetDetailsAddresses(
 		return output, errors.Wrapf(httperrors.ErrNotSufficientPrivilege, "require %s allow %s", scope, allowScope)
 	}
 
-	output, err := network.fetchAddressDetails(userCred, userCred, scope)
+	output, err := network.fetchAddressDetails(ctx, userCred, userCred, scope)
 	if err != nil {
 		return output, errors.Wrap(err, "fetchAddressDetails")
 	}
@@ -3412,23 +3458,42 @@ func (network *SNetwork) GetDetailsAddresses(
 	return output, nil
 }
 
-func (network *SNetwork) fetchAddressDetails(userCred mcclient.TokenCredential, owner mcclient.IIdentityProvider, scope rbacscope.TRbacScope) (api.GetNetworkAddressesOutput, error) {
+func (network *SNetwork) GetUsedAddressDetails(ctx context.Context, addr string) (*api.SNetworkUsedAddress, error) {
+	address, err := network.GetAddressDetails(ctx, nil, nil, rbacscope.ScopeSystem)
+	if err != nil {
+		return nil, errors.Wrapf(err, "GetAddressDetails")
+	}
+	for i := range address {
+		if address[i].IpAddr == addr || address[i].Ip6Addr == addr {
+			return &address[i], nil
+		}
+	}
+	return nil, errors.Wrapf(errors.ErrNotFound, addr)
+}
+
+func (network *SNetwork) GetAddressDetails(ctx context.Context, userCred mcclient.TokenCredential, owner mcclient.IIdentityProvider, scope rbacscope.TRbacScope) ([]api.SNetworkUsedAddress, error) {
+	netAddrs := make([]api.SNetworkUsedAddress, 0)
+	q := network.getUsedAddressQuery(ctx, userCred, owner, scope, false)
+	err := q.All(&netAddrs)
+	if err != nil {
+		return nil, httperrors.NewGeneralError(err)
+	}
+	sort.Sort(SNetworkUsedAddressList(netAddrs))
+	return netAddrs, nil
+}
+
+func (network *SNetwork) fetchAddressDetails(ctx context.Context, userCred mcclient.TokenCredential, owner mcclient.IIdentityProvider, scope rbacscope.TRbacScope) (api.GetNetworkAddressesOutput, error) {
 	output := api.GetNetworkAddressesOutput{}
 	{
-		netAddrs := make([]api.SNetworkUsedAddress, 0)
-		q := network.getUsedAddressQuery(userCred, owner, scope, false)
-		err := q.All(&netAddrs)
+		var err error
+		output.Addresses, err = network.GetAddressDetails(ctx, userCred, owner, scope)
 		if err != nil {
-			return output, httperrors.NewGeneralError(err)
+			return output, err
 		}
-
-		sort.Sort(SNetworkUsedAddressList(netAddrs))
-
-		output.Addresses = netAddrs
 	}
 	{
 		netAddrs6 := make([]api.SNetworkUsedAddress, 0)
-		q := network.getUsedAddressQuery6(userCred, owner, scope, false)
+		q := network.getUsedAddressQuery6(ctx, userCred, owner, scope, false)
 		err := q.All(&netAddrs6)
 		if err != nil {
 			return output, httperrors.NewGeneralError(err)
@@ -3450,7 +3515,7 @@ func (network *SNetwork) GetDetailsAvailableAddresses(
 	var availables []string
 	var availables6 []string
 	{
-		addrTable := network.GetUsedAddresses()
+		addrTable := network.GetUsedAddresses(ctx)
 		recentUsedAddrTable := GuestnetworkManager.getRecentlyReleasedIPAddresses(network.Id, network.getAllocTimoutDuration())
 		addrRange := network.getIPRange()
 
@@ -3464,10 +3529,10 @@ func (network *SNetwork) GetDetailsAvailableAddresses(
 		}
 	}
 	if network.IsSupportIPv6() {
-		addrTable6 := network.GetUsedAddresses6()
+		addrTable6 := network.GetUsedAddresses6(ctx)
 		recentUsedAddrTable6 := GuestnetworkManager.getRecentlyReleasedIPAddresses6(network.Id, network.getAllocTimoutDuration())
 		addrRange6 := network.getIPRange6()
-		for addr6 := addrRange6.StartIp(); addr6.Le(addrRange6.EndIp()) && len(availables) < maxCount; addr6 = addr6.StepUp() {
+		for addr6 := addrRange6.StartIp(); addr6.Le(addrRange6.EndIp()) && len(availables6) < maxCount; addr6 = addr6.StepUp() {
 			addrStr6 := addr6.String()
 			if _, ok := addrTable6[addrStr6]; !ok {
 				if _, ok := recentUsedAddrTable6[addrStr6]; !ok {
@@ -3493,9 +3558,13 @@ func (net *SNetwork) PerformSyncstatus(ctx context.Context, userCred mcclient.To
 func (net *SNetwork) PerformSync(ctx context.Context, userCred mcclient.TokenCredential, query jsonutils.JSONObject, input *api.NetworkSyncInput) (jsonutils.JSONObject, error) {
 	vpc, _ := net.GetVpc()
 	if vpc != nil && vpc.IsManaged() {
-		return nil, StartResourceSyncStatusTask(ctx, userCred, net, "NetworkSyncstatusTask", "")
+		return nil, net.StartSyncstatusTask(ctx, userCred, "")
 	}
 	return nil, httperrors.NewUnsupportOperationError("on-premise network cannot sync status")
+}
+
+func (net *SNetwork) StartSyncstatusTask(ctx context.Context, userCred mcclient.TokenCredential, parentTaskId string) error {
+	return StartResourceSyncStatusTask(ctx, userCred, net, "NetworkSyncstatusTask", parentTaskId)
 }
 
 // 更改IP子网状态
@@ -3631,7 +3700,7 @@ func (net *SNetwork) PerformSwitchWire(
 		return nil, errors.Wrap(httperrors.ErrNotSupported, "default vpc only")
 	}
 
-	wireObj, err := WireManager.FetchByIdOrName(userCred, input.WireId)
+	wireObj, err := WireManager.FetchByIdOrName(ctx, userCred, input.WireId)
 	if err != nil {
 		if errors.Cause(err) == sql.ErrNoRows {
 			return nil, httperrors.NewResourceNotFoundError2(WireManager.Keyword(), input.WireId)
@@ -3734,7 +3803,7 @@ func (net *SNetwork) PerformSyncAdditionalWires(
 	wireIds := make([]string, 0)
 	errs := make([]error, 0)
 	for _, wireId := range input.WireIds {
-		wireObj, err := WireManager.FetchByIdOrName(userCred, wireId)
+		wireObj, err := WireManager.FetchByIdOrName(ctx, userCred, wireId)
 		if err != nil {
 			if errors.Cause(err) == sql.ErrNoRows {
 				errs = append(errs, httperrors.NewResourceNotFoundError2(WireManager.Keyword(), wireId))
@@ -3757,4 +3826,34 @@ func (net *SNetwork) PerformSyncAdditionalWires(
 
 func (net *SNetwork) IsSupportIPv6() bool {
 	return len(net.GuestIp6Start) > 0 && len(net.GuestIp6End) > 0
+}
+
+func (net *SNetwork) OnMetadataUpdated(ctx context.Context, userCred mcclient.TokenCredential) {
+	if len(net.ExternalId) == 0 || options.Options.KeepTagLocalization {
+		return
+	}
+	vpc, err := net.GetVpc()
+	if err != nil {
+		return
+	}
+	if account := vpc.GetCloudaccount(); account != nil && account.ReadOnly {
+		return
+	}
+	err = net.StartRemoteUpdateTask(ctx, userCred, true, "")
+	if err != nil {
+		log.Errorf("StartRemoteUpdateTask fail: %s", err)
+	}
+}
+
+func (net *SNetwork) StartRemoteUpdateTask(ctx context.Context, userCred mcclient.TokenCredential, replaceTags bool, parentTaskId string) error {
+	data := jsonutils.NewDict()
+	if replaceTags {
+		data.Add(jsonutils.JSONTrue, "replace_tags")
+	}
+	task, err := taskman.TaskManager.NewTask(ctx, "NetworkRemoteUpdateTask", net, userCred, data, parentTaskId, "", nil)
+	if err != nil {
+		return errors.Wrap(err, "Start NetworkRemoteUpdateTask")
+	}
+	net.SetStatus(ctx, userCred, apis.STATUS_UPDATE_TAGS, "StartRemoteUpdateTask")
+	return task.ScheduleRun(nil)
 }
