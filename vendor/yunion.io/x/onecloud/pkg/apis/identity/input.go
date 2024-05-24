@@ -164,6 +164,9 @@ type ProjectListInput struct {
 
 	// project tags filter imposed by policy
 	PolicyProjectTags tagutils.TTagSetList `json:"policy_project_tags"`
+
+	// 通过项目管理员id过滤
+	AdminId []string `json:"admin_id"`
 }
 
 type DomainListInput struct {
@@ -334,7 +337,7 @@ type IdentityProviderListInput struct {
 
 	// 过滤支持SSO的认证源，如果值为all，则列出所有的全局认证源，否则可出sso为域ID的域认证源
 	// example: all
-	SsoDomain string `json:"sso"`
+	SsoDomain string `json:"sso_domain"`
 
 	AutoCreateProject *bool `json:"auto_create_project"`
 	AutoCreateUser    *bool `json:"auto_create_user"`
@@ -426,11 +429,14 @@ type IdentityProviderUpdateInput struct {
 
 type PolicyTagInput struct {
 	// 匹配的资源标签
-	ObjectTags tagutils.TTagSet `json:"object_tags"`
+	ObjectTags tagutils.TTagSet `json:"object_tags,allowempty"`
 	// 匹配的项目标签
-	ProjectTags tagutils.TTagSet `json:"project_tags"`
+	ProjectTags tagutils.TTagSet `json:"project_tags,allowempty"`
 	// 匹配的域标签
-	DomainTags tagutils.TTagSet `json:"domain_tags"`
+	DomainTags tagutils.TTagSet `json:"domain_tags,allowempty"`
+
+	// 组织架构节点ID
+	OrgNodeId []string `json:"org_node_id,allowempty"`
 }
 
 type PolicyUpdateInput struct {
@@ -551,12 +557,7 @@ type PolicyCreateInput struct {
 	// 是否为系统权限
 	IsSystem *bool `json:"is_system"`
 
-	// 匹配的资源标签
-	ResourceTags tagutils.TTagSet `json:"resource_tags"`
-	// 匹配的项目标签
-	ProjectTags tagutils.TTagSet `json:"project_tags"`
-	// 匹配的域标签
-	DomainTags tagutils.TTagSet `json:"domain_tags"`
+	PolicyTagInput
 }
 
 type RoleCreateInput struct {

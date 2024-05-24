@@ -98,19 +98,19 @@ type SServerSku struct {
 	SysDiskMinSizeGB int               `nullable:"true" list:"user" create:"admin_optional" update:"admin"` // not required。 windows比较新的版本都是50G左右。
 	SysDiskMaxSizeGB int               `nullable:"true" list:"user" create:"admin_optional" update:"admin"` // not required
 
-	AttachedDiskType   string `nullable:"true" list:"user" create:"admin_optional" update:"admin"`
+	AttachedDiskType   string `width:"32" nullable:"true" list:"user" create:"admin_optional" update:"admin"`
 	AttachedDiskSizeGB int    `nullable:"true" list:"user" create:"admin_optional" update:"admin"`
 	AttachedDiskCount  int    `nullable:"true" list:"user" create:"admin_optional" update:"admin"`
 
 	DataDiskTypes    string `width:"128" charset:"ascii" nullable:"true" list:"user" create:"admin_optional" update:"admin"`
 	DataDiskMaxCount int    `nullable:"true" list:"user" create:"admin_optional" update:"admin"`
 
-	NicType     string `nullable:"true" list:"user" create:"admin_optional" update:"admin"`
+	NicType     string `width:"32" nullable:"true" list:"user" create:"admin_optional" update:"admin"`
 	NicMaxCount int    `default:"1" nullable:"true" list:"user" create:"admin_optional" update:"admin"`
 
 	GpuAttachable tristate.TriState `default:"true" list:"user" create:"admin_optional" update:"admin"`
 	GpuSpec       string            `width:"128" charset:"ascii" nullable:"true" list:"user" create:"admin_optional" update:"admin"`
-	GpuCount      string            `nullable:"true" list:"user" create:"admin_optional" update:"admin"`
+	GpuCount      string            `width:"16" nullable:"true" list:"user" create:"admin_optional" update:"admin"`
 	GpuMaxCount   int               `nullable:"true" list:"user" create:"admin_optional" update:"admin"`
 
 	Provider string `width:"64" charset:"ascii" nullable:"true" list:"user" default:"OneCloud" create:"admin_optional"`
@@ -298,7 +298,7 @@ func (manager *SServerSkuManager) FetchCustomizeColumns(
 func (self *SServerSkuManager) ValidateCreateData(ctx context.Context, userCred mcclient.TokenCredential, ownerId mcclient.IIdentityProvider, query jsonutils.JSONObject, input api.ServerSkuCreateInput) (api.ServerSkuCreateInput, error) {
 	var region *SCloudregion
 	if len(input.CloudregionId) > 0 {
-		_region, err := validators.ValidateModel(userCred, CloudregionManager, &input.CloudregionId)
+		_region, err := validators.ValidateModel(ctx, userCred, CloudregionManager, &input.CloudregionId)
 		if err != nil {
 			return input, err
 		}
@@ -306,7 +306,7 @@ func (self *SServerSkuManager) ValidateCreateData(ctx context.Context, userCred 
 	}
 
 	if len(input.ZoneId) > 0 {
-		_zone, err := validators.ValidateModel(userCred, ZoneManager, &input.ZoneId)
+		_zone, err := validators.ValidateModel(ctx, userCred, ZoneManager, &input.ZoneId)
 		if err != nil {
 			return input, err
 		}
@@ -556,7 +556,7 @@ func (manager *SServerSkuManager) GetPropertyInstanceSpecs(ctx context.Context, 
 	q = q.Asc(q.Field("cpu_core_count"), q.Field("memory_size_mb"))
 	err = db.FetchModelObjects(manager, q, &skus)
 	if err != nil {
-		log.Infof("FetchModelObjects %s", err)
+		log.Errorf("FetchModelObjects %s: %s", q.DebugString(), err)
 		return nil, httperrors.NewBadRequestError("instance specs list query error")
 	}
 
@@ -641,7 +641,7 @@ func (self *SServerSku) StartServerSkuDeleteTask(ctx context.Context, userCred m
 		log.Errorf("newTask ServerSkuDeleteTask fail %s", err)
 		return err
 	}
-	self.SetStatus(userCred, api.SkuStatusDeleting, "start to delete")
+	self.SetStatus(ctx, userCred, api.SkuStatusDeleting, "start to delete")
 	task.ScheduleRun(nil)
 	return nil
 }
@@ -812,7 +812,7 @@ func (manager *SServerSkuManager) ListItemFilter(
 
 	zoneStr := query.ZoneId
 	if len(zoneStr) > 0 {
-		_zone, err := ZoneManager.FetchByIdOrName(userCred, zoneStr)
+		_zone, err := ZoneManager.FetchByIdOrName(ctx, userCred, zoneStr)
 		if err != nil {
 			if err == sql.ErrNoRows {
 				return nil, httperrors.NewResourceNotFoundError2("zone", zoneStr)
@@ -832,7 +832,7 @@ func (manager *SServerSkuManager) ListItemFilter(
 		}
 	}
 
-	q, err = managedResourceFilterByRegion(q, query.RegionalFilterListInput, "", nil)
+	q, err = managedResourceFilterByRegion(ctx, q, query.RegionalFilterListInput, "", nil)
 	if err != nil {
 		return nil, errors.Wrap(err, "managedResourceFilterByRegion")
 	}
@@ -1406,6 +1406,7 @@ func (manager *SServerSkuManager) InitializeData() error {
 			sku.Name, _ = genInstanceType(sku.InstanceTypeFamily, int64(item.cpu), int64(item.memGb*1024))
 			sku.PrepaidStatus = api.SkuStatusAvailable
 			sku.PostpaidStatus = api.SkuStatusAvailable
+			sku.SetModelManager(manager, sku)
 			err := manager.TableSpec().Insert(context.TODO(), sku)
 			if err != nil {
 				log.Errorf("ServerSkuManager Initialize local sku %s", err)
@@ -1459,28 +1460,28 @@ func (self *SServerSku) GetICloudSku(ctx context.Context) (cloudprovider.ICloudS
 		}
 		return nil, errors.Wrapf(err, "GetRegion")
 	}
-	provider, err := region.GetCloudprovider()
+	providers, err := region.GetCloudproviders()
 	if err != nil {
-		if errors.Cause(err) == sql.ErrNoRows {
-			return nil, errors.Wrapf(cloudprovider.ErrNotFound, "GetCloudprovider")
-		}
 		return nil, errors.Wrapf(err, "GetCloudprovider")
 	}
-	driver, err := provider.GetProvider(ctx)
-	if err != nil {
-		return nil, errors.Wrapf(err, "GetDriver()")
-	}
-	iRegion, err := driver.GetIRegionById(region.ExternalId)
-	if err != nil {
-		return nil, errors.Wrapf(err, "GetIRegionById(%s)", region.ExternalId)
-	}
-	skus, err := iRegion.GetISkus()
-	if err != nil {
-		return nil, errors.Wrapf(err, "GetICloudSku")
-	}
-	for i := range skus {
-		if skus[i].GetGlobalId() == self.ExternalId {
-			return skus[i], nil
+	for i := range providers {
+		provider := providers[i]
+		driver, err := provider.GetProvider(ctx)
+		if err != nil {
+			return nil, errors.Wrapf(err, "GetDriver()")
+		}
+		iRegion, err := driver.GetIRegionById(region.ExternalId)
+		if err != nil {
+			return nil, errors.Wrapf(err, "GetIRegionById(%s)", region.ExternalId)
+		}
+		skus, err := iRegion.GetISkus()
+		if err != nil {
+			return nil, errors.Wrapf(err, "GetICloudSku")
+		}
+		for i := range skus {
+			if skus[i].GetGlobalId() == self.ExternalId {
+				return skus[i], nil
+			}
 		}
 	}
 	return nil, errors.Wrapf(cloudprovider.ErrNotFound, self.ExternalId)

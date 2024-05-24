@@ -48,20 +48,24 @@ func (self *SGuest) PerformConvertToKvm(
 	if len(self.GetMetadata(ctx, api.SERVER_META_CONVERTED_SERVER, userCred)) > 0 {
 		return nil, httperrors.NewBadRequestError("guest has been converted")
 	}
-	switch self.Hypervisor {
-	case api.HYPERVISOR_ESXI:
-		return self.ConvertEsxiToKvm(ctx, userCred, data)
-	case api.HYPERVISOR_CLOUDPODS:
-		return self.ConvertCloudpodsToKvm(ctx, userCred, data)
-	default:
-		return nil, httperrors.NewBadRequestError("not support %s", self.Hypervisor)
+	drv, err := self.GetDriver()
+	if err != nil {
+		return nil, err
 	}
+
+	if drv.GetProvider() == api.CLOUD_PROVIDER_ONECLOUD && drv.GetHypervisor() == api.HYPERVISOR_ESXI {
+		return self.ConvertEsxiToKvm(ctx, userCred, data)
+	}
+	if drv.GetProvider() == api.CLOUD_PROVIDER_CLOUDPODS && drv.GetHypervisor() == api.HYPERVISOR_DEFAULT {
+		return self.ConvertCloudpodsToKvm(ctx, userCred, data)
+	}
+	return nil, httperrors.NewBadRequestError("not support %s", self.Hypervisor)
 }
 
 func (self *SGuest) ConvertCloudpodsToKvm(ctx context.Context, userCred mcclient.TokenCredential, data *api.ConvertToKvmInput) (jsonutils.JSONObject, error) {
 	preferHost := data.PreferHost
 	if len(preferHost) > 0 {
-		iHost, err := HostManager.FetchByIdOrName(userCred, preferHost)
+		iHost, err := HostManager.FetchByIdOrName(ctx, userCred, preferHost)
 		if err != nil {
 			return nil, err
 		}
@@ -99,7 +103,7 @@ func (self *SGuest) ConvertCloudpodsToKvm(ctx context.Context, userCred mcclient
 func (self *SGuest) ConvertEsxiToKvm(ctx context.Context, userCred mcclient.TokenCredential, data *api.ConvertToKvmInput) (jsonutils.JSONObject, error) {
 	preferHost := data.PreferHost
 	if len(preferHost) > 0 {
-		iHost, err := HostManager.FetchByIdOrName(userCred, preferHost)
+		iHost, err := HostManager.FetchByIdOrName(ctx, userCred, preferHost)
 		if err != nil {
 			return nil, err
 		}
@@ -147,7 +151,7 @@ func (self *SGuest) StartConvertToKvmTask(
 	if err != nil {
 		return err
 	} else {
-		self.SetStatus(userCred, api.VM_CONVERTING, "esxi guest convert to kvm")
+		self.SetStatus(ctx, userCred, api.VM_CONVERTING, "esxi guest convert to kvm")
 		task.ScheduleRun(nil)
 		return nil
 	}

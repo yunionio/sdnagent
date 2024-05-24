@@ -26,9 +26,21 @@ var (
 	// errCTNoArguments is returned when no arguments are passed to ActionCT.
 	errCTNoArguments = errors.New("no arguments for connection tracking")
 
+	// errInvalidIPv6Label is returned when an input IPv6 label is out of
+	// range. It should only use the first 20 bits of the 32 bit field.
+	errInvalidIPv6Label = errors.New("IPv6 label must only use 20 bits")
+
+	// errInvalidARPOP is returned when an input ARP OP is out of
+	// range. It should be in the range 1-4.
+	errInvalidARPOP = errors.New("ARP OP must in the range 1-4")
+
 	// errInvalidVLANVID is returned when an input VLAN VID is out of range
 	// for a valid VLAN VID.
 	errInvalidVLANVID = errors.New("VLAN VID must be between 0 and 4095")
+
+	// errInvalidVLANVIDPCP is returned when an input VLAN PCP is out of range
+	// for a valid VLAN PCP.
+	errInvalidVLANPCP = errors.New("VLAN PCP must be between 0 and 7")
 
 	// errOutputNegativePort is returned when Output is called with a
 	// negative integer port.
@@ -42,10 +54,6 @@ var (
 	// field set to empty strings.
 	errLoadSetFieldZero = errors.New("value and/or field for action load or set_field are empty")
 
-	// errMoveFieldZero is returned when Move is called with src and/or dest
-	// field set to empty strings.
-	errMoveFieldZero = errors.New("src and/or dest field for action move are empty")
-
 	// errResubmitPortInvalid is returned when ResubmitPort is given a port number that is
 	// invalid per the openflow spec.
 	errResubmitPortInvalid = errors.New("resubmit port must be between 0 and 65279 inclusive")
@@ -53,11 +61,21 @@ var (
 	// errTooManyDimensions is returned when the specified dimension exceeds the total dimension
 	// in a conjunction action.
 	errDimensionTooLarge = errors.New("dimension number exceeds total number of dimensions")
+
+	// errMoveEmpty is returned when Move is called with src and/or dst set to the empty string.
+	errMoveEmpty = errors.New("src and/or dst field for action move are empty")
+
+	// errOutputFieldEmpty is returned when OutputField is called with field set to the empty string.
+	errOutputFieldEmpty = errors.New("field for action output (output:field syntax) is empty")
+
+	// errLearnedNil is returned when Learn is called with a nil *LearnedFlow.
+	errLearnedNil = errors.New("learned flow for action learn is nil")
 )
 
 // Action strings in lower case, as those are compared to the lower case letters
 // in parseAction().
 const (
+	actionAll       = "all"
 	actionDrop      = "drop"
 	actionFlood     = "flood"
 	actionInPort    = "in_port"
@@ -88,6 +106,8 @@ func (a *textAction) MarshalText() ([]byte, error) {
 // GoString implements Action.
 func (a *textAction) GoString() string {
 	switch a.action {
+	case actionAll:
+		return "ovs.All()"
 	case actionDrop:
 		return "ovs.Drop()"
 	case actionFlood:
@@ -102,6 +122,14 @@ func (a *textAction) GoString() string {
 		return "ovs.StripVLAN()"
 	default:
 		return fmt.Sprintf("// BUG(mdlayher): unimplemented OVS text action: %q", a.action)
+	}
+}
+
+// All outputs the packet on all switch ports except
+// the port on which it was received.
+func All() Action {
+	return &textAction{
+		action: actionAll,
 	}
 }
 
@@ -153,6 +181,7 @@ func StripVLAN() Action {
 // printf-style patterns for marshaling and unmarshaling actions.
 const (
 	patConnectionTracking          = "ct(%s)"
+	patMultipath                   = "multipath(%s,%d,%s,%d,%d,%s)"
 	patConjunction                 = "conjunction(%d,%d/%d)"
 	patModDataLinkDestination      = "mod_dl_dst:%s"
 	patModDataLinkSource           = "mod_dl_src:%s"
@@ -162,8 +191,10 @@ const (
 	patModTransportSourcePort      = "mod_tp_src:%d"
 	patModVLANVID                  = "mod_vlan_vid:%d"
 	patOutput                      = "output:%d"
+	patOutputField                 = "output:%s"
 	patResubmitPort                = "resubmit:%s"
 	patResubmitPortTable           = "resubmit(%s,%s)"
+	patLearn                       = "learn(%s)"
 )
 
 // ConnectionTracking sends a packet through the host's connection tracker.
@@ -381,6 +412,74 @@ func (a *outputAction) GoString() string {
 	return fmt.Sprintf("ovs.Output(%d)", a.port)
 }
 
+// OutputField outputs the packet to the switch port described by the specified field.
+// For example, when the `field` value is "in_port", the packet is output to the port
+// it came in on.
+func OutputField(field string) Action {
+	return &outputFieldAction{
+		field: field,
+	}
+}
+
+// An outputFieldAction is an Action which is used by OutputField.
+type outputFieldAction struct {
+	field string
+}
+
+// MarshalText implements Action.
+func (a *outputFieldAction) MarshalText() ([]byte, error) {
+	if a.field == "" {
+		return nil, errOutputFieldEmpty
+	}
+
+	return bprintf(patOutputField, a.field), nil
+}
+
+// GoString implements Action.
+func (a *outputFieldAction) GoString() string {
+	return fmt.Sprintf("ovs.OutputField(%q)", a.field)
+}
+
+// Multipath returns a MultipathAction instance.
+//
+// Hashes fields using `basis` as a universal hash parameter, then
+// applies multipath link selection `algorithm` (with parameter `arg`)
+// to choose one of `n_links` output links numbered 0 through n_links
+// minus 1, and stores the link into `dst`, which must be a field or
+// subfield in the syntax described under ``Field Specifications’’
+// above.
+// https://www.openvswitch.org/support/dist-docs/ovs-actions.7.txt
+func Multipath(fields string, basis int, algorithm string, nlinks int, arg int, dst string) Action {
+	return &multipathAction{
+		fields:    fields,
+		basis:     basis,
+		algorithm: algorithm,
+		nlinks:    nlinks,
+		arg:       arg,
+		dst:       dst,
+	}
+}
+
+// MarshalText converts the Bucket to its string representation
+func (me *multipathAction) MarshalText() ([]byte, error) {
+	return bprintf(patMultipath, me.fields, me.basis, me.algorithm, me.nlinks, me.arg, me.dst), nil
+}
+
+// MultipathAction represents a multipath hashing rule
+type multipathAction struct {
+	fields    string
+	basis     int
+	algorithm string
+	nlinks    int
+	arg       int
+	dst       string
+}
+
+// GoString implements Action.
+func (me *multipathAction) GoString() string {
+	return fmt.Sprintf("ovs.Multipath(%q, %q, %q, %q, %q, %q)", me.fields, me.basis, me.algorithm, me.nlinks, me.arg, me.dst)
+}
+
 // Conjunction associates a flow with a certain conjunction ID to match on more than
 // one dimension across multiple set matches.
 func Conjunction(id int, dimensionNumber int, dimensionSize int) Action {
@@ -539,41 +638,6 @@ func (a *loadSetFieldAction) GoString() string {
 	return fmt.Sprintf("ovs.SetField(%q, %q)", a.value, a.field)
 }
 
-// Move loads the specified value into the specified field.
-// If either string is empty, an error is returned.
-func Move(src string, dest string) Action {
-	return &moveAction{
-		src:  src,
-		dest: dest,
-	}
-}
-
-// Specifies whether Move was called to construct a
-// moveAction.
-const (
-	actionMove = iota
-)
-
-// A moveAction is an Action which is used by Move.
-type moveAction struct {
-	src  string
-	dest string
-}
-
-// MarshalText implements Action.
-func (a *moveAction) MarshalText() ([]byte, error) {
-	if a.src == "" || a.dest == "" {
-		return nil, errMoveFieldZero
-	}
-
-	return bprintf("move:%s->%s", a.src, a.dest), nil
-}
-
-// GoString implements Action.
-func (a *moveAction) GoString() string {
-	return fmt.Sprintf("ovs.Move(%q, %q)", a.src, a.dest)
-}
-
 // SetTunnel sets the tunnel id, e.g. VNI if vxlan is the tunnel protocol.
 func SetTunnel(tunnelID uint64) Action {
 	return &setTunnelAction{
@@ -596,8 +660,85 @@ func (a *setTunnelAction) MarshalText() ([]byte, error) {
 	return bprintf("set_tunnel:%#x", a.tunnelID), nil
 }
 
+// Move sets the value of the destination field to the value of the source field.
+func Move(src, dst string) Action {
+	return &moveAction{
+		src: src,
+		dst: dst,
+	}
+}
+
+// A moveAction is an Action used by Move.
+type moveAction struct {
+	src string
+	dst string
+}
+
+// GoString implements Action.
+func (a *moveAction) GoString() string {
+	return fmt.Sprintf("ovs.Move(%q, %q)", a.src, a.dst)
+}
+
+// MarshalText implements Action.
+func (a *moveAction) MarshalText() ([]byte, error) {
+	if a.src == "" || a.dst == "" {
+		return nil, errMoveEmpty
+	}
+
+	return bprintf("move:%s->%s", a.src, a.dst), nil
+}
+
+// Learn dynamically installs a LearnedFlow.
+func Learn(learned *LearnedFlow) Action {
+	return &learnAction{
+		learned: learned,
+	}
+}
+
+// A learnAction is an Action used by Learn.
+type learnAction struct {
+	learned *LearnedFlow
+}
+
+// GoString implements Action.
+func (a *learnAction) GoString() string {
+	return fmt.Sprintf("ovs.Learn(%#v)", a.learned)
+}
+
+// MarshalText implements Action.
+func (a *learnAction) MarshalText() ([]byte, error) {
+	if a.learned == nil {
+		return nil, errLearnedNil
+	}
+
+	l, err := a.learned.MarshalText()
+	if err != nil {
+		return nil, err
+	}
+
+	return bprintf(patLearn, l), nil
+}
+
+// validARPOP indicates if an ARP OP is out of range. It should be in the range
+// 1-4.
+func validARPOP(op uint16) bool {
+	return 1 <= op && op <= 4
+}
+
+// validIPv6Label indicates if an IPv6 label is out of range. It should only
+// use the first 20 bits of the 32 bit field.
+func validIPv6Label(label uint32) bool {
+	return (label & 0xfff00000) == 0x00000000
+}
+
 // validVLANVID indicates if a VLAN VID falls within the valid range
 // for a VLAN VID.
 func validVLANVID(vid int) bool {
 	return vid >= 0x000 && vid <= 0xfff
+}
+
+// validVLANVPCP indicates if a VLAN VID falls within the valid range
+// for a VLAN VID.
+func validVLANPCP(pcp int) bool {
+	return pcp >= 0 && pcp <= 7
 }

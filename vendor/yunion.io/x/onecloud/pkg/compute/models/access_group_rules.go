@@ -96,9 +96,9 @@ func (manager *SAccessGroupRuleManager) FetchOwnerId(ctx context.Context, data j
 	return db.FetchDomainInfo(ctx, data)
 }
 
-func (manager *SAccessGroupRuleManager) FilterByOwner(q *sqlchemy.SQuery, man db.FilterByOwnerProvider, userCred mcclient.TokenCredential, owner mcclient.IIdentityProvider, scope rbacscope.TRbacScope) *sqlchemy.SQuery {
+func (manager *SAccessGroupRuleManager) FilterByOwner(ctx context.Context, q *sqlchemy.SQuery, man db.FilterByOwnerProvider, userCred mcclient.TokenCredential, owner mcclient.IIdentityProvider, scope rbacscope.TRbacScope) *sqlchemy.SQuery {
 	sq := AccessGroupManager.Query("id")
-	sq = db.SharableManagerFilterByOwner(AccessGroupManager, sq, userCred, owner, scope)
+	sq = db.SharableManagerFilterByOwner(ctx, AccessGroupManager, sq, userCred, owner, scope)
 	return q.In("access_group_id", sq.SubQuery())
 }
 
@@ -209,7 +209,7 @@ func (manager *SAccessGroupRuleManager) ValidateCreateData(ctx context.Context, 
 	if len(input.AccessGroupId) == 0 {
 		return input, httperrors.NewMissingParameterError("access_group_id")
 	}
-	_ag, err := validators.ValidateModel(userCred, AccessGroupManager, &input.AccessGroupId)
+	_ag, err := validators.ValidateModel(ctx, userCred, AccessGroupManager, &input.AccessGroupId)
 	if err != nil {
 		return input, err
 	}
@@ -276,7 +276,7 @@ func (self *SAccessGroupRule) CustomizeDelete(ctx context.Context, userCred mccl
 	return self.StartDeleteTask(ctx, userCred, "")
 }
 
-func (self *SAccessGroupRule) SetStatus(userCred mcclient.TokenCredential, status string, reason string) error {
+func (self *SAccessGroupRule) SetStatus(ctx context.Context, userCred mcclient.TokenCredential, status string, reason string) error {
 	_, err := db.Update(self, func() error {
 		self.Status = status
 		return nil
@@ -293,10 +293,10 @@ func (self *SAccessGroupRule) StartDeleteTask(ctx context.Context, userCred mccl
 		return task.ScheduleRun(nil)
 	}()
 	if err != nil {
-		self.SetStatus(userCred, apis.STATUS_DELETE_FAILED, err.Error())
+		self.SetStatus(ctx, userCred, apis.STATUS_DELETE_FAILED, err.Error())
 		return nil
 	}
-	self.SetStatus(userCred, apis.STATUS_DELETING, "")
+	self.SetStatus(ctx, userCred, apis.STATUS_DELETING, "")
 	return nil
 }
 

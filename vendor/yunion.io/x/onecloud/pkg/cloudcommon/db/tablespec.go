@@ -17,11 +17,13 @@ package db
 import (
 	"context"
 	"reflect"
+	"runtime/debug"
 	"time"
 
 	"yunion.io/x/jsonutils"
 	"yunion.io/x/log"
 	"yunion.io/x/pkg/errors"
+	"yunion.io/x/pkg/gotypes"
 	"yunion.io/x/sqlchemy"
 
 	api "yunion.io/x/onecloud/pkg/apis/notify"
@@ -55,6 +57,8 @@ type ITableSpec interface {
 	GetTableSpec() *sqlchemy.STableSpec
 
 	GetDBName() sqlchemy.DBName
+
+	InformUpdate(ctx context.Context, dt interface{}, oldObj *jsonutils.JSONDict)
 }
 
 type sTableSpec struct {
@@ -120,7 +124,13 @@ func (ts *sTableSpec) newInformerModel(dt interface{}) (*informer.ModelObject, e
 	jointObj, isJoint := obj.(IJointModel)
 	if isJoint {
 		mObj := JointMaster(jointObj)
+		if gotypes.IsNil(mObj) {
+			return nil, errors.Errorf("object %#v master is nil", obj)
+		}
 		sObj := JointSlave(jointObj)
+		if gotypes.IsNil(sObj) {
+			return nil, errors.Errorf("object %#v slave is nil", obj)
+		}
 		return informer.NewJointModel(jointObj, jointObj.KeywordPlural(), mObj.GetId(), sObj.GetId()), nil
 	}
 	return informer.NewModel(obj, obj.KeywordPlural(), obj.GetId()), nil
@@ -270,6 +280,7 @@ func (ts *sTableSpec) inform(ctx context.Context, dt interface{}, f func(ctx con
 		obj, err := ts.newInformerModel(dt)
 		if err != nil {
 			log.Warningf("newInformerModel error: %v", err)
+			debug.PrintStack()
 			return
 		}
 		if err := f(ctx, obj); err != nil {
@@ -291,6 +302,7 @@ func (ts *sTableSpec) informUpdate(ctx context.Context, dt interface{}, oldObj *
 		obj, err := ts.newInformerModel(dt)
 		if err != nil {
 			log.Warningf("newInformerModel error: %v", err)
+			debug.PrintStack()
 			return
 		}
 		if err := informer.Update(ctx, obj, oldObj); err != nil {
@@ -302,4 +314,8 @@ func (ts *sTableSpec) informUpdate(ctx context.Context, dt interface{}, oldObj *
 		}
 	}
 	nopanic.Run(nf)
+}
+
+func (ts *sTableSpec) InformUpdate(ctx context.Context, dt interface{}, oldObj *jsonutils.JSONDict) {
+	ts.informUpdate(ctx, dt, oldObj)
 }

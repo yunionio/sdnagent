@@ -26,42 +26,59 @@ import (
 const (
 	source      = "src"
 	destination = "dst"
-
-	sourceHardwareAddr = "sha"
-	targetHardwareAddr = "tha"
-	sourceProtocolAddr = "spa"
-	targetProtocolAddr = "tpa"
 )
 
 // Constants of full Match names.
 const (
-	arpOp    = "arp_op"
-	arpSHA   = "arp_sha"
-	arpSPA   = "arp_spa"
-	arpTHA   = "arp_tha"
-	arpTPA   = "arp_tpa"
-	conjID   = "conj_id"
-	ctMark   = "ct_mark"
-	ctState  = "ct_state"
-	ctZone   = "ct_zone"
-	dlSRC    = "dl_src"
-	dlDST    = "dl_dst"
-	dlType   = "dl_type"
-	dlVLAN   = "dl_vlan"
-	icmpType = "icmp_type"
-	ipv6DST  = "ipv6_dst"
-	ipv6SRC  = "ipv6_src"
-	ndSLL    = "nd_sll"
-	ndTLL    = "nd_tll"
-	ndTarget = "nd_target"
-	nwDST    = "nw_dst"
-	nwProto  = "nw_proto"
-	nwSRC    = "nw_src"
-	tcpFlags = "tcp_flags"
-	tpDST    = "tp_dst"
-	tpSRC    = "tp_src"
-	tunID    = "tun_id"
-	vlanTCI  = "vlan_tci"
+	arpOp       = "arp_op"
+	arpSHA      = "arp_sha"
+	arpSPA      = "arp_spa"
+	arpTHA      = "arp_tha"
+	arpTPA      = "arp_tpa"
+	conjID      = "conj_id"
+	ctMark      = "ct_mark"
+	ctState     = "ct_state"
+	ctZone      = "ct_zone"
+	dlDST       = "dl_dst"
+	dlSRC       = "dl_src"
+	dlType      = "dl_type"
+	dlVLAN      = "dl_vlan"
+	dlVLANPCP   = "dl_vlan_pcp"
+	icmp6Code   = "icmpv6_code"
+	icmp6Type   = "icmpv6_type"
+	icmpCode    = "icmp_code"
+	icmpType    = "icmp_type"
+	ipFrag      = "ip_frag"
+	ipv6DST     = "ipv6_dst"
+	ipv6Label   = "ipv6_label"
+	ipv6SRC     = "ipv6_src"
+	metadata    = "metadata"
+	ndSLL       = "nd_sll"
+	ndTarget    = "nd_target"
+	ndTLL       = "nd_tll"
+	nwDST       = "nw_dst"
+	nwECN       = "nw_ecn"
+	nwProto     = "nw_proto"
+	nwSRC       = "nw_src"
+	nwTOS       = "nw_tos"
+	nwTTL       = "nw_ttl"
+	tcpFlags    = "tcp_flags"
+	tpDST       = "tp_dst"
+	tpSRC       = "tp_src"
+	tunDST      = "tun_dst"
+	tunFlags    = "tun_flags"
+	tunGbpFlags = "tun_gbp_flags"
+	tunGbpID    = "tun_gbp_id"
+	tunID       = "tun_id"
+	tunSRC      = "tun_src"
+	tunTOS      = "tun_tos"
+	tunTTL      = "tun_ttl"
+	tunv6DST    = "tun_ipv6_dst"
+	tunv6SRC    = "tun_ipv6_src"
+	udpDST      = "udp_dst"
+	udpSRC      = "udp_src"
+	vlanTCI1    = "vlan_tci1"
+	vlanTCI     = "vlan_tci"
 )
 
 // A Match is a type which can be marshaled into an OpenFlow packet matching
@@ -209,6 +226,34 @@ func (m *dataLinkVLANMatch) GoString() string {
 	return fmt.Sprintf("ovs.DataLinkVLAN(%d)", m.vid)
 }
 
+// DataLinkVLANPCP matches packets with the specified VLAN PCP matching pcp.
+func DataLinkVLANPCP(pcp int) Match {
+	return &dataLinkVLANPCPMatch{
+		pcp: pcp,
+	}
+}
+
+var _ Match = &dataLinkVLANPCPMatch{}
+
+// A dataLinkVLANPCPMatch is a Match returned by DataLinkVLANPCP.
+type dataLinkVLANPCPMatch struct {
+	pcp int
+}
+
+// MarshalText implements Match.
+func (m *dataLinkVLANPCPMatch) MarshalText() ([]byte, error) {
+	if !validVLANPCP(m.pcp) {
+		return nil, errInvalidVLANPCP
+	}
+
+	return bprintf("%s=%d", dlVLANPCP, m.pcp), nil
+}
+
+// GoString implements Match.
+func (m *dataLinkVLANPCPMatch) GoString() string {
+	return fmt.Sprintf("ovs.DataLinkVLANPCP(%d)", m.pcp)
+}
+
 // NetworkSource matches packets with a source IPv4 address or IPv4 CIDR
 // block matching ip.
 func NetworkSource(ip string) Match {
@@ -248,6 +293,176 @@ func (m *networkMatch) GoString() string {
 
 	return fmt.Sprintf("ovs.NetworkDestination(%q)", m.ip)
 }
+
+// NetworkECN creates a new networkECN
+func NetworkECN(ecn int) Match {
+	return &networkECN{
+		ecn: ecn,
+	}
+}
+
+var _ Match = &networkECN{}
+
+// a networkECN is a match for network Explicit Congestion Notification
+type networkECN struct {
+	ecn int
+}
+
+// MarshalText implements Match.
+func (e *networkECN) MarshalText() ([]byte, error) {
+	return bprintf("nw_ecn=%d", e.ecn), nil
+}
+
+// GoString implements Match.
+func (e *networkECN) GoString() string {
+	return fmt.Sprintf("ovs.NetworkECN(%d)", e.ecn)
+}
+
+// NetworkTOS returns a new networkTOS type
+func NetworkTOS(tos int) Match {
+	return &networkTOS{
+		tos: tos,
+	}
+}
+
+var _ Match = &networkTOS{}
+
+// networkTOS is a match for network type of service
+type networkTOS struct {
+	tos int
+}
+
+// MarshalText implements Match.
+func (t *networkTOS) MarshalText() ([]byte, error) {
+	return bprintf("nw_tos=%d", t.tos), nil
+}
+
+// GoString implements Match.
+func (t *networkTOS) GoString() string {
+	return fmt.Sprintf("ovs.NetworkTOS(%d)", t.tos)
+}
+
+// TunnelGBP returns a new tunnelGBP
+func TunnelGBP(gbp int) Match {
+	return &tunnelGBP{
+		gbp: gbp,
+	}
+}
+
+var _ Match = &tunnelGBP{}
+
+// tunnelGBP is a match for tunnel GBP
+type tunnelGBP struct {
+	gbp int
+}
+
+// MarshalText implements Match.
+func (t *tunnelGBP) MarshalText() ([]byte, error) {
+	return bprintf("tun_gbp_id=%d", t.gbp), nil
+}
+
+// GoString implements Match.
+func (t *tunnelGBP) GoString() string {
+	return fmt.Sprintf("ovs.TunnelGBP(%d)", t.gbp)
+}
+
+// TunnelGbpFlags returns a new tunnelFlags
+func TunnelGbpFlags(gbpFlags int) Match {
+	return &tunnelGbpFlags{
+		gbpFlags: gbpFlags,
+	}
+}
+
+var _ Match = &tunnelGbpFlags{}
+
+// tunnelGbpFlags is a match for tunnel Flags
+type tunnelGbpFlags struct {
+	gbpFlags int
+}
+
+// MarshalText implements Match.
+func (t *tunnelGbpFlags) MarshalText() ([]byte, error) {
+	return bprintf("tun_gbp_flags=%d", t.gbpFlags), nil
+}
+
+// GoString implements Match.
+func (t *tunnelGbpFlags) GoString() string {
+	return fmt.Sprintf("ovs.TunnelGbpFlags(%d)", t.gbpFlags)
+}
+
+// TunnelFlags returns a new tunnelFlags
+func TunnelFlags(flags int) Match {
+	return &tunnelFlags{
+		flags: flags,
+	}
+}
+
+var _ Match = &tunnelFlags{}
+
+// tunnelFlags is a match for tunnel Flags
+type tunnelFlags struct {
+	flags int
+}
+
+// MarshalText implements Match.
+func (t *tunnelFlags) MarshalText() ([]byte, error) {
+	return bprintf("tun_flags=%d", t.flags), nil
+}
+
+// GoString implements Match.
+func (t *tunnelFlags) GoString() string {
+	return fmt.Sprintf("ovs.TunnelFlags(%d)", t.flags)
+}
+
+// NetworkTTL returns a new networkTTL
+func NetworkTTL(ttl int) Match {
+	return &networkTTL{
+		ttl: ttl,
+	}
+}
+
+var _ Match = &networkTTL{}
+
+// networkTTL is a match for network time to live
+type networkTTL struct {
+	ttl int
+}
+
+// MarshalText implements Match.
+func (t *networkTTL) MarshalText() ([]byte, error) {
+	return bprintf("nw_ttl=%d", t.ttl), nil
+}
+
+// GoString implements Match.
+func (t *networkTTL) GoString() string {
+	return fmt.Sprintf("ovs.NetworkTTL(%d)", t.ttl)
+}
+
+// TunnelTTL returns a new tunnelTTL
+func TunnelTTL(ttl int) Match {
+	return &tunnelTTL{
+		ttl: ttl,
+	}
+}
+
+var _ Match = &tunnelTTL{}
+
+// tunnelTTL is a match for a tunnel time to live
+type tunnelTTL struct {
+	ttl int
+}
+
+// MarshalText implements Match.
+func (t *tunnelTTL) MarshalText() ([]byte, error) {
+	return bprintf("tun_ttl=%d", t.ttl), nil
+}
+
+// GoString implements Match.
+func (t *tunnelTTL) GoString() string {
+	return fmt.Sprintf("ovs.TunnelTTL(%d)", t.ttl)
+}
+
+var _ Match = &regMatch{}
 
 type regMatch struct {
 	n    int
@@ -289,6 +504,30 @@ func ConjunctionID(id uint32) Match {
 	return &conjunctionIDMatch{
 		id: id,
 	}
+}
+
+// TunnelTOS returns a new tunnelTOS
+func TunnelTOS(tos int) Match {
+	return &tunnelTOS{
+		tos: tos,
+	}
+}
+
+var _ Match = &tunnelTOS{}
+
+// tunnelTOS is a match for a tunnel type of service
+type tunnelTOS struct {
+	tos int
+}
+
+// MarshalText implements Match.
+func (t *tunnelTOS) MarshalText() ([]byte, error) {
+	return bprintf("tun_tos=%d", t.tos), nil
+}
+
+// GoString implements Match.
+func (t *tunnelTOS) GoString() string {
+	return fmt.Sprintf("ovs.TunnelTOS(%d)", t.tos)
 }
 
 // A conjunctionIDMatch is a Match returned by ConjunctionID
@@ -397,6 +636,102 @@ func (m *icmpTypeMatch) GoString() string {
 	return fmt.Sprintf("ovs.ICMPType(%d)", m.typ)
 }
 
+// ICMPCode matches packets with the specified ICMP code.
+func ICMPCode(code uint8) Match {
+	return &icmpCodeMatch{
+		code: code,
+	}
+}
+
+var _ Match = &icmpCodeMatch{}
+
+// An icmpCodeMatch is a Match returned by ICMPCode.
+type icmpCodeMatch struct {
+	code uint8
+}
+
+// MarshalText implements Match.
+func (m *icmpCodeMatch) MarshalText() ([]byte, error) {
+	return bprintf("%s=%d", icmpCode, m.code), nil
+}
+
+// GoString implements Match.
+func (m *icmpCodeMatch) GoString() string {
+	return fmt.Sprintf("ovs.ICMPCode(%d)", m.code)
+}
+
+// ICMP6Type matches packets with the specified ICMP type matching typ.
+func ICMP6Type(typ uint8) Match {
+	return &icmp6TypeMatch{
+		typ: typ,
+	}
+}
+
+var _ Match = &icmp6TypeMatch{}
+
+// An icmp6TypeMatch is a Match returned by ICMP6Type.
+type icmp6TypeMatch struct {
+	typ uint8
+}
+
+// MarshalText implements Match.
+func (m *icmp6TypeMatch) MarshalText() ([]byte, error) {
+	return bprintf("%s=%d", icmp6Type, m.typ), nil
+}
+
+// GoString implements Match.
+func (m *icmp6TypeMatch) GoString() string {
+	return fmt.Sprintf("ovs.ICMP6Type(%d)", m.typ)
+}
+
+// ICMP6Code matches packets with the specified ICMP type matching typ.
+func ICMP6Code(code uint8) Match {
+	return &icmp6CodeMatch{
+		code: code,
+	}
+}
+
+var _ Match = &icmp6CodeMatch{}
+
+// An icmp6CodeMatch is a Match returned by ICMP6Code.
+type icmp6CodeMatch struct {
+	code uint8
+}
+
+// MarshalText implements Match.
+func (m *icmp6CodeMatch) MarshalText() ([]byte, error) {
+	return bprintf("%s=%d", icmp6Code, m.code), nil
+}
+
+// GoString implements Match.
+func (m *icmp6CodeMatch) GoString() string {
+	return fmt.Sprintf("ovs.ICMP6Code(%d)", m.code)
+}
+
+// InPortMatch matches packets ingressing from a specified OVS port
+func InPortMatch(port int) Match {
+	return &inPortMatch{
+		port: port,
+	}
+}
+
+var _ Match = &inPortMatch{}
+
+// inPort matches packets ingressing from a specified OVS port
+type inPortMatch struct {
+	port int
+}
+
+// MarshalText implements Match.
+func (i *inPortMatch) MarshalText() ([]byte, error) {
+	return bprintf("%s=%d", inPort, i.port), nil
+}
+
+// GoString implements Match.
+func (i *inPortMatch) GoString() string {
+	return fmt.Sprintf("ovs.InPort(%d)", i.port)
+}
+
 // NeighborDiscoveryTarget matches packets with an IPv6 neighbor discovery target
 // IPv6 address or IPv6 CIDR block matching ip.
 func NeighborDiscoveryTarget(ip string) Match {
@@ -468,12 +803,28 @@ func (m *neighborDiscoveryLinkLayerMatch) GoString() string {
 	return fmt.Sprintf("ovs.NeighborDiscoveryTargetLinkLayer(%s)", syntax)
 }
 
-// ARPSourceHardwareAddress matches packets with an ARP source hardware address
-// (SHA) matching addr.
-func ARPOp(op uint16) Match {
-	return &arpOpMatch{
-		op: op,
+// ARPOperation matches packets with the specified ARP operation matching oper.
+func ARPOperation(oper uint16) Match {
+	return &arpOperationMatch{
+		oper: oper,
 	}
+}
+
+var _ Match = &arpOperationMatch{}
+
+// An arpOperationMatch is a Match returned by ARPOperation.
+type arpOperationMatch struct {
+	oper uint16
+}
+
+// MarshalText implements Match.
+func (m *arpOperationMatch) MarshalText() ([]byte, error) {
+	return bprintf("%s=%d", arpOp, m.oper), nil
+}
+
+// GoString implements Match.
+func (m *arpOperationMatch) GoString() string {
+	return fmt.Sprintf("ovs.ARPOperation(%d)", m.oper)
 }
 
 // ARPSourceHardwareAddress matches packets with an ARP source hardware address
@@ -522,21 +873,6 @@ func (m *arpHardwareAddressMatch) GoString() string {
 	return fmt.Sprintf("ovs.ARPTargetHardwareAddress(%s)", syntax)
 }
 
-// An arpOpMatch is a Match returned by ARPOp.
-type arpOpMatch struct {
-	op uint16
-}
-
-// MarshalText implements Match.
-func (m *arpOpMatch) MarshalText() ([]byte, error) {
-	return bprintf("%s=%d", arpOp, m.op), nil
-}
-
-// GoString implements Match.
-func (m *arpOpMatch) GoString() string {
-	return fmt.Sprintf("ovs.ARPOp(%d)", m.op)
-}
-
 // ARPSourceProtocolAddress matches packets with an ARP source protocol address
 // (SPA) IPv4 address or IPv4 CIDR block matching addr.
 func ARPSourceProtocolAddress(ip string) Match {
@@ -581,8 +917,7 @@ func (m *arpProtocolAddressMatch) GoString() string {
 	return fmt.Sprintf("ovs.ARPTargetProtocolAddress(%q)", m.ip)
 }
 
-// TransportSourcePort matches packets with a transport layer (TCP/UDP) source
-// port matching port.
+// TransportSourcePort matches packets with a TCP source port matching port.
 func TransportSourcePort(port uint16) Match {
 	return &transportPortMatch{
 		srcdst: source,
@@ -591,8 +926,7 @@ func TransportSourcePort(port uint16) Match {
 	}
 }
 
-// TransportDestinationPort matches packets with a transport layer (TCP/UDP)
-// destination port matching port.
+// TransportDestinationPort matches packets with a TCP destination port matching port.
 func TransportDestinationPort(port uint16) Match {
 	return &transportPortMatch{
 		srcdst: destination,
@@ -601,8 +935,7 @@ func TransportDestinationPort(port uint16) Match {
 	}
 }
 
-// TransportSourceMaskedPort matches packets with a transport layer (TCP/UDP)
-// source port matching a masked port range.
+// TransportSourceMaskedPort matches packets with TCP source port matching a masked port range.
 func TransportSourceMaskedPort(port uint16, mask uint16) Match {
 	return &transportPortMatch{
 		srcdst: source,
@@ -611,14 +944,131 @@ func TransportSourceMaskedPort(port uint16, mask uint16) Match {
 	}
 }
 
-// TransportDestinationMaskedPort matches packets with a transport layer (TCP/UDP)
-// destination port matching a masked port range.
+// TransportDestinationMaskedPort matches packets with a TCP destination port matching a masked port range.
 func TransportDestinationMaskedPort(port uint16, mask uint16) Match {
 	return &transportPortMatch{
 		srcdst: destination,
 		port:   port,
 		mask:   mask,
 	}
+}
+
+// UDPSourcePort matches packets with a UDP source port matching port.
+func UDPSourcePort(port uint16) Match {
+	return &udpPortMatch{
+		srcdst: source,
+		port:   port,
+		mask:   0,
+	}
+}
+
+// UDPDestinationPort matches packets with a UDP destination port matching port.
+func UDPDestinationPort(port uint16) Match {
+	return &udpPortMatch{
+		srcdst: destination,
+		port:   port,
+		mask:   0,
+	}
+}
+
+// UDPSourceMaskedPort matches packets with UDP source port matching a masked port range.
+func UDPSourceMaskedPort(port uint16, mask uint16) Match {
+	return &udpPortMatch{
+		srcdst: source,
+		port:   port,
+		mask:   mask,
+	}
+}
+
+// UDPDestinationMaskedPort matches packets with a UDP destination port matching a masked port range.
+func UDPDestinationMaskedPort(port uint16, mask uint16) Match {
+	return &udpPortMatch{
+		srcdst: destination,
+		port:   port,
+		mask:   mask,
+	}
+}
+
+// A udpPortMatch is a Match returned by Udp{Source,Destination}Port.
+type udpPortMatch struct {
+	srcdst string
+	port   uint16
+	mask   uint16
+}
+
+var _ Match = &udpPortMatch{}
+
+// A udpPortRange reprsents the start and end values of a udp protocol port range.
+type udpPortRange struct {
+	srcdst    string
+	startPort uint16
+	endPort   uint16
+}
+
+// UDPDestinationPortRange represent a port range intended for a UDP protocol destination port.
+func UDPDestinationPortRange(startPort uint16, endPort uint16) TransportPortRanger {
+	return &udpPortRange{
+		srcdst:    destination,
+		startPort: startPort,
+		endPort:   endPort,
+	}
+}
+
+// UDPSourcePortRange represent a port range intended for a UDP protocol source port.
+func UDPSourcePortRange(startPort uint16, endPort uint16) TransportPortRanger {
+	return &udpPortRange{
+		srcdst:    source,
+		startPort: startPort,
+		endPort:   endPort,
+	}
+}
+
+// MaskedPorts returns the represented port ranges as an array of bitwise matches.
+func (pr *udpPortRange) MaskedPorts() ([]Match, error) {
+	portRange := PortRange{
+		Start: pr.startPort,
+		End:   pr.endPort,
+	}
+
+	bitRanges, err := portRange.BitwiseMatch()
+	if err != nil {
+		return nil, err
+	}
+
+	var ports []Match
+
+	for _, br := range bitRanges {
+		maskedPortRange := &udpPortMatch{
+			srcdst: pr.srcdst,
+			port:   br.Value,
+			mask:   br.Mask,
+		}
+		ports = append(ports, maskedPortRange)
+	}
+
+	return ports, nil
+}
+
+// MarshalText implements Match.
+func (m *udpPortMatch) MarshalText() ([]byte, error) {
+	return matchUDPPort(m.srcdst, m.port, m.mask)
+}
+
+// GoString implements Match.
+func (m *udpPortMatch) GoString() string {
+	if m.mask > 0 {
+		if m.srcdst == source {
+			return fmt.Sprintf("ovs.UdpSourceMaskedPort(%#x, %#x)", m.port, m.mask)
+		}
+
+		return fmt.Sprintf("ovs.UdpDestinationMaskedPort(%#x, %#x)", m.port, m.mask)
+	}
+
+	if m.srcdst == source {
+		return fmt.Sprintf("ovs.UdpSourcePort(%d)", m.port)
+	}
+
+	return fmt.Sprintf("ovs.UdpDestinationPort(%d)", m.port)
 }
 
 // A transportPortMatch is a Match returned by Transport{Source,Destination}Port.
@@ -737,6 +1187,94 @@ func (m *vlanTCIMatch) GoString() string {
 	return fmt.Sprintf("ovs.VLANTCI(0x%04x, 0x%04x)", m.tci, m.mask)
 }
 
+// A vlanTCI1Match is a Match returned by VLANTCI1.
+type vlanTCI1Match struct {
+	tci  uint16
+	mask uint16
+}
+
+// VLANTCI1 matches packets based on their VLAN tag control information, using
+// the specified TCI and optional mask value.
+func VLANTCI1(tci, mask uint16) Match {
+	return &vlanTCI1Match{
+		tci:  tci,
+		mask: mask,
+	}
+}
+
+// MarshalText implements Match.
+func (m *vlanTCI1Match) MarshalText() ([]byte, error) {
+	if m.mask != 0 {
+		return bprintf("%s=0x%04x/0x%04x", vlanTCI1, m.tci, m.mask), nil
+	}
+
+	return bprintf("%s=0x%04x", vlanTCI1, m.tci), nil
+}
+
+// GoString implements Match.
+func (m *vlanTCI1Match) GoString() string {
+	return fmt.Sprintf("ovs.VLANTCI1(0x%04x, 0x%04x)", m.tci, m.mask)
+}
+
+// An ipv6LabelMatch is a Match returned by IPv6Label.
+type ipv6LabelMatch struct {
+	label uint32
+	mask  uint32
+}
+
+// IPv6Label matches packets based on their IPv6 label information, using
+// the specified label and optional mask value.
+func IPv6Label(label, mask uint32) Match {
+	return &ipv6LabelMatch{
+		label: label,
+		mask:  mask,
+	}
+}
+
+// MarshalText implements Match.
+func (m *ipv6LabelMatch) MarshalText() ([]byte, error) {
+	if !validIPv6Label(m.label) || !validIPv6Label(m.mask) {
+		return nil, errInvalidIPv6Label
+	}
+	if m.mask != 0 {
+		return bprintf("%s=0x%05x/0x%05x", ipv6Label, m.label, m.mask), nil
+	}
+
+	return bprintf("%s=0x%05x", ipv6Label, m.label), nil
+}
+
+// GoString implements Match.
+func (m *ipv6LabelMatch) GoString() string {
+	return fmt.Sprintf("ovs.IPv6Label(0x%04x, 0x%04x)", m.label, m.mask)
+}
+
+// An arpOpMatch is a Match returned by ArpOp.
+type arpOpMatch struct {
+	op uint16
+}
+
+// ArpOp matches packets based on their IPv6 label information, using
+// the specified op.
+func ArpOp(op uint16) Match {
+	return &arpOpMatch{
+		op: op,
+	}
+}
+
+// MarshalText implements Match.
+func (m *arpOpMatch) MarshalText() ([]byte, error) {
+	if !validARPOP(m.op) {
+		return nil, errInvalidARPOP
+	}
+
+	return bprintf("%s=%1d", arpOp, m.op), nil
+}
+
+// GoString implements Match.
+func (m *arpOpMatch) GoString() string {
+	return fmt.Sprintf("ovs.ArpOp(%01d)", m.op)
+}
+
 // A connectionTrackingMarkMatch is a Match returned by ConnectionTrackingMark.
 type connectionTrackingMarkMatch struct {
 	mark uint32
@@ -849,6 +1387,48 @@ func UnsetState(state CTState) string {
 	return fmt.Sprintf("-%s", state)
 }
 
+// Metadata returns a Match that matches the given Metadata exactly.
+func Metadata(id uint64) Match {
+	return &metadataMatch{
+		data: id,
+		mask: 0,
+	}
+}
+
+// MetadataWithMask returns a Match with specified Metadata and mask.
+func MetadataWithMask(id, mask uint64) Match {
+	return &metadataMatch{
+		data: id,
+		mask: mask,
+	}
+}
+
+var _ Match = &metadataMatch{}
+
+// A metadataMatch is a Match against a Metadata field.
+type metadataMatch struct {
+	data uint64
+	mask uint64
+}
+
+// GoString implements Match.
+func (m *metadataMatch) GoString() string {
+	if m.mask > 0 {
+		return fmt.Sprintf("ovs.MetadataWithMask(%#x, %#x)", m.data, m.mask)
+	}
+
+	return fmt.Sprintf("ovs.Metadata(%#x)", m.data)
+}
+
+// MarshalText implements Match.
+func (m *metadataMatch) MarshalText() ([]byte, error) {
+	if m.mask == 0 {
+		return bprintf("%s=%#x", metadata, m.data), nil
+	}
+
+	return bprintf("%s=%#x/%#x", metadata, m.data, m.mask), nil
+}
+
 // TCPFlags matches packets using their enabled TCP flags, when matching TCP
 // flags on a TCP segment.   Use the SetTCPFlag and UnsetTCPFlag functions to
 // populate the parameter list for this function.
@@ -952,6 +1532,44 @@ func (m *tunnelIDMatch) MarshalText() ([]byte, error) {
 	return bprintf("%s=%#x/%#x", tunID, m.id, m.mask), nil
 }
 
+// TunnelSrc returns a Match with specified Tunnel Source.
+func TunnelSrc(addr string) Match {
+	return &tunnelMatch{
+		srcdst: source,
+		ip:     addr,
+	}
+}
+
+// TunnelDst returns a Match with specified Tunnel Destination.
+func TunnelDst(addr string) Match {
+	return &tunnelMatch{
+		srcdst: destination,
+		ip:     addr,
+	}
+}
+
+var _ Match = &tunnelMatch{}
+
+// A tunnelMatch is a Match against a tunnel {source|destination}.
+type tunnelMatch struct {
+	srcdst string
+	ip     string
+}
+
+// GoString implements Match.
+func (m *tunnelMatch) GoString() string {
+	if m.srcdst == source {
+		return fmt.Sprintf("ovs.TunnelSrc(%q)", m.ip)
+	}
+
+	return fmt.Sprintf("ovs.TunnelDst(%q)", m.ip)
+}
+
+// MarshalText implements Match.
+func (m *tunnelMatch) MarshalText() ([]byte, error) {
+	return matchIPv4AddressOrCIDR(fmt.Sprintf("tun_%s", m.srcdst), m.ip)
+}
+
 // matchIPv4AddressOrCIDR attempts to create a Match using the specified key
 // and input string, which could be interpreted as an IPv4 address or IPv4
 // CIDR block.
@@ -1023,4 +1641,76 @@ func matchTransportPort(srcdst string, port uint16, mask uint16) ([]byte, error)
 	}
 
 	return bprintf("tp_%s=0x%04x/0x%04x", srcdst, port, mask), nil
+}
+
+// matchUDPPort is the common implementation for
+// Udp{Source,Destination}Port.
+func matchUDPPort(srcdst string, port uint16, mask uint16) ([]byte, error) {
+	// No mask specified
+	if mask == 0 {
+		return bprintf("udp_%s=%d", srcdst, port), nil
+	}
+
+	return bprintf("udp_%s=0x%04x/0x%04x", srcdst, port, mask), nil
+}
+
+// IPFragFlag is a string type which can be used with the IPFragMatch.
+type IPFragFlag string
+
+// OvS IP frag flags.
+// Source: http://www.openvswitch.org/support/dist-docs-2.5/ovs-ofctl.8.txt
+const (
+	IPFragFlagYes      IPFragFlag = "yes"
+	IPFragFlagNo       IPFragFlag = "no"
+	IPFragFlagFirst    IPFragFlag = "first"
+	IPFragFlagLater    IPFragFlag = "later"
+	IPFragFlagNotLater IPFragFlag = "not_later"
+)
+
+// IPFrag returns an ipFragMatch.
+func IPFrag(flag IPFragFlag) Match {
+	return &ipFragMatch{flag: flag}
+}
+
+// ipFragMatch implements the Match interface and is a match against
+// a packet fragmentation value.
+type ipFragMatch struct {
+	flag IPFragFlag
+}
+
+var _ Match = &ipFragMatch{}
+
+// GoString implements Match.
+func (m *ipFragMatch) GoString() string {
+	return fmt.Sprintf("ovs.IpFrag(%v)", m.flag)
+}
+
+// MarshalText implements Match.
+func (m *ipFragMatch) MarshalText() ([]byte, error) {
+	return bprintf("%s=%s", ipFrag, m.flag), nil
+}
+
+// FieldMatch returns an fieldMatch.
+func FieldMatch(field, srcOrValue string) Match {
+	return &fieldMatch{field: field, srcOrValue: srcOrValue}
+}
+
+// fieldMatch implements the Match interface and
+// matches a given field against another a value, e.g. "0x123" or "1.2.3.4",
+// or against another src field in the packet, e.g "arp_tpa" or "NXM_OF_ARP_TPA[]".
+type fieldMatch struct {
+	field      string
+	srcOrValue string
+}
+
+var _ Match = &fieldMatch{}
+
+// GoString implements Match.
+func (m *fieldMatch) GoString() string {
+	return fmt.Sprintf("ovs.FieldMatch(%v,%v)", m.field, m.srcOrValue)
+}
+
+// MarshalText implements Match.
+func (m *fieldMatch) MarshalText() ([]byte, error) {
+	return bprintf("%s=%s", m.field, m.srcOrValue), nil
 }

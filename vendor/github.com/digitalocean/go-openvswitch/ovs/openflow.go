@@ -202,10 +202,14 @@ func (o *OpenFlowService) AddFlowBundle(bridge string, fn func(tx *FlowTransacti
 //
 // If flow is nil, all flows will be deleted from the specified bridge.
 func (o *OpenFlowService) DelFlows(bridge string, flow *MatchFlow) error {
+	args := []string{"del-flows"}
+	args = append(args, o.c.ofctlFlags...)
+	args = append(args, bridge)
+
 	if flow == nil {
 		// This means we'll flush the entire flows
-		// from the specifided bridge.
-		_, err := o.exec("del-flows", bridge)
+		// from the specified bridge.
+		_, err := o.exec(args...)
 		return err
 	}
 	fb, err := flow.MarshalText()
@@ -213,13 +217,18 @@ func (o *OpenFlowService) DelFlows(bridge string, flow *MatchFlow) error {
 		return err
 	}
 
-	_, err = o.exec("del-flows", bridge, string(fb))
+	args = append(args, string(fb))
+	_, err = o.exec(args...)
 	return err
 }
 
 // ModPort modifies the specified characteristics for the specified port.
 func (o *OpenFlowService) ModPort(bridge string, port string, action PortAction) error {
-	_, err := o.exec("mod-port", bridge, string(port), string(action))
+	args := []string{"mod-port"}
+	args = append(args, o.c.ofctlFlags...)
+	args = append(args, []string{bridge, port, string(action)}...)
+
+	_, err := o.exec(args...)
 	return err
 }
 
@@ -247,7 +256,10 @@ func (o *OpenFlowService) DumpPorts(bridge string) ([]*PortStats, error) {
 // If a table has no active flows and has not been used for a lookup or matched
 // by an incoming packet, it is filtered from the output.
 func (o *OpenFlowService) DumpTables(bridge string) ([]*Table, error) {
-	out, err := o.exec("dump-tables", bridge)
+	args := []string{"dump-tables", bridge}
+	args = append(args, o.c.ofctlFlags...)
+
+	out, err := o.exec(args...)
 	if err != nil {
 		return nil, err
 	}
@@ -271,19 +283,30 @@ func (o *OpenFlowService) DumpTables(bridge string) ([]*Table, error) {
 	return tables, err
 }
 
-// DumpFlows retrieves statistics about all flows for the specified bridge.
+// DumpFlowsWithFlowArgs retrieves statistics about all flows for the specified bridge,
+// filtering on the specified flow(s), if provided.
 // If a table has no active flows and has not been used for a lookup or matched
 // by an incoming packet, it is filtered from the output.
-func (o *OpenFlowService) DumpFlows(bridge string) ([]*Flow, error) {
-	out, err := o.exec("dump-flows", bridge)
+// We neeed to add a Matchflow to filter the dumpflow results. For example filter based on table, cookie.
+func (o *OpenFlowService) DumpFlowsWithFlowArgs(bridge string, flow *MatchFlow) ([]*Flow, error) {
+	args := []string{"dump-flows", bridge}
+	args = append(args, o.c.ofctlFlags...)
+	if flow != nil {
+		fb, err := flow.MarshalText()
+		if err != nil {
+			return nil, err
+		}
+		args = append(args, string(fb))
+	}
+	out, err := o.exec(args...)
 	if err != nil {
 		return nil, err
 	}
 
 	var flows []*Flow
 	err = parseEachLine(out, dumpFlowsPrefix, func(b []byte) error {
-		// Do not attempt to parse NXST_FLOW messages.
-		if bytes.HasPrefix(b, dumpFlowsPrefix) {
+		// Do not attempt to parse ST_FLOW messages.
+		if bytes.Contains(b, dumpFlowsPrefix) {
 			return nil
 		}
 
@@ -297,6 +320,13 @@ func (o *OpenFlowService) DumpFlows(bridge string) ([]*Flow, error) {
 	})
 
 	return flows, err
+}
+
+// DumpFlows retrieves statistics about all flows for the specified bridge.
+// If a table has no active flows and has not been used for a lookup or matched
+// by an incoming packet, it is filtered from the output.
+func (o *OpenFlowService) DumpFlows(bridge string) ([]*Flow, error) {
+	return o.DumpFlowsWithFlowArgs(bridge, nil)
 }
 
 // DumpAggregate retrieves statistics about the specified flow attached to the
@@ -319,13 +349,16 @@ var (
 	// the output from 'ovs-ofctl dump-tables'.
 	dumpTablesPrefix = []byte("OFPST_TABLE reply")
 
-	// dumpFlowsPrefix is a sentinel value returned at the beginning of
-	// the output from 'ovs-ofctl dump-flows'.
-	dumpFlowsPrefix = []byte("NXST_FLOW reply")
+	// dumpFlowsPrefix is a sentinel value returned at the beginning of the output
+	// from 'ovs-ofctl dump-flows'. The value returned when using protocol version
+	// 1.0 is "NXST_FLOW reply". The value returned when using protocol version > 1.1
+	// is "OFPST_FLOW reply". However, we use ST_FLOW here to be able to match both
+	// of these.
+	dumpFlowsPrefix = []byte("ST_FLOW reply")
 
 	// dumpAggregatePrefix is a sentinel value returned at the beginning of
 	// the output from "ovs-ofctl dump-aggregate"
-	dumpAggregatePrefix = []byte("NXST_AGGREGATE reply")
+	//dumpAggregatePrefix = []byte("NXST_AGGREGATE reply")
 )
 
 // dumpPorts calls 'ovs-ofctl dump-ports' with the specified arguments and
@@ -403,8 +436,8 @@ func parseEachLine(in []byte, prefix []byte, fn func(b []byte) error) error {
 		return io.ErrUnexpectedEOF
 	}
 
-	// First line must contain prefix returned by OVS
-	if !bytes.HasPrefix(scanner.Bytes(), prefix) {
+	// First line must contain the prefix returned by OVS
+	if !bytes.Contains(scanner.Bytes(), prefix) {
 		return io.ErrUnexpectedEOF
 	}
 
@@ -441,6 +474,8 @@ func parseEach(in []byte, prefix []byte, fn func(b []byte) error) error {
 	// which must be ignored.  A banner appears containing "(OF1.x)" which we
 	// detect here to discover if the last line should be discarded.
 	hasDuration := bytes.Contains(scanner.Bytes(), []byte("(OF1."))
+	// Detect if CUSTOM Statistics is present, to skip additional lines
+	hasCustomStats := bytes.Contains(in, []byte("CUSTOM"))
 
 	// Scan every two lines to retrieve information needed to unmarshal
 	// a single PortStats struct.
@@ -454,9 +489,20 @@ func parseEach(in []byte, prefix []byte, fn func(b []byte) error) error {
 		}
 		b = append(b, scanner.Bytes()...)
 
-		// Discard the third line of information if applicable.
-		if hasDuration && !scanner.Scan() {
-			return io.ErrUnexpectedEOF
+		if hasDuration {
+			// Discard the third line of information if applicable.
+			if !scanner.Scan() {
+				return io.ErrUnexpectedEOF
+			}
+			//Discard 4th & 5th lines if Custom stats are present
+			if hasCustomStats {
+				if !scanner.Scan() {
+					return io.ErrUnexpectedEOF
+				}
+				if !scanner.Scan() {
+					return io.ErrUnexpectedEOF
+				}
+			}
 		}
 
 		if err := fn(b); err != nil {

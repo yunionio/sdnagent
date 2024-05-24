@@ -15,6 +15,7 @@
 package models
 
 import (
+	"context"
 	"time"
 
 	"yunion.io/x/pkg/util/rbacscope"
@@ -34,27 +35,32 @@ type usedAddressQueryArgs struct {
 }
 
 type usedAddressQueryProvider interface {
-	usedAddressQuery(args *usedAddressQueryArgs) *sqlchemy.SQuery
+	KeywordPlural() string
+	usedAddressQuery(ctx context.Context, args *usedAddressQueryArgs) *sqlchemy.SQuery
 }
 
-var usedAddressQueryProviders = []usedAddressQueryProvider{
-	GuestnetworkManager,
-	HostnetworkManager,
-	ReservedipManager,
-	GroupnetworkManager,
-	LoadbalancernetworkManager,
-	ElasticipManager,
-	NetworkinterfacenetworkManager,
-	DBInstanceManager,
-	NetworkAddressManager,
+func getUsedAddressQueryProviders() []usedAddressQueryProvider {
+	return []usedAddressQueryProvider{
+		GuestnetworkManager,
+		HostnetworkManager,
+		ReservedipManager,
+		GroupnetworkManager,
+		LoadbalancernetworkManager,
+		ElasticipManager,
+		NetworkinterfacenetworkManager,
+		DBInstanceManager,
+		NetworkAddressManager,
+	}
 }
 
-var usedAddress6QueryProviders = []usedAddressQueryProvider{
-	GuestnetworkManager,
-	ReservedipManager,
+func getUsedAddress6QueryProviders() []usedAddressQueryProvider {
+	return []usedAddressQueryProvider{
+		GuestnetworkManager,
+		ReservedipManager,
+	}
 }
 
-func (manager *SGuestnetworkManager) usedAddressQuery(args *usedAddressQueryArgs) *sqlchemy.SQuery {
+func (manager *SGuestnetworkManager) usedAddressQuery(ctx context.Context, args *usedAddressQueryArgs) *sqlchemy.SQuery {
 	var (
 		baseq = GuestnetworkManager.Query().Equals("network_id", args.network.Id).SubQuery()
 		retq  *sqlchemy.SQuery
@@ -69,7 +75,7 @@ func (manager *SGuestnetworkManager) usedAddressQuery(args *usedAddressQueryArgs
 		var fields []sqlchemy.IQueryField = []sqlchemy.IQueryField{
 			baseq.Field(field),
 		}
-		ownerq := GuestManager.FilterByOwner(GuestManager.Query(), GuestManager, args.userCred, args.owner, args.scope).SubQuery()
+		ownerq := GuestManager.FilterByOwner(ctx, GuestManager.Query(), GuestManager, args.userCred, args.owner, args.scope).SubQuery()
 		fields = append(fields,
 			baseq.Field("mac_addr"),
 			sqlchemy.NewStringField(GuestManager.KeywordPlural()).Label("owner_type"),
@@ -92,7 +98,7 @@ func (manager *SGuestnetworkManager) usedAddressQuery(args *usedAddressQueryArgs
 	return retq
 }
 
-func (manager *SHostnetworkManager) usedAddressQuery(args *usedAddressQueryArgs) *sqlchemy.SQuery {
+func (manager *SHostnetworkManager) usedAddressQuery(ctx context.Context, args *usedAddressQueryArgs) *sqlchemy.SQuery {
 	var (
 		baseq = HostnetworkManager.Query().Equals("network_id", args.network.Id).SubQuery()
 		retq  *sqlchemy.SQuery
@@ -102,7 +108,7 @@ func (manager *SHostnetworkManager) usedAddressQuery(args *usedAddressQueryArgs)
 			baseq.Field("ip_addr"),
 		)
 	} else {
-		ownerq := HostManager.FilterByOwner(HostManager.Query(), HostManager, args.userCred, args.owner, args.scope).SubQuery()
+		ownerq := HostManager.FilterByOwner(ctx, HostManager.Query(), HostManager, args.userCred, args.owner, args.scope).SubQuery()
 		retq = baseq.Query(
 			baseq.Field("ip_addr"),
 			baseq.Field("mac_addr"),
@@ -124,7 +130,7 @@ func (manager *SHostnetworkManager) usedAddressQuery(args *usedAddressQueryArgs)
 	return retq
 }
 
-func (manager *SReservedipManager) usedAddressQuery(args *usedAddressQueryArgs) *sqlchemy.SQuery {
+func (manager *SReservedipManager) usedAddressQuery(ctx context.Context, args *usedAddressQueryArgs) *sqlchemy.SQuery {
 	var (
 		baseq = ReservedipManager.Query().Equals("network_id", args.network.Id).SubQuery()
 		retq  *sqlchemy.SQuery
@@ -142,7 +148,7 @@ func (manager *SReservedipManager) usedAddressQuery(args *usedAddressQueryArgs) 
 		fields = append(fields,
 			sqlchemy.NewStringField("").Label("mac_addr"),
 			sqlchemy.NewStringField(ReservedipManager.KeywordPlural()).Label("owner_type"),
-			baseq.Field("id").Label("owner_id"),
+			sqlchemy.CASTString(baseq.Field("id"), "owner_id"),
 			baseq.Field("status").Label("owner_status"),
 			baseq.Field("notes").Label("owner"),
 			sqlchemy.NewStringField("").Label("associate_id"),
@@ -159,7 +165,7 @@ func (manager *SReservedipManager) usedAddressQuery(args *usedAddressQueryArgs) 
 	return retq
 }
 
-func (manager *SGroupnetworkManager) usedAddressQuery(args *usedAddressQueryArgs) *sqlchemy.SQuery {
+func (manager *SGroupnetworkManager) usedAddressQuery(ctx context.Context, args *usedAddressQueryArgs) *sqlchemy.SQuery {
 	var (
 		baseq = GroupnetworkManager.Query().Equals("network_id", args.network.Id).SubQuery()
 		retq  *sqlchemy.SQuery
@@ -179,7 +185,7 @@ func (manager *SGroupnetworkManager) usedAddressQuery(args *usedAddressQueryArgs
 		} else {
 			fields = append(fields, baseq.Field("ip_addr"))
 		}
-		ownerq := GroupManager.FilterByOwner(GroupManager.Query(), GroupManager, args.userCred, args.owner, args.scope).SubQuery()
+		ownerq := GroupManager.FilterByOwner(ctx, GroupManager.Query(), GroupManager, args.userCred, args.owner, args.scope).SubQuery()
 		fields = append(fields,
 			sqlchemy.NewStringField("").Label("mac_addr"),
 			sqlchemy.NewStringField(GroupManager.KeywordPlural()).Label("owner_type"),
@@ -201,7 +207,7 @@ func (manager *SGroupnetworkManager) usedAddressQuery(args *usedAddressQueryArgs
 	return retq
 }
 
-func (manager *SLoadbalancernetworkManager) usedAddressQuery(args *usedAddressQueryArgs) *sqlchemy.SQuery {
+func (manager *SLoadbalancernetworkManager) usedAddressQuery(ctx context.Context, args *usedAddressQueryArgs) *sqlchemy.SQuery {
 	var (
 		baseq = LoadbalancernetworkManager.Query().Equals("network_id", args.network.Id).SubQuery()
 		retq  *sqlchemy.SQuery
@@ -211,7 +217,7 @@ func (manager *SLoadbalancernetworkManager) usedAddressQuery(args *usedAddressQu
 			baseq.Field("ip_addr"),
 		)
 	} else {
-		ownerq := LoadbalancerManager.FilterByOwner(LoadbalancerManager.Query(), LoadbalancerManager, args.userCred, args.owner, args.scope).SubQuery()
+		ownerq := LoadbalancerManager.FilterByOwner(ctx, LoadbalancerManager.Query(), LoadbalancerManager, args.userCred, args.owner, args.scope).SubQuery()
 		retq = baseq.Query(
 			baseq.Field("ip_addr"),
 			sqlchemy.NewStringField("").Label("mac_addr"),
@@ -233,7 +239,7 @@ func (manager *SLoadbalancernetworkManager) usedAddressQuery(args *usedAddressQu
 	return retq
 }
 
-func (manager *SElasticipManager) usedAddressQuery(args *usedAddressQueryArgs) *sqlchemy.SQuery {
+func (manager *SElasticipManager) usedAddressQuery(ctx context.Context, args *usedAddressQueryArgs) *sqlchemy.SQuery {
 	var (
 		baseq = ElasticipManager.Query().Equals("network_id", args.network.Id).SubQuery()
 		retq  *sqlchemy.SQuery
@@ -243,7 +249,7 @@ func (manager *SElasticipManager) usedAddressQuery(args *usedAddressQueryArgs) *
 			baseq.Field("ip_addr"),
 		)
 	} else {
-		ownerq := ElasticipManager.FilterByOwner(ElasticipManager.Query().Equals("network_id", args.network.Id), ElasticipManager, args.userCred, args.owner, args.scope).SubQuery()
+		ownerq := ElasticipManager.FilterByOwner(ctx, ElasticipManager.Query().Equals("network_id", args.network.Id), ElasticipManager, args.userCred, args.owner, args.scope).SubQuery()
 		retq = baseq.Query(
 			baseq.Field("ip_addr"),
 			sqlchemy.NewStringField("").Label("mac_addr"),
@@ -265,7 +271,7 @@ func (manager *SElasticipManager) usedAddressQuery(args *usedAddressQueryArgs) *
 	return retq
 }
 
-func (manager *SNetworkinterfacenetworkManager) usedAddressQuery(args *usedAddressQueryArgs) *sqlchemy.SQuery {
+func (manager *SNetworkinterfacenetworkManager) usedAddressQuery(ctx context.Context, args *usedAddressQueryArgs) *sqlchemy.SQuery {
 	var (
 		baseq = NetworkinterfacenetworkManager.Query().Equals("network_id", args.network.Id).SubQuery()
 		retq  *sqlchemy.SQuery
@@ -275,7 +281,7 @@ func (manager *SNetworkinterfacenetworkManager) usedAddressQuery(args *usedAddre
 			baseq.Field("ip_addr"),
 		)
 	} else {
-		ownerq := NetworkInterfaceManager.FilterByOwner(NetworkInterfaceManager.Query(), NetworkInterfaceManager, args.userCred, args.owner, args.scope).SubQuery()
+		ownerq := NetworkInterfaceManager.FilterByOwner(ctx, NetworkInterfaceManager.Query(), NetworkInterfaceManager, args.userCred, args.owner, args.scope).SubQuery()
 		retq = baseq.Query(
 			baseq.Field("ip_addr"),
 			ownerq.Field("mac").Label("mac_addr"),
@@ -297,7 +303,7 @@ func (manager *SNetworkinterfacenetworkManager) usedAddressQuery(args *usedAddre
 	return retq
 }
 
-func (manager *SDBInstanceManager) usedAddressQuery(args *usedAddressQueryArgs) *sqlchemy.SQuery {
+func (manager *SDBInstanceManager) usedAddressQuery(ctx context.Context, args *usedAddressQueryArgs) *sqlchemy.SQuery {
 	var (
 		baseq = DBInstanceNetworkManager.Query().Equals("network_id", args.network.Id).SubQuery()
 		retq  *sqlchemy.SQuery
@@ -307,7 +313,7 @@ func (manager *SDBInstanceManager) usedAddressQuery(args *usedAddressQueryArgs) 
 			baseq.Field("ip_addr"),
 		)
 	} else {
-		ownerq := DBInstanceManager.FilterByOwner(DBInstanceManager.Query(), DBInstanceManager, args.userCred, args.owner, args.scope).SubQuery()
+		ownerq := DBInstanceManager.FilterByOwner(ctx, DBInstanceManager.Query(), DBInstanceManager, args.userCred, args.owner, args.scope).SubQuery()
 		retq = baseq.Query(
 			baseq.Field("ip_addr"),
 			sqlchemy.NewStringField("").Label("mac_addr"),
@@ -329,7 +335,7 @@ func (manager *SDBInstanceManager) usedAddressQuery(args *usedAddressQueryArgs) 
 	return retq
 }
 
-func (manager *SNetworkAddressManager) usedAddressQuery(args *usedAddressQueryArgs) *sqlchemy.SQuery {
+func (manager *SNetworkAddressManager) usedAddressQuery(ctx context.Context, args *usedAddressQueryArgs) *sqlchemy.SQuery {
 	var (
 		retq *sqlchemy.SQuery
 	)
@@ -353,7 +359,7 @@ func (manager *SNetworkAddressManager) usedAddressQuery(args *usedAddressQueryAr
 			baseq.Field("parent_type").Label("associate_type"),
 			baseq.Field("created_at"),
 		).Join(guestNetworks, sqlchemy.Equals(guestNetworks.Field("row_id"), baseq.Field("parent_id"))).Join(guests, sqlchemy.Equals(guests.Field("id"), guestNetworks.Field("guest_id")))
-		retq = NetworkAddressManager.FilterByOwner(retq, NetworkAddressManager, args.userCred, args.owner, args.scope)
+		retq = NetworkAddressManager.FilterByOwner(ctx, retq, NetworkAddressManager, args.userCred, args.owner, args.scope)
 	}
 	return retq
 }

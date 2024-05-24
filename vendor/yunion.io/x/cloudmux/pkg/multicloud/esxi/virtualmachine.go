@@ -220,7 +220,15 @@ func (svm *SVirtualMachine) GetGlobalId() string {
 }
 
 func (svm *SVirtualMachine) GetHostname() string {
-	return svm.GetName()
+	return ""
+}
+
+func (svm *SVirtualMachine) GetDescription() string {
+	vm := svm.getVirtualMachine()
+	if vm != nil && vm.Config != nil {
+		return vm.Config.Annotation
+	}
+	return ""
 }
 
 func (svm *SVirtualMachine) GetStatus() string {
@@ -462,7 +470,7 @@ func (vm *SVirtualMachine) getNormalizedOsInfo() *imagetools.ImageInfo {
 			osInfo := imagetools.NormalizeImageInfo("", string(osInfo.OsArch), string(osInfo.OsType), osInfo.OsDistribution, osInfo.OsVersion)
 			vm.osInfo = &osInfo
 		} else {
-			osInfo := imagetools.NormalizeImageInfo("", "", "", "", "")
+			osInfo := imagetools.NormalizeImageInfo(vm.GetName(), "", "", "", "")
 			vm.osInfo = &osInfo
 		}
 	}
@@ -1199,7 +1207,11 @@ func (svm *SVirtualMachine) CopyRootDisk(ctx context.Context, imagePath string) 
 	if err != nil {
 		return "", errors.Wrapf(err, "GetRootImagePath")
 	}
-	fm := datastore.getDatastoreObj().NewFileManager(datastore.datacenter.getObjectDatacenter(), true)
+	ds, err := datastore.getDatastoreObj(ctx)
+	if err != nil {
+		return "", errors.Wrapf(err, "getDatastoreObj")
+	}
+	fm := ds.NewFileManager(datastore.datacenter.getObjectDatacenter(), true)
 	err = fm.Copy(ctx, imagePath, newImagePath)
 	if err != nil {
 		return "", errors.Wrapf(err, "unable to copy system disk %s -> %s", imagePath, newImagePath)
@@ -1218,7 +1230,10 @@ func (svm *SVirtualMachine) createDiskWithDeviceChange(ctx context.Context, devi
 		}
 	}
 
-	devSpec := NewDiskDev(int64(config.SizeMb), config)
+	devSpec, err := NewDiskDev(ctx, int64(config.SizeMb), config)
+	if err != nil {
+		return errors.Wrapf(err, "NewDiskDev")
+	}
 	spec := addDevSpec(devSpec)
 	if len(config.ImagePath) == 0 {
 		spec.FileOperation = types.VirtualDeviceConfigSpecFileOperationCreate
@@ -1626,7 +1641,18 @@ func (svm *SVirtualMachine) relocate(hostId string) error {
 		}
 	}
 	if !isShared {
-		config.Datastore = &targetHs.Datastore[0]
+		err := host.fetchDatastores()
+		if err != nil {
+			return errors.Wrapf(err, "fetchDatastores")
+		}
+		max := int64(0)
+		for i := range host.datastores {
+			ds := host.datastores[i].(*SDatastore)
+			if ds.GetCapacityFreeMB() > max {
+				max = ds.GetCapacityFreeMB()
+				config.Datastore = &targetHs.Datastore[i]
+			}
+		}
 	}
 	task, err := svm.getVmObj().Relocate(ctx, config, types.VirtualMachineMovePriorityDefaultPriority)
 	if err != nil {

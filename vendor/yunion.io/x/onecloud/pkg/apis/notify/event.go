@@ -65,6 +65,11 @@ var (
 	ActionIsolatedDeviceCreate SAction = "isolated_device_create"
 	ActionIsolatedDeviceUpdate SAction = "isolated_device_update"
 	ActionIsolatedDeviceDelete SAction = "isolated_device_delete"
+	ActionStatusChanged        SAction = "status_changed"
+	ActionStart                SAction = "start"
+	ActionStop                 SAction = "stop"
+	ActionReset                SAction = "reset"
+	ActionRestart              SAction = "restart"
 
 	ResultFailed  SResult = "failed"
 	ResultSucceed SResult = "succeed"

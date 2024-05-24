@@ -72,9 +72,9 @@ func (fm *FlowMan) doDumpFlows() (*utils.FlowSet, error) {
 		log.Errorf("flowman %s: dump-flows failed: %s", fm.bridge, err)
 		return nil, errors.Wrap(err, "DumpFlows")
 	}
-	for _, of := range flows {
-		utils.OVSFlowOrderMatch(of)
-	}
+	// for _, of := range flows {
+	// 	utils.OVSFlowOrderMatch(of)
+	// }
 	fs := utils.NewFlowSetFromList(flows)
 	return fs, nil
 }
@@ -250,7 +250,7 @@ func (fm *FlowMan) sendCmd(ctx context.Context, cmd *flowManCmd) {
 }
 
 func (fm *FlowMan) AddFlow(ctx context.Context, of *ovs.Flow) {
-	utils.OVSFlowOrderMatch(of)
+	// utils.OVSFlowOrderMatch(of)
 	cmd := &flowManCmd{
 		Type: flowManCmdAddFlow,
 		Who:  THEMAN,
@@ -260,7 +260,7 @@ func (fm *FlowMan) AddFlow(ctx context.Context, of *ovs.Flow) {
 }
 
 func (fm *FlowMan) DelFlow(ctx context.Context, of *ovs.Flow) {
-	utils.OVSFlowOrderMatch(of)
+	// utils.OVSFlowOrderMatch(of)
 	cmd := &flowManCmd{
 		Type: flowManCmdDelFlow,
 		Who:  THEMAN,
@@ -292,9 +292,9 @@ func (fm *FlowMan) updateFlows(ctx context.Context, who string, ofs []*ovs.Flow)
 			atomic.AddInt32(&fm.waitCount, 1)
 		}
 	}
-	for _, of := range ofs {
-		utils.OVSFlowOrderMatch(of)
-	}
+	// for _, of := range ofs {
+	//	utils.OVSFlowOrderMatch(of)
+	// }
 	cmd := &flowManCmd{
 		Type: flowManCmdUpdateFlows,
 		Who:  who,

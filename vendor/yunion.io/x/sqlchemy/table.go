@@ -104,6 +104,8 @@ type STableSpec struct {
 	extraOptions TableExtraOptions
 
 	sDBReferer
+
+	IsLinked bool
 }
 
 // STable is an instance of table for query, system will automatically give a alias to this table
@@ -148,6 +150,7 @@ func NewTableSpecFromISpecWithDBName(spec ITableSpec, name string, dbName DBName
 			dbName: dbName,
 		},
 		extraOptions: extraOpts,
+		IsLinked:     true,
 	}
 	return table
 }
@@ -159,7 +162,8 @@ func (ts *STableSpec) Name() string {
 
 // Expression implementation of STableSpec for ITableSpec
 func (ts *STableSpec) Expression() string {
-	return fmt.Sprintf("`%s`", ts.name)
+	qChar := ts.Database().backend.QuoteChar()
+	return fmt.Sprintf("%s%s%s", qChar, ts.name, qChar)
 }
 
 func (ts *STableSpec) SyncColumnIndexes() error {
@@ -169,11 +173,20 @@ func (ts *STableSpec) SyncColumnIndexes() error {
 
 	cols, err := ts.Database().backend.FetchTableColumnSpecs(ts)
 	if err != nil {
-		log.Errorf("fetchColumnDefs fail: %s", err)
 		return errors.Wrap(err, "FetchTableColumnSpecs")
 	}
 	if len(cols) != len(ts._columns) {
-		return errors.Wrapf(errors.ErrInvalidStatus, "ts col %d != actual col %d", len(ts._columns), len(cols))
+		colsName := map[string]bool{}
+		for _, col := range ts._columns {
+			colsName[col.Name()] = true
+		}
+		removed := []string{}
+		for _, col := range cols {
+			if _, ok := colsName[col.Name()]; !ok {
+				removed = append(removed, col.Name())
+			}
+		}
+		return errors.Wrapf(errors.ErrInvalidStatus, "ts %s col %d != actual col %d need remove columns %s", ts.Name(), len(ts._columns), len(cols), removed)
 	}
 	for i := range cols {
 		cols[i].SetColIndex(i)
@@ -351,10 +364,8 @@ func (tbl *STable) Variables() []interface{} {
 
 // Expression implementation of STableField for IQueryField
 func (c *STableField) Expression() string {
-	if len(c.alias) > 0 {
-		return fmt.Sprintf("`%s`.`%s` as `%s`", c.table.Alias(), c.spec.Name(), c.alias)
-	}
-	return fmt.Sprintf("`%s`.`%s`", c.table.Alias(), c.spec.Name())
+	qChar := c.database().backend.QuoteChar()
+	return fmt.Sprintf("%s%s%s.%s%s%s", qChar, c.table.Alias(), qChar, qChar, c.spec.Name(), qChar)
 }
 
 // Name implementation of STableField for IQueryField
@@ -367,7 +378,8 @@ func (c *STableField) Name() string {
 
 // Reference implementation of STableField for IQueryField
 func (c *STableField) Reference() string {
-	return fmt.Sprintf("`%s`.`%s`", c.table.Alias(), c.Name())
+	qChar := c.database().backend.QuoteChar()
+	return fmt.Sprintf("%s%s%s.%s%s%s", qChar, c.table.Alias(), qChar, qChar, c.Name(), qChar)
 }
 
 // Label implementation of STableField for IQueryField
