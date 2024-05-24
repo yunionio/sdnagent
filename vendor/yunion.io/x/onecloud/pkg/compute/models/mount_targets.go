@@ -87,7 +87,7 @@ func (manager *SMountTargetManager) ValidateCreateData(ctx context.Context, user
 	if len(input.FileSystemId) == 0 {
 		return input, httperrors.NewMissingParameterError("file_system_id")
 	}
-	_fs, err := validators.ValidateModel(userCred, FileSystemManager, &input.FileSystemId)
+	_fs, err := validators.ValidateModel(ctx, userCred, FileSystemManager, &input.FileSystemId)
 	if err != nil {
 		return input, err
 	}
@@ -111,7 +111,7 @@ func (manager *SMountTargetManager) ValidateCreateData(ctx context.Context, user
 		if len(input.NetworkId) == 0 {
 			return input, httperrors.NewMissingParameterError("network_id")
 		}
-		_network, err := validators.ValidateModel(userCred, NetworkManager, &input.NetworkId)
+		_network, err := validators.ValidateModel(ctx, userCred, NetworkManager, &input.NetworkId)
 		if err != nil {
 			return input, err
 		}
@@ -131,7 +131,7 @@ func (manager *SMountTargetManager) ValidateCreateData(ctx context.Context, user
 	if len(input.AccessGroupId) == 0 {
 		return input, httperrors.NewMissingParameterError("access_group_id")
 	}
-	groupObj, err := validators.ValidateModel(userCred, AccessGroupManager, &input.AccessGroupId)
+	groupObj, err := validators.ValidateModel(ctx, userCred, AccessGroupManager, &input.AccessGroupId)
 	if err != nil {
 		return input, err
 	}
@@ -170,10 +170,10 @@ func (self *SMountTarget) StartCreateTask(ctx context.Context, userCred mcclient
 		return task.ScheduleRun(nil)
 	}()
 	if err != nil {
-		self.SetStatus(userCred, api.MOUNT_TARGET_STATUS_CREATE_FAILED, err.Error())
+		self.SetStatus(ctx, userCred, api.MOUNT_TARGET_STATUS_CREATE_FAILED, err.Error())
 		return nil
 	}
-	self.SetStatus(userCred, api.MOUNT_TARGET_STATUS_CREATING, "")
+	self.SetStatus(ctx, userCred, api.MOUNT_TARGET_STATUS_CREATING, "")
 	return nil
 }
 
@@ -205,7 +205,7 @@ func (manager *SMountTargetManager) ListItemFilter(
 		return nil, errors.Wrapf(err, "SNetworkResourceBaseManager.ListItemFilter")
 	}
 	if len(query.FileSystemId) > 0 {
-		_, err := validators.ValidateModel(userCred, FileSystemManager, &query.FileSystemId)
+		_, err := validators.ValidateModel(ctx, userCred, FileSystemManager, &query.FileSystemId)
 		if err != nil {
 			return nil, err
 		}
@@ -271,7 +271,7 @@ func (self *SMountTarget) GetOwnerId() mcclient.IIdentityProvider {
 	return &db.SOwnerId{DomainId: fs.DomainId}
 }
 
-func (manager *SMountTargetManager) FilterByOwner(q *sqlchemy.SQuery, man db.FilterByOwnerProvider, userCred mcclient.TokenCredential, owner mcclient.IIdentityProvider, scope rbacscope.TRbacScope) *sqlchemy.SQuery {
+func (manager *SMountTargetManager) FilterByOwner(ctx context.Context, q *sqlchemy.SQuery, man db.FilterByOwnerProvider, userCred mcclient.TokenCredential, owner mcclient.IIdentityProvider, scope rbacscope.TRbacScope) *sqlchemy.SQuery {
 	if owner != nil {
 		sq := FileSystemManager.Query("id")
 		if scope == rbacscope.ScopeDomain && len(owner.GetProjectDomainId()) > 0 {
@@ -377,10 +377,10 @@ func (self *SMountTarget) StartDeleteTask(ctx context.Context, userCred mcclient
 		return task.ScheduleRun(nil)
 	}()
 	if err != nil {
-		self.SetStatus(userCred, api.MOUNT_TARGET_STATUS_DELETE_FAILED, err.Error())
+		self.SetStatus(ctx, userCred, api.MOUNT_TARGET_STATUS_DELETE_FAILED, err.Error())
 		return err
 	}
-	return self.SetStatus(userCred, api.MOUNT_TARGET_STATUS_DELETING, "")
+	return self.SetStatus(ctx, userCred, api.MOUNT_TARGET_STATUS_DELETING, "")
 }
 
 func (self *SFileSystem) GetMountTargets() ([]SMountTarget, error) {

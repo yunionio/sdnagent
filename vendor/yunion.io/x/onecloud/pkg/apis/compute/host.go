@@ -71,6 +71,7 @@ type HostListInput struct {
 
 	StorageFilterListInput
 	UsableResourceListInput
+	BackupstorageFilterListInput
 
 	// filter by ResourceType
 	ResourceType string `json:"resource_type"`
@@ -295,6 +296,11 @@ type HostResourceInfo struct {
 
 	// 宿主机类型
 	HostType string `json:"host_type"`
+
+	// 宿主机管理IP
+	HostAccessIp string `json:"host_access_ip"`
+	// 宿主机公网IP（如果有）
+	HostEIP string `json:"host_eip"`
 }
 
 type HostFilterListInput struct {
@@ -354,6 +360,9 @@ type HostAccessAttributes struct {
 	AccessNet string `json:"access_net"`
 	// 物理机管理口二次网络
 	AccessWire string `json:"access_wire"`
+
+	// 公网IP
+	PublicIp *string `json:"public_ip"`
 }
 
 type HostSizeAttributes struct {
@@ -506,6 +515,8 @@ type HostUpdateInput struct {
 
 	// 主机启动模式, 可能值位PXE和ISO
 	BootMode string `json:"boot_mode"`
+
+	EnableNumaAllocate *bool `json:"enable_numa_allocate"`
 }
 
 type HostOfflineInput struct {
@@ -561,7 +572,7 @@ type HostAddNetifInput struct {
 
 	NicType cloudmux.TNicType `json:"nic_type"`
 
-	Index int8 `json:"index"`
+	Index int `json:"index"`
 
 	LinkUp string `json:"link_up"`
 

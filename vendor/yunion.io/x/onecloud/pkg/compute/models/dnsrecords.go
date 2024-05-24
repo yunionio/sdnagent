@@ -103,7 +103,7 @@ func (manager *SDnsRecordManager) ValidateCreateData(
 		return nil, httperrors.NewInputParameterError("invalid record name %s", input.Name)
 	}
 
-	_, err = validators.ValidateModel(userCred, DnsZoneManager, &input.DnsZoneId)
+	_, err = validators.ValidateModel(ctx, userCred, DnsZoneManager, &input.DnsZoneId)
 	if err != nil {
 		return nil, err
 	}
@@ -162,7 +162,7 @@ func (self *SDnsRecord) StartCreateTask(ctx context.Context, userCred mcclient.T
 	if err != nil {
 		return errors.Wrap(err, "NewTask")
 	}
-	self.SetStatus(userCred, api.DNS_RECORDSET_STATUS_CREATING, "")
+	self.SetStatus(ctx, userCred, api.DNS_RECORDSET_STATUS_CREATING, "")
 	return task.ScheduleRun(nil)
 }
 
@@ -289,9 +289,9 @@ func (manager *SDnsRecordManager) FetchOwnerId(ctx context.Context, data jsonuti
 	return db.FetchDomainInfo(ctx, data)
 }
 
-func (manager *SDnsRecordManager) FilterByOwner(q *sqlchemy.SQuery, man db.FilterByOwnerProvider, userCred mcclient.TokenCredential, owner mcclient.IIdentityProvider, scope rbacscope.TRbacScope) *sqlchemy.SQuery {
+func (manager *SDnsRecordManager) FilterByOwner(ctx context.Context, q *sqlchemy.SQuery, man db.FilterByOwnerProvider, userCred mcclient.TokenCredential, owner mcclient.IIdentityProvider, scope rbacscope.TRbacScope) *sqlchemy.SQuery {
 	sq := DnsZoneManager.Query("id")
-	sq = db.SharableManagerFilterByOwner(DnsZoneManager, sq, userCred, owner, scope)
+	sq = db.SharableManagerFilterByOwner(ctx, DnsZoneManager, sq, userCred, owner, scope)
 	return q.In("dns_zone_id", sq.SubQuery())
 }
 
@@ -332,7 +332,7 @@ func (self *SDnsRecord) StartDeleteTask(ctx context.Context, userCred mcclient.T
 	if err != nil {
 		return errors.Wrap(err, "NewTask")
 	}
-	self.SetStatus(userCred, apis.STATUS_DELETING, "")
+	self.SetStatus(ctx, userCred, apis.STATUS_DELETING, "")
 	return task.ScheduleRun(nil)
 }
 
@@ -408,7 +408,7 @@ func (self *SDnsRecord) StartUpdateTask(ctx context.Context, userCred mcclient.T
 	if err != nil {
 		return errors.Wrap(err, "NewTask")
 	}
-	self.SetStatus(userCred, apis.STATUS_SYNC_STATUS, "")
+	self.SetStatus(ctx, userCred, apis.STATUS_SYNC_STATUS, "")
 	return task.ScheduleRun(nil)
 }
 
@@ -698,7 +698,7 @@ func (self *SDnsRecord) StartSetEnabledTask(ctx context.Context, userCred mcclie
 	if err != nil {
 		return errors.Wrap(err, "NewTask")
 	}
-	self.SetStatus(userCred, apis.STATUS_SYNC_STATUS, "")
+	self.SetStatus(ctx, userCred, apis.STATUS_SYNC_STATUS, "")
 	return task.ScheduleRun(nil)
 }
 

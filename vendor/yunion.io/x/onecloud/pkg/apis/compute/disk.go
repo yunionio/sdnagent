@@ -160,6 +160,9 @@ type DiskListInput struct {
 	// swagger:ignore
 	// Deprecated
 	Snapshot string `json:"snapshot" yunion-deprecated-by:"snapshot_id"`
+
+	// 根据虚拟机状态过滤
+	GuestStatus string `json:"guest_status"`
 }
 
 type DiskResourceInput struct {
@@ -230,11 +233,6 @@ type DiskDetails struct {
 
 	// 自动快照策略
 	Snapshotpolicies []SimpleSnapshotPolicy `json:"snapshotpolicies"`
-
-	// 手动快照数量
-	ManualSnapshotCount int `json:"manual_snapshot_count"`
-	// 最多可创建手动快照数量
-	MaxManualSnapshotCount int `json:"max_manual_snapshot_count"`
 }
 
 type DiskResourceInfoBase struct {
@@ -286,6 +284,7 @@ type DiskAllocateInput struct {
 	Format        string
 	DiskSizeMb    int
 	ImageId       string
+	ImageFormat   string
 	FsFormat      string
 	Rebuild       bool
 	BackingDiskId string
@@ -319,6 +318,7 @@ type DiskAllocateFromBackupInput struct {
 type DiskDeleteInput struct {
 	SkipRecycle      *bool
 	EsxiFlatFilePath string
+	CleanSnapshots   bool
 }
 
 type DiskResetInput struct {
@@ -326,6 +326,16 @@ type DiskResetInput struct {
 	AutoStart  bool   `json:"auto_start"`
 }
 
+type DiskMigrateInput struct {
+	TargetStorageId string `json:"target_storage_id"`
+}
+
 type DiskSnapshotpolicyInput struct {
 	SnapshotpolicyId string `json:"snapshotpolicy_id"`
+}
+
+type DiskRebuildInput struct{}
+
+type DiskResetTemplateInput struct {
+	TemplateId string `json:"template_id"`
 }

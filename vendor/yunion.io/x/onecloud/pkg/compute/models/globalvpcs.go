@@ -134,7 +134,7 @@ func (manager *SGlobalVpcManager) ValidateCreateData(
 	if len(input.CloudproviderId) == 0 {
 		return input, httperrors.NewMissingParameterError("cloudprovider_id")
 	}
-	_, err = validators.ValidateModel(userCred, CloudproviderManager, &input.CloudproviderId)
+	_, err = validators.ValidateModel(ctx, userCred, CloudproviderManager, &input.CloudproviderId)
 	if err != nil {
 		return input, err
 	}
@@ -381,7 +381,7 @@ func (self *SGlobalVpc) StartDeleteTask(ctx context.Context, userCred mcclient.T
 	if err != nil {
 		return errors.Wrapf(err, "NewTask")
 	}
-	self.SetStatus(userCred, apis.STATUS_DELETING, "")
+	self.SetStatus(ctx, userCred, apis.STATUS_DELETING, "")
 	return task.ScheduleRun(nil)
 }
 
@@ -399,7 +399,7 @@ func (self *SGlobalVpc) GetICloudGlobalVpc(ctx context.Context) (cloudprovider.I
 func (self *SGlobalVpc) syncRemoveGlobalVpc(ctx context.Context, userCred mcclient.TokenCredential) error {
 	err := self.ValidateDeleteCondition(ctx, nil)
 	if err != nil {
-		self.SetStatus(userCred, apis.STATUS_UNKNOWN, "sync remove")
+		self.SetStatus(ctx, userCred, apis.STATUS_UNKNOWN, "sync remove")
 		return err
 	}
 	return self.RealDelete(ctx, userCred)

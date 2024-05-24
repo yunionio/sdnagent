@@ -15,9 +15,10 @@
 package utils
 
 import (
-	"sort"
+	"strings"
 
 	"github.com/digitalocean/go-openvswitch/ovs"
+	"yunion.io/x/pkg/errors"
 )
 
 type FlowSet struct {
@@ -36,30 +37,21 @@ func NewFlowSetFromList(flows []*ovs.Flow) *FlowSet {
 	return fs
 }
 
-func (fs *FlowSet) findFlowIndex(f *ovs.Flow) int {
-	i := fs.findMinIndexOfPriority(f.Priority)
-	if i >= 0 {
-		for j := i; j < len(fs.flows) && fs.flows[j].Priority == f.Priority; j++ {
-			if OVSFlowEqual(fs.flows[j], f) {
-				return j
-			}
+func (fs *FlowSet) findFlowIndex(f *ovs.Flow) (int, bool) {
+	i := 0
+	j := len(fs.flows) - 1
+	for i <= j {
+		m := (i + j) / 2
+		result := CompareOVSFlow(fs.flows[m], f)
+		if result < 0 {
+			i = m + 1
+		} else if result > 0 {
+			j = m - 1
+		} else {
+			return m, true
 		}
-		return -1
 	}
-	return -1
-}
-
-func (fs *FlowSet) findMinIndexOfPriority(priority int) int {
-	i := sort.Search(len(fs.flows), func(i int) bool {
-		return fs.flows[i].Priority >= priority
-	})
-	if i < len(fs.flows) {
-		if fs.flows[i].Priority != priority {
-			return -1
-		}
-		return i
-	}
-	return -1
+	return j + 1, false
 }
 
 func (fs *FlowSet) Flows() []*ovs.Flow {
@@ -67,25 +59,19 @@ func (fs *FlowSet) Flows() []*ovs.Flow {
 }
 
 func (fs *FlowSet) Add(f *ovs.Flow) bool {
-	if !fs.Contains(f) {
-		i := sort.Search(len(fs.flows), func(i int) bool {
-			return fs.flows[i].Priority > f.Priority
-		})
-		if i < len(fs.flows) {
-			fs.flows = append(fs.flows, nil)
-			copy(fs.flows[i+1:], fs.flows[i:])
-			fs.flows[i] = f
-		} else {
-			fs.flows = append(fs.flows, f)
-		}
+	i, find := fs.findFlowIndex(f)
+	if !find {
+		fs.flows = append(fs.flows, f)
+		copy(fs.flows[i+1:], fs.flows[i:])
+		fs.flows[i] = f
 		return true
 	}
 	return false
 }
 
 func (fs *FlowSet) Remove(f *ovs.Flow) bool {
-	i := fs.findFlowIndex(f)
-	if i >= 0 {
+	i, find := fs.findFlowIndex(f)
+	if find {
 		fs.flows = append(fs.flows[:i], fs.flows[i+1:]...)
 		return true
 	}
@@ -93,28 +79,55 @@ func (fs *FlowSet) Remove(f *ovs.Flow) bool {
 }
 
 func (fs *FlowSet) Contains(f *ovs.Flow) bool {
-	return fs.findFlowIndex(f) >= 0
+	_, find := fs.findFlowIndex(f)
+	return find
 }
+
+func (fs *FlowSet) DumpFlows() (string, error) {
+	buf := strings.Builder{}
+	for _, f := range fs.flows {
+		strf, err := f.MarshalText()
+		if err != nil {
+			return "", errors.Wrap(err, "MarshalText")
+		}
+		buf.WriteString(string(strf))
+		buf.WriteByte('\n')
+	}
+	return buf.String(), nil
+}
+
+/*func (fs *FlowSet) Merge(fs1 *FlowSet) {
+	for _, f := range fs1.flows {
+		fs.Add(f)
+	}
+}*/
 
 // Diff return dels,adds that are needed to make the current set has the same
 // elements as with fs1
-func (fs0 *FlowSet) Diff(fs1 *FlowSet) (flowsAdd, flowsDel []*ovs.Flow) {
+/*func (fs0 *FlowSet) Diff(fs1 *FlowSet) (flowsAdd, flowsDel []*ovs.Flow) {
 	flowsAdd = []*ovs.Flow{}
 	flowsDel = []*ovs.Flow{}
-	for _, f0 := range fs0.flows {
-		if !fs1.Contains(f0) {
-			flowsDel = append(flowsDel, f0)
+
+	i := 0
+	j := 0
+	for i < len(fs0.flows) && j < len(fs1.flows) {
+		cmp := CompareOVSFlow(fs0.flows[i], fs1.flows[j])
+		if cmp < 0 {
+			flowsDel = append(flowsDel, fs0.flows[i])
+			i += 1
+		} else if cmp > 0 {
+			flowsAdd = append(flowsAdd, fs1.flows[j])
+			j += 1
+		} else {
+			i += 1
+			j += 1
 		}
 	}
-	for _, f1 := range fs1.flows {
-		if !fs0.Contains(f1) {
-			flowsAdd = append(flowsAdd, f1)
-		}
+	if i < len(fs0.flows) {
+		flowsDel = append(flowsDel, fs0.flows[i:]...)
+	}
+	if j < len(fs1.flows) {
+		flowsAdd = append(flowsAdd, fs1.flows[j:]...)
 	}
 	return
-}
-
-// Merge
-// Sub
-// Add
-// AddList
+}*/

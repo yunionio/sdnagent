@@ -246,7 +246,7 @@ func (lbagent *SLoadbalancerAgent) validateHost(ctx context.Context, userCred mc
 	case regutils.MatchIP4Addr(name):
 	case strings.HasPrefix(name, "host:"):
 		name = strings.TrimSpace(name[len("host:"):])
-		obj, err := db.FetchByIdOrName(HostManager, userCred, name)
+		obj, err := db.FetchByIdOrName(ctx, HostManager, userCred, name)
 		if err != nil {
 			return httperrors.NewNotFoundError("find host %s: %v", name, err)
 		}
@@ -258,12 +258,16 @@ func (lbagent *SLoadbalancerAgent) validateHost(ctx context.Context, userCred mc
 		name = name[len("server:"):]
 		fallthrough
 	default:
-		obj, err := db.FetchByIdOrName(GuestManager, userCred, name)
+		obj, err := db.FetchByIdOrName(ctx, GuestManager, userCred, name)
 		if err != nil {
 			return httperrors.NewNotFoundError("find guest %s: %v", name, err)
 		}
 		guest := obj.(*SGuest)
-		if utils.IsInStringArray(guest.Hypervisor, compute_apis.PUBLIC_CLOUD_HYPERVISORS) {
+		region, err := guest.GetRegion()
+		if err != nil {
+			return errors.Wrapf(err, "GetRegion")
+		}
+		if utils.IsInStringArray(region.Provider, compute_apis.PUBLIC_CLOUD_PROVIDERS) {
 			return httperrors.NewBadRequestError("lbagent cannot be deployed on public guests")
 		}
 		if guest.Status != compute_apis.VM_RUNNING {
