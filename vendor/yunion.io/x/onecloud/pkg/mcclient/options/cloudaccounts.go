@@ -28,6 +28,7 @@ type CloudaccountListOptions struct {
 	BaseListOptions
 	Capability []string `help:"capability filter" choices:"project|compute|network|loadbalancer|objectstore|rds|cache|event|tablestore"`
 
+	ReadOnly *bool `help:"filter read only account" negative:"no-read-only"`
 	//DistinctField string `help:"distinct field"`
 	ProxySetting string `help:"Proxy setting id or name"`
 	// 按宿主机数量排序
@@ -663,10 +664,11 @@ type SCloudAccountUpdateBaseOptions struct {
 	SCloudAccountIdOptions
 	Name string `help:"New name to update"`
 
-	SyncIntervalSeconds *int   `help:"auto synchornize interval in seconds"`
-	AutoCreateProject   *bool  `help:"automatically create local project for new remote project" negative:"no_auto_create_project"`
-	ProxySetting        string `help:"proxy setting name or id" json:"proxy_setting"`
-	SamlAuth            string `help:"Enable or disable saml auth" choices:"true|false"`
+	SyncIntervalSeconds    *int   `help:"auto synchornize interval in seconds"`
+	AutoCreateProject      *bool  `help:"automatically create local project for new remote project" negative:"no_auto_create_project"`
+	EnableAutoSyncResource *bool  `help:"automatically sync resources" negative:"disable_auto_sync_resource"`
+	ProxySetting           string `help:"proxy setting name or id" json:"proxy_setting"`
+	SamlAuth               string `help:"Enable or disable saml auth" choices:"true|false"`
 
 	ReadOnly *bool `help:"is account read only" negative:"no_read_only"`
 
@@ -749,6 +751,9 @@ type SAzureCloudAccountUpdateOptions struct {
 
 	OptionsBalanceKey       string `help:"update cloud balance account key, such as Azure EA key" json:"-"`
 	RemoveOptionsBalanceKey bool   `help:"remove cloud blance account key" json:"-"`
+
+	OptionsBillingReportBucket       string `help:"update Azure bucket that stores account billing report" json:"-"`
+	RemoveOptionsBillingReportBucket bool   `help:"remove Azure bucket that stores account billing report" json:"-"`
 }
 
 func (opts *SAzureCloudAccountUpdateOptions) Params() (jsonutils.JSONObject, error) {
@@ -758,12 +763,18 @@ func (opts *SAzureCloudAccountUpdateOptions) Params() (jsonutils.JSONObject, err
 	if len(opts.OptionsBalanceKey) > 0 {
 		options.Add(jsonutils.NewString(opts.OptionsBalanceKey), "balance_key")
 	}
+	if len(opts.OptionsBillingReportBucket) > 0 {
+		options.Add(jsonutils.NewString(opts.OptionsBillingReportBucket), "billing_report_bucket")
+	}
 	if options.Size() > 0 {
 		params.Add(options, "options")
 	}
 	removeOptions := make([]string, 0)
 	if opts.RemoveOptionsBalanceKey {
 		removeOptions = append(removeOptions, "balance_key")
+	}
+	if opts.RemoveOptionsBillingReportBucket {
+		removeOptions = append(removeOptions, "billing_report_bucket")
 	}
 	if len(removeOptions) > 0 {
 		params.Add(jsonutils.NewStringArray(removeOptions), "remove_options")

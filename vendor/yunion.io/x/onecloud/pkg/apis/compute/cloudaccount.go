@@ -137,6 +137,7 @@ type CloudaccountResourceInfo struct {
 	AccountStatus string `json:"account_status,omitempty"`
 	// 云账号监控状态
 	AccountHealthStatus string `json:"account_health_status,omitempty"`
+	AccountReadOnly     bool   `json:"account_read_only,omitempty"`
 }
 
 type CloudaccountCreateInput struct {
@@ -223,6 +224,8 @@ type CloudaccountCreateInput struct {
 	// 货币类型
 	// enmu: CNY, USD
 	Currency string `json:"currency"`
+
+	EnableAutoSyncResource *bool `json:"enable_auto_sync_resource"`
 }
 
 type SProjectMappingResourceInput struct {
@@ -258,6 +261,8 @@ type CloudaccountListInput struct {
 
 	// 账号健康状态
 	HealthStatus []string `json:"health_status"`
+
+	ReadOnly *bool `json:"read_only"`
 
 	// 共享模式
 	ShareMode []string `json:"share_mode"`
@@ -402,6 +407,8 @@ type CloudaccountUpdateInput struct {
 	ReadOnly bool `json:"read_only"`
 
 	Currency string `json:"currency"`
+
+	EnableAutoSyncResource *bool `json:"enable_auto_sync_resource"`
 }
 
 type CloudaccountPerformPublicInput struct {
@@ -524,19 +531,6 @@ type SubscriptonCreateInput struct {
 }
 
 type EnrollmentAccountQuery struct {
-}
-
-type GetCloudaccountSamlOutput struct {
-	// cloudaccount SAML ServiceProvider entity ID
-	EntityId string `json:"entity_id,allowempty"`
-	// redirect login URL for this cloudaccount
-	RedirectLoginUrl string `json:"redirect_login_url,allowempty"`
-	// redirect logout URL for this cloudaccount
-	RedirectLogoutUrl string `json:"redirect_logout_url,allowempty"`
-	// metadata URL for this cloudaccount
-	MetadataUrl string `json:"metadata_url,allowempty"`
-	// initial SAML SSO login URL for this cloudaccount
-	InitLoginUrl string `json:"init_login_url,allowempty"`
 }
 
 type CloudaccountSyncSkusInput struct {

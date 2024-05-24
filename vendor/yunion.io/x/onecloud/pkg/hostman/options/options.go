@@ -36,7 +36,7 @@ type SHostBaseOptions struct {
 	LiveMigrateCpuThrottleMax int64 `default:"99" help:"live migrate auto converge cpu throttle max"`
 
 	DefaultQemuVersion string `help:"Default qemu version" default:"4.2.0"`
-	NoHpet             bool   `help:"disable qemu hpet timer" default:"false"`
+	NoHpet             bool   `help:"Disable qemu hpet timer" default:"true"`
 
 	CdromCount  int `help:"cdrom count" default:"1"`
 	FloppyCount int `help:"floppy count" default:"1"`
@@ -45,6 +45,14 @@ type SHostBaseOptions struct {
 
 	DhcpLeaseTime   int `default:"100663296" help:"DHCP lease time in seconds"`
 	DhcpRenewalTime int `default:"67108864" help:"DHCP renewal time in seconds"`
+
+	Ext4LargefileSizeGb int `default:"4096" help:"Use largefile options when the ext4 fs greater than this size"`
+	Ext4HugefileSizeGb  int `default:"512" help:"Use huge options when the ext4 fs greater than this size"`
+
+	ImageCacheExpireDays        int  `help:"Image cache expire duration in days" default:"30"`
+	ImageCacheCleanupPercentage int  `help:"The cleanup threshold ratio of image cache size v.s. total storage size" default:"12"`
+	ImageCacheCleanupOnStartup  bool `help:"Cleanup image cache on host startup" default:"false"`
+	ImageCacheCleanupDryRun     bool `help:"Dry run cleanup image cache" default:"true"`
 }
 
 type SHostOptions struct {

@@ -97,7 +97,7 @@ type SIsolatedDevice struct {
 	// 云主机Id
 	GuestId string `width:"36" charset:"ascii" nullable:"true" index:"true" list:"domain"`
 	// guest network index
-	NetworkIndex int8 `nullable:"true" default:"-1" list:"user" update:"user"`
+	NetworkIndex int `nullable:"true" default:"-1" list:"user" update:"user"`
 	// Nic wire id
 	WireId string `width:"36" charset:"ascii" nullable:"true" index:"true" list:"domain" update:"domain" create:"domain_optional"`
 	// Offload interface name
@@ -144,6 +144,8 @@ type SIsolatedDevice struct {
 
 	// PciInfo stores extra PCIE information
 	PcieInfo *api.IsolatedDevicePCIEInfo `nullable:"true" create:"optional" list:"user" get:"user" update:"domain"`
+	// device numa node
+	NumaNode int8 `nullable:"true" default:"-1" list:"domain" update:"domain" create:"domain_optional"`
 }
 
 func (manager *SIsolatedDeviceManager) ExtraSearchConditions(ctx context.Context, q *sqlchemy.SQuery, like string) []sqlchemy.ICondition {
@@ -159,7 +161,7 @@ func (manager *SIsolatedDeviceManager) ValidateCreateData(ctx context.Context,
 ) (api.IsolatedDeviceCreateInput, error) {
 	var err error
 	var host *SHost
-	host, input.HostResourceInput, err = ValidateHostResourceInput(userCred, input.HostResourceInput)
+	host, input.HostResourceInput, err = ValidateHostResourceInput(ctx, userCred, input.HostResourceInput)
 	if err != nil {
 		return input, errors.Wrap(err, "ValidateHostResourceInput")
 	}
@@ -327,7 +329,7 @@ func (manager *SIsolatedDeviceManager) ListItemFilter(
 	}
 
 	if query.GuestId != "" {
-		obj, err := GuestManager.FetchByIdOrName(userCred, query.GuestId)
+		obj, err := GuestManager.FetchByIdOrName(ctx, userCred, query.GuestId)
 		if err != nil {
 			return nil, errors.Wrapf(err, "Fetch guest by %q", query.GuestId)
 		}
@@ -703,6 +705,7 @@ func (manager *SIsolatedDeviceManager) ReleaseDevicesOfGuest(ctx context.Context
 }
 
 func (manager *SIsolatedDeviceManager) totalCountQ(
+	ctx context.Context,
 	scope rbacscope.TRbacScope, ownerId mcclient.IIdentityProvider, devType []string, hostTypes []string,
 	resourceTypes []string,
 	providers []string, brands []string, cloudEnv string,
@@ -713,7 +716,7 @@ func (manager *SIsolatedDeviceManager) totalCountQ(
 	if scope == rbacscope.ScopeDomain {
 		hq = hq.Filter(sqlchemy.Equals(hq.Field("domain_id"), ownerId.GetProjectDomainId()))
 	}
-	hq = db.ObjectIdQueryWithPolicyResult(hq, HostManager, policyResult)
+	hq = db.ObjectIdQueryWithPolicyResult(ctx, hq, HostManager, policyResult)
 	hosts := hq.SubQuery()
 	devs := manager.Query().SubQuery()
 	q := devs.Query().Join(hosts, sqlchemy.Equals(devs.Field("host_id"), hosts.Field("id")))
@@ -730,6 +733,7 @@ type IsolatedDeviceCountStat struct {
 }
 
 func (manager *SIsolatedDeviceManager) totalCount(
+	ctx context.Context,
 	scope rbacscope.TRbacScope,
 	ownerId mcclient.IIdentityProvider,
 	devType,
@@ -742,6 +746,7 @@ func (manager *SIsolatedDeviceManager) totalCount(
 	policyResult rbacutils.SPolicyResult,
 ) (int, error) {
 	return manager.totalCountQ(
+		ctx,
 		scope,
 		ownerId,
 		devType,
@@ -756,6 +761,7 @@ func (manager *SIsolatedDeviceManager) totalCount(
 }
 
 func (manager *SIsolatedDeviceManager) TotalCount(
+	ctx context.Context,
 	scope rbacscope.TRbacScope,
 	ownerId mcclient.IIdentityProvider,
 	hostType []string,
@@ -768,6 +774,7 @@ func (manager *SIsolatedDeviceManager) TotalCount(
 ) (IsolatedDeviceCountStat, error) {
 	stat := IsolatedDeviceCountStat{}
 	devCnt, err := manager.totalCount(
+		ctx,
 		scope, ownerId, nil, hostType, resourceTypes,
 		providers, brands, cloudEnv,
 		rangeObjs, policyResult)
@@ -775,6 +782,7 @@ func (manager *SIsolatedDeviceManager) TotalCount(
 		return stat, err
 	}
 	gpuCnt, err := manager.totalCount(
+		ctx,
 		scope, ownerId, VALID_GPU_TYPES, hostType, resourceTypes,
 		providers, brands, cloudEnv,
 		rangeObjs, policyResult)
@@ -799,6 +807,7 @@ func (self *SIsolatedDevice) getDesc() *api.IsolatedDeviceJsonDesc {
 		DiskIndex:           self.DiskIndex,
 		NvmeSizeMB:          self.NvmeSizeMB,
 		MdevId:              self.MdevId,
+		NumaNode:            self.NumaNode,
 	}
 }
 
@@ -1060,12 +1069,12 @@ func (manager *SIsolatedDeviceManager) ResourceScope() rbacscope.TRbacScope {
 	return rbacscope.ScopeDomain
 }
 
-func (manager *SIsolatedDeviceManager) FilterByOwner(q *sqlchemy.SQuery, man db.FilterByOwnerProvider, userCred mcclient.TokenCredential, owner mcclient.IIdentityProvider, scope rbacscope.TRbacScope) *sqlchemy.SQuery {
+func (manager *SIsolatedDeviceManager) FilterByOwner(ctx context.Context, q *sqlchemy.SQuery, man db.FilterByOwnerProvider, userCred mcclient.TokenCredential, owner mcclient.IIdentityProvider, scope rbacscope.TRbacScope) *sqlchemy.SQuery {
 	if owner != nil {
 		switch scope {
 		case rbacscope.ScopeProject, rbacscope.ScopeDomain:
 			hostsQ := HostManager.Query("id")
-			hostsQ = HostManager.FilterByOwner(hostsQ, HostManager, userCred, owner, scope)
+			hostsQ = HostManager.FilterByOwner(ctx, hostsQ, HostManager, userCred, owner, scope)
 			hosts := hostsQ.SubQuery()
 			q = q.Join(hosts, sqlchemy.Equals(q.Field("host_id"), hosts.Field("id")))
 		}
@@ -1085,7 +1094,7 @@ func (model *SIsolatedDevice) GetOwnerId() mcclient.IIdentityProvider {
 	return nil
 }
 
-func (model *SIsolatedDevice) SetNetworkIndex(idx int8) error {
+func (model *SIsolatedDevice) SetNetworkIndex(idx int) error {
 	_, err := db.Update(model, func() error {
 		model.NetworkIndex = idx
 		return nil

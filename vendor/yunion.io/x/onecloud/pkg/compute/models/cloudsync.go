@@ -306,7 +306,9 @@ func syncRegionVPCs(
 			if syncRange.IsNotSkipSyncResource(SecurityGroupManager) {
 				syncVpcSecGroup(ctx, userCred, syncResults, provider, localRegion, &localVpcs[j], remoteVpcs[j], syncRange)
 			}
-			syncVpcNatgateways(ctx, userCred, syncResults, provider, &localVpcs[j], remoteVpcs[j], syncRange)
+			if syncRange.IsNotSkipSyncResource(NatGatewayManager) {
+				syncVpcNatgateways(ctx, userCred, syncResults, provider, &localVpcs[j], remoteVpcs[j], syncRange)
+			}
 			syncVpcPeerConnections(ctx, userCred, syncResults, provider, &localVpcs[j], remoteVpcs[j], syncRange)
 			syncVpcRouteTables(ctx, userCred, syncResults, provider, &localVpcs[j], remoteVpcs[j], syncRange)
 			syncIPv6Gateways(ctx, userCred, syncResults, provider, &localVpcs[j], remoteVpcs[j], syncRange)
@@ -1389,7 +1391,7 @@ func syncDBInstanceResource(
 	if err != nil {
 		log.Errorf("syncDBInstanceParameters error: %v", err)
 	}
-	if syncRange.IsNotSkipSyncResource(DBInstanceBackupManager) {
+	if syncRange.IsNotSkipSyncResource(DBInstanceDatabaseManager) {
 		err = syncDBInstanceDatabases(ctx, userCred, syncResults, localInstance, remoteInstance)
 		if err != nil {
 			log.Errorf("syncDBInstanceParameters error: %v", err)
@@ -1399,9 +1401,11 @@ func syncDBInstanceResource(
 	if err != nil {
 		log.Errorf("syncDBInstanceAccounts: %v", err)
 	}
-	err = syncDBInstanceBackups(ctx, userCred, syncResults, localInstance, remoteInstance)
-	if err != nil {
-		log.Errorf("syncDBInstanceBackups: %v", err)
+	if syncRange.IsNotSkipSyncResource(DBInstanceBackupManager) {
+		err = syncDBInstanceBackups(ctx, userCred, syncResults, localInstance, remoteInstance)
+		if err != nil {
+			log.Errorf("syncDBInstanceBackups: %v", err)
+		}
 	}
 }
 
@@ -2156,7 +2160,9 @@ func syncPublicCloudProviderInfo(
 	}
 
 	if cloudprovider.IsSupportCompute(driver) {
-		if syncRange.NeedSyncResource(cloudprovider.CLOUD_CAPABILITY_NETWORK) || syncRange.NeedSyncResource(cloudprovider.CLOUD_CAPABILITY_EIP) {
+		if syncRange.NeedSyncResource(cloudprovider.CLOUD_CAPABILITY_NETWORK) ||
+			syncRange.NeedSyncResource(cloudprovider.CLOUD_CAPABILITY_NAT) ||
+			syncRange.NeedSyncResource(cloudprovider.CLOUD_CAPABILITY_EIP) {
 			// 需要先同步vpc，避免私有云eip找不到network
 			if !(driver.GetFactory().IsPublicCloud() && !syncRange.NeedSyncResource(cloudprovider.CLOUD_CAPABILITY_NETWORK)) && syncRange.IsNotSkipSyncResource(VpcManager) {
 				syncRegionVPCs(ctx, userCred, syncResults, provider, localRegion, remoteRegion, syncRange)
@@ -2575,6 +2581,7 @@ func SyncCloudProject(ctx context.Context, userCred mcclient.TokenCredential, mo
 	if err != nil {
 		return
 	}
+	projectSync := false
 	newOwnerId, err := func() (mcclient.IIdentityProvider, error) {
 		rm, err := manager.GetProjectMapping()
 		if err != nil {
@@ -2583,24 +2590,27 @@ func SyncCloudProject(ctx context.Context, userCred mcclient.TokenCredential, mo
 			}
 			return nil, errors.Wrapf(err, "GetProjectMapping")
 		}
-		if rm != nil && rm.Enabled.Bool() && rm.IsNeedResourceSync() {
-			model.SetProjectSrc(apis.OWNER_SOURCE_CLOUD)
-			extTags, err := extModel.GetTags()
-			if err != nil {
-				return nil, errors.Wrapf(err, "extModel.GetTags")
-			}
-			if rm.Rules != nil {
-				for _, rule := range *rm.Rules {
-					domainId, projectId, newProj, isMatch := rule.IsMatchTags(extTags)
-					if isMatch {
-						if len(newProj) > 0 {
-							domainId, projectId, err = account.getOrCreateTenant(ctx, newProj, "", "", "auto create from tag")
-							if err != nil {
-								return nil, errors.Wrapf(err, "getOrCreateTenant(%s)", newProj)
+		if rm != nil && rm.Enabled.Bool() {
+			projectSync = rm.IsNeedProjectSync()
+			if rm.IsNeedResourceSync() {
+				model.SetProjectSrc(apis.OWNER_SOURCE_CLOUD)
+				extTags, err := extModel.GetTags()
+				if err != nil {
+					return nil, errors.Wrapf(err, "extModel.GetTags")
+				}
+				if rm.Rules != nil {
+					for _, rule := range *rm.Rules {
+						domainId, projectId, newProj, isMatch := rule.IsMatchTags(extTags)
+						if isMatch {
+							if len(newProj) > 0 {
+								domainId, projectId, err = account.getOrCreateTenant(ctx, newProj, "", "", "auto create from tag")
+								if err != nil {
+									return nil, errors.Wrapf(err, "getOrCreateTenant(%s)", newProj)
+								}
 							}
-						}
-						if len(domainId) > 0 && len(projectId) > 0 {
-							return &db.SOwnerId{DomainId: domainId, ProjectId: projectId}, nil
+							if len(domainId) > 0 && len(projectId) > 0 {
+								return &db.SOwnerId{DomainId: domainId, ProjectId: projectId}, nil
+							}
 						}
 					}
 				}
@@ -2611,7 +2621,8 @@ func SyncCloudProject(ctx context.Context, userCred mcclient.TokenCredential, mo
 	if err != nil {
 		log.Errorf("try sync project for %s %s by tags error: %v", model.Keyword(), model.GetName(), err)
 	}
-	if extProjectId := extModel.GetProjectId(); len(extProjectId) > 0 && account.AutoCreateProject && newOwnerId == nil {
+	// 根据云上项目映射或开启同步策略并影响范围为项目标签, 则根据云上项目映射做资源归属
+	if extProjectId := extModel.GetProjectId(); len(extProjectId) > 0 && (account.AutoCreateProject || projectSync) && newOwnerId == nil {
 		extProject, err := ExternalProjectManager.GetProject(extProjectId, manager.Id)
 		if err != nil {
 			log.Errorf("sync project for %s %s error: %v", model.Keyword(), model.GetName(), err)

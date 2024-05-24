@@ -104,6 +104,11 @@ func (self *SDatastore) GetCapacityUsedMB() int64 {
 	return self.GetCapacityMB() - moStore.Summary.FreeSpace/1024/1024
 }
 
+func (self *SDatastore) GetCapacityFreeMB() int64 {
+	moStore := self.getDatastore()
+	return moStore.Summary.FreeSpace / 1024 / 1024
+}
+
 func (self *SDatastore) GetEnabled() bool {
 	return true
 }
@@ -252,14 +257,14 @@ func (self *SDatastore) GetIZone() cloudprovider.ICloudZone {
 
 func (self *SDatastore) FetchNoTemplateVMs() ([]*SVirtualMachine, error) {
 	mods := self.getDatastore()
-	filter := property.Filter{}
+	filter := property.Match{}
 	filter["datastore"] = mods.Reference()
 	return self.datacenter.fetchVMsWithFilter(filter)
 }
 
 func (self *SDatastore) FetchTemplateVMs() ([]*SVirtualMachine, error) {
 	mods := self.getDatastore()
-	filter := property.Filter{}
+	filter := property.Match{}
 	filter["config.template"] = true
 	filter["datastore"] = mods.Reference()
 	return self.datacenter.fetchVMsWithFilter(filter)
@@ -267,7 +272,7 @@ func (self *SDatastore) FetchTemplateVMs() ([]*SVirtualMachine, error) {
 
 func (self *SDatastore) FetchTemplateVMById(id string) (*SVirtualMachine, error) {
 	mods := self.getDatastore()
-	filter := property.Filter{}
+	filter := property.Match{}
 	uuid := toTemplateUuid(id)
 	filter["summary.config.uuid"] = uuid
 	filter["config.template"] = true
@@ -284,7 +289,7 @@ func (self *SDatastore) FetchTemplateVMById(id string) (*SVirtualMachine, error)
 
 func (self *SDatastore) FetchFakeTempateVMById(id string, regex string) (*SVirtualMachine, error) {
 	mods := self.getDatastore()
-	filter := property.Filter{}
+	filter := property.Match{}
 	uuid := toTemplateUuid(id)
 	filter["summary.config.uuid"] = uuid
 	filter["datastore"] = mods.Reference()
@@ -306,7 +311,7 @@ func (self *SDatastore) FetchFakeTempateVMById(id string, regex string) (*SVirtu
 
 func (self *SDatastore) FetchFakeTempateVMs(regex string) ([]*SVirtualMachine, error) {
 	mods := self.getDatastore()
-	filter := property.Filter{}
+	filter := property.Match{}
 	filter["datastore"] = mods.Reference()
 	filter["summary.runtime.powerState"] = types.VirtualMachinePowerStatePoweredOff
 	filter["config.template"] = false

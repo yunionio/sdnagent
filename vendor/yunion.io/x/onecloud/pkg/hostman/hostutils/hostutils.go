@@ -51,11 +51,13 @@ type IHost interface {
 	GetCpuArchitecture() string
 	GetKernelVersion() string
 	IsAarch64() bool
+	IsX8664() bool
 	GetHostTopology() *hostapi.HostTopology
 	GetReservedCpusInfo() *cpuset.CPUSet
 
 	IsHugepagesEnabled() bool
 	HugepageSizeKb() int
+	IsNumaAllocateEnabled() bool
 
 	IsKvmSupport() bool
 	IsNestedVirtualization() bool

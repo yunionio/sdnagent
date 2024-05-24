@@ -82,7 +82,13 @@ func (h *HostLocal) FlowsMap() (map[string][]*ovs.Flow, error) {
 		F(0, 27200, "in_port=LOCAL", "normal"),
 		F(0, 26900, T("in_port={{.PortNoPhy}},dl_dst={{.MAC}}"), "normal"),
 		// allow any IPv6 link local multicast
-		F(0, 40000, T("dl_dst=01:00:00:00:00:00/01:00:00:00:00:00,icmp6,ipv6_dst=ff02::/64"), "normal"),
+		F(0, 40000, T("dl_dst=01:00:00:00:00:00/01:00:00:00:00:00,ipv6,icmp6,ipv6_dst=ff02::/64"), "normal"),
+		// allow ipv6 nb solicit and advertise from outside
+		F(0, 30001, T("in_port={{.PortNoPhy}},ipv6,icmp6,icmp_type=135"), "normal"),
+		F(0, 30002, T("in_port={{.PortNoPhy}},ipv6,icmp6,icmp_type=136"), "normal"),
+		// allow ipv6 nb solicit and advertise from local
+		F(0, 30003, T("in_port=LOCAL,ipv6,icmp6,icmp_type=135"), "normal"),
+		F(0, 30004, T("in_port=LOCAL,ipv6,icmp6,icmp_type=136"), "normal"),
 	)
 	// NOTE we do not do check of existence of a "switch" guest and
 	// silently "AllowSwitchVMs" here.  That could be deemed as unexpected
@@ -247,11 +253,12 @@ func (g *Guest) FlowsMapForNic(nic *GuestNIC) ([]*ovs.Flow, error) {
 		F(0, 26700, T("in_port={{.PortNoPhy}},dl_dst={{.MAC}},{{._dl_vlan}}"), "normal"),
 	)
 	if !g.SrcMacCheck() {
-		// allow anything from vm port
 		flows = append(flows, F(0, 24670, T("in_port={{.PortNo}}"), "normal"))
 		if nic.EnableIPv6() {
 			flows = append(flows,
+				// allow nb solicite from VM port to outside
 				F(0, 27770, T("in_port={{.PortNo}},ipv6,icmp6,icmp_type=135"), "normal"),
+				// allow nb advertisement from VM port to outside
 				F(0, 27770, T("in_port={{.PortNo}},ipv6,icmp6,icmp_type=136"), "normal"),
 			)
 		}
@@ -262,10 +269,11 @@ func (g *Guest) FlowsMapForNic(nic *GuestNIC) ([]*ovs.Flow, error) {
 				F(0, 27770, T("in_port={{.PortNo}},arp,dl_src={{.MAC}},arp_sha={{.MAC}}"), "normal"),
 			)
 			if nic.EnableIPv6() {
-				// allow any ICMPv6 from VM mac
 				flows = append(flows,
-					F(0, 27770, T("in_port={{.PortNo}},ipv6,icmp6,dl_src={{.MAC}},icmp_type=135"), "normal"),
-					F(0, 27770, T("in_port={{.PortNo}},ipv6,icmp6,dl_src={{.MAC}},icmp_type=136"), "normal"),
+					// allow nb soliciate from VM src mac
+					F(0, 27770, T("in_port={{.PortNo}},dl_src={{.MAC}},ipv6,icmp6,icmp_type=135"), "normal"),
+					// allow nb advertisement from VM src mac
+					F(0, 27770, T("in_port={{.PortNo}},dl_src={{.MAC}},ipv6,icmp6,icmp_type=136"), "normal"),
 				)
 			}
 		} else {
@@ -276,10 +284,15 @@ func (g *Guest) FlowsMapForNic(nic *GuestNIC) ([]*ovs.Flow, error) {
 				)
 			})
 			if nic.EnableIPv6() {
-				// allow ICMPv6 from VM src IP
 				flows = append(flows,
-					F(0, 27770, T("in_port={{.PortNo}},dl_src={{.MAC}},icmp6,ipv6_src={{.IP6}},icmp_type=135"), "normal"),
-					F(0, 27770, T("in_port={{.PortNo}},dl_src={{.MAC}},icmp6,ipv6_src={{.IP6}},icmp_type=136"), "normal"),
+					// allow nb solicitate from VM src IP to outside
+					F(0, 27774, T("in_port={{.PortNo}},dl_src={{.MAC}},ipv6,ipv6_src={{.IP6}},icmp6,icmp_type=135"), "normal"),
+					// allow nb solicitate from VM src IP to outside
+					F(0, 27773, T("in_port={{.PortNo}},dl_src={{.MAC}},ipv6,ipv6_src={{.IP6LOCAL}},icmp6,icmp_type=135"), "normal"),
+					// allow nb advert from VM src IP to outside
+					F(0, 27772, T("in_port={{.PortNo}},dl_src={{.MAC}},ipv6,ipv6_src={{.IP6}},icmp6,icmp_type=136"), "normal"),
+					// allow nb advert from VM src IP to outside
+					F(0, 27771, T("in_port={{.PortNo}},dl_src={{.MAC}},ipv6,ipv6_src={{.IP6LOCAL}},icmp6,icmp_type=136"), "normal"),
 				)
 			}
 		}
@@ -319,9 +332,9 @@ func (g *Guest) FlowsMapForNic(nic *GuestNIC) ([]*ovs.Flow, error) {
 						F(0, 25870, T("in_port={{.PortNo}},dl_src={{.MAC}},ipv6,ipv6_src={{.IP6}}"), "normal"),
 						F(0, 24770, T("dl_dst={{.MAC}},ipv6,ipv6_dst={{.IP6}}"), "normal"),
 						// allow for link local IP
-						F(0, 26870, T("in_port={{.PortNoPhy}},dl_dst={{.MAC}},{{._dl_vlan}},ipv6,ipv6_dst=fe80::/64"), "normal"),
-						F(0, 25870, T("in_port={{.PortNo}},dl_src={{.MAC}},ipv6,ipv6_src=fe80::/64"), "normal"),
-						F(0, 24770, T("dl_dst={{.MAC}},ipv6,ipv6_dst=fe80::/64"), "normal"),
+						F(0, 26871, T("in_port={{.PortNoPhy}},dl_dst={{.MAC}},{{._dl_vlan}},ipv6,ipv6_dst={{.IP6LOCAL}}"), "normal"),
+						F(0, 25871, T("in_port={{.PortNo}},dl_src={{.MAC}},ipv6,ipv6_src={{.IP6LOCAL}}"), "normal"),
+						F(0, 24771, T("dl_dst={{.MAC}},ipv6,ipv6_dst={{.IP6LOCAL}}"), "normal"),
 						// drop others
 						F(0, 26860, T("in_port={{.PortNoPhy}},dl_dst={{.MAC}},{{._dl_vlan}},ipv6"), "drop"),
 						F(0, 25860, T("in_port={{.PortNo}},dl_src={{.MAC}},ipv6"), "drop"),
@@ -429,7 +442,6 @@ func (sr *SecurityRules) Flows(g *Guest, nic *GuestNIC, data map[string]interfac
 			F(0, 24770, T("dl_dst={{.MAC}},ipv6"),
 				loadZone+T(",ct(table=1,zone={{.CT_ZONE}})")),
 		)
-
 	} else {
 		g.eachIP(data, func(T2 func(string) string) {
 			flows = append(flows,

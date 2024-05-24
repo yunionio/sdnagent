@@ -151,7 +151,7 @@ func (manager *SBucketManager) syncBuckets(ctx context.Context, userCred mcclien
 	}
 	if !xor {
 		for i := 0; i < len(commondb); i += 1 {
-			err = commondb[i].syncWithCloudBucket(ctx, userCred, commonext[i], provider, false)
+			err = commondb[i].SyncWithCloudBucket(ctx, userCred, commonext[i], false)
 			if err != nil {
 				syncResult.UpdateError(err)
 			} else {
@@ -274,11 +274,10 @@ func (bucket *SBucket) GetShortDesc(ctx context.Context) *jsonutils.JSONDict {
 	return desc
 }
 
-func (bucket *SBucket) syncWithCloudBucket(
+func (bucket *SBucket) SyncWithCloudBucket(
 	ctx context.Context,
 	userCred mcclient.TokenCredential,
 	extBucket cloudprovider.ICloudBucket,
-	provider *SCloudprovider,
 	statsOnly bool,
 ) error {
 	oStats := bucket.getStats()
@@ -291,6 +290,11 @@ func (bucket *SBucket) syncWithCloudBucket(
 		bucket.ObjectCnt = stats.ObjectCount
 		if bucket.ObjectCnt < 0 {
 			bucket.ObjectCnt = 0
+		}
+
+		created := extBucket.GetCreatedAt()
+		if !created.IsZero() {
+			bucket.CreatedAt = created
 		}
 
 		if !statsOnly {
@@ -334,6 +338,7 @@ func (bucket *SBucket) syncWithCloudBucket(
 		db.OpsLog.LogEvent(bucket, api.BUCKET_OPS_STATS_CHANGE, bucket.GetShortDesc(ctx), userCred)
 	}
 
+	provider := bucket.GetCloudprovider()
 	if provider != nil {
 		SyncCloudProject(ctx, userCred, bucket, provider.GetOwnerId(), extBucket, provider)
 		bucket.SyncShareState(ctx, userCred, provider.getAccountShareInfo())
@@ -399,7 +404,7 @@ func (bucket *SBucket) StartBucketDeleteTask(ctx context.Context, userCred mccli
 		log.Errorf("%s", err)
 		return err
 	}
-	bucket.SetStatus(userCred, api.CLOUD_PROVIDER_START_DELETE, "StartBucketDeleteTask")
+	bucket.SetStatus(ctx, userCred, api.CLOUD_PROVIDER_START_DELETE, "StartBucketDeleteTask")
 	task.ScheduleRun(nil)
 	return nil
 }
@@ -441,12 +446,12 @@ func (manager *SBucketManager) ValidateCreateData(
 ) (api.BucketCreateInput, error) {
 	var err error
 	var cloudRegionV *SCloudregion
-	cloudRegionV, input.CloudregionResourceInput, err = ValidateCloudregionResourceInput(userCred, input.CloudregionResourceInput)
+	cloudRegionV, input.CloudregionResourceInput, err = ValidateCloudregionResourceInput(ctx, userCred, input.CloudregionResourceInput)
 	if err != nil {
 		return input, errors.Wrap(err, "ValidateCloudregionResourceInput")
 	}
 	var managerV *SCloudprovider
-	managerV, input.CloudproviderResourceInput, err = ValidateCloudproviderResourceInput(userCred, input.CloudproviderResourceInput)
+	managerV, input.CloudproviderResourceInput, err = ValidateCloudproviderResourceInput(ctx, userCred, input.CloudproviderResourceInput)
 	if err != nil {
 		return input, errors.Wrap(err, "ValidateCloudproviderResourceInput")
 	}
@@ -516,10 +521,10 @@ func (bucket *SBucket) PostCreate(
 		}
 	}
 
-	bucket.SetStatus(userCred, api.BUCKET_STATUS_START_CREATE, "PostCreate")
+	bucket.SetStatus(ctx, userCred, api.BUCKET_STATUS_START_CREATE, "PostCreate")
 	task, err := taskman.TaskManager.NewTask(ctx, "BucketCreateTask", bucket, userCred, nil, "", "", nil)
 	if err != nil {
-		bucket.SetStatus(userCred, api.BUCKET_STATUS_CREATE_FAIL, errors.Wrapf(err, "NewTask").Error())
+		bucket.SetStatus(ctx, userCred, api.BUCKET_STATUS_CREATE_FAIL, errors.Wrapf(err, "NewTask").Error())
 		return
 	}
 	task.ScheduleRun(nil)
@@ -569,9 +574,9 @@ func (bucket *SBucket) RemoteCreate(ctx context.Context, userCred mcclient.Token
 			logclient.AddSimpleActionLog(bucket, logclient.ACT_UPDATE_TAGS, err, userCred, false)
 		}
 	}
-	err = bucket.syncWithCloudBucket(ctx, userCred, extBucket, nil, false)
+	err = bucket.SyncWithCloudBucket(ctx, userCred, extBucket, false)
 	if err != nil {
-		return errors.Wrap(err, "bucket.syncWithCloudBucket")
+		return errors.Wrap(err, "SyncWithCloudBucket")
 	}
 	return nil
 }
@@ -868,7 +873,7 @@ func (bucket *SBucket) PerformMakedir(
 	db.OpsLog.LogEvent(bucket, db.ACT_MKDIR, key, userCred)
 	logclient.AddActionLogWithContext(ctx, bucket, logclient.ACT_MKDIR, key, userCred, true)
 
-	bucket.syncWithCloudBucket(ctx, userCred, iBucket, nil, true)
+	bucket.SyncWithCloudBucket(ctx, userCred, iBucket, true)
 
 	quotas.CancelPendingUsage(ctx, userCred, &pendingUsage, &pendingUsage, true)
 
@@ -914,7 +919,7 @@ func (bucket *SBucket) PerformDelete(
 	db.OpsLog.LogEvent(bucket, db.ACT_DELETE_OBJECT, keyStrs, userCred)
 	logclient.AddActionLogWithContext(ctx, bucket, logclient.ACT_DELETE_OBJECT, keyStrs, userCred, true)
 
-	bucket.syncWithCloudBucket(ctx, userCred, iBucket, nil, true)
+	bucket.SyncWithCloudBucket(ctx, userCred, iBucket, true)
 
 	return modulebase.SubmitResults2JSON(results), nil
 }
@@ -1024,7 +1029,7 @@ func (bucket *SBucket) PerformUpload(
 	db.OpsLog.LogEvent(bucket, db.ACT_UPLOAD_OBJECT, key, userCred)
 	logclient.AddActionLogWithContext(ctx, bucket, logclient.ACT_UPLOAD_OBJECT, key, userCred, true)
 
-	bucket.syncWithCloudBucket(ctx, userCred, iBucket, nil, true)
+	bucket.SyncWithCloudBucket(ctx, userCred, iBucket, true)
 
 	if !pendingUsage.IsEmpty() {
 		quotas.CancelPendingUsage(ctx, userCred, &pendingUsage, &pendingUsage, true)
@@ -1066,7 +1071,7 @@ func (bucket *SBucket) PerformAcl(
 			return nil, httperrors.NewInternalServerError("setAcl error %s", err)
 		}
 
-		err = bucket.syncWithCloudBucket(ctx, userCred, iBucket, nil, false)
+		err = bucket.SyncWithCloudBucket(ctx, userCred, iBucket, false)
 		if err != nil {
 			return nil, httperrors.NewInternalServerError("syncWithCloudBucket error %s", err)
 		}
@@ -1130,16 +1135,12 @@ func (bucket *SBucket) PerformSync(
 		return nil, errors.Wrap(err, "GetIBucket")
 	}
 
-	err = bucket.syncWithCloudBucket(ctx, userCred, iBucket, nil, statsOnly)
+	err = bucket.SyncWithCloudBucket(ctx, userCred, iBucket, statsOnly)
 	if err != nil {
 		return nil, httperrors.NewInternalServerError("syncWithCloudBucket error %s", err)
 	}
 
 	return nil, nil
-}
-
-func (bucket *SBucket) ValidatePurgeCondition(ctx context.Context) error {
-	return bucket.SSharableVirtualResourceBase.ValidateDeleteCondition(ctx, nil)
 }
 
 func (bucket *SBucket) ValidateDeleteCondition(ctx context.Context, info jsonutils.JSONObject) error {
@@ -1149,7 +1150,7 @@ func (bucket *SBucket) ValidateDeleteCondition(ctx context.Context, info jsonuti
 	if bucket.ObjectCnt > 0 {
 		return httperrors.NewNotEmptyError("Buckets that are not empty do not support this operation")
 	}
-	return bucket.ValidatePurgeCondition(ctx)
+	return bucket.SSharableVirtualResourceBase.ValidateDeleteCondition(ctx, info)
 }
 
 // 获取对象或bucket的ACL
@@ -1545,10 +1546,10 @@ type SBucketUsages struct {
 	DiskUsedRate float64
 }
 
-func (manager *SBucketManager) TotalCount(scope rbacscope.TRbacScope, ownerId mcclient.IIdentityProvider, rangeObjs []db.IStandaloneModel, providers []string, brands []string, cloudEnv string, policyResult rbacutils.SPolicyResult) SBucketUsages {
+func (manager *SBucketManager) TotalCount(ctx context.Context, scope rbacscope.TRbacScope, ownerId mcclient.IIdentityProvider, rangeObjs []db.IStandaloneModel, providers []string, brands []string, cloudEnv string, policyResult rbacutils.SPolicyResult) SBucketUsages {
 	usage := SBucketUsages{}
 	bq := manager.Query()
-	bq = db.ObjectIdQueryWithPolicyResult(bq, manager, policyResult)
+	bq = db.ObjectIdQueryWithPolicyResult(ctx, bq, manager, policyResult)
 	bq = scopeOwnerIdFilter(bq, scope, ownerId)
 	buckets := bq.SubQuery()
 	bucketsQ := buckets.Query(
@@ -1558,6 +1559,7 @@ func (manager *SBucketManager) TotalCount(scope rbacscope.TRbacScope, ownerId mc
 				buckets.Field("object_cnt"),
 			).Else(sqlchemy.NewConstField(0)),
 			"object_cnt1",
+			false,
 		),
 		sqlchemy.NewFunction(
 			sqlchemy.NewCase().When(
@@ -1565,6 +1567,7 @@ func (manager *SBucketManager) TotalCount(scope rbacscope.TRbacScope, ownerId mc
 				buckets.Field("size_bytes"),
 			).Else(sqlchemy.NewConstField(0)),
 			"size_bytes1",
+			false,
 		),
 		sqlchemy.NewFunction(
 			sqlchemy.NewCase().When(
@@ -1573,6 +1576,7 @@ func (manager *SBucketManager) TotalCount(scope rbacscope.TRbacScope, ownerId mc
 			).Else(
 				buckets.Field("size_bytes")),
 			"size_bytes_limit",
+			false,
 		),
 	)
 	bucketsQ = manager.usageQ(bucketsQ, rangeObjs, providers, brands, cloudEnv)

@@ -24,6 +24,7 @@ import (
 
 	"yunion.io/x/jsonutils"
 	"yunion.io/x/pkg/errors"
+	"yunion.io/x/pkg/gotypes"
 	"yunion.io/x/pkg/object"
 	"yunion.io/x/pkg/util/rbacscope"
 	"yunion.io/x/pkg/util/version"
@@ -62,6 +63,7 @@ type SModelBaseManager struct {
 	keywordPlural string
 	alias         string
 	aliasPlural   string
+	extraHook     IModelManagerExtraHook
 }
 
 func NewModelBaseManager(model interface{}, tableName string, keyword string, keywordPlural string) SModelBaseManager {
@@ -82,6 +84,7 @@ func NewModelBaseManagerWithSplitableDBName(model interface{}, tableName string,
 		tableSpec:     ts,
 		keyword:       keyword,
 		keywordPlural: keywordPlural,
+		extraHook:     NewEmptyExtraHook(),
 	}
 	return modelMan
 }
@@ -135,6 +138,10 @@ func (manager *SModelBaseManager) GetImmutableInstance(ctx context.Context, user
 
 func (manager *SModelBaseManager) GetMutableInstance(ctx context.Context, userCred mcclient.TokenCredential, query jsonutils.JSONObject, data jsonutils.JSONObject) IModelManager {
 	return manager.GetIModelManager()
+}
+
+func (manager *SModelBaseManager) PrepareQueryContext(ctx context.Context, userCred mcclient.TokenCredential, query jsonutils.JSONObject) context.Context {
+	return ctx
 }
 
 func (manager *SModelBaseManager) SetAlias(alias string, aliasPlural string) {
@@ -222,12 +229,24 @@ func (manager *SModelBaseManager) QueryDistinctExtraField(q *sqlchemy.SQuery, fi
 	return q, httperrors.ErrNotFound
 }
 
+func (manager *SModelBaseManager) QueryDistinctExtraFields(q *sqlchemy.SQuery, resource string, fields []string) (*sqlchemy.SQuery, error) {
+	return q, httperrors.ErrNotImplemented
+}
+
 func (manager *SModelBaseManager) CustomizeFilterList(ctx context.Context, q *sqlchemy.SQuery, userCred mcclient.TokenCredential, query jsonutils.JSONObject) (*CustomizeListFilters, error) {
 	return NewCustomizeListFilters(), nil
 }
 
 func (manager *SModelBaseManager) ExtraSearchConditions(ctx context.Context, q *sqlchemy.SQuery, like string) []sqlchemy.ICondition {
 	return nil
+}
+
+func (manager *SModelBaseManager) NewQuery(ctx context.Context, userCred mcclient.TokenCredential, query jsonutils.JSONObject, useRawQuery bool) *sqlchemy.SQuery {
+	if useRawQuery {
+		return manager.Query()
+	} else {
+		return manager.GetIModelManager().Query()
+	}
 }
 
 // fetch hook
@@ -260,7 +279,7 @@ func (manager *SModelBaseManager) FilterByName(q *sqlchemy.SQuery, name string) 
 	return q
 }
 
-func (manager *SModelBaseManager) FilterByOwner(q *sqlchemy.SQuery, man FilterByOwnerProvider, userCred mcclient.TokenCredential, ownerId mcclient.IIdentityProvider, scope rbacscope.TRbacScope) *sqlchemy.SQuery {
+func (manager *SModelBaseManager) FilterByOwner(ctx context.Context, q *sqlchemy.SQuery, man FilterByOwnerProvider, userCred mcclient.TokenCredential, ownerId mcclient.IIdentityProvider, scope rbacscope.TRbacScope) *sqlchemy.SQuery {
 	return q
 }
 
@@ -280,11 +299,11 @@ func (manager *SModelBaseManager) FetchById(idStr string) (IModel, error) {
 	return nil, sql.ErrNoRows
 }
 
-func (manager *SModelBaseManager) FetchByName(userCred mcclient.IIdentityProvider, idStr string) (IModel, error) {
+func (manager *SModelBaseManager) FetchByName(ctx context.Context, userCred mcclient.IIdentityProvider, idStr string) (IModel, error) {
 	return nil, sql.ErrNoRows
 }
 
-func (manager *SModelBaseManager) FetchByIdOrName(userCred mcclient.IIdentityProvider, idStr string) (IModel, error) {
+func (manager *SModelBaseManager) FetchByIdOrName(ctx context.Context, userCred mcclient.IIdentityProvider, idStr string) (IModel, error) {
 	return nil, sql.ErrNoRows
 }
 
@@ -380,10 +399,6 @@ func (manager *SModelBaseManager) ResourceScope() rbacscope.TRbacScope {
 	return rbacscope.ScopeSystem
 }
 
-func (manager *SModelBaseManager) AllowGetPropertyDistinctField(ctx context.Context, userCred mcclient.TokenCredential, query jsonutils.JSONObject) bool {
-	return true
-}
-
 func (manager *SModelBaseManager) GetPagingConfig() *SPagingConfig {
 	return nil
 }
@@ -464,6 +479,94 @@ func (manager *SModelBaseManager) GetPropertyDistinctField(ctx context.Context, 
 		res.Set(fe, jsonutils.Marshal(efa))
 	}
 	return res, nil
+}
+
+func (manager *SModelBaseManager) GetPropertyDistinctFields(ctx context.Context, userCred mcclient.TokenCredential, query jsonutils.JSONObject) (jsonutils.JSONObject, error) {
+	im, ok := manager.GetVirtualObject().(IModelManager)
+	if !ok {
+		im = manager
+	}
+	input := &apis.DistinctFieldsInput{}
+	query.Unmarshal(input)
+	if len(input.Field) == 0 && (len(input.ExtraResource) == 0 || len(input.ExtraField) == 0) {
+		return nil, httperrors.NewMissingParameterError("field")
+	}
+	// validate field
+	for _, fd := range input.Field {
+		var hasField = false
+		for _, field := range manager.getTable().Fields() {
+			if field.Name() == fd {
+				hasField = true
+				break
+			}
+		}
+		if !hasField {
+			return nil, httperrors.NewBadRequestError("model has no field %s", fd)
+		}
+	}
+	var err error
+	q := im.Query()
+	q, err = ListItemQueryFilters(im, ctx, q, userCred, query, policy.PolicyActionList)
+	if err != nil {
+		return nil, err
+	}
+	result := jsonutils.NewDict()
+	fields := jsonutils.NewArray()
+	if len(input.Field) > 0 {
+		sq := q.Copy()
+		// query field
+		for i := 0; i < len(input.Field); i++ {
+			sq = sq.AppendField(sq.Field(input.Field[i]))
+		}
+		rows, err := sq.Distinct().Rows()
+		if err != nil {
+			return nil, err
+		}
+		defer rows.Close()
+		for rows.Next() {
+			mMap, err := sq.Row2Map(rows)
+			if err != nil {
+				return nil, errors.Wrapf(err, "Row2Map")
+			}
+			fields.Add(jsonutils.Marshal(mMap))
+		}
+	}
+	result.Set("fields", fields)
+
+	extraFields := jsonutils.NewArray()
+	if len(input.ExtraResource) > 0 && len(input.ExtraField) > 0 {
+		// query extra field
+		sq := q.Copy()
+		em := GetModelManager(input.ExtraResource)
+		if gotypes.IsNil(em) {
+			return nil, httperrors.NewInputParameterError("invalid extra_resource %s", input.ExtraResource)
+		}
+		for _, field := range input.ExtraField {
+			if gotypes.IsNil(em.TableSpec().ColumnSpec(field)) {
+				return nil, httperrors.NewInputParameterError("resource %s does not have field %s", input.ExtraResource, field)
+			}
+		}
+		sq, err := im.QueryDistinctExtraFields(sq, input.ExtraResource, input.ExtraField)
+		if err != nil {
+			return nil, err
+		}
+
+		rows, err := sq.Distinct().Rows()
+		if err != nil {
+			return nil, err
+		}
+
+		defer rows.Close()
+		for rows.Next() {
+			mMap, err := sq.Row2Map(rows)
+			if err != nil {
+				return nil, errors.Wrapf(err, "Row2Map")
+			}
+			extraFields.Add(jsonutils.Marshal(mMap))
+		}
+	}
+	result.Set("extra_fields", extraFields)
+	return result, nil
 }
 
 func (manager *SModelBaseManager) BatchPreValidate(
@@ -568,9 +671,17 @@ func (manager *SModelBaseManager) CustomizedTotalCount(ctx context.Context, user
 	ret := apis.TotalCountBase{}
 	err := totalQ.First(&ret)
 	if err != nil {
-		return -1, nil, errors.Wrap(err, "SModelBaseManager Query total")
+		return -1, nil, errors.Wrapf(err, "SModelBaseManager Query total %s", totalQ.DebugString())
 	}
 	return ret.Count, nil, nil
+}
+
+func (manager *SModelBaseManager) RegisterExtraHook(eh IModelManagerExtraHook) {
+	manager.extraHook = eh
+}
+
+func (manager *SModelBaseManager) GetExtraHook() IModelManagerExtraHook {
+	return manager.extraHook
 }
 
 func (model SModelBase) GetId() string {
@@ -716,6 +827,10 @@ func (model *SModelBase) MarkPendingDeleted() {
 	return
 }
 
+func (model *SModelBase) CancelPendingDeleted() {
+	return
+}
+
 func (model *SModelBase) Delete(ctx context.Context, userCred mcclient.TokenCredential) error {
 	return nil
 }
@@ -749,5 +864,15 @@ func (model *SModelBase) GetUsages() []IUsage {
 }
 
 func (model *SModelBase) GetI18N(ctx context.Context) *jsonutils.JSONDict {
+	return nil
+}
+
+type SEmptyExtraHook struct{}
+
+func NewEmptyExtraHook() *SEmptyExtraHook {
+	return new(SEmptyExtraHook)
+}
+
+func (e SEmptyExtraHook) AfterPostCreate(ctx context.Context, userCred mcclient.TokenCredential, ownerId mcclient.IIdentityProvider, model IModel, query jsonutils.JSONObject, data jsonutils.JSONObject) error {
 	return nil
 }

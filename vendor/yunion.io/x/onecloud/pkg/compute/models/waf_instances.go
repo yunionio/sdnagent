@@ -68,6 +68,17 @@ type SWafInstance struct {
 
 	Type          cloudprovider.TWafType       `width:"20" charset:"ascii" nullable:"false" list:"domain" create:"required"`
 	DefaultAction *cloudprovider.DefaultAction `charset:"ascii" nullable:"true" list:"domain" create:"domain_optional"`
+
+	Cname string `width:"256" charset:"utf8" nullable:"true" list:"user" update:"admin"`
+	// 前面是否有代理服务
+	IsAccessProduct bool     `nullable:"false" default:"false" list:"user" update:"user" create:"optional"`
+	AccessHeaders   []string `width:"512" charset:"utf8" nullable:"true" list:"user" update:"admin"`
+	SourceIps       []string `width:"512" charset:"utf8" nullable:"true" list:"user" update:"admin"`
+	HttpPorts       []int    `width:"64" charset:"utf8" nullable:"true" list:"user" update:"admin"`
+	HttpsPorts      []int    `width:"64" charset:"utf8" nullable:"true" list:"user" update:"admin"`
+
+	UpstreamScheme string `width:"32" charset:"utf8" nullable:"true" list:"user" update:"admin"`
+	UpstreamPort   int    `nullable:"true" list:"user" update:"admin"`
 }
 
 func (manager *SWafInstanceManager) GetContextManagers() [][]db.IModelManager {
@@ -77,12 +88,12 @@ func (manager *SWafInstanceManager) GetContextManagers() [][]db.IModelManager {
 }
 
 func (manager *SWafInstanceManager) ValidateCreateData(ctx context.Context, userCred mcclient.TokenCredential, ownerId mcclient.IIdentityProvider, query jsonutils.JSONObject, input api.WafInstanceCreateInput) (api.WafInstanceCreateInput, error) {
-	_region, err := validators.ValidateModel(userCred, CloudregionManager, &input.CloudregionId)
+	_region, err := validators.ValidateModel(ctx, userCred, CloudregionManager, &input.CloudregionId)
 	if err != nil {
 		return input, err
 	}
 	region := _region.(*SCloudregion)
-	_provider, err := validators.ValidateModel(userCred, CloudproviderManager, &input.CloudproviderId)
+	_provider, err := validators.ValidateModel(ctx, userCred, CloudproviderManager, &input.CloudproviderId)
 	if err != nil {
 		return input, err
 	}
@@ -93,7 +104,7 @@ func (manager *SWafInstanceManager) ValidateCreateData(ctx context.Context, user
 	for i := range input.CloudResources {
 		switch input.CloudResources[i].Type {
 		case LoadbalancerManager.Keyword():
-			_lb, err := validators.ValidateModel(userCred, LoadbalancerManager, &input.CloudResources[i].Id)
+			_lb, err := validators.ValidateModel(ctx, userCred, LoadbalancerManager, &input.CloudResources[i].Id)
 			if err != nil {
 				return input, err
 			}
@@ -102,7 +113,7 @@ func (manager *SWafInstanceManager) ValidateCreateData(ctx context.Context, user
 				return input, httperrors.NewConflictError("lb %s does not belong to account %s", lb.Name, provider.GetName())
 			}
 		case GuestManager.Keyword():
-			_server, err := validators.ValidateModel(userCred, GuestManager, &input.CloudResources[i].Id)
+			_server, err := validators.ValidateModel(ctx, userCred, GuestManager, &input.CloudResources[i].Id)
 			if err != nil {
 				return input, err
 			}
@@ -139,7 +150,7 @@ func (self *SWafInstance) StartCreateTask(ctx context.Context, userCred mcclient
 	if err != nil {
 		return errors.Wrapf(err, "NewTask")
 	}
-	self.SetStatus(userCred, api.WAF_STATUS_CREATING, "")
+	self.SetStatus(ctx, userCred, api.WAF_STATUS_CREATING, "")
 	return task.ScheduleRun(nil)
 }
 
@@ -369,7 +380,7 @@ func (self *SWafInstance) StartDeleteTask(ctx context.Context, userCred mcclient
 	if err != nil {
 		return errors.Wrapf(err, "NewTask")
 	}
-	self.SetStatus(userCred, api.WAF_STATUS_DELETING, "")
+	self.SetStatus(ctx, userCred, api.WAF_STATUS_DELETING, "")
 	return task.ScheduleRun(nil)
 }
 
@@ -432,6 +443,15 @@ func (self *SWafInstance) SyncWithCloudWafInstance(ctx context.Context, userCred
 		self.SetEnabled(ext.GetEnabled())
 		self.DefaultAction = ext.GetDefaultAction()
 		self.Status = ext.GetStatus()
+		self.IsAccessProduct = ext.GetIsAccessProduct()
+		self.Type = ext.GetWafType()
+		self.HttpsPorts = ext.GetHttpsPorts()
+		self.HttpPorts = ext.GetHttpPorts()
+		self.Cname = ext.GetCname()
+		self.SourceIps = ext.GetSourceIps()
+		self.UpstreamScheme = ext.GetUpstreamScheme()
+		self.UpstreamPort = ext.GetUpstreamPort()
+		self.AccessHeaders = ext.GetAccessHeaders()
 		return nil
 	})
 	if len(diff) > 0 {
@@ -456,6 +476,14 @@ func (self *SCloudregion) newFromCloudWafInstance(ctx context.Context, userCred 
 	waf.DefaultAction = ext.GetDefaultAction()
 	waf.Type = ext.GetWafType()
 	waf.ExternalId = ext.GetGlobalId()
+	waf.IsAccessProduct = ext.GetIsAccessProduct()
+	waf.HttpsPorts = ext.GetHttpsPorts()
+	waf.HttpPorts = ext.GetHttpPorts()
+	waf.Cname = ext.GetCname()
+	waf.UpstreamScheme = ext.GetUpstreamScheme()
+	waf.UpstreamPort = ext.GetUpstreamPort()
+	waf.SourceIps = ext.GetSourceIps()
+	waf.AccessHeaders = ext.GetAccessHeaders()
 	var err = func() error {
 		lockman.LockRawObject(ctx, WafInstanceManager.Keyword(), "name")
 		defer lockman.ReleaseRawObject(ctx, WafInstanceManager.Keyword(), "name")
@@ -514,7 +542,7 @@ func (self *SWafInstance) StartRemoteUpdateTask(ctx context.Context, userCred mc
 	if err != nil {
 		return errors.Wrap(err, "NewTask")
 	}
-	self.SetStatus(userCred, apis.STATUS_UPDATE_TAGS, "StartRemoteUpdateTask")
+	self.SetStatus(ctx, userCred, apis.STATUS_UPDATE_TAGS, "StartRemoteUpdateTask")
 	return task.ScheduleRun(nil)
 }
 
