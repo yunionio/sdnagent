@@ -24,6 +24,7 @@ import (
 
 	"yunion.io/x/log"
 
+	apis "yunion.io/x/onecloud/pkg/apis/compute"
 	"yunion.io/x/onecloud/pkg/apis/identity"
 	"yunion.io/x/onecloud/pkg/hostman/options"
 	"yunion.io/x/onecloud/pkg/mcclient/auth"
@@ -114,7 +115,7 @@ func (hc *HostConfig) GetOverlayMTU() int {
 	if mtu < 576 {
 		mtu = 576
 	}
-	mtu -= 58
+	mtu -= apis.VPC_OVN_ENCAP_COST
 	return mtu
 }
 
