@@ -118,6 +118,9 @@ type SGuestnetwork struct {
 
 	// 是否为缺省路由
 	IsDefault bool `default:"false" list:"user"`
+
+	// 端口映射
+	PortMappings api.GuestPortMappings `length:"long" list:"user" update:"user"`
 }
 
 func (gn SGuestnetwork) GetIP() string {
@@ -263,7 +266,8 @@ type newGuestNetworkArgs struct {
 	rxTrafficLimit int64
 	txTrafficLimit int64
 
-	virtual bool
+	virtual      bool
+	portMappings api.GuestPortMappings
 }
 
 func (manager *SGuestnetworkManager) newGuestNetwork(
@@ -310,6 +314,7 @@ func (manager *SGuestnetworkManager) newGuestNetwork(
 	if bwLimit >= 0 {
 		gn.BwLimit = bwLimit
 	}
+	gn.PortMappings = args.portMappings
 
 	lockman.LockObject(ctx, network)
 	defer lockman.ReleaseObject(ctx, network)
@@ -629,7 +634,8 @@ func (gn *SGuestnetwork) getJsonDesc() *api.GuestnetworkJsonDesc {
 			Mac:     gn.MacAddr,
 			Virtual: gn.Virtual,
 
-			IsDefault: gn.IsDefault,
+			IsDefault:    gn.IsDefault,
+			PortMappings: gn.PortMappings,
 		},
 	}
 
@@ -746,6 +752,14 @@ func (gn *SGuestnetwork) UpdateNicTrafficLimit(rx, tx *int64) error {
 	return err
 }
 
+func (gn *SGuestnetwork) UpdatePortMappings(pms api.GuestPortMappings) error {
+	_, err := db.Update(gn, func() error {
+		gn.PortMappings = pms
+		return nil
+	})
+	return err
+}
+
 func (manager *SGuestnetworkManager) GetGuestByAddress(address string, projectId string) *SGuest {
 	gnQ := manager.Query()
 	ipField := "ip_addr"
@@ -830,6 +844,12 @@ func (gn *SGuestnetwork) ValidateUpdateData(
 			return input, errors.Wrap(httperrors.ErrInvalidStatus, "nic of default gateway has no ip")
 		}
 	}
+	for _, pm := range input.PortMappings {
+		if err := validatePortMapping(pm); err != nil {
+			return input, err
+		}
+	}
+
 	var err error
 	input.GuestJointBaseUpdateInput, err = gn.SGuestJointsBase.ValidateUpdateData(ctx, userCred, query, input.GuestJointBaseUpdateInput)
 	if err != nil {

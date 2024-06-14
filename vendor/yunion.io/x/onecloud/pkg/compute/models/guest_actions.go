@@ -1129,7 +1129,7 @@ func (self *SGuest) PerformStart(
 			if err != nil {
 				return nil, errors.Wrapf(err, "GetDriver")
 			}
-			err = driver.PerformStart(ctx, userCred, self, kwargs)
+			err = driver.PerformStart(ctx, userCred, self, kwargs, "")
 			return nil, err
 		} else {
 			return nil, httperrors.NewInvalidStatusError("Some disk not ready")
@@ -3095,13 +3095,15 @@ func (self *SGuest) PerformChangeConfig(ctx context.Context, userCred mcclient.T
 }
 
 func (self *SGuest) ChangeConfToSchedDesc(addCpu, addMem int, schedInputDisks []*api.DiskConfig) *schedapi.ScheduleInput {
+	region, _ := self.GetRegion()
 	devs, _ := self.GetIsolatedDevices()
 	desc := &schedapi.ScheduleInput{
 		ServerConfig: schedapi.ServerConfig{
 			ServerConfigs: &api.ServerConfigs{
-				Hypervisor: self.Hypervisor,
-				PreferHost: self.HostId,
-				Disks:      schedInputDisks,
+				Hypervisor:   self.Hypervisor,
+				PreferRegion: region.Id,
+				PreferHost:   self.HostId,
+				Disks:        schedInputDisks,
 			},
 			Memory:  addMem,
 			Ncpu:    addCpu,

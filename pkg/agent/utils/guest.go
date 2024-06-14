@@ -26,6 +26,7 @@ import (
 	"yunion.io/x/pkg/errors"
 	"yunion.io/x/pkg/util/netutils"
 
+	computeapi "yunion.io/x/onecloud/pkg/apis/compute"
 	"yunion.io/x/onecloud/pkg/hostman/guestman/desc"
 )
 
@@ -85,6 +86,8 @@ type GuestNIC struct {
 	PortNo      int    `json:"-"`
 
 	NetworkAddresses []GuestNICNetworkAddress `json:"networkaddresses"`
+
+	PortMappings computeapi.GuestPortMappings `json:"port_mappings"`
 }
 
 func (nic *GuestNIC) EnableIPv6() bool {

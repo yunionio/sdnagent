@@ -2412,6 +2412,10 @@ func (guest *SGuest) PostCreate(ctx context.Context, userCred mcclient.TokenCred
 	if jsonutils.QueryBoolean(data, imageapi.IMAGE_DISABLE_USB_KBD, false) {
 		guest.SetMetadata(ctx, imageapi.IMAGE_DISABLE_USB_KBD, "true", userCred)
 	}
+	matcherJson, _ := data.Get(api.BAREMETAL_SERVER_METATA_ROOT_DISK_MATCHER)
+	if matcherJson != nil {
+		guest.SetMetadata(ctx, api.BAREMETAL_SERVER_METATA_ROOT_DISK_MATCHER, matcherJson, userCred)
+	}
 
 	userData, _ := data.GetString("user_data")
 	if len(userData) > 0 {
@@ -2606,6 +2610,22 @@ func (self *SGuest) moreExtraInfo(
 		out.CdromSupport, _ = drv.IsSupportCdrom(self)
 		out.FloppySupport, _ = drv.IsSupportFloppy(self)
 		out.MonitorUrl = drv.FetchMonitorUrl(ctx, self)
+	}
+
+	if drv != nil && drv.GetHypervisor() == api.HYPERVISOR_POD {
+		ctrs, _ := GetContainerManager().GetContainersByPod(self.GetId())
+		desc := make([]*api.PodContainerDesc, len(ctrs))
+		for i := range ctrs {
+			ctr := ctrs[i]
+			desc[i] = &api.PodContainerDesc{
+				Id:   ctr.GetId(),
+				Name: ctr.GetName(),
+			}
+			if ctr.Spec != nil {
+				desc[i].Image = ctr.Spec.Image
+			}
+		}
+		out.Containers = desc
 	}
 
 	return out
@@ -3491,7 +3511,8 @@ type Attach2NetworkArgs struct {
 
 	Virtual bool
 
-	IsDefault bool
+	IsDefault    bool
+	PortMappings api.GuestPortMappings
 
 	PendingUsage quotas.IQuota
 }
@@ -3523,6 +3544,7 @@ func (args *Attach2NetworkArgs) onceArgs(i int) attach2NetworkOnceArgs {
 		isDefault: args.IsDefault,
 
 		pendingUsage: args.PendingUsage,
+		portMappings: args.PortMappings,
 	}
 	if i > 0 {
 		r.ipAddr = ""
@@ -3565,6 +3587,7 @@ type attach2NetworkOnceArgs struct {
 	isDefault bool
 
 	pendingUsage quotas.IQuota
+	portMappings api.GuestPortMappings
 }
 
 func (self *SGuest) Attach2Network(
@@ -3640,7 +3663,8 @@ func (self *SGuest) attach2NetworkOnce(
 
 		virtual: args.virtual,
 
-		isDefault: args.isDefault,
+		isDefault:    args.isDefault,
+		portMappings: args.portMappings,
 	}
 	lockman.LockClass(ctx, QuotaManager, self.ProjectId)
 	defer lockman.ReleaseClass(ctx, QuotaManager, self.ProjectId)
@@ -4412,7 +4436,8 @@ func (self *SGuest) attach2NamedNetworkDesc(ctx context.Context, userCred mcclie
 			UseDesignatedIP:     reuseAddr,
 			NicConfs:            nicConfs,
 
-			IsDefault: netConfig.IsDefault,
+			IsDefault:    netConfig.IsDefault,
+			PortMappings: netConfig.PortMappings,
 		})
 		if err != nil {
 			return nil, errors.Wrap(err, "Attach2Network fail")

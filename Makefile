@@ -38,7 +38,7 @@ GOPROXY ?= direct
 
 mod:
 	GOPROXY=$(GOPROXY) GONOSUMDB=yunion.io/x go get -v yunion.io/x/onecloud@$(RELEASE_BRANCH) yunion.io/x/cloudmux@$(RELEASE_BRANCH)
-	GOPROXY=$(GOPROXY) GONOSUMDB=yunion.io/x go get -v $(MAKE_MODE_ARGS) $(patsubst %,%@master,$(shell GO111MODULE=on go mod edit -print | sed -n -e 's|.*\(yunion.io/x/[a-z].*\) v.*|\1|p' | grep -v '/onecloud$$' | grep -v '/cloudmux$$'))
+	GOPROXY=$(GOPROXY) GONOSUMDB=yunion.io/x go get -v $(MAKE_MODE_ARGS) $(patsubst %,%@master,$(shell GO111MODULE=on go mod edit -print | sed -n -e 's|.*\(yunion.io/x/[a-z].*\) v.*|\1|p' | grep -v '/onecloud$$' | grep -v '/cloudmux$$' | grep -v '/go-openvswitch$$' ))
 	GOPROXY=$(GOPROXY) GONOSUMDB=yunion.io/x go mod tidy
 	GOPROXY=$(GOPROXY) GONOSUMDB=yunion.io/x go mod vendor -v
 

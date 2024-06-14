@@ -313,6 +313,8 @@ type DiskAllocateFromBackupInput struct {
 	BackupId                string
 	BackupStorageId         string
 	BackupStorageAccessInfo *jsonutils.JSONDict
+	DiskConfig              *DiskConfig           `json:"disk_config"`
+	BackupAsTar             *DiskBackupAsTarInput `json:"backup_as_tar"`
 }
 
 type DiskDeleteInput struct {
@@ -334,8 +336,7 @@ type DiskSnapshotpolicyInput struct {
 	SnapshotpolicyId string `json:"snapshotpolicy_id"`
 }
 
-type DiskRebuildInput struct{}
-
-type DiskResetTemplateInput struct {
-	TemplateId string `json:"template_id"`
+type DiskRebuildInput struct {
+	BackupId   *string `json:"backup_id,allowempty"`
+	TemplateId *string `json:"template_id,allowempty"`
 }

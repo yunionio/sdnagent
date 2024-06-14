@@ -829,6 +829,8 @@ func (self *SDisk) getDiskAllocateFromBackupInput(ctx context.Context, backupId 
 		BackupId:                backupId,
 		BackupStorageId:         bs.GetId(),
 		BackupStorageAccessInfo: jsonutils.Marshal(accessInfo).(*jsonutils.JSONDict),
+		DiskConfig:              &backup.DiskConfig.DiskConfig,
+		BackupAsTar:             backup.DiskConfig.BackupAsTar,
 	}, nil
 }
 
@@ -2332,6 +2334,21 @@ func (self *SDisk) RealDelete(ctx context.Context, userCred mcclient.TokenCreden
 	return self.SVirtualResourceBase.Delete(ctx, userCred)
 }
 
+func (self *SDisk) RecordLastAttachedHost(ctx context.Context, userCred mcclient.TokenCredential, hostId string) error {
+	storage, err := self.GetStorage()
+	if err != nil {
+		return err
+	}
+	if storage.StorageType != api.STORAGE_SLVM {
+		return nil
+	}
+	return self.SetMetadata(ctx, api.DISK_META_LAST_ATTACHED_HOST, hostId, userCred)
+}
+
+func (self *SDisk) GetLastAttachedHost(ctx context.Context, userCred mcclient.TokenCredential) string {
+	return self.GetMetadata(ctx, api.DISK_META_LAST_ATTACHED_HOST, userCred)
+}
+
 // 同步磁盘状态
 func (self *SDisk) PerformSyncstatus(ctx context.Context, userCred mcclient.TokenCredential, query jsonutils.JSONObject, input api.DiskSyncstatusInput) (jsonutils.JSONObject, error) {
 	var openTask = true
@@ -3147,7 +3164,7 @@ func (disk *SDisk) PerformRebuild(
 	ctx context.Context,
 	userCred mcclient.TokenCredential,
 	query jsonutils.JSONObject,
-	input *api.DiskRebuildInput,
+	input api.DiskRebuildInput,
 ) (jsonutils.JSONObject, error) {
 	guests := disk.GetGuests()
 	for _, guest := range guests {
@@ -3156,42 +3173,67 @@ func (disk *SDisk) PerformRebuild(
 		}
 		guest.SetStatus(ctx, userCred, api.VM_DISK_RESET, "disk rebuild")
 	}
+	err := disk.resetDiskinfo(ctx, userCred, input)
+	if err != nil {
+		return nil, errors.Wrap(err, "disk.resetDiskinfo")
+	}
 	disk.SetStatus(ctx, userCred, api.DISK_REBUILD, "disk rebuild")
 	return nil, disk.StartDiskCreateTask(ctx, userCred, true, disk.SnapshotId, "")
 }
 
-func (disk *SDisk) PerformResetTemplate(
+func (disk *SDisk) resetDiskinfo(
 	ctx context.Context,
 	userCred mcclient.TokenCredential,
-	query jsonutils.JSONDict,
-	input api.DiskResetTemplateInput,
-) (jsonutils.JSONObject, error) {
+	input api.DiskRebuildInput,
+) error {
 	if disk.DiskFormat != "raw" {
-		return nil, errors.Wrapf(errors.ErrInvalidStatus, "disk_format must be raw, not %s", disk.DiskFormat)
+		return errors.Wrapf(errors.ErrInvalidStatus, "disk_format must be raw, not %s", disk.DiskFormat)
 	}
 	if len(disk.FsFormat) == 0 {
-		return nil, errors.Wrap(errors.ErrInvalidStatus, "fs_format must be set")
+		return errors.Wrap(errors.ErrInvalidStatus, "fs_format must be set")
 	}
-	if len(input.TemplateId) > 0 {
-		imageObj, err := CachedimageManager.FetchById(input.TemplateId)
-		if err != nil {
-			if errors.Cause(err) == sql.ErrNoRows {
-				return nil, httperrors.NewResourceNotFoundError2(CachedimageManager.Keyword(), input.TemplateId)
-			} else {
-				return nil, errors.Wrap(err, "CachedimageManager.FetchById")
+	if input.TemplateId != nil {
+		if len(*input.TemplateId) > 0 {
+			imageObj, err := CachedimageManager.FetchByIdOrName(ctx, userCred, *input.TemplateId)
+			if err != nil {
+				if errors.Cause(err) == sql.ErrNoRows {
+					return httperrors.NewResourceNotFoundError2(CachedimageManager.Keyword(), *input.TemplateId)
+				} else {
+					return errors.Wrap(err, "CachedimageManager.FetchById")
+				}
 			}
+			image := imageObj.(*SCachedimage)
+			input.TemplateId = &image.Id
 		}
-		input.TemplateId = imageObj.GetId()
+	}
+	if input.BackupId != nil {
+		if len(*input.BackupId) > 0 {
+			bkObj, err := DiskBackupManager.FetchByIdOrName(ctx, userCred, *input.BackupId)
+			if err != nil {
+				if errors.Cause(err) == sql.ErrNoRows {
+					return httperrors.NewResourceNotFoundError2(DiskBackupManager.Keyword(), *input.BackupId)
+				} else {
+					return errors.Wrap(err, "DiskBackupManager.FetchByIdOrName")
+				}
+			}
+			backup := bkObj.(*SDiskBackup)
+			input.BackupId = &backup.Id
+		}
 	}
 	notes, err := db.Update(disk, func() error {
-		disk.TemplateId = input.TemplateId
+		if input.TemplateId != nil {
+			disk.TemplateId = *input.TemplateId
+		}
+		if input.BackupId != nil {
+			disk.BackupId = *input.BackupId
+		}
 		return nil
 	})
 	if err != nil {
 		logclient.AddActionLogWithContext(ctx, disk, logclient.ACT_UPDATE, err, userCred, false)
-		return nil, errors.Wrap(err, "Update")
+		return errors.Wrap(err, "Update")
 	}
 	logclient.AddActionLogWithContext(ctx, disk, logclient.ACT_UPDATE, err, userCred, true)
 	db.OpsLog.LogEvent(disk, db.ACT_UPDATE, notes, userCred)
-	return nil, nil
+	return nil
 }

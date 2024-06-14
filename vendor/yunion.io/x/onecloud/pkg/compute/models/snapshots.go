@@ -87,6 +87,7 @@ type SSnapshot struct {
 	// CloudregionId string    `width:"36" charset:"ascii" nullable:"true" list:"user" create:"optional"`
 
 	BackingDiskId string    `width:"36" charset:"ascii" nullable:"true" default:""`
+	DiskBackupId  string    `width:"36" charset:"ascii" nullable:"true" default:""`
 	ExpiredAt     time.Time `nullable:"true" list:"user" create:"optional"`
 }
 
@@ -655,7 +656,7 @@ func (self *SSnapshotManager) GetDiskSnapshotCount(diskId string) (int, error) {
 }
 
 func (self *SSnapshotManager) CreateSnapshot(ctx context.Context, owner mcclient.IIdentityProvider,
-	createdBy, diskId, guestId, location, name string, retentionDay int, isSystem bool) (*SSnapshot, error) {
+	createdBy, diskId, guestId, location, name string, retentionDay int, isSystem bool, diskBackupId string) (*SSnapshot, error) {
 	iDisk, err := DiskManager.FetchById(diskId)
 	if err != nil {
 		return nil, err
@@ -693,6 +694,7 @@ func (self *SSnapshotManager) CreateSnapshot(ctx context.Context, owner mcclient
 		snapshot.ExpiredAt = time.Now().AddDate(0, 0, retentionDay)
 	}
 	snapshot.IsSystem = isSystem
+	snapshot.DiskBackupId = diskBackupId
 	err = SnapshotManager.TableSpec().Insert(ctx, snapshot)
 	if err != nil {
 		return nil, err
@@ -822,16 +824,20 @@ func (self *SSnapshotManager) PerformDeleteDiskSnapshots(ctx context.Context, us
 	if snapshots == nil || len(snapshots) == 0 {
 		return nil, httperrors.NewNotFoundError("Disk %s dose not have snapshot", diskId)
 	}
+	snapshotIds := []string{}
 	for i := 0; i < len(snapshots); i++ {
 		if snapshots[i].FakeDeleted == false {
 			return nil, httperrors.NewBadRequestError("Can not delete disk snapshots, have manual snapshot")
 		}
+		snapshotIds = append(snapshotIds, snapshots[i].Id)
 	}
-	err = snapshots[0].StartSnapshotsDeleteTask(ctx, userCred, "")
+	err = snapshots[0].StartSnapshotsDeleteTask(ctx, userCred, "", snapshotIds)
 	return nil, err
 }
 
-func (self *SSnapshot) StartSnapshotsDeleteTask(ctx context.Context, userCred mcclient.TokenCredential, parentTaskId string) error {
+func (self *SSnapshot) StartSnapshotsDeleteTask(ctx context.Context, userCred mcclient.TokenCredential, parentTaskId string, snapshotIds []string) error {
+	data := jsonutils.NewDict()
+	data.Set("snapshot_ids", jsonutils.NewStringArray(snapshotIds))
 	task, err := taskman.TaskManager.NewTask(ctx, "BatchSnapshotsDeleteTask", self, userCred, nil, parentTaskId, "", nil)
 	if err != nil {
 		log.Errorln(err)

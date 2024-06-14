@@ -119,7 +119,7 @@ type SHost struct {
 	ManagerUri string `width:"256" charset:"ascii" nullable:"true" list:"domain" update:"domain" create:"domain_optional"`
 
 	// 系统信息
-	SysInfo jsonutils.JSONObject `nullable:"true" search:"domain" list:"domain" update:"domain" create:"domain_optional"`
+	SysInfo jsonutils.JSONObject `length:"medium" nullable:"true" search:"domain" list:"domain" update:"domain" create:"domain_optional"`
 	// 物理机序列号信息
 	SN string `width:"128" charset:"ascii" nullable:"true" list:"domain" update:"domain" create:"domain_optional"`
 
@@ -1610,7 +1610,7 @@ func (hh *SHostManager) GetEnabledKvmHostForDiskBackup(backup *SDiskBackup) (*SH
 func (hh *SHostManager) GetEnabledKvmHost(candidates []string) (*SHost, error) {
 	hostq := HostManager.Query().IsTrue("enabled")
 	hostq = hostq.Equals("host_status", api.HOST_ONLINE)
-	hostq = hostq.In("host_type", []string{api.HOST_TYPE_HYPERVISOR, api.HOST_TYPE_KVM})
+	hostq = hostq.In("host_type", []string{api.HOST_TYPE_HYPERVISOR, api.HOST_TYPE_KVM, api.HOST_TYPE_CONTAINER})
 	if len(candidates) > 0 {
 		hostq = hostq.In("id", candidates)
 	}
@@ -2018,6 +2018,9 @@ func (hh *SHost) SyncWithCloudHost(ctx context.Context, userCred mcclient.TokenC
 			hh.IsBaremetal = true
 		}
 		hh.StorageInfo = extHost.GetStorageInfo()
+		if storageDriver := extHost.GetStorageDriver(); len(storageDriver) > 0 {
+			hh.StorageDriver = storageDriver
+		}
 		hh.OvnVersion = extHost.GetOvnVersion()
 
 		if cpuCmt := extHost.GetCpuCmtbound(); cpuCmt > 0 {
@@ -2274,6 +2277,7 @@ func (manager *SHostManager) NewFromCloudHost(ctx context.Context, userCred mccl
 	host.MemSize = extHost.GetMemSizeMB()
 	host.StorageSize = extHost.GetStorageSizeMB()
 	host.StorageType = extHost.GetStorageType()
+	host.StorageDriver = extHost.GetStorageDriver()
 	host.CpuCmtbound = 8.0
 	if cpuCmt := extHost.GetCpuCmtbound(); cpuCmt > 0 {
 		host.CpuCmtbound = cpuCmt
@@ -3799,7 +3803,7 @@ func (manager *SHostManager) ValidateCreateData(
 					wire := wireObj.(*SWire)
 					lockman.LockObject(ctx, wire)
 					defer lockman.ReleaseObject(ctx, wire)
-					net, err := wire.GetCandidatePrivateNetwork(ctx, userCred, userCred, NetworkManager.AllowScope(userCred), false, []string{api.NETWORK_TYPE_PXE, api.NETWORK_TYPE_BAREMETAL, api.NETWORK_TYPE_GUEST})
+					net, err := wire.GetCandidatePrivateNetwork(ctx, userCred, userCred, NetworkManager.AllowScope(userCred), false, []api.TNetworkType{api.NETWORK_TYPE_PXE, api.NETWORK_TYPE_BAREMETAL, api.NETWORK_TYPE_GUEST})
 					if err != nil {
 						return input, httperrors.NewGeneralError(err)
 					}
@@ -4939,7 +4943,7 @@ func (h *SHost) PerformEnableNetif(
 }
 
 func (h *SHost) EnableNetif(ctx context.Context, userCred mcclient.TokenCredential, netif *SNetInterface,
-	network, ipAddr, allocDir string, netType string, reserve, requireDesignatedIp bool) error {
+	network, ipAddr, allocDir string, netType api.TNetworkType, reserve, requireDesignatedIp bool) error {
 	bn := netif.GetHostNetwork()
 	if bn != nil {
 		log.Debugf("Netif has been attach2network? %s", jsonutils.Marshal(bn))
@@ -4982,11 +4986,11 @@ func (h *SHost) EnableNetif(ctx context.Context, userCred mcclient.TokenCredenti
 				return fmt.Errorf("Network %s not reacheable on mac %s", network, netif.Mac)
 			}
 		} else {
-			var netTypes []string
+			var netTypes []api.TNetworkType
 			if len(netType) > 0 && netType != api.NETWORK_TYPE_BAREMETAL {
-				netTypes = []string{netType, api.NETWORK_TYPE_BAREMETAL}
+				netTypes = []api.TNetworkType{netType, api.NETWORK_TYPE_BAREMETAL}
 			} else {
-				netTypes = []string{api.NETWORK_TYPE_BAREMETAL}
+				netTypes = []api.TNetworkType{api.NETWORK_TYPE_BAREMETAL}
 			}
 			net, err = wire.GetCandidatePrivateNetwork(ctx, userCred, userCred, NetworkManager.AllowScope(userCred), false, netTypes)
 			if err != nil {
