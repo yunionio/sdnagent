@@ -52,7 +52,7 @@ type SHostBaseOptions struct {
 	ImageCacheExpireDays        int  `help:"Image cache expire duration in days" default:"30"`
 	ImageCacheCleanupPercentage int  `help:"The cleanup threshold ratio of image cache size v.s. total storage size" default:"12"`
 	ImageCacheCleanupOnStartup  bool `help:"Cleanup image cache on host startup" default:"false"`
-	ImageCacheCleanupDryRun     bool `help:"Dry run cleanup image cache" default:"true"`
+	ImageCacheCleanupDryRun     bool `help:"Dry run cleanup image cache" default:"false"`
 }
 
 type SHostOptions struct {
@@ -222,6 +222,8 @@ type SHostOptions struct {
 	CudaMPSPipeDirectory string `help:"cuda mps pipe dir" default:"/tmp/nvidia-mps/pipe"`
 	CudaMPSLogDirectory  string `help:"cuda mps log dir" default:"/tmp/nvidia-mps/log"`
 	CudaMPSReplicas      int    `help:"cuda mps replias" default:"10"`
+
+	EnableContainerAscendNPU bool `help:"enable container npu" default:"false"`
 }
 
 var (

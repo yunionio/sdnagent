@@ -156,6 +156,10 @@ var (
 	// parameter list.
 	ctRe = regexp.MustCompile(`ct\((\S+)\)`)
 
+	// learnRe is the regex used to match the learn action with its
+	// parameter list.
+	learnRe = regexp.MustCompile(`learn\((\S+)\)`)
+
 	// loadRe is the regex used to match the load action
 	// with its parameters.
 	loadRe = regexp.MustCompile(`load:(\S+)->(\S+)`)
@@ -195,6 +199,19 @@ func parseAction(s string) (Action, error) {
 		//  - full string
 		//  - arguments list
 		return ConnectionTracking(ss[0][1]), nil
+	}
+
+	// ActionLearn, with its arguments
+	if ss := learnRe.FindAllStringSubmatch(s, 1); len(ss) > 0 && len(ss[0]) == 2 {
+		// Results are:
+		//  - full string
+		//  - arguments list
+		learnFlow := &LearnedFlow{}
+		err := learnFlow.UnmarshalText([]byte(ss[0][1]))
+		if err != nil {
+			return nil, err
+		}
+		return Learn(learnFlow), nil
 	}
 
 	// ActionModDataLinkDestination, with its hardware address.
@@ -315,14 +332,15 @@ func parseAction(s string) (Action, error) {
 
 	// ActionOutput, with its port number
 	if strings.HasPrefix(s, patOutput[:len(patOutput)-2]) {
-		var port int
-		n, err := fmt.Sscanf(s, patOutput, &port)
-		if err != nil {
-			return nil, err
+		segs := strings.Split(s, ":")
+		if len(segs) != 2 {
+			return nil, errInvalidActions
 		}
-		if n > 0 {
+		port, err := strconv.Atoi(segs[1])
+		if err == nil {
 			return Output(port), nil
 		}
+		return OutputField(strings.TrimSpace(segs[1])), nil
 	}
 
 	// ActionResubmit, with both port number and table number

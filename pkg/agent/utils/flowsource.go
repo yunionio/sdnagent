@@ -90,6 +90,30 @@ func (h *HostLocal) FlowsMap() (map[string][]*ovs.Flow, error) {
 		F(0, 30003, T("in_port=LOCAL,ipv6,icmp6,icmp_type=135"), "normal"),
 		F(0, 30004, T("in_port=LOCAL,ipv6,icmp6,icmp_type=136"), "normal"),
 	)
+	{
+		flows = append(flows,
+			// 未经过conntrack的，先走一下conntrack
+			F(9, 40001, "tcp,ct_state=-trk", "ct(table=9)"),
+			F(9, 40000, "udp,ct_state=-trk", "ct(table=9)"),
+			// 如果是从虚拟机发出的，新的报文，则应该丢弃
+			F(9, 31001, "reg0=0x4,tcp,ct_state=+new+trk", "drop"),
+			F(9, 31000, "reg0=0x4,udp,ct_state=+new+trk", "drop"),
+			// 如果从外部或者本地请求的新的报文，则commit，并正常转发
+			F(9, 30001, "tcp,ct_state=+new+trk", "ct(commit,exec(move:NXM_NX_REG0[]->NXM_NX_CT_MARK[])),normal"),
+			F(9, 30000, "udp,ct_state=+new+trk", "ct(commit,exec(move:NXM_NX_REG0[]->NXM_NX_CT_MARK[])),normal"),
+			// 如果是从虚拟机发出的，且ct_mark=2的，是直接请求流量的响应，需正常处理
+			F(9, 20003, "reg0=0x4,tcp,ct_state=+est+trk,ct_mark=0x2", "normal"),
+			F(9, 20002, "reg0=0x4,udp,ct_state=+est+trk,ct_mark=0x2", "normal"),
+			// 如果是从虚拟机发出的，且ct_mark=1的，是外部做了port_mapping请求的响应，需要转到table=10 UNDO DNAT
+			F(9, 20001, "reg0=0x4,tcp,ct_state=+est+trk,ct_mark=0x1", "resubmit(,10)"),
+			F(9, 20000, "reg0=0x4,udp,ct_state=+est+trk,ct_mark=0x1", "resubmit(,10)"),
+			// 其他的是从外部进入的，正常转发
+			F(9, 10001, "tcp,ct_state=+est+trk", "normal"),
+			F(9, 10000, "udp,ct_state=+est+trk", "normal"),
+			// 其他 drop
+			F(9, 1000, "", "drop"),
+		)
+	}
 	// NOTE we do not do check of existence of a "switch" guest and
 	// silently "AllowSwitchVMs" here.  That could be deemed as unexpected
 	// compromise for other guests.  Intentions must be explicit
@@ -296,6 +320,50 @@ func (g *Guest) FlowsMapForNic(nic *GuestNIC) ([]*ovs.Flow, error) {
 				)
 			}
 		}
+
+		if nic.PortMappings != nil && len(nic.PortMappings) > 0 {
+			for _, pm := range nic.PortMappings {
+				if len(pm.RemoteIps) == 0 {
+					pm.RemoteIps = []string{"0.0.0.0/0"}
+				}
+				for _, remoteNet := range pm.RemoteIps {
+					srcIpStr := ""
+					if remoteNet != "0.0.0.0/0" {
+						srcIpStr = fmt.Sprintf("nw_src=%s,", remoteNet)
+					}
+					protoNum := 6
+					tpSrcField := "tcp_src"
+					nxmTpSrc := "NXM_OF_TCP_SRC[]"
+					nxmTpDst := "NXM_OF_TCP_DST[]"
+					switch pm.Protocol {
+					case "tcp":
+						protoNum = 6
+						tpSrcField = "tcp_src"
+						nxmTpSrc = "NXM_OF_TCP_SRC[]"
+						nxmTpDst = "NXM_OF_TCP_DST[]"
+					case "udp":
+						protoNum = 17
+						tpSrcField = "udp_src"
+						nxmTpSrc = "NXM_OF_UDP_SRC[]"
+						nxmTpDst = "NXM_OF_UDP_DST[]"
+					}
+					learnStr := fmt.Sprintf("table=10,priority=10000,idle_timeout=30,in_port=%d,dl_type=0x0800,nw_proto=%d,%s=%d,load:NXM_OF_ETH_DST[]->NXM_OF_ETH_SRC[],load:NXM_OF_ETH_SRC[]->NXM_OF_ETH_DST[],load:NXM_OF_IP_DST[]->NXM_OF_IP_SRC[],load:%s->%s,output:NXM_OF_IN_PORT[]", nic.PortNo, protoNum, tpSrcField, pm.Port, nxmTpDst, nxmTpSrc)
+					flows = append(flows,
+						// 外部访问的流量, 需要DNAT, reg0=1
+						F(0, 28200, fmt.Sprintf("in_port=%d,ip,%s%s,tp_dst=%d", portNoPhy, srcIpStr, pm.Protocol, *pm.HostPort), fmt.Sprintf("learn(%s),load:0x1->NXM_NX_REG0[],mod_dl_dst:%s,mod_nw_dst:%s,mod_tp_dst:%d,resubmit(,9)", learnStr, nic.MAC, nic.IP, pm.Port)),
+						// 外部直接访问的流量，不需要DNAT，reg0=2
+						F(0, 28200, fmt.Sprintf("in_port=%d,ip,%snw_dst=%s,%s,tp_dst=%d", portNoPhy, srcIpStr, nic.IP, pm.Protocol, pm.Port), "load:0x2->NXM_NX_REG0[],resubmit(,9)"),
+					)
+				}
+				flows = append(flows,
+					// 本地流量, 直接访问，不需要DNAT, reg0=2
+					F(0, 28201, fmt.Sprintf("in_port=LOCAL,ip,nw_dst=%s,%s,tp_dst=%d", nic.IP, pm.Protocol, pm.Port), "load:0x2->NXM_NX_REG0[],resubmit(,9)"),
+					// 返回流量, reg0=4
+					F(0, 28202, fmt.Sprintf("in_port=%d,ip,%s,tp_src=%d", nic.PortNo, pm.Protocol, pm.Port), "load:0x4->NXM_NX_REG0[],resubmit(,9)"),
+				)
+			}
+		}
+
 		if g.HostConfig.DisableSecurityGroup {
 			if !g.SrcIpCheck() {
 				flows = append(flows,

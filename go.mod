@@ -19,8 +19,8 @@ require (
 	google.golang.org/protobuf v1.27.1
 	yunion.io/x/jsonutils v1.0.1-0.20240203102553-4096f103b401
 	yunion.io/x/log v1.0.1-0.20240305175729-7cf2d6cd5a91
-	yunion.io/x/onecloud v0.0.0-20240522123740-fabf28086058
-	yunion.io/x/pkg v1.10.1-0.20240510032728-8203b24857a2
+	yunion.io/x/onecloud v0.0.0-20240614113442-2d07eeef247f
+	yunion.io/x/pkg v1.10.1-0.20240601050854-9e3452bf4d47
 )
 
 require (
@@ -85,6 +85,7 @@ require (
 	github.com/tklauser/numcpus v0.4.0 // indirect
 	github.com/tredoe/osutil/v2 v2.0.0-rc.16 // indirect
 	github.com/ugorji/go/codec v1.1.7 // indirect
+	github.com/ulikunitz/xz v0.5.12 // indirect
 	github.com/vmware/govmomi v0.37.1 // indirect
 	github.com/yusufpapurcu/wmi v1.2.2 // indirect
 	go.etcd.io/etcd/api/v3 v3.5.0 // indirect
@@ -117,15 +118,15 @@ require (
 	moul.io/http2curl/v2 v2.3.0 // indirect
 	sigs.k8s.io/structured-merge-diff/v4 v4.0.1 // indirect
 	sigs.k8s.io/yaml v1.2.0 // indirect
-	yunion.io/x/cloudmux v0.3.10-0-alpha.1.0.20240523082917-4977738de7e0 // indirect
+	yunion.io/x/cloudmux v0.3.10-0-alpha.1.0.20240611023744-6cfb14a28b9f // indirect
 	yunion.io/x/executor v0.0.0-20230705125604-c5ac3141db32 // indirect
 	yunion.io/x/s3cli v0.0.0-20190917004522-13ac36d8687e // indirect
-	yunion.io/x/sqlchemy v1.1.3-0.20240417115142-4f4271cd8305 // indirect
+	yunion.io/x/sqlchemy v1.1.3-0.20240530085133-5058648977dd // indirect
 	yunion.io/x/structarg v0.0.0-20231017124457-df4d5009457c // indirect
 )
 
 replace (
-	github.com/digitalocean/go-openvswitch => yunion.io/x/go-openvswitch v0.0.0-20240505033048-be7a14d52fb2
+	github.com/digitalocean/go-openvswitch => yunion.io/x/go-openvswitch v0.0.20240615
 	github.com/go-logr/logr => github.com/go-logr/logr v0.4.0
 	github.com/jaypipes/ghw => github.com/zexi/ghw v0.9.1
 )

@@ -36,6 +36,7 @@ const (
 	CONTAINER_DEV_NETINT_CA_QUADRA = "NETINT_CA_QUADRA"
 	CONTAINER_DEV_NVIDIA_GPU       = "NVIDIA_GPU"
 	CONTAINER_DEV_NVIDIA_MPS       = "NVIDIA_MPS"
+	CONTAINER_DEV_ASCEND_NPU       = "ASCEND_NPU"
 )
 
 const (
@@ -152,4 +153,16 @@ type ContainerExecInfoOutput struct {
 type ContainerExecInput struct {
 	Command []string `json:"command"`
 	Tty     bool     `json:"tty"`
+}
+
+type ContainerExecSyncInput struct {
+	Command []string `json:"command"`
+	// Timeout in seconds to stop the command. Default: 0 (run forever).
+	Timeout int64 `json:"timeout"`
+}
+
+type ContainerExecSyncResponse struct {
+	Stdout   string `json:"stdout"`
+	Stderr   string `json:"stderr"`
+	ExitCode int32  `json:"exit_code"`
 }

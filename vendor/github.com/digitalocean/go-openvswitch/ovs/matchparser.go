@@ -35,7 +35,7 @@ func parseMatch(key string, value string) (Match, error) {
 		return parseIntMatch(key, value, math.MaxUint8)
 	case ctZone:
 		return parseIntMatch(key, value, math.MaxUint16)
-	case tpSRC, tpDST, udpSRC, udpDST:
+	case tpSRC, tpDST, udpSRC, udpDST, tcpSRC, tcpDST:
 		return parsePort(key, value, math.MaxUint16)
 	case conjID:
 		return parseIntMatch(key, value, math.MaxUint32)
@@ -47,11 +47,11 @@ func parseMatch(key string, value string) (Match, error) {
 		return parseCTState(value)
 	case tcpFlags:
 		return parseTCPFlags(value)
-	case dlSRC:
+	case dlSRC, ethSRC:
 		return DataLinkSource(value), nil
-	case dlDST:
+	case dlDST, ethDST:
 		return DataLinkDestination(value), nil
-	case dlType:
+	case dlType, ethType:
 		etherType, err := parseHexUint16(value)
 		if err != nil {
 			return nil, err
@@ -258,6 +258,10 @@ func parsePort(key string, value string, max int) (Match, error) {
 		return UDPSourceMaskedPort(uint16(values[0]), uint16(values[1])), nil
 	case udpDST:
 		return UDPDestinationMaskedPort(uint16(values[0]), uint16(values[1])), nil
+	case tcpSRC:
+		return TCPSourceMaskedPort(uint16(values[0]), uint16(values[1])), nil
+	case tcpDST:
+		return TCPDestinationMaskedPort(uint16(values[0]), uint16(values[1])), nil
 	}
 	// Return error if input is invalid
 	return nil, fmt.Errorf("no action matched for %s=%s", key, value)

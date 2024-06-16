@@ -41,7 +41,10 @@ const (
 	ctZone      = "ct_zone"
 	dlDST       = "dl_dst"
 	dlSRC       = "dl_src"
+	ethDST      = "eth_dst"
+	ethSRC      = "eth_src"
 	dlType      = "dl_type"
+	ethType     = "eth_type"
 	dlVLAN      = "dl_vlan"
 	dlVLANPCP   = "dl_vlan_pcp"
 	icmp6Code   = "icmpv6_code"
@@ -77,6 +80,8 @@ const (
 	tunv6SRC    = "tun_ipv6_src"
 	udpDST      = "udp_dst"
 	udpSRC      = "udp_src"
+	tcpDST      = "tcp_dst"
+	tcpSRC      = "tcp_src"
 	vlanTCI1    = "vlan_tci1"
 	vlanTCI     = "vlan_tci"
 )
@@ -1156,6 +1161,83 @@ func (m *transportPortMatch) GoString() string {
 	}
 
 	return fmt.Sprintf("ovs.TransportDestinationPort(%d)", m.port)
+}
+
+// TCPSourceMaskedPort matches packets with UDP source port matching a masked port range.
+func TCPSourceMaskedPort(port uint16, mask uint16) Match {
+	return &tcpPortMatch{
+		srcdst: source,
+		port:   port,
+		mask:   mask,
+	}
+}
+
+// TC{DestinationMaskedPort matches packets with a UDP destination port matching a masked port range.
+func TCPDestinationMaskedPort(port uint16, mask uint16) Match {
+	return &tcpPortMatch{
+		srcdst: destination,
+		port:   port,
+		mask:   mask,
+	}
+}
+
+// TCPSourcePort matches packets with a TCP source port matching port.
+func TCPSourcePort(port uint16) Match {
+	return &tcpPortMatch{
+		srcdst: source,
+		port:   port,
+		mask:   0,
+	}
+}
+
+// TCPDestinationPort matches packets with a TCP destination port matching port.
+func TCPDestinationPort(port uint16) Match {
+	return &tcpPortMatch{
+		srcdst: destination,
+		port:   port,
+		mask:   0,
+	}
+}
+
+type tcpPortMatch struct {
+	srcdst string
+	port   uint16
+	mask   uint16
+}
+
+var _ Match = &tcpPortMatch{}
+
+// MarshalText implements Match.
+func (m *tcpPortMatch) MarshalText() ([]byte, error) {
+	return matchTCPPort(m.srcdst, m.port, m.mask)
+}
+
+// matchTCPPort is the common implementation for
+// Tcp{Source,Destination}Port.
+func matchTCPPort(srcdst string, port uint16, mask uint16) ([]byte, error) {
+	// No mask specified
+	if mask == 0 {
+		return bprintf("tcp_%s=%d", srcdst, port), nil
+	}
+
+	return bprintf("tcp_%s=0x%04x/0x%04x", srcdst, port, mask), nil
+}
+
+// GoString implements Match.
+func (m *tcpPortMatch) GoString() string {
+	if m.mask > 0 {
+		if m.srcdst == source {
+			return fmt.Sprintf("ovs.TcpSourceMaskedPort(%#x, %#x)", m.port, m.mask)
+		}
+
+		return fmt.Sprintf("ovs.TcpDestinationMaskedPort(%#x, %#x)", m.port, m.mask)
+	}
+
+	if m.srcdst == source {
+		return fmt.Sprintf("ovs.TcpSourcePort(%d)", m.port)
+	}
+
+	return fmt.Sprintf("ovs.TcpDestinationPort(%d)", m.port)
 }
 
 // A vlanTCIMatch is a Match returned by VLANTCI.
