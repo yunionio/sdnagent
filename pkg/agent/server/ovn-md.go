@@ -543,7 +543,7 @@ func (mdf *ovnMdForward) Serve(ctx context.Context) error {
 					laddr = conn.LocalAddr()
 					raddr = conn.RemoteAddr()
 				)
-				log.Infof("serveConn %s %s->%s: %v", laddr.Network(), raddr, laddr, err)
+				log.Errorf("serveConn %s %s->%s fail: %v", laddr.Network(), raddr, laddr, err)
 			}
 		}()
 	}

@@ -17,6 +17,7 @@ package utils
 import (
 	"bytes"
 	"fmt"
+	"strings"
 	"text/template"
 
 	"github.com/digitalocean/go-openvswitch/ovs"
@@ -63,6 +64,20 @@ func (h *HostLocal) Who() string {
 }
 
 func (h *HostLocal) FlowsMap() (map[string][]*ovs.Flow, error) {
+	var (
+		hexMac = "0x" + strings.TrimLeft(strings.ReplaceAll(h.MAC.String(), ":", ""), "0")
+
+		mdArpRespActions = []string{
+			"move:NXM_OF_ETH_SRC[]->NXM_OF_ETH_DST[]",
+			fmt.Sprintf("load:%s->NXM_OF_ETH_SRC[]", hexMac),
+			"load:0x2->NXM_OF_ARP_OP[]",
+			fmt.Sprintf("load:%s->NXM_NX_ARP_SHA[]", hexMac),
+			"move:NXM_OF_ARP_TPA[]->NXM_OF_ARP_SPA[]",
+			"move:NXM_NX_ARP_SHA[]->NXM_NX_ARP_THA[]",
+			"move:NXM_OF_ARP_SPA[]->NXM_OF_ARP_TPA[]",
+			"in_port",
+		}
+	)
 	ps, err := DumpPort(h.Bridge, h.Ifname)
 	if err != nil {
 		return nil, err
@@ -78,6 +93,7 @@ func (h *HostLocal) FlowsMap() (map[string][]*ovs.Flow, error) {
 		// F(0, 40000, "ipv6", "drop"),
 	}
 	flows = append(flows,
+		F(0, 29311, "arp,arp_op=1,arp_tpa=169.254.169.254", strings.Join(mdArpRespActions, ",")),
 		F(0, 29310, "in_port=LOCAL,tcp,nw_dst=169.254.169.254,tp_dst=80", T("normal")),
 		F(0, 27200, "in_port=LOCAL", "normal"),
 		F(0, 26900, T("in_port={{.PortNoPhy}},dl_dst={{.MAC}}"), "normal"),
