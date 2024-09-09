@@ -16,6 +16,8 @@ package utils
 
 import (
 	"net"
+
+	"yunion.io/x/onecloud/pkg/apis/compute"
 )
 
 type HostLocal struct {
@@ -24,4 +26,6 @@ type HostLocal struct {
 	Ifname     string
 	IP         net.IP
 	MAC        net.HardwareAddr
+
+	HostLocalNets []compute.NetworkDetails
 }

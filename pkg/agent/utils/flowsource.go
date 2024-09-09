@@ -24,6 +24,7 @@ import (
 
 	"yunion.io/x/log"
 	"yunion.io/x/pkg/errors"
+	"yunion.io/x/pkg/util/netutils"
 )
 
 type FlowSource interface {
@@ -75,6 +76,7 @@ func (h *HostLocal) FlowsMap() (map[string][]*ovs.Flow, error) {
 	}
 	T := t(m)
 	flows := []*ovs.Flow{
+		// allow ipv6
 		// F(0, 40000, "ipv6", "drop"),
 	}
 	flows = append(flows,
@@ -113,6 +115,18 @@ func (h *HostLocal) FlowsMap() (map[string][]*ovs.Flow, error) {
 			// 其他 drop
 			F(9, 1000, "", "drop"),
 		)
+	}
+	{
+		// prevent hostlocal IPs leaking outside of host
+		for i := range h.HostLocalNets {
+			netConf := h.HostLocalNets[i]
+			ip4, _ := netutils.NewIPV4Addr(netConf.GuestIpStart)
+			addrMask := fmt.Sprintf("%s/%d", ip4.NetAddr(int8(netConf.GuestIpMask)).String(), netConf.GuestIpMask)
+			flows = append(flows,
+				F(0, 39000, T(fmt.Sprintf("in_port={{.PortNoPhy}},arp,arp_tpa=%s", addrMask)), "drop"),
+				F(0, 39001, T(fmt.Sprintf("in_port={{.PortNoPhy}},arp,arp_spa=%s", addrMask)), "drop"),
+			)
+		}
 	}
 	// NOTE we do not do check of existence of a "switch" guest and
 	// silently "AllowSwitchVMs" here.  That could be deemed as unexpected

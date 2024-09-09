@@ -12,27 +12,4 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-package options
-
-import "yunion.io/x/jsonutils"
-
-type DBInstanceAccountListOptions struct {
-	BaseListOptions
-	DBInstance string `help:"ID or Name of DBInstance" json:"dbinstance"`
-}
-
-func (opts *DBInstanceAccountListOptions) Params() (jsonutils.JSONObject, error) {
-	return ListStructToParams(opts)
-}
-
-type DBInstanceAccountIdOptions struct {
-	ID string `help:"ID of DBInstanceaccount"`
-}
-
-func (opts *DBInstanceAccountIdOptions) GetId() string {
-	return opts.ID
-}
-
-func (opts *DBInstanceAccountIdOptions) Params() (jsonutils.JSONObject, error) {
-	return nil, nil
-}
+package baremetal // import "yunion.io/x/onecloud/pkg/compute/models/baremetal"

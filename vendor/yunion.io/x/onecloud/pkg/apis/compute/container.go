@@ -37,6 +37,16 @@ const (
 	CONTAINER_DEV_NVIDIA_GPU       = "NVIDIA_GPU"
 	CONTAINER_DEV_NVIDIA_MPS       = "NVIDIA_MPS"
 	CONTAINER_DEV_ASCEND_NPU       = "ASCEND_NPU"
+	CONTAINER_DEV_VASTAITECH_GPU   = "VASTAITECH_GPU"
+)
+
+var (
+	CONTAINER_GPU_TYPES = []string{
+		CONTAINER_DEV_CPH_AMD_GPU,
+		CONTAINER_DEV_NVIDIA_GPU,
+		CONTAINER_DEV_NVIDIA_MPS,
+		CONTAINER_DEV_VASTAITECH_GPU,
+	}
 )
 
 const (
@@ -63,10 +73,14 @@ const (
 	CONTAINER_STATUS_RUNNING            = "running"
 	CONTAINER_STATUS_DELETING           = "deleting"
 	CONTAINER_STATUS_DELETE_FAILED      = "delete_failed"
+	// for health check
+	CONTAINER_STATUS_PROBING      = "probing"
+	CONTAINER_STATUS_PROBE_FAILED = "probe_failed"
 )
 
 const (
-	CONTAINER_METADATA_CRI_ID = "cri_id"
+	CONTAINER_METADATA_CRI_ID           = "cri_id"
+	CONTAINER_METADATA_RELEASED_DEVICES = "released_devices"
 )
 
 type ContainerSpec struct {
