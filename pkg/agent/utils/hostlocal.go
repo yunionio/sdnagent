@@ -16,9 +16,12 @@ package utils
 
 import (
 	"net"
+	"sync"
 
-	"yunion.io/x/onecloud/pkg/apis/compute"
+	"yunion.io/x/onecloud/pkg/appsrv"
 )
+
+var hostLocalMap *sync.Map
 
 type HostLocal struct {
 	HostConfig *HostConfig
@@ -27,5 +30,28 @@ type HostLocal struct {
 	IP         net.IP
 	MAC        net.HardwareAddr
 
-	HostLocalNets []compute.NetworkDetails
+	metadataPort int
+	metadataApp  *appsrv.Application
+}
+
+func init() {
+	hostLocalMap = &sync.Map{}
+}
+
+func FetchHostLocal(hl *HostLocal, watcher IServerWatcher) *HostLocal {
+	if uhl, ok := hostLocalMap.Load(hl.Bridge); !ok {
+		// not found, register
+		go hl.StartMetadataServer(watcher)
+		hostLocalMap.Store(hl.Bridge, hl)
+		return hl
+	} else {
+		return uhl.(*HostLocal)
+	}
+}
+
+func findHostLocalByBridge(bridge string) *HostLocal {
+	if val, ok := hostLocalMap.Load(bridge); ok {
+		return val.(*HostLocal)
+	}
+	return nil
 }

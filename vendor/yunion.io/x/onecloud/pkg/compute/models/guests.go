@@ -1750,8 +1750,8 @@ func (manager *SGuestManager) validateCreateData(
 				return nil, httperrors.NewInputParameterError("UEFI image requires UEFI boot mode")
 			}
 		default:
-			// not UEFI or not detectable
-			if input.Bios == "UEFI" {
+			// not UEFI image
+			if input.Bios == "UEFI" && len(imgProperties) != 0 {
 				return nil, httperrors.NewInputParameterError("UEFI boot mode requires UEFI image")
 			}
 		}
@@ -4549,6 +4549,13 @@ func (self *SGuest) CreateDiskOnStorage(ctx context.Context, userCred mcclient.T
 
 	if err != nil {
 		return nil, err
+	}
+
+	if isWithServerCreate {
+		meta, _ := self.GetAllUserMetadata()
+		if len(meta) > 0 {
+			disk.SetUserMetadataAll(ctx, meta, userCred)
+		}
 	}
 
 	if pendingUsage != nil {

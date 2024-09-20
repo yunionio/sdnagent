@@ -94,13 +94,13 @@ func parseMatch(key string, value string) (Match, error) {
 		return IPv6Destination(value), nil
 	case ipv6Label:
 		return parseIPv6Label(value)
-	case nwSRC:
+	case nwSRC, ipSRC:
 		return NetworkSource(value), nil
 	case tunSRC:
 		return NetworkSource(value), nil
 	case tunDST:
 		return NetworkDestination(value), nil
-	case nwDST:
+	case nwDST, ipDST:
 		return NetworkDestination(value), nil
 	case vlanTCI1:
 		return parseVLANTCI1(value)

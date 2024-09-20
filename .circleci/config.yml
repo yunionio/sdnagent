@@ -5,7 +5,7 @@ version: 2
 jobs:
   build:
     docker:
-      - image: yunion/centos-build:go-1.18.3-0
+      - image: yunion/centos-build:go-1.21.10-0
 
     working_directory: /root/go/src/yunion.io/x/sdnagent
     steps:
