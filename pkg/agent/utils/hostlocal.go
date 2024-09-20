@@ -45,7 +45,10 @@ func FetchHostLocal(hl *HostLocal, watcher IServerWatcher) *HostLocal {
 		hostLocalMap.Store(hl.Bridge, hl)
 		return hl
 	} else {
-		return uhl.(*HostLocal)
+		// find, to update fields
+		nhl := uhl.(*HostLocal)
+		nhl.HostConfig = hl.HostConfig
+		return nhl
 	}
 }
 
