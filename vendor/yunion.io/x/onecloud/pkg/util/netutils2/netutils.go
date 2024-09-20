@@ -21,6 +21,7 @@ import (
 	"reflect"
 	"strconv"
 	"strings"
+	"time"
 	"unicode"
 
 	"yunion.io/x/log"
@@ -171,13 +172,20 @@ func AddNicRoutes(routes [][]string, nicDesc *types.SServerNic, mainIp string, n
 			}
 		}
 	}
+
+	if nicDesc.Ip == mainIp {
+		// always add 169.254.169.254 for default NIC
+		routes = addRoute(routes, "169.254.169.254/32", "0.0.0.0")
+	}
 	return routes
 }
 
 func GetNicDns(nicdesc *types.SServerNic) []string {
 	dnslist := []string{}
 	if len(nicdesc.Dns) > 0 {
-		dnslist = append(dnslist, nicdesc.Dns)
+		for _, dns := range strings.Split(nicdesc.Dns, ",") {
+			dnslist = append(dnslist, dns)
+		}
 	}
 	return dnslist
 }
@@ -440,4 +448,32 @@ func PrefixSplit(pref string) (string, int, error) {
 	} else {
 		return pref, 32, nil
 	}
+}
+
+func TestTcpPort(ip string, port int, timeoutSecs int, tries int) error {
+	if timeoutSecs <= 0 {
+		timeoutSecs = 3
+	}
+	if tries <= 0 {
+		tries = 3
+	}
+
+	address := net.JoinHostPort(ip, fmt.Sprintf("%d", port))
+	// 3 second timeout
+	errs := make([]error, 0)
+	for i := 0; i < tries; i++ {
+		conn, err := net.DialTimeout("tcp", address, time.Duration(timeoutSecs)*time.Second)
+		if err != nil {
+			errs = append(errs, err)
+		} else {
+			if conn != nil {
+				_ = conn.Close()
+				return nil
+			} else {
+				errs = append(errs, errors.Wrap(errors.ErrEmpty, "nil conn"))
+			}
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	return errors.NewAggregate(errs)
 }

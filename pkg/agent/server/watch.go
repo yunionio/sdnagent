@@ -45,12 +45,19 @@ type wCmd int
 
 const (
 	wCmdFindGuestDescByIdIP wCmd = iota
+	wCmdFindGuestDescByHostLocalIP
 )
 
 type wCmdFindGuestDescByIdIPData struct {
 	NetId  string
 	IP     string
 	RespCh chan<- *desc.SGuestDesc
+}
+
+type wCmdFindGuestDescByHostLocalIPData struct {
+	HostLocal *utils.HostLocal
+	IP        string
+	RespCh    chan<- *desc.SGuestDesc
 }
 
 type wCmdReq struct {
@@ -316,6 +323,25 @@ func (w *serversWatcher) Start(ctx context.Context, agent *AgentServer) {
 							log.Errorf("guest %s: GetJSONObjectDesc: %v", guestId, err)
 						}
 						robj = obj
+						break
+					}
+				}
+				data.RespCh <- robj
+			case wCmdFindGuestDescByHostLocalIP:
+				var (
+					data      = cmd.data.(wCmdFindGuestDescByHostLocalIPData)
+					hostLocal = data.HostLocal
+					ip        = data.IP
+					robj      *desc.SGuestDesc
+				)
+				for guestId, guest := range w.guests {
+					if nic := guest.FindNicByHostLocalIP(hostLocal, ip); nic != nil {
+						obj, err := guest.GetJSONObjectDesc()
+						if err != nil {
+							log.Errorf("guest %s: GetJSONObjectDesc: %v", guestId, err)
+						}
+						robj = obj
+						break
 					}
 				}
 				data.RespCh <- robj
@@ -337,6 +363,22 @@ func (w *serversWatcher) FindGuestDescByNetIdIP(netId, ip string) *desc.SGuestDe
 	}
 	req := wCmdReq{
 		cmd:  wCmdFindGuestDescByIdIP,
+		data: reqData,
+	}
+	w.cmdCh <- req
+	obj := <-respCh
+	return obj
+}
+
+func (w *serversWatcher) FindGuestDescByHostLocalIp(hostLocal *utils.HostLocal, ip string) *desc.SGuestDesc {
+	respCh := make(chan *desc.SGuestDesc)
+	reqData := wCmdFindGuestDescByHostLocalIPData{
+		HostLocal: hostLocal,
+		IP:        ip,
+		RespCh:    respCh,
+	}
+	req := wCmdReq{
+		cmd:  wCmdFindGuestDescByHostLocalIP,
 		data: reqData,
 	}
 	w.cmdCh <- req
@@ -381,6 +423,15 @@ func (w *serversWatcher) watchEvent(ev *fsnotify.Event) (wev *watchEvent) {
 		} else if ev.Op&fsnotify.Write != 0 {
 			wev.evType = watchEventTypeUpdServer
 			return wev
+		}
+	}
+	return nil
+}
+
+func (w *serversWatcher) GetHostLocalByIp(ip string) *utils.HostLocal {
+	for _, hl := range w.hostLocal.bridgeMap {
+		if hl.IP.String() == ip {
+			return hl
 		}
 	}
 	return nil

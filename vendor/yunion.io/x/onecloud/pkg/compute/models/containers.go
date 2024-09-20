@@ -164,6 +164,10 @@ func (m *SContainerManager) ValidateSpec(ctx context.Context, userCred mcclient.
 		return httperrors.NewInputParameterError("/dev/shm size is small than 64MB")
 	}
 
+	if err := m.ValidateSpecProbe(ctx, userCred, spec); err != nil {
+		return errors.Wrap(err, "validate probe configuration")
+	}
+
 	return nil
 }
 
@@ -247,6 +251,81 @@ func (c *SContainer) CustomizeCreate(ctx context.Context, userCred mcclient.Toke
 	}
 	return nil
 }*/
+
+func (m *SContainerManager) ValidateSpecProbe(ctx context.Context, userCred mcclient.TokenCredential, spec *api.ContainerSpec) error {
+	//if err := m.validateSpecProbe(ctx, userCred, spec.LivenessProbe); err != nil {
+	//	return errors.Wrap(err, "validate liveness probe")
+	//}
+	if err := m.validateSpecProbe(ctx, userCred, spec.StartupProbe); err != nil {
+		return errors.Wrap(err, "validate startup probe")
+	}
+	return nil
+}
+
+func (m *SContainerManager) validateSpecProbe(ctx context.Context, userCred mcclient.TokenCredential, probe *apis.ContainerProbe) error {
+	if probe == nil {
+		return nil
+	}
+	if err := m.validateSpecProbeHandler(probe.ContainerProbeHandler); err != nil {
+		return errors.Wrap(err, "validate container probe handler")
+	}
+	for key, val := range map[string]int32{
+		//"initial_delay_seconds": probe.InitialDelaySeconds,
+		"timeout_seconds":   probe.TimeoutSeconds,
+		"period_seconds":    probe.PeriodSeconds,
+		"success_threshold": probe.SuccessThreshold,
+		"failure_threshold": probe.FailureThreshold,
+	} {
+		if val < 0 {
+			return httperrors.NewInputParameterError(key + " is negative")
+		}
+	}
+
+	//if probe.InitialDelaySeconds == 0 {
+	//	probe.InitialDelaySeconds = 5
+	//}
+	if probe.TimeoutSeconds == 0 {
+		probe.TimeoutSeconds = 3
+	}
+	if probe.PeriodSeconds == 0 {
+		probe.PeriodSeconds = 10
+	}
+	if probe.SuccessThreshold == 0 {
+		probe.SuccessThreshold = 1
+	}
+	if probe.FailureThreshold == 0 {
+		probe.FailureThreshold = 3
+	}
+	return nil
+}
+
+func (m *SContainerManager) validateSpecProbeHandler(probe apis.ContainerProbeHandler) error {
+	isAllNil := true
+	if probe.Exec != nil {
+		isAllNil = false
+		if len(probe.Exec.Command) == 0 {
+			return httperrors.NewInputParameterError("exec command is required")
+		}
+	}
+	if probe.TCPSocket != nil {
+		isAllNil = false
+		port := probe.TCPSocket.Port
+		if port < 1 || port > 65535 {
+			return httperrors.NewInputParameterError("invalid tcp socket port: %d, must between [1,65535]", port)
+		}
+	}
+	if probe.HTTPGet != nil {
+		isAllNil = false
+		port := probe.HTTPGet.Port
+		if port < 1 || port > 65535 {
+			return httperrors.NewInputParameterError("invalid http port: %d, must between [1,65535]", port)
+		}
+	}
+	if isAllNil {
+		return httperrors.NewInputParameterError("one of [exec, http_get, tcp_socket] is required")
+	}
+	return nil
+}
 
 func (c *SContainer) PostCreate(ctx context.Context, userCred mcclient.TokenCredential, ownerId mcclient.IIdentityProvider, query jsonutils.JSONObject, data jsonutils.JSONObject) {
 	c.SVirtualResourceBase.PostCreate(ctx, userCred, ownerId, query, data)
@@ -560,16 +639,83 @@ func (c *SContainer) GetDetailsExecInfo(ctx context.Context, userCred mcclient.T
 	return out, nil
 }
 
-/*func (c *SContainer) PerformExec(ctx context.Context, userCred mcclient.TokenCredential, query jsonutils.JSONObject, body jsonutils.JSONObject) (jsonutils.JSONObject, error) {
+func (c *SContainer) PerformExecSync(ctx context.Context, userCred mcclient.TokenCredential, query jsonutils.JSONObject, input *api.ContainerExecSyncInput) (jsonutils.JSONObject, error) {
 	if c.Status != api.CONTAINER_STATUS_RUNNING {
 		return nil, httperrors.NewInvalidStatusError("Can't exec container in status %s", c.Status)
 	}
-	input := new(api.ContainerExecInput)
-	if err := query.Unmarshal(input); err != nil {
-		return nil, errors.Wrapf(err, "unmarshal query to input: %s", query)
+	return c.GetPodDriver().RequestExecSyncContainer(ctx, userCred, c, input)
+}
+
+func (c *SContainer) PerformSetResourcesLimit(ctx context.Context, userCred mcclient.TokenCredential, _ jsonutils.JSONObject, limit *apis.ContainerResources) (jsonutils.JSONObject, error) {
+	if err := c.ValidateResourcesLimit(limit); err != nil {
+		return nil, errors.Wrap(err, "ValidateResourcesLimit")
 	}
-	if err := c.GetPodDriver().RequestExecContainer(ctx, userCred, c, input); err != nil {
-		return nil, errors.Wrap(err, "RequestExecContainer")
+	if _, err := db.Update(c, func() error {
+		c.Spec.ResourcesLimit = limit
+		return nil
+	}); err != nil {
+		return nil, errors.Wrap(err, "Update spec.resources_limit")
 	}
-	return nil, nil
-}*/
+	if !api.ContainerRunningStatus.Has(c.GetStatus()) {
+		return nil, nil
+	}
+	return c.GetPodDriver().RequestSetContainerResourcesLimit(ctx, userCred, c, limit)
+}
+
+func (c *SContainer) ValidateResourcesLimit(limit *apis.ContainerResources) error {
+	if limit == nil {
+		return httperrors.NewInputParameterError("limit cannot be nil")
+	}
+	pod := c.GetPod()
+	if limit.CpuCfsQuota != nil {
+		if *limit.CpuCfsQuota <= 0 {
+			return httperrors.NewInputParameterError("invalid cpu_cfs_quota %f", *limit.CpuCfsQuota)
+		}
+		if *limit.CpuCfsQuota > float64(pod.VcpuCount) {
+			return httperrors.NewInputParameterError("cpu_cfs_quota %f can't large than %d", *limit.CpuCfsQuota, pod.VcpuCount)
+		}
+	}
+	return nil
+}
+
+type ContainerReleasedDevice struct {
+	*api.ContainerDevice
+	DeviceType  string
+	DeviceModel string
+}
+
+func NewContainerReleasedDevice(device *api.ContainerDevice, devType, devModel string) *ContainerReleasedDevice {
+	return &ContainerReleasedDevice{
+		ContainerDevice: device,
+		DeviceType:      devType,
+		DeviceModel:     devModel,
+	}
+}
+
+func (c *SContainer) SaveReleasedDevices(ctx context.Context, userCred mcclient.TokenCredential, devs map[string]ContainerReleasedDevice) error {
+	return c.SetMetadata(ctx, api.CONTAINER_METADATA_RELEASED_DEVICES, devs, userCred)
+}
+
+func (c *SContainer) GetReleasedDevices(ctx context.Context, userCred mcclient.TokenCredential) (map[string]ContainerReleasedDevice, error) {
+	out := make(map[string]ContainerReleasedDevice, 0)
+	if ret := c.GetMetadata(ctx, api.CONTAINER_METADATA_RELEASED_DEVICES, userCred); ret == "" {
+		return out, nil
+	}
+	obj := c.GetMetadataJson(ctx, api.CONTAINER_METADATA_RELEASED_DEVICES, userCred)
+	if obj == nil {
+		return nil, errors.Error("get metadata released devices")
+	}
+	if err := obj.Unmarshal(&out); err != nil {
+		return nil, errors.Wrap(err, "Unmarshal metadata released devices")
+	}
+	return out, nil
+}
+
+func (c *SContainer) PerformStatus(ctx context.Context, userCred mcclient.TokenCredential, query jsonutils.JSONObject, input apis.PerformStatusInput) (jsonutils.JSONObject, error) {
+	if c.GetStatus() == api.CONTAINER_STATUS_EXITED {
+		if input.Status == api.CONTAINER_STATUS_PROBE_FAILED {
+			return nil, httperrors.NewInputParameterError("can't set container status to %s when %s", input.Status, c.Status)
+		}
+	}
+	return c.SVirtualResourceBase.PerformStatus(ctx, userCred, query, input)
+}

@@ -219,8 +219,8 @@ func (man *ovnMan) ensureGeneveFastpath(ctx context.Context) {
 
 func (man *ovnMan) ensureBasicFlows(ctx context.Context) {
 	var (
-		p       = apis.VpcMappedCidr()
-		hexMac  = "0x" + strings.TrimLeft(strings.ReplaceAll(man.mac, ":", ""), "0")
+		p = apis.VpcMappedCidr()
+		/*hexMac  = "0x" + strings.TrimLeft(strings.ReplaceAll(man.mac, ":", ""), "0")
 		actions = []string{
 			"move:NXM_OF_ETH_SRC[]->NXM_OF_ETH_DST[]",
 			fmt.Sprintf("load:%s->NXM_OF_ETH_SRC[]", hexMac),
@@ -230,12 +230,12 @@ func (man *ovnMan) ensureBasicFlows(ctx context.Context) {
 			"move:NXM_NX_ARP_SHA[]->NXM_NX_ARP_THA[]",
 			"move:NXM_OF_ARP_SPA[]->NXM_OF_ARP_TPA[]",
 			"in_port",
-		}
+		}*/
 	)
 	flows := []*ovs.Flow{
 		utils.F(0, 3050,
 			fmt.Sprintf("in_port=LOCAL,arp,arp_op=1,arp_tpa=%s", p.String()),
-			strings.Join(actions, ",")),
+			utils.FakeArpRespActions(man.mac) /*strings.Join(actions, ",")*/),
 		utils.F(0, 32000,
 			fmt.Sprintf("ip,nw_dst=%s", p.String()),
 			"drop"),

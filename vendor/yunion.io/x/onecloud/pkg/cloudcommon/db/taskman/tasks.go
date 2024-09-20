@@ -70,6 +70,9 @@ const (
 	CONVERT_TASK = "convert_task"
 
 	LANG = "lang"
+
+	taskStatusDone    = "done"
+	TASK_STATUS_QUEUE = "queue"
 )
 
 type STaskManager struct {
@@ -79,12 +82,18 @@ type STaskManager struct {
 }
 
 var TaskManager *STaskManager
+var userCredWidthLimit = 0
 
 func init() {
 	TaskManager = &STaskManager{
 		SModelBaseManager: db.NewModelBaseManager(STask{}, "tasks_tbl", "task", "tasks"),
 	}
 	TaskManager.SetVirtualObject(TaskManager)
+	if field, ok := reflect.TypeOf(&STask{}).Elem().FieldByName("UserCred"); ok {
+		if widthStr := field.Tag.Get(sqlchemy.TAG_WIDTH); len(widthStr) > 0 {
+			userCredWidthLimit, _ = strconv.Atoi(widthStr)
+		}
+	}
 }
 
 type STask struct {
@@ -106,7 +115,8 @@ type STask struct {
 
 	Id string `width:"36" charset:"ascii" primary:"true" list:"user"` // Column(VARCHAR(36, charset='ascii'), primary_key=True, default=get_uuid)
 
-	ObjName  string `width:"128" charset:"utf8" nullable:"false" list:"user"`               //  Column(VARCHAR(128, charset='utf8'), nullable=False)
+	ObjType  string `old_name:"obj_name" json:"obj_type" width:"128" charset:"utf8" nullable:"true" list:"user"`
+	Object   string `json:"object" width:"128" charset:"utf8" nullable:"true" list:"user"`  //  Column(VARCHAR(128, charset='utf8'), nullable=False)
 	ObjId    string `width:"128" charset:"ascii" nullable:"false" list:"user" index:"true"` // Column(VARCHAR(ID_LENGTH, charset='ascii'), nullable=False)
 	TaskName string `width:"64" charset:"ascii" nullable:"false" list:"user"`               // Column(VARCHAR(64, charset='ascii'), nullable=False)
 
@@ -121,6 +131,10 @@ type STask struct {
 
 	taskObject  db.IStandaloneModel   `ignore:"true"`
 	taskObjects []db.IStandaloneModel `ignore:"true"`
+
+	SubTaskCount   int `ignore:"true"`
+	FailSubTaskCnt int `ignore:"true"`
+	SUccSubTaskCnt int `ignore:"true"`
 }
 
 func (manager *STaskManager) CreateByInsertOrUpdate() bool {
@@ -303,13 +317,18 @@ func (manager *STaskManager) NewTask(
 
 	data := fetchTaskParams(ctx, taskName, taskData, parentTaskId, parentTaskNotifyUrl, pendingUsage)
 	task := &STask{
-		ObjName:      obj.Keyword(),
+		ObjType:      obj.Keyword(),
 		ObjId:        obj.GetId(),
+		Object:       obj.GetName(),
 		TaskName:     taskName,
 		UserCred:     userCred,
 		Params:       data,
 		Stage:        TASK_INIT_STAGE,
 		ParentTaskId: parentTaskId,
+	}
+
+	if userCredWidthLimit > 0 && len(userCred.String()) > userCredWidthLimit {
+		return nil, fmt.Errorf("Too many permissions for user %s", userCred.GetUserName())
 	}
 
 	ownerId := obj.GetOwnerId()
@@ -324,6 +343,8 @@ func (manager *STaskManager) NewTask(
 		log.Errorf("Task insert error %s", err)
 		return nil, err
 	}
+	task.SetProgressAndStatus(0, TASK_STATUS_QUEUE)
+
 	parentTask := task.GetParentTask()
 	if parentTask != nil {
 		st := &SSubTask{TaskId: parentTask.Id, Stage: parentTask.Stage, SubtaskId: task.Id}
@@ -359,7 +380,8 @@ func (manager *STaskManager) NewParallelTask(
 
 	data := fetchTaskParams(ctx, taskName, taskData, parentTaskId, parentTaskNotifyUrl, pendingUsage)
 	task := &STask{
-		ObjName:      objs[0].Keyword(),
+		ObjType:      objs[0].Keyword(),
+		Object:       MULTI_OBJECTS_ID,
 		ObjId:        MULTI_OBJECTS_ID,
 		TaskName:     taskName,
 		UserCred:     userCred,
@@ -373,19 +395,25 @@ func (manager *STaskManager) NewParallelTask(
 		log.Errorf("Task insert error %s", err)
 		return nil, err
 	}
+	task.SetProgressAndStatus(0, TASK_STATUS_QUEUE)
 
+	domainIds := stringutils2.NewSortedStrings(nil)
+	tenantIds := stringutils2.NewSortedStrings(nil)
 	for i := range objs {
 		obj := objs[i]
 		to := STaskObject{
 			TaskId: task.Id,
 			ObjId:  obj.GetId(),
+			Object: obj.GetName(),
 		}
 		ownerId := obj.GetOwnerId()
 		if ownerId != nil {
 			to.DomainId = ownerId.GetProjectDomainId()
 			to.ProjectId = ownerId.GetProjectId()
+			domainIds = domainIds.Append(to.DomainId)
+			tenantIds = tenantIds.Append(to.ProjectId)
 		}
-		to.SetModelManager(TaskObjectManager, &to)
+		// to.SetModelManager(TaskObjectManager, &to)
 
 		to.SetModelManager(TaskObjectManager, &to)
 		err := TaskObjectManager.TableSpec().Insert(ctx, &to)
@@ -394,6 +422,12 @@ func (manager *STaskManager) NewParallelTask(
 			return nil, errors.Wrap(err, "insert task object")
 		}
 	}
+
+	db.Update(task, func() error {
+		task.DomainId = strings.Join(domainIds, ",")
+		task.ProjectId = strings.Join(tenantIds, ",")
+		return nil
+	})
 
 	parentTask := task.GetParentTask()
 	if parentTask != nil {
@@ -524,9 +558,9 @@ func execITask(taskValue reflect.Value, task *STask, odata jsonutils.JSONObject,
 		return
 	}
 
-	objManager := db.GetModelManager(task.ObjName)
+	objManager := db.GetModelManager(task.ObjType)
 	if objManager == nil {
-		msg := fmt.Sprintf("model %s not found??? ...", task.ObjName)
+		msg := fmt.Sprintf("model %s %s(%s) not found??? ...", task.ObjType, task.Object, task.ObjId)
 		log.Errorf(msg)
 		task.SetStageFailed(ctx, jsonutils.NewString(msg))
 		task.SaveRequestContext(&ctxData)
@@ -535,7 +569,7 @@ func execITask(taskValue reflect.Value, task *STask, odata jsonutils.JSONObject,
 	// log.Debugf("objManager: %s", objManager)
 	objResManager, ok := objManager.(db.IStandaloneModelManager)
 	if !ok {
-		msg := fmt.Sprintf("model %s is not a resource??? ...", task.ObjName)
+		msg := fmt.Sprintf("model %s %s(%s) is not a resource??? ...", task.ObjType, task.Object, task.ObjId)
 		log.Errorf(msg)
 		task.SetStageFailed(ctx, jsonutils.NewString(msg))
 		task.SaveRequestContext(&ctxData)
@@ -551,7 +585,7 @@ func execITask(taskValue reflect.Value, task *STask, odata jsonutils.JSONObject,
 		for i, objId := range objIds {
 			obj, err := objResManager.FetchById(objId)
 			if err != nil {
-				msg := fmt.Sprintf("fail to find %s object %s", task.ObjName, objId)
+				msg := fmt.Sprintf("fail to find %s object %s", task.ObjType, objId)
 				log.Errorf(msg)
 				task.SetStageFailed(ctx, jsonutils.NewString(msg))
 				task.SaveRequestContext(&ctxData)
@@ -573,7 +607,7 @@ func execITask(taskValue reflect.Value, task *STask, odata jsonutils.JSONObject,
 	} else {
 		obj, err := objResManager.FetchById(task.ObjId)
 		if err != nil {
-			msg := fmt.Sprintf("fail to find %s object %s", task.ObjName, task.ObjId)
+			msg := fmt.Sprintf("fail to find %s object %s", task.ObjType, task.ObjId)
 			log.Errorf(msg)
 			task.SetStageFailed(ctx, jsonutils.NewString(msg))
 			task.SaveRequestContext(&ctxData)
@@ -730,25 +764,35 @@ func (self *STask) SetStage(stageName string, data *jsonutils.JSONDict) error {
 	return err
 }
 
-func (self *STask) GetObjectIdStr() string {
-	if self.ObjId == MULTI_OBJECTS_ID {
-		return strings.Join(TaskObjectManager.GetObjectIds(self), ",")
+func (task *STask) GetObjectIdStr() string {
+	if task.ObjId == MULTI_OBJECTS_ID {
+		return strings.Join(TaskObjectManager.GetObjectIds(task), ",")
 	} else {
-		return self.ObjId
+		return task.ObjId
 	}
 }
 
-func (self *STask) SetStageComplete(ctx context.Context, data *jsonutils.JSONDict) {
-	log.Infof("XXX TASK %s complete", self.TaskName)
-	self.SetStage(TASK_STAGE_COMPLETE, data)
+func (task *STask) GetObjectStr() string {
+	if task.ObjId == MULTI_OBJECTS_ID {
+		return strings.Join(TaskObjectManager.GetObjectNames(task), ",")
+	} else {
+		return task.Object
+	}
+}
+
+func (task *STask) SetStageComplete(ctx context.Context, data *jsonutils.JSONDict) {
+	log.Infof("XXX TASK %s complete", task.TaskName)
+	task.SetStage(TASK_STAGE_COMPLETE, data)
+	task.SetProgressAndStatus(100, taskStatusDone)
 	if data == nil {
 		data = jsonutils.NewDict()
 	}
 	if data.Size() == 0 {
-		data.Add(jsonutils.NewString(self.GetObjectIdStr()), "id")
-		data.Add(jsonutils.NewString(self.ObjName), "name")
+		data.Add(jsonutils.NewString(task.GetObjectIdStr()), "id")
+		data.Add(jsonutils.NewString(task.GetObjectStr()), "name")
+		data.Add(jsonutils.NewString(task.ObjType), "type")
 	}
-	self.NotifyParentTaskComplete(ctx, data, false)
+	task.NotifyParentTaskComplete(ctx, data, false)
 }
 
 func (self *STask) SetStageFailed(ctx context.Context, reason jsonutils.JSONObject) {
@@ -776,6 +820,7 @@ func (self *STask) SetStageFailed(ctx context.Context, reason jsonutils.JSONObje
 	data := jsonutils.NewDict()
 	data.Add(reason, "__failed_reason")
 	self.SetStage(TASK_STAGE_FAILED, data)
+	self.SetProgressAndStatus(100, taskStatusDone)
 	self.NotifyParentTaskFailure(ctx, reason)
 }
 
@@ -835,10 +880,11 @@ func (self *STask) NotifyParentTaskFailure(ctx context.Context, reason jsonutils
 }
 
 func (self *STask) IsCurrentStageComplete() bool {
-	totalSubtasks := SubTaskManager.GetTotalSubtasks(self.Id, self.Stage, "")
-	initSubtasks := SubTaskManager.GetInitSubtasks(self.Id, self.Stage)
-	log.Debugf("Task %s IsCurrentStageComplete totalSubtasks %d initSubtasks %d ", self.String(), len(totalSubtasks), len(initSubtasks))
-	if len(totalSubtasks) > 0 && len(initSubtasks) == 0 {
+	totalSubtasksCnt, _ := SubTaskManager.GetTotalSubtasksCount(self.Id, self.Stage)
+	initSubtasksCnt, _ := SubTaskManager.GetInitSubtasksCount(self.Id, self.Stage)
+	log.Debugf("Task %s IsCurrentStageComplete totalSubtasks %d initSubtasks %d ", self.String(), totalSubtasksCnt, initSubtasksCnt)
+	self.SetProgress(float32(totalSubtasksCnt-initSubtasksCnt) / float32(totalSubtasksCnt))
+	if totalSubtasksCnt > 0 && initSubtasksCnt == 0 {
 		return true
 	} else {
 		return false
@@ -947,7 +993,7 @@ func (manager *STaskManager) QueryTasksOfObject(obj db.IStandaloneModel, since t
 	subq1 := manager.Query()
 	{
 		subq1 = subq1.Equals("obj_id", obj.GetId())
-		subq1 = subq1.Equals("obj_name", obj.Keyword())
+		subq1 = subq1.Equals("obj_type", obj.Keyword())
 		if !since.IsZero() {
 			subq1 = subq1.GE("created_at", since)
 		}
@@ -970,7 +1016,7 @@ func (manager *STaskManager) QueryTasksOfObject(obj db.IStandaloneModel, since t
 			sqlchemy.Equals(taskObjs.Field("obj_id"), obj.GetId()),
 		))
 		subq2 = subq2.Filter(sqlchemy.Equals(subq2.Field("obj_id"), MULTI_OBJECTS_ID))
-		subq2 = subq2.Filter(sqlchemy.Equals(subq2.Field("obj_name"), obj.Keyword()))
+		subq2 = subq2.Filter(sqlchemy.Equals(subq2.Field("obj_type"), obj.Keyword()))
 		if !since.IsZero() {
 			subq2 = subq2.Filter(sqlchemy.GE(subq2.Field("created_at"), since))
 		}
@@ -1051,7 +1097,11 @@ func (manager *STaskManager) ListItemFilter(
 	}
 
 	if len(input.ObjName) > 0 {
-		q = q.In("obj_name", input.ObjName)
+		q = q.In("object", input.ObjName)
+	}
+
+	if len(input.ObjType) > 0 {
+		q = q.In("obj_type", input.ObjType)
 	}
 
 	if len(input.TaskName) > 0 {
@@ -1098,7 +1148,42 @@ func (manager *STaskManager) ListItemFilter(
 		}
 	}
 
-	q.DebugQuery2("taskQuery")
+	if input.Details != nil && *input.Details {
+		subSQFunc := func(status string, cntField string) *sqlchemy.SSubQuery {
+			subQ := SubTaskManager.Query()
+			if len(status) > 0 {
+				subQ = subQ.Equals("status", status)
+			}
+			subQ = subQ.GroupBy(subQ.Field("task_id"))
+			subQ = subQ.AppendField(subQ.Field("task_id"))
+			subQ = subQ.AppendField(sqlchemy.COUNT(cntField))
+			return subQ.SubQuery()
+		}
+
+		{
+			subSQ := subSQFunc("", "sub_task_count")
+			q = q.LeftJoin(subSQ, sqlchemy.Equals(subSQ.Field("task_id"), q.Field("id")))
+			q = q.AppendField(subSQ.Field("sub_task_count"))
+		}
+
+		{
+			failSubSQ := subSQFunc(SUBTASK_FAIL, "fail_sub_task_cnt")
+			q = q.LeftJoin(failSubSQ, sqlchemy.Equals(failSubSQ.Field("task_id"), q.Field("id")))
+			q = q.AppendField(failSubSQ.Field("fail_sub_task_cnt"))
+		}
+
+		{
+			succSubSQ := subSQFunc(SUBTASK_SUCC, "succ_sub_task_cnt")
+			q = q.LeftJoin(succSubSQ, sqlchemy.Equals(succSubSQ.Field("task_id"), q.Field("id")))
+			q = q.AppendField(succSubSQ.Field("succ_sub_task_cnt"))
+		}
+
+		for _, c := range manager.TableSpec().Columns() {
+			q = q.AppendField(q.Field(c.Name()))
+		}
+	}
+
+	// q.DebugQuery2("taskQuery")
 
 	return q, nil
 }
@@ -1173,8 +1258,8 @@ func (manager *STaskManager) OrderByExtraFields(
 
 func (task *STask) SetProgressAndStatus(progress float32, status string) error {
 	_, err := db.Update(task, func() error {
-		task.SetProgressValue(progress)
 		task.SetStatusValue(status)
+		task.SetProgressValue(progress)
 		return nil
 	})
 	if err != nil {
@@ -1190,6 +1275,20 @@ func (task *STask) SetProgress(progress float32) error {
 	})
 	if err != nil {
 		return errors.Wrap(err, "Update")
+	}
+	return nil
+}
+
+func (manager *STaskManager) InitializeData() error {
+	q := manager.Query().NotIn("stage", []string{TASK_STAGE_FAILED, TASK_STAGE_COMPLETE})
+	tasks := make([]STask, 0)
+	err := db.FetchModelObjects(manager, q, &tasks)
+	if err != nil {
+		return errors.Wrap(err, "FetchModelObjects")
+	}
+	reason := jsonutils.NewString("service restart")
+	for i := range tasks {
+		tasks[i].SetStageFailed(context.Background(), reason)
 	}
 	return nil
 }

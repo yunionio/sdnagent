@@ -527,6 +527,8 @@ func (self *SGuest) GetSchedMigrateParams(
 	if input.PreferHostId != "" {
 		schedDesc.ServerConfig.PreferHost = input.PreferHostId
 	}
+
+	schedDesc.ResetCpuNumaPin = input.ResetCpuNumaPin
 	if input.LiveMigrate {
 		schedDesc.LiveMigrate = input.LiveMigrate
 		if self.GetMetadata(context.Background(), "__cpu_mode", userCred) != api.CPU_MODE_QEMU {
@@ -543,6 +545,11 @@ func (self *SGuest) GetSchedMigrateParams(
 			schedDesc.TargetHostKernel, _ = host.SysInfo.GetString("kernel_version")
 			schedDesc.SkipKernelCheck = &input.SkipKernelCheck
 			schedDesc.HostMemPageSizeKB = host.PageSizeKB
+		}
+		if self.CpuNumaPin != nil {
+			cpuNumaPin := make([]schedapi.SCpuNumaPin, 0)
+			self.CpuNumaPin.Unmarshal(&cpuNumaPin)
+			schedDesc.CpuNumaPin = cpuNumaPin
 		}
 	}
 	schedDesc.ReuseNetwork = true
@@ -562,7 +569,8 @@ func (self *SGuest) StartMigrateTask(
 	ctx context.Context, userCred mcclient.TokenCredential,
 	isRescueMode, autoStart bool, guestStatus, preferHostId, parentTaskId string,
 ) error {
-	self.SetStatus(ctx, userCred, api.VM_START_MIGRATE, "")
+	vmStatus := api.VM_START_MIGRATE
+
 	data := jsonutils.NewDict()
 	if isRescueMode {
 		data.Set("is_rescue_mode", jsonutils.JSONTrue)
@@ -573,11 +581,17 @@ func (self *SGuest) StartMigrateTask(
 	if autoStart {
 		data.Set("auto_start", jsonutils.JSONTrue)
 	}
+	if self.HostId == preferHostId {
+		vmStatus = api.VM_STARTING
+		data.Set("reset_cpu_numa_pin", jsonutils.JSONTrue)
+	}
+
 	data.Set("guest_status", jsonutils.NewString(guestStatus))
 	dedicateMigrateTask := "GuestMigrateTask"
-	if self.GetHypervisor() != api.HYPERVISOR_KVM {
+	if !utils.IsInStringArray(self.GetHypervisor(), []string{api.HYPERVISOR_KVM, api.HYPERVISOR_POD}) {
 		dedicateMigrateTask = "ManagedGuestMigrateTask" //托管私有云
 	}
+	self.SetStatus(ctx, userCred, vmStatus, "")
 	if task, err := taskman.TaskManager.NewTask(ctx, dedicateMigrateTask, self, userCred, data, parentTaskId, "", nil); err != nil {
 		log.Errorln(err)
 		return err
@@ -792,6 +806,9 @@ func (self *SGuest) PerformSetPassword(ctx context.Context, userCred mcclient.To
 		inputDeploy.AutoStart = input.AutoStart
 		inputDeploy.Password = input.Password
 		inputDeploy.ResetPassword = input.ResetPassword
+		if input.Username != "" {
+			inputDeploy.LoginAccount = input.Username
+		}
 		return self.PerformDeploy(ctx, userCred, query, inputDeploy)
 	}
 }
@@ -875,6 +892,14 @@ func (self *SGuest) PerformDeploy(
 	doRestart := false
 	if input.ResetPassword {
 		doRestart = driver.IsNeedRestartForResetLoginInfo()
+		if len(input.LoginAccount) > 0 {
+			if len(input.LoginAccount) > 32 {
+				return nil, httperrors.NewInputParameterError("login_account is longer than 32 chars")
+			}
+			if err := GuestManager.ValidateNameLoginAccount(input.LoginAccount); err != nil {
+				return nil, err
+			}
+		}
 	}
 
 	deployStatus, err := driver.GetDeployStatus()
@@ -1129,7 +1154,7 @@ func (self *SGuest) PerformStart(
 			if err != nil {
 				return nil, errors.Wrapf(err, "GetDriver")
 			}
-			err = driver.PerformStart(ctx, userCred, self, kwargs)
+			err = driver.PerformStart(ctx, userCred, self, kwargs, "")
 			return nil, err
 		} else {
 			return nil, httperrors.NewInvalidStatusError("Some disk not ready")
@@ -1532,7 +1557,20 @@ func (self *SGuest) StartGueststartTask(
 	ctx context.Context, userCred mcclient.TokenCredential,
 	data *jsonutils.JSONDict, parentTaskId string,
 ) error {
-	if self.Hypervisor == api.HYPERVISOR_KVM && self.guestDisksStorageTypeIsShared() {
+	schedStart := self.Hypervisor == api.HYPERVISOR_KVM && self.guestDisksStorageTypeIsShared()
+	if options.Options.IgnoreNonrunningGuests {
+		host := HostManager.FetchHostById(self.HostId)
+		if host != nil && host.EnableNumaAllocate {
+			schedStart = true
+		}
+	}
+
+	if self.CpuNumaPin != nil {
+		// clean cpu numa pin
+		self.SetCpuNumaPin(ctx, userCred, nil, nil)
+	}
+
+	if schedStart {
 		return self.GuestSchedStartTask(ctx, userCred, data, parentTaskId)
 	} else {
 		return self.GuestNonSchedStartTask(ctx, userCred, data, parentTaskId)
@@ -1829,6 +1867,16 @@ func (self *SGuest) PerformRebuildRoot(
 	}
 
 	input.ResetPassword = resetPasswd
+	if input.ResetPassword {
+		if len(input.LoginAccount) > 0 {
+			if len(input.LoginAccount) > 32 {
+				return nil, httperrors.NewInputParameterError("login_account is longer than 32 chars")
+			}
+			if err := GuestManager.ValidateNameLoginAccount(input.LoginAccount); err != nil {
+				return nil, err
+			}
+		}
+	}
 
 	return nil, self.StartRebuildRootTask(ctx, userCred, input.ImageId, needStop, autoStart, allDisks, &input.ServerDeployInputBase)
 }
@@ -2044,6 +2092,66 @@ func (self *SGuest) StartGuestDetachdiskTask(
 	return driver.StartGuestDetachdiskTask(ctx, userCred, self, taskData, parentTaskId)
 }
 
+func (self *SGuest) GetReleasedIsolatedDevices(ctx context.Context, userCred mcclient.TokenCredential) ([]api.ServerReleasedIsolatedDevice, error) {
+	devs := make([]api.ServerReleasedIsolatedDevice, 0)
+	if ret := self.GetMetadata(ctx, api.VM_METADATA_RELEASED_DEVICES, userCred); ret == "" {
+		return devs, nil
+	}
+	obj := self.GetMetadataJson(ctx, api.VM_METADATA_RELEASED_DEVICES, userCred)
+	if obj == nil {
+		return nil, errors.Error("get medata json")
+	}
+	if err := obj.Unmarshal(&devs); err != nil {
+		return nil, errors.Wrapf(err, "unmarshal json string: %s", obj.String())
+	}
+	return devs, nil
+}
+
+func (self *SGuest) SetReleasedIsolatedDevices(ctx context.Context, userCred mcclient.TokenCredential, devs []SIsolatedDevice) error {
+	records := make([]api.ServerReleasedIsolatedDevice, 0)
+	for _, dev := range devs {
+		record := api.ServerReleasedIsolatedDevice{
+			DevType: dev.DevType,
+			Model:   dev.Model,
+		}
+		records = append(records, record)
+	}
+	if err := self.SetMetadata(ctx, api.VM_METADATA_RELEASED_DEVICES, records, userCred); err != nil {
+		return errors.Wrap(err, "set metadata")
+	}
+	return nil
+}
+
+func (self *SGuest) DetachIsolatedDevices(ctx context.Context, userCred mcclient.TokenCredential, devs []SIsolatedDevice) error {
+	host, _ := self.GetHost()
+	lockman.LockObject(ctx, host)
+	defer lockman.ReleaseObject(ctx, host)
+	for i := 0; i < len(devs); i++ {
+		// check first
+		dev := devs[i]
+		if !utils.IsInStringArray(dev.DevType, api.VALID_ATTACH_TYPES) {
+			if devModel, err := IsolatedDeviceModelManager.GetByDevType(dev.DevType); err != nil {
+				msg := fmt.Sprintf("Can't separately detach dev type %s", dev.DevType)
+				logclient.AddActionLogWithContext(ctx, self, logclient.ACT_GUEST_DETACH_ISOLATED_DEVICE, msg, userCred, false)
+				return httperrors.NewBadRequestError(msg)
+			} else {
+				if !devModel.HotPluggable.Bool() && self.GetStatus() == api.VM_RUNNING {
+					msg := fmt.Sprintf("dev type %s model %s unhotpluggable", dev.DevType, devModel.Model)
+					logclient.AddActionLogWithContext(ctx, self, logclient.ACT_GUEST_DETACH_ISOLATED_DEVICE, msg, userCred, false)
+					return httperrors.NewBadRequestError(msg)
+				}
+			}
+		}
+	}
+	for i := 0; i < len(devs); i++ {
+		err := self.detachIsolateDevice(ctx, userCred, &devs[i])
+		if err != nil {
+			return errors.Wrapf(err, "detach device %s", devs[i].GetId())
+		}
+	}
+	return nil
+}
+
 // 卸载透传设备
 func (self *SGuest) PerformDetachIsolatedDevice(ctx context.Context, userCred mcclient.TokenCredential, query jsonutils.JSONObject, data jsonutils.JSONObject) (jsonutils.JSONObject, error) {
 	if self.Hypervisor != api.HYPERVISOR_KVM && self.Hypervisor != api.HYPERVISOR_POD {
@@ -2056,6 +2164,7 @@ func (self *SGuest) PerformDetachIsolatedDevice(ctx context.Context, userCred mc
 		return nil, httperrors.NewInvalidStatusError(msg)
 	}
 	var detachAllDevice = jsonutils.QueryBoolean(data, "detach_all", false)
+	devs := make([]SIsolatedDevice, 0)
 	if !detachAllDevice {
 		device, err := data.GetString("device")
 		if err != nil {
@@ -2063,40 +2172,21 @@ func (self *SGuest) PerformDetachIsolatedDevice(ctx context.Context, userCred mc
 			logclient.AddActionLogWithContext(ctx, self, logclient.ACT_GUEST_DETACH_ISOLATED_DEVICE, msg, userCred, false)
 			return nil, httperrors.NewBadRequestError(msg)
 		}
-		err = self.startDetachIsolateDeviceWithoutNic(ctx, userCred, device)
+		iDev, err := IsolatedDeviceManager.FetchByIdOrName(ctx, userCred, device)
 		if err != nil {
-			return nil, err
+			msgFmt := "Isolated device %s not found"
+			msg := fmt.Sprintf(msgFmt, device)
+			logclient.AddActionLogWithContext(ctx, self, logclient.ACT_GUEST_DETACH_ISOLATED_DEVICE, msg, userCred, false)
+			return nil, httperrors.NewBadRequestError(msgFmt, device)
 		}
+		devs = append(devs, *iDev.(*SIsolatedDevice))
 	} else {
-		devs, _ := self.GetIsolatedDevices()
-		host, _ := self.GetHost()
-		lockman.LockObject(ctx, host)
-		defer lockman.ReleaseObject(ctx, host)
-		for i := 0; i < len(devs); i++ {
-			// check first
-			dev := devs[i]
-			if !utils.IsInStringArray(dev.DevType, api.VALID_ATTACH_TYPES) {
-				if devModel, err := IsolatedDeviceModelManager.GetByDevType(dev.DevType); err != nil {
-					msg := fmt.Sprintf("Can't separately detach dev type %s", dev.DevType)
-					logclient.AddActionLogWithContext(ctx, self, logclient.ACT_GUEST_DETACH_ISOLATED_DEVICE, msg, userCred, false)
-					return nil, httperrors.NewBadRequestError(msg)
-				} else {
-					if !devModel.HotPluggable.Bool() && self.GetStatus() == api.VM_RUNNING {
-						msg := fmt.Sprintf("dev type %s model %s unhotpluggable", dev.DevType, devModel.Model)
-						logclient.AddActionLogWithContext(ctx, self, logclient.ACT_GUEST_DETACH_ISOLATED_DEVICE, msg, userCred, false)
-						return nil, httperrors.NewBadRequestError(msg)
-					}
-				}
-			}
-		}
-		for i := 0; i < len(devs); i++ {
-			err := self.detachIsolateDevice(ctx, userCred, &devs[i])
-			if err != nil {
-				return nil, err
-			}
-		}
+		devs, _ = self.GetIsolatedDevices()
 	}
-	return nil, self.startIsolatedDevicesSyncTask(ctx, userCred, jsonutils.QueryBoolean(data, "auto_start", false), "")
+	if err := self.DetachIsolatedDevices(ctx, userCred, devs); err != nil {
+		return nil, err
+	}
+	return nil, self.StartIsolatedDevicesSyncTask(ctx, userCred, jsonutils.QueryBoolean(data, "auto_start", false), "")
 }
 
 func (self *SGuest) startDetachIsolateDeviceWithoutNic(ctx context.Context, userCred mcclient.TokenCredential, device string) error {
@@ -2108,25 +2198,7 @@ func (self *SGuest) startDetachIsolateDeviceWithoutNic(ctx context.Context, user
 		return httperrors.NewBadRequestError(msgFmt, device)
 	}
 	dev := iDev.(*SIsolatedDevice)
-	if !utils.IsInStringArray(dev.DevType, api.VALID_ATTACH_TYPES) {
-		if devModel, err := IsolatedDeviceModelManager.GetByDevType(dev.DevType); err != nil {
-			msg := fmt.Sprintf("Can't separately detach dev type %s", dev.DevType)
-			logclient.AddActionLogWithContext(ctx, self, logclient.ACT_GUEST_DETACH_ISOLATED_DEVICE, msg, userCred, false)
-			return httperrors.NewBadRequestError(msg)
-		} else {
-			if !devModel.HotPluggable.Bool() && self.GetStatus() == api.VM_RUNNING {
-				msg := fmt.Sprintf("dev type %s model %s unhotpluggable", dev.DevType, devModel.Model)
-				logclient.AddActionLogWithContext(ctx, self, logclient.ACT_GUEST_DETACH_ISOLATED_DEVICE, msg, userCred, false)
-				return httperrors.NewBadRequestError(msg)
-			}
-		}
-	}
-
-	host, _ := self.GetHost()
-	lockman.LockObject(ctx, host)
-	defer lockman.ReleaseObject(ctx, host)
-	err = self.detachIsolateDevice(ctx, userCred, dev)
-	return err
+	return self.DetachIsolatedDevices(ctx, userCred, []SIsolatedDevice{*dev})
 }
 
 func (self *SGuest) detachIsolateDevice(ctx context.Context, userCred mcclient.TokenCredential, dev *SIsolatedDevice) error {
@@ -2134,6 +2206,10 @@ func (self *SGuest) detachIsolateDevice(ctx context.Context, userCred mcclient.T
 		msg := "Isolated device is not attached to this guest"
 		logclient.AddActionLogWithContext(ctx, self, logclient.ACT_GUEST_DETACH_ISOLATED_DEVICE, msg, userCred, false)
 		return httperrors.NewBadRequestError(msg)
+	}
+	drv, _ := self.GetDriver()
+	if err := drv.BeforeDetachIsolatedDevice(ctx, userCred, self, dev); err != nil {
+		return errors.Wrapf(err, "BeforeDetachIsolatedDevice %s of guest %s", jsonutils.Marshal(dev), self.GetId())
 	}
 	_, err := db.Update(dev, func() error {
 		dev.GuestId = ""
@@ -2189,53 +2265,59 @@ func (self *SGuest) StartAttachIsolatedDevices(ctx context.Context, userCred mcc
 		return err
 	}
 	// perform post attach task
-	return self.startIsolatedDevicesSyncTask(ctx, userCred, autoStart, "")
+	return self.StartIsolatedDevicesSyncTask(ctx, userCred, autoStart, "")
 }
 
-func (self *SGuest) startAttachIsolatedDevices(ctx context.Context, userCred mcclient.TokenCredential, devModel string, count int) error {
+func (self *SGuest) AttachIsolatedDevices(ctx context.Context, userCred mcclient.TokenCredential, devModelCount map[string]int) error {
 	host, _ := self.GetHost()
 	lockman.LockObject(ctx, host)
 	defer lockman.ReleaseObject(ctx, host)
-	devs, err := IsolatedDeviceManager.GetDevsOnHost(host.Id, devModel, count)
-	if err != nil {
-		return httperrors.NewInternalServerError("fetch gpu failed %s", err)
-	}
-	if len(devs) == 0 || len(devs) != count {
-		return httperrors.NewBadRequestError("guest %s host %s isolated device not enough", self.GetName(), host.GetName())
-	}
-	dev := devs[0]
-	if !utils.IsInStringArray(dev.DevType, api.VALID_ATTACH_TYPES) {
-		if devModel, err := IsolatedDeviceModelManager.GetByDevType(dev.DevType); err != nil {
-			return httperrors.NewBadRequestError("Can't separately attach dev type %s", dev.DevType)
-		} else {
-			if !devModel.HotPluggable.Bool() && self.GetStatus() == api.VM_RUNNING {
-				return httperrors.NewBadRequestError("dev type %s model %s unhotpluggable", dev.DevType, devModel.Model)
-			}
-		}
-	}
 
-	if dev.DevType == api.LEGACY_VGPU_TYPE {
-		devs, err := self.GetIsolatedDevices()
+	unusedDevs := []SIsolatedDevice{}
+	for devModel, count := range devModelCount {
+		devs, err := IsolatedDeviceManager.GetUnusedDevsOnHost(host.Id, devModel, count)
 		if err != nil {
-			return errors.Wrap(err, "get isolated devices")
+			return httperrors.NewInternalServerError("fetch gpu failed %s", err)
 		}
-		for i := range devs {
-			if devs[i].DevType == api.LEGACY_VGPU_TYPE {
-				return httperrors.NewBadRequestError("Nvidia vgpu count exceed > 1")
-			} else if utils.IsInStringArray(devs[i].DevType, api.VALID_GPU_TYPES) {
-				return httperrors.NewBadRequestError("Nvidia vgpu can't passthrough with other gpus")
+		if len(devs) == 0 || len(devs) != count {
+			return httperrors.NewBadRequestError("require %d %s isolated device of host %s is not enough", count, devModel, host.GetName())
+		}
+		dev := devs[0]
+		if !utils.IsInStringArray(dev.DevType, api.VALID_ATTACH_TYPES) {
+			if devModel, err := IsolatedDeviceModelManager.GetByDevType(dev.DevType); err != nil {
+				return httperrors.NewBadRequestError("Can't separately attach dev type %s", dev.DevType)
+			} else {
+				if !devModel.HotPluggable.Bool() && self.GetStatus() == api.VM_RUNNING {
+					return httperrors.NewBadRequestError("dev type %s model %s unhotpluggable", dev.DevType, devModel.Model)
+				}
 			}
 		}
+		if dev.DevType == api.LEGACY_VGPU_TYPE {
+			devs, err := self.GetIsolatedDevices()
+			if err != nil {
+				return errors.Wrap(err, "get isolated devices")
+			}
+			for i := range devs {
+				if devs[i].DevType == api.LEGACY_VGPU_TYPE {
+					return httperrors.NewBadRequestError("Nvidia vgpu count exceed > 1")
+				} else if utils.IsInStringArray(devs[i].DevType, api.VALID_GPU_TYPES) {
+					return httperrors.NewBadRequestError("Nvidia vgpu can't passthrough with other gpus")
+				}
+			}
+		}
+		unusedDevs = append(unusedDevs, devs...)
 	}
-
 	defer func() { go host.ClearSchedDescCache() }()
-	for i := 0; i < len(devs); i++ {
-		err = self.attachIsolatedDevice(ctx, userCred, &devs[i], nil, nil)
-		if err != nil {
-			return err
+	for i := 0; i < len(unusedDevs); i++ {
+		if err := self.attachIsolatedDevice(ctx, userCred, &unusedDevs[i], nil, nil); err != nil {
+			return errors.Wrapf(err, "attach device %s", unusedDevs[i].GetId())
 		}
 	}
 	return nil
+}
+
+func (self *SGuest) startAttachIsolatedDevices(ctx context.Context, userCred mcclient.TokenCredential, devModel string, count int) error {
+	return self.AttachIsolatedDevices(ctx, userCred, map[string]int{devModel: count})
 }
 
 func (self *SGuest) StartAttachIsolatedDeviceGpuOrUsb(ctx context.Context, userCred mcclient.TokenCredential, device string, autoStart bool) error {
@@ -2243,7 +2325,7 @@ func (self *SGuest) StartAttachIsolatedDeviceGpuOrUsb(ctx context.Context, userC
 		return err
 	}
 	// perform post attach task
-	return self.startIsolatedDevicesSyncTask(ctx, userCred, autoStart, "")
+	return self.StartIsolatedDevicesSyncTask(ctx, userCred, autoStart, "")
 }
 
 func (self *SGuest) startAttachIsolatedDevGeneral(ctx context.Context, userCred mcclient.TokenCredential, device string) error {
@@ -2304,7 +2386,11 @@ func (self *SGuest) attachIsolatedDevice(ctx context.Context, userCred mcclient.
 		self.HostId {
 		return fmt.Errorf("Isolated device and guest are not located in the same host")
 	}
-	_, err := db.Update(dev, func() error {
+	drv, _ := self.GetDriver()
+	if err := drv.BeforeAttachIsolatedDevice(ctx, userCred, self, dev); err != nil {
+		return errors.Wrapf(err, "BeforeAttachIsolatedDevice %s of guest %s", jsonutils.Marshal(dev), self.GetId())
+	}
+	if _, err := db.Update(dev, func() error {
 		dev.GuestId = self.Id
 		if networkIndex != nil {
 			dev.NetworkIndex = *networkIndex
@@ -2317,9 +2403,8 @@ func (self *SGuest) attachIsolatedDevice(ctx context.Context, userCred mcclient.
 			dev.DiskIndex = -1
 		}
 		return nil
-	})
-	if err != nil {
-		return err
+	}); err != nil {
+		return errors.Wrap(err, "db.Update")
 	}
 	db.OpsLog.LogEvent(self, db.ACT_GUEST_ATTACH_ISOLATED_DEVICE, dev.GetShortDesc(ctx), userCred)
 	return nil
@@ -2373,17 +2458,17 @@ func (self *SGuest) PerformSetIsolatedDevice(ctx context.Context, userCred mccli
 			return nil, err
 		}
 	}
-	return nil, self.startIsolatedDevicesSyncTask(ctx, userCred, jsonutils.QueryBoolean(data, "auto_start", false), "")
+	return nil, self.StartIsolatedDevicesSyncTask(ctx, userCred, jsonutils.QueryBoolean(data, "auto_start", false), "")
 }
 
-func (self *SGuest) startIsolatedDevicesSyncTask(ctx context.Context, userCred mcclient.TokenCredential, autoStart bool, parenetId string) error {
+func (self *SGuest) StartIsolatedDevicesSyncTask(ctx context.Context, userCred mcclient.TokenCredential, autoStart bool, parentId string) error {
 	if self.GetStatus() == api.VM_RUNNING {
 		autoStart = false
 	}
 	data := jsonutils.Marshal(map[string]interface{}{
 		"auto_start": autoStart,
 	}).(*jsonutils.JSONDict)
-	if task, err := taskman.TaskManager.NewTask(ctx, "GuestIsolatedDeviceSyncTask", self, userCred, data, parenetId, "", nil); err != nil {
+	if task, err := taskman.TaskManager.NewTask(ctx, "GuestIsolatedDeviceSyncTask", self, userCred, data, parentId, "", nil); err != nil {
 		return err
 	} else {
 		return task.ScheduleRun(nil)
@@ -2941,14 +3026,14 @@ func (self *SGuest) PerformAttachnetwork(
 }
 
 // 调整带宽
-func (self *SGuest) PerformChangeBandwidth(
+func (guest *SGuest) PerformChangeBandwidth(
 	ctx context.Context,
 	userCred mcclient.TokenCredential,
 	query jsonutils.JSONObject,
 	input api.ServerChangeBandwidthInput,
 ) (jsonutils.JSONObject, error) {
-	if !utils.IsInStringArray(self.Status, []string{api.VM_READY, api.VM_RUNNING}) {
-		return nil, httperrors.NewBadRequestError("Cannot change bandwidth in status %s", self.Status)
+	if !utils.IsInStringArray(guest.Status, []string{api.VM_READY, api.VM_RUNNING}) {
+		return nil, httperrors.NewBadRequestError("Cannot change bandwidth in status %s", guest.Status)
 	}
 
 	bandwidth := input.Bandwidth
@@ -2956,7 +3041,7 @@ func (self *SGuest) PerformChangeBandwidth(
 		return nil, httperrors.NewBadRequestError("Bandwidth must be non-negative")
 	}
 
-	guestnic, err := self.findGuestnetworkByInfo(input.ServerNetworkInfo)
+	guestnic, err := guest.findGuestnetworkByInfo(input.ServerNetworkInfo)
 	if err != nil {
 		return nil, errors.Wrap(err, "findGuestnetworkByInfo")
 	}
@@ -2969,9 +3054,14 @@ func (self *SGuest) PerformChangeBandwidth(
 		if err != nil {
 			return nil, err
 		}
-		db.OpsLog.LogEvent(self, db.ACT_CHANGE_BANDWIDTH, diff, userCred)
-		logclient.AddActionLogWithContext(ctx, self, logclient.ACT_VM_CHANGE_BANDWIDTH, diff, userCred, true)
-		return nil, self.StartSyncTask(ctx, userCred, false, "")
+		db.OpsLog.LogEvent(guest, db.ACT_CHANGE_BANDWIDTH, diff, userCred)
+		logclient.AddActionLogWithContext(ctx, guest, logclient.ACT_VM_CHANGE_BANDWIDTH, diff, userCred, true)
+		if guest.Status == api.VM_READY || (input.NoSync != nil && *input.NoSync) {
+			// if no sync, just update db
+			return nil, nil
+		}
+		// otherwise, sync configure to host
+		return nil, guest.StartSyncTask(ctx, userCred, false, "")
 	}
 	return nil, nil
 }
@@ -3095,13 +3185,15 @@ func (self *SGuest) PerformChangeConfig(ctx context.Context, userCred mcclient.T
 }
 
 func (self *SGuest) ChangeConfToSchedDesc(addCpu, addMem int, schedInputDisks []*api.DiskConfig) *schedapi.ScheduleInput {
+	region, _ := self.GetRegion()
 	devs, _ := self.GetIsolatedDevices()
 	desc := &schedapi.ScheduleInput{
 		ServerConfig: schedapi.ServerConfig{
 			ServerConfigs: &api.ServerConfigs{
-				Hypervisor: self.Hypervisor,
-				PreferHost: self.HostId,
-				Disks:      schedInputDisks,
+				Hypervisor:   self.Hypervisor,
+				PreferRegion: region.Id,
+				PreferHost:   self.HostId,
+				Disks:        schedInputDisks,
 			},
 			Memory:  addMem,
 			Ncpu:    addCpu,
@@ -5371,6 +5463,16 @@ func (self *SGuest) PerformSnapshotAndClone(
 		count = *input.Count
 		if count <= 0 {
 			return nil, httperrors.NewInputParameterError("count must > 0")
+		}
+	}
+	if len(input.PreferHostId) > 0 {
+		if len(input.PreferHostId) > 0 {
+			iHost, _ := HostManager.FetchByIdOrName(ctx, userCred, input.PreferHostId)
+			if iHost == nil {
+				return nil, httperrors.NewBadRequestError("Host %s not found", input.PreferHostId)
+			}
+			host := iHost.(*SHost)
+			input.PreferHostId = host.Id
 		}
 	}
 

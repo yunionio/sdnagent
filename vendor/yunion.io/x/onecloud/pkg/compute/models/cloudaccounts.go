@@ -179,6 +179,9 @@ type SCloudaccount struct {
 	SkipSyncResources *api.SkipSyncResources `length:"medium" get:"user" update:"domain" list:"user"`
 
 	EnableAutoSyncResource tristate.TriState `get:"user" update:"domain" create:"optional" list:"user" default:"true"`
+
+	// 云平台默认区域id
+	RegionId string `width:"64" charset:"utf8" list:"user" create:"domain_optional"`
 }
 
 func (acnt *SCloudaccount) IsNotSkipSyncResource(res lockman.ILockedClass) bool {
@@ -346,7 +349,6 @@ func (acnt *SCloudaccount) ValidateUpdateData(
 		return input, httperrors.NewNotSupportedError("%s not support saml auth", acnt.Provider)
 	}
 
-	defaultRegion, _ := jsonutils.Marshal(acnt.Options).GetString("default_region")
 	if len(input.ProxySettingId) > 0 {
 		var proxySetting *proxy.SProxySetting
 		proxySetting, input.ProxySettingResourceInput, err = proxy.ValidateProxySettingResourceInput(ctx, userCred, input.ProxySettingResourceInput)
@@ -359,12 +361,12 @@ func (acnt *SCloudaccount) ValidateUpdateData(
 			proxyFunc := proxySetting.HttpTransportProxyFunc()
 			secret, _ := acnt.getPassword()
 			_, _, err := cloudprovider.IsValidCloudAccount(cloudprovider.ProviderConfig{
-				Vendor:        acnt.Provider,
-				URL:           acnt.AccessUrl,
-				Account:       acnt.Account,
-				Secret:        secret,
-				DefaultRegion: defaultRegion,
-				ProxyFunc:     proxyFunc,
+				Vendor:    acnt.Provider,
+				URL:       acnt.AccessUrl,
+				Account:   acnt.Account,
+				Secret:    secret,
+				RegionId:  acnt.regionId(),
+				ProxyFunc: proxyFunc,
 
 				AliyunResourceGroupIds: options.Options.AliyunResourceGroups,
 
@@ -490,10 +492,6 @@ func (manager *SCloudaccountManager) validateCreateData(
 	}
 	input.Options.Update(jsonutils.Marshal(input.SCloudaccountCredential.SHCSOEndpoints))
 
-	if len(input.DefaultRegion) > 0 {
-		input.Options.Add(jsonutils.NewString(input.DefaultRegion), "default_region")
-	}
-
 	input.SCloudaccount, err = providerDriver.ValidateCreateCloudaccountData(ctx, input.SCloudaccountCredential)
 	if err != nil {
 		return input, err
@@ -521,6 +519,9 @@ func (manager *SCloudaccountManager) validateCreateData(
 	}
 	input.IsPublicCloud = providerDriver.IsPublicCloud()
 	input.IsOnPremise = providerDriver.IsOnPremise()
+	if providerDriver.IsReadOnly() {
+		input.ReadOnly = true
+	}
 
 	if !input.SkipDuplicateAccountCheck {
 		q := manager.Query().Equals("provider", input.Provider)
@@ -553,13 +554,13 @@ func (manager *SCloudaccountManager) validateCreateData(
 		proxyFunc = proxySetting.HttpTransportProxyFunc()
 	}
 	provider, accountId, err := cloudprovider.IsValidCloudAccount(cloudprovider.ProviderConfig{
-		Name:          input.Name,
-		Vendor:        input.Provider,
-		URL:           input.AccessUrl,
-		Account:       input.Account,
-		Secret:        input.Secret,
-		DefaultRegion: input.DefaultRegion,
-		ProxyFunc:     proxyFunc,
+		Name:      input.Name,
+		Vendor:    input.Provider,
+		URL:       input.AccessUrl,
+		Account:   input.Account,
+		Secret:    input.Secret,
+		RegionId:  input.RegionId,
+		ProxyFunc: proxyFunc,
 
 		AdminProjectId:         auth.GetAdminSession(ctx, options.Options.Region).GetProjectId(),
 		AliyunResourceGroupIds: options.Options.AliyunResourceGroups,
@@ -682,6 +683,17 @@ func (acnt *SCloudaccount) getPassword() (string, error) {
 	return utils.DescryptAESBase64(acnt.Id, acnt.Secret)
 }
 
+func (acnt *SCloudaccount) regionId() string {
+	if len(acnt.RegionId) > 0 {
+		return acnt.RegionId
+	}
+	if gotypes.IsNil(acnt.Options) {
+		return ""
+	}
+	regionId, _ := acnt.Options.GetString("default_region")
+	return regionId
+}
+
 func (acnt *SCloudaccount) PerformSync(ctx context.Context, userCred mcclient.TokenCredential, query jsonutils.JSONObject, input api.SyncRangeInput) (jsonutils.JSONObject, error) {
 	if !acnt.GetEnabled() {
 		return nil, httperrors.NewInvalidStatusError("Account disabled")
@@ -715,14 +727,13 @@ func (acnt *SCloudaccount) PerformTestConnectivity(ctx context.Context, userCred
 		return nil, err
 	}
 
-	defaultRegion, _ := jsonutils.Marshal(acnt.Options).GetString("default_region")
 	_, _, err = cloudprovider.IsValidCloudAccount(cloudprovider.ProviderConfig{
 		URL:     acnt.AccessUrl,
 		Vendor:  acnt.Provider,
 		Account: account.Account,
 		Secret:  account.Secret,
 
-		DefaultRegion: defaultRegion,
+		RegionId: acnt.regionId(),
 
 		AliyunResourceGroupIds: options.Options.AliyunResourceGroups,
 
@@ -802,15 +813,14 @@ func (acnt *SCloudaccount) PerformUpdateCredential(ctx context.Context, userCred
 		}
 	}
 
-	defaultRegion, _ := jsonutils.Marshal(acnt.Options).GetString("default_region")
 	_, accountId, err := cloudprovider.IsValidCloudAccount(cloudprovider.ProviderConfig{
-		Name:          acnt.Name,
-		Vendor:        acnt.Provider,
-		URL:           accountAccessUrl,
-		Account:       account.Account,
-		Secret:        account.Secret,
-		Options:       acnt.Options,
-		DefaultRegion: defaultRegion,
+		Name:     acnt.Name,
+		Vendor:   acnt.Provider,
+		URL:      accountAccessUrl,
+		Account:  account.Account,
+		Secret:   account.Secret,
+		Options:  acnt.Options,
+		RegionId: acnt.regionId(),
 
 		AliyunResourceGroupIds: options.Options.AliyunResourceGroups,
 
@@ -1052,7 +1062,6 @@ func (acnt *SCloudaccount) getProviderInternal(ctx context.Context) (cloudprovid
 		return nil, fmt.Errorf("Invalid password %s", err)
 	}
 
-	defaultRegion, _ := jsonutils.Marshal(acnt.Options).GetString("default_region")
 	return cloudprovider.GetProvider(cloudprovider.ProviderConfig{
 		Id:      acnt.Id,
 		Name:    acnt.Name,
@@ -1061,9 +1070,9 @@ func (acnt *SCloudaccount) getProviderInternal(ctx context.Context) (cloudprovid
 		Account: acnt.Account,
 		Secret:  secret,
 
-		Options:       acnt.Options,
-		DefaultRegion: defaultRegion,
-		ProxyFunc:     acnt.proxyFunc(),
+		Options:   acnt.Options,
+		RegionId:  acnt.regionId(),
+		ProxyFunc: acnt.proxyFunc(),
 
 		ReadOnly:               acnt.ReadOnly,
 		AliyunResourceGroupIds: options.Options.AliyunResourceGroups,
@@ -2860,7 +2869,7 @@ type sBrandCapability struct {
 	Capability string
 }
 
-func (manager *SCloudaccountManager) getBrandsOfCapability(region *SCloudregion, zone *SZone, domainId string) ([]sBrandCapability, error) {
+func (manager *SCloudaccountManager) getBrandsOfCapability(region *SCloudregion, domainId string) ([]sBrandCapability, error) {
 	accounts := manager.Query("id", "enabled", "brand")
 	if len(domainId) > 0 {
 		accounts = manager.filterByDomainId(accounts, domainId)
@@ -2876,13 +2885,6 @@ func (manager *SCloudaccountManager) getBrandsOfCapability(region *SCloudregion,
 	q = q.Join(providers, sqlchemy.Equals(q.Field("cloudprovider_id"), providers.Field("id")))
 	q = q.Join(accountSQ, sqlchemy.Equals(providers.Field("cloudaccount_id"), accountSQ.Field("id")))
 
-	if zone != nil {
-		var err error
-		region, err = zone.GetRegion()
-		if err != nil {
-			return nil, errors.Wrapf(err, "GetRegion")
-		}
-	}
 	if region != nil {
 		providerregions := CloudproviderRegionManager.Query().SubQuery()
 		q = q.Join(providerregions, sqlchemy.Equals(q.Field("cloudprovider_id"), providerregions.Field("cloudprovider_id"))).Filter(

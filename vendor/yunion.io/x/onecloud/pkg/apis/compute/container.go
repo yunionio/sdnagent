@@ -19,6 +19,7 @@ import (
 
 	"yunion.io/x/jsonutils"
 	"yunion.io/x/pkg/gotypes"
+	"yunion.io/x/pkg/util/sets"
 
 	"yunion.io/x/onecloud/pkg/apis"
 )
@@ -36,6 +37,17 @@ const (
 	CONTAINER_DEV_NETINT_CA_QUADRA = "NETINT_CA_QUADRA"
 	CONTAINER_DEV_NVIDIA_GPU       = "NVIDIA_GPU"
 	CONTAINER_DEV_NVIDIA_MPS       = "NVIDIA_MPS"
+	CONTAINER_DEV_ASCEND_NPU       = "ASCEND_NPU"
+	CONTAINER_DEV_VASTAITECH_GPU   = "VASTAITECH_GPU"
+)
+
+var (
+	CONTAINER_GPU_TYPES = []string{
+		CONTAINER_DEV_CPH_AMD_GPU,
+		CONTAINER_DEV_NVIDIA_GPU,
+		CONTAINER_DEV_NVIDIA_MPS,
+		CONTAINER_DEV_VASTAITECH_GPU,
+	}
 )
 
 const (
@@ -62,10 +74,18 @@ const (
 	CONTAINER_STATUS_RUNNING            = "running"
 	CONTAINER_STATUS_DELETING           = "deleting"
 	CONTAINER_STATUS_DELETE_FAILED      = "delete_failed"
+	// for health check
+	CONTAINER_STATUS_PROBING      = "probing"
+	CONTAINER_STATUS_PROBE_FAILED = "probe_failed"
+)
+
+var (
+	ContainerRunningStatus = sets.NewString(CONTAINER_STATUS_RUNNING, CONTAINER_STATUS_PROBING)
 )
 
 const (
-	CONTAINER_METADATA_CRI_ID = "cri_id"
+	CONTAINER_METADATA_CRI_ID           = "cri_id"
+	CONTAINER_METADATA_RELEASED_DEVICES = "released_devices"
 )
 
 type ContainerSpec struct {
@@ -152,4 +172,16 @@ type ContainerExecInfoOutput struct {
 type ContainerExecInput struct {
 	Command []string `json:"command"`
 	Tty     bool     `json:"tty"`
+}
+
+type ContainerExecSyncInput struct {
+	Command []string `json:"command"`
+	// Timeout in seconds to stop the command. Default: 0 (run forever).
+	Timeout int64 `json:"timeout"`
+}
+
+type ContainerExecSyncResponse struct {
+	Stdout   string `json:"stdout"`
+	Stderr   string `json:"stderr"`
+	ExitCode int32  `json:"exit_code"`
 }

@@ -68,7 +68,8 @@ type Flow struct {
 
 // A LearnedFlow is defined as part of the Learn action.
 type LearnedFlow struct {
-	Priority    int
+	Priority int
+
 	InPort      int
 	Matches     []Match
 	Table       int
@@ -124,8 +125,11 @@ const (
 	// Variables used in LearnedFlows only.
 	deleteLearned  = "delete_learned"
 	finHardTimeout = "fin_hard_timeout"
+	finIdleTimeout = "fin_idle_timeout"
 	hardTimeout    = "hard_timeout"
 	limit          = "limit"
+	sendFlowRem    = "send_flow_rem"
+	resultDst      = "result_dst"
 
 	portLOCAL = "LOCAL"
 )
@@ -236,9 +240,14 @@ func (f *LearnedFlow) MarshalText() ([]byte, error) {
 		return nil, err
 	}
 
-	b := make([]byte, len(priorityBytes))
-	copy(b, priorityBytes)
+	b := make([]byte, 0)
 
+	b = append(b, table+"="...)
+	b = strconv.AppendInt(b, int64(f.Table), 10)
+
+	b = append(b, ","+priorityString...)
+	// b = make([]byte, len(priorityBytes))
+	// copy(b, priorityBytes)
 	b = strconv.AppendInt(b, int64(f.Priority), 10)
 
 	if f.InPort != 0 {
@@ -256,17 +265,20 @@ func (f *LearnedFlow) MarshalText() ([]byte, error) {
 		b = append(b, ","+strings.Join(matches, ",")...)
 	}
 
-	b = append(b, ","+table+"="...)
-	b = strconv.AppendInt(b, int64(f.Table), 10)
+	if f.IdleTimeout > 0 {
+		b = append(b, ","+idleTimeout+"="...)
+		b = strconv.AppendInt(b, int64(f.IdleTimeout), 10)
+	}
 
-	b = append(b, ","+idleTimeout+"="...)
-	b = strconv.AppendInt(b, int64(f.IdleTimeout), 10)
+	if f.FinHardTimeout > 0 {
+		b = append(b, ","+finHardTimeout+"="...)
+		b = strconv.AppendInt(b, int64(f.FinHardTimeout), 10)
+	}
 
-	b = append(b, ","+finHardTimeout+"="...)
-	b = strconv.AppendInt(b, int64(f.FinHardTimeout), 10)
-
-	b = append(b, ","+hardTimeout+"="...)
-	b = strconv.AppendInt(b, int64(f.HardTimeout), 10)
+	if f.HardTimeout > 0 {
+		b = append(b, ","+hardTimeout+"="...)
+		b = strconv.AppendInt(b, int64(f.HardTimeout), 10)
+	}
 
 	if f.Limit > 0 {
 		// On older version of OpenVSwitch, the limit option doesn't exist.
@@ -419,7 +431,7 @@ func (f *Flow) UnmarshalText(b []byte) error {
 	out, raw, err := p.Parse()
 	if err != nil {
 		return &FlowError{
-			Str: actions,
+			Str: actions + "->" + err.Error(),
 			Err: errInvalidActions,
 		}
 	}
@@ -433,6 +445,152 @@ func (f *Flow) UnmarshalText(b []byte) error {
 					Err: errActionsWithDrop,
 				}
 			}
+		}
+	}
+
+	return nil
+}
+
+// UnmarshalText unmarshals flow text into a Flow.
+func (f *LearnedFlow) UnmarshalText(b []byte) error {
+	// Make a copy per documentation for encoding.TextUnmarshaler.
+	// A string is easier to work with in this case.
+	s := string(b)
+
+	// Handle matchers first.
+	ss := strings.Split(s, ",")
+	f.Matches = make([]Match, 0)
+	f.Actions = make([]Action, 0)
+	for i := 0; i < len(ss); i++ {
+		if !strings.Contains(ss[i], "=") {
+			// action, either laod or output
+			switch strings.TrimSpace(ss[i]) {
+			case deleteLearned:
+				f.DeleteLearned = true
+			case sendFlowRem:
+				// skip
+			default:
+				action, err := parseAction(ss[i])
+				if err != nil {
+					return &FlowError{
+						Str: ss[i],
+						Err: err,
+					}
+				}
+				f.Actions = append(f.Actions, action)
+			}
+			continue
+		}
+
+		// All remaining comma-separated values should be in key=value format
+		kv := strings.Split(ss[i], "=")
+		if len(kv) != 2 {
+			continue
+		}
+		kv[1] = strings.TrimSpace(kv[1])
+
+		switch strings.TrimSpace(kv[0]) {
+		case finHardTimeout, finIdleTimeout:
+			// ignore this action
+			continue
+		case priority:
+			// Parse priority into struct field.
+			pri, err := strconv.ParseInt(kv[1], 10, 0)
+			if err != nil {
+				return &FlowError{
+					Str: kv[1],
+					Err: err,
+				}
+			}
+			f.Priority = int(pri)
+			continue
+		case cookie:
+			// Parse cookie into struct field.
+			cookie, err := strconv.ParseUint(kv[1], 0, 64)
+			if err != nil {
+				return &FlowError{
+					Str: kv[1],
+					Err: err,
+				}
+			}
+			f.Cookie = cookie
+			continue
+		case inPort:
+			// Parse in_port into struct field.
+			s := kv[1]
+			if strings.TrimSpace(s) == portLOCAL {
+				f.InPort = PortLOCAL
+				continue
+			}
+
+			port, err := strconv.ParseInt(s, 10, 0)
+			if err != nil {
+				return &FlowError{
+					Str: s,
+					Err: err,
+				}
+			}
+			f.InPort = int(port)
+			continue
+		case idleTimeout:
+			// Parse idle_timeout into struct field.
+			timeout, err := strconv.ParseInt(kv[1], 10, 0)
+			if err != nil {
+				return &FlowError{
+					Str: kv[1],
+					Err: err,
+				}
+			}
+			f.IdleTimeout = int(timeout)
+			continue
+		case hardTimeout:
+			// Parse idle_timeout into struct field.
+			timeout, err := strconv.ParseInt(kv[1], 10, 0)
+			if err != nil {
+				return &FlowError{
+					Str: kv[1],
+					Err: err,
+				}
+			}
+			f.HardTimeout = int(timeout)
+			continue
+		case limit:
+			// Parse idle_timeout into struct field.
+			lmt, err := strconv.ParseInt(kv[1], 10, 0)
+			if err != nil {
+				return &FlowError{
+					Str: kv[1],
+					Err: err,
+				}
+			}
+			f.Limit = int(lmt)
+			continue
+		case table:
+			// Parse table into struct field.
+			table, err := strconv.ParseInt(kv[1], 10, 0)
+			if err != nil {
+				return &FlowError{
+					Str: kv[1],
+					Err: err,
+				}
+			}
+			f.Table = int(table)
+			continue
+		case resultDst:
+			// ignore those fields.
+			continue
+		}
+
+		// All arbitrary key/value pairs that
+		// don't match the case above.
+		match, err := parseMatch(kv[0], kv[1])
+		if err != nil {
+			return err
+		}
+		// The keyword will be skipped if unknown,
+		// don't add a nil value
+		if match != nil {
+			f.Matches = append(f.Matches, match)
 		}
 	}
 

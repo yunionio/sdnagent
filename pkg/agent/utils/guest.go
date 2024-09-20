@@ -322,3 +322,21 @@ func (g *Guest) FindNicByNetIdIP(netId, ip string) *GuestNIC {
 	}
 	return nil
 }
+
+func (g *Guest) FindNicByHostLocalIP(hostLocal *HostLocal, ip string) *GuestNIC {
+	var searchNic = func(nics []*GuestNIC) *GuestNIC {
+		for _, nic := range nics {
+			if nic.Bridge == hostLocal.Bridge {
+				_, fakeIp, _ := hostLocal.fakeMdSrcIpMac(nic.PortNo)
+				if fakeIp == ip {
+					return nic
+				}
+			}
+		}
+		return nil
+	}
+	if nic := searchNic(g.NICs); nic != nil {
+		return nic
+	}
+	return nil
+}
