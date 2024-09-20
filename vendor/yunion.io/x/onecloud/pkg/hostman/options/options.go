@@ -15,7 +15,9 @@
 package options
 
 import (
+	"fmt"
 	"os"
+	"path/filepath"
 
 	"yunion.io/x/log"
 	"yunion.io/x/structarg"
@@ -132,8 +134,9 @@ type SHostOptions struct {
 	SetVncPassword         bool `default:"true" help:"Auto set vnc password after monitor connected"`
 	UseBootVga             bool `default:"false" help:"Use boot VGA GPU for guest"`
 
-	EnableCpuBinding         bool `default:"true" help:"Enable cpu binding and rebalance"`
-	EnableOpenflowController bool `default:"false"`
+	EnableHostAgentNumaAllocate bool `default:"false" help:"Enable host agent numa allocate"`
+	EnableCpuBinding            bool `default:"true" help:"Enable cpu binding and rebalance"`
+	EnableOpenflowController    bool `default:"false"`
 
 	PingRegionInterval int      `default:"60" help:"interval to ping region, deefault is 1 minute"`
 	LogSystemdUnits    []string `help:"Systemd units log collected by fluent-bit"`
@@ -190,7 +193,7 @@ type SHostOptions struct {
 	AMDVgpuPFs          []string `help:"amd vgpu pf pci addresses"`
 	NVIDIAVgpuPFs       []string `help:"nvidia vgpu pf pci addresses"`
 
-	EthtoolEnableGso bool `help:"use ethtool to turn on or off GSO(generic segment offloading)" default:"false" json:"ethtool_enable_gso"`
+	EthtoolEnableGso bool `help:"use ethtool to turn on or off GSO(generic segment offloading)" default:"true" json:"ethtool_enable_gso"`
 
 	EthtoolEnableGsoInterfaces  []string `help:"use ethtool to turn on GSO for the specific interfaces" json:"ethtool_enable_gso_interfaces"`
 	EthtoolDisableGsoInterfaces []string `help:"use ethtool to turn off GSO for the specific interfaces" json:"ethtool_disable_gso_interfaces"`
@@ -224,6 +227,12 @@ type SHostOptions struct {
 	CudaMPSReplicas      int    `help:"cuda mps replias" default:"10"`
 
 	EnableContainerAscendNPU bool `help:"enable container npu" default:"false"`
+
+	EnableDirtyRecoverySeconds int `help:"Seconds to delay enable dirty guests recovery feature, default 15 minutes" default:"900"`
+}
+
+func (o SHostOptions) HostLocalNetconfPath(br string) string {
+	return filepath.Join(o.ServersPath, fmt.Sprintf("host_local_netconf_%s.json", br))
 }
 
 var (

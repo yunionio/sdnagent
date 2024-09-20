@@ -22,12 +22,14 @@ import (
 	"strings"
 	"time"
 
+	"yunion.io/x/jsonutils"
 	"yunion.io/x/log"
 
 	apis "yunion.io/x/onecloud/pkg/apis/compute"
 	"yunion.io/x/onecloud/pkg/apis/identity"
 	"yunion.io/x/onecloud/pkg/hostman/options"
 	"yunion.io/x/onecloud/pkg/mcclient/auth"
+	"yunion.io/x/onecloud/pkg/util/fileutils2"
 )
 
 type HostConfigNetwork struct {
@@ -35,6 +37,8 @@ type HostConfigNetwork struct {
 	Ifname string
 	IP     net.IP
 	mac    net.HardwareAddr
+
+	HostLocalNets []apis.NetworkDetails
 }
 
 func NewHostConfigNetwork(network string) (*HostConfigNetwork, error) {
@@ -78,6 +82,30 @@ func (hcn *HostConfigNetwork) IPMAC() (net.IP, net.HardwareAddr, error) {
 	return nil, nil, fmt.Errorf("cannot find proper ip/mac")
 }
 
+func (hcn *HostConfigNetwork) loadHostLocalNetconfs(hc *HostConfig) {
+	log.Infof("HostConfigNetwork loadHostLocalNetconfs!!!")
+	if hcn.IP == nil {
+		return
+	}
+	fn := hc.HostLocalNetconfPath(hcn.Bridge)
+	confStr, err := fileutils2.FileGetContents(fn)
+	if err != nil {
+		log.Warningf("fail to load host local netconfs %s: %s", fn, err)
+		return
+	}
+	confJson, err := jsonutils.ParseString(confStr)
+	if err != nil {
+		log.Warningf("fail to parse host local netconfs %s: %s", fn, err)
+		return
+	}
+	hcn.HostLocalNets = make([]apis.NetworkDetails, 0)
+	err = confJson.Unmarshal(&hcn.HostLocalNets)
+	if err != nil {
+		log.Warningf("fail to unmarshal host local netconfs %s: %s", fn, err)
+		return
+	}
+}
+
 type HostConfig struct {
 	options.SHostOptions
 
@@ -104,6 +132,7 @@ func NewHostConfig() (*HostConfig, error) {
 			// NOTE error ignored
 			continue
 		}
+		hcn.loadHostLocalNetconfs(hc)
 		hc.networks = append(hc.networks, hcn)
 	}
 
