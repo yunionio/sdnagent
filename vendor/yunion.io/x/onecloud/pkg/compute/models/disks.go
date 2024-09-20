@@ -425,7 +425,7 @@ func (self *SDisk) ValidateUpdateData(ctx context.Context, userCred mcclient.Tok
 	var err error
 
 	if input.DiskType != "" {
-		if !utils.IsInStringArray(input.DiskType, []string{api.DISK_TYPE_DATA, api.DISK_TYPE_VOLUME}) {
+		if !utils.IsInStringArray(input.DiskType, []string{api.DISK_TYPE_DATA, api.DISK_TYPE_VOLUME, api.DISK_TYPE_SYS}) {
 			return input, httperrors.NewInputParameterError("not support update disk_type %s", input.DiskType)
 		}
 	}
@@ -1409,6 +1409,12 @@ func (disk *SDisk) getCandidateHostIds() ([]string, error) {
 }
 
 func (self *SDisk) GetMasterHost(storage *SStorage) (*SHost, error) {
+	if storage.StorageType == api.STORAGE_SLVM {
+		if guest := self.GetGuest(); guest != nil {
+			return guest.GetHost()
+		}
+	}
+
 	if storage.MasterHost != "" {
 		return storage.GetMasterHost()
 	}
@@ -2256,6 +2262,21 @@ func (self *SDisk) RealDelete(ctx context.Context, userCred mcclient.TokenCreden
 		}
 	}
 	return self.SVirtualResourceBase.Delete(ctx, userCred)
+}
+
+func (self *SDisk) RecordLastAttachedHost(ctx context.Context, userCred mcclient.TokenCredential, hostId string) error {
+	storage, err := self.GetStorage()
+	if err != nil {
+		return err
+	}
+	if storage.StorageType != api.STORAGE_SLVM {
+		return nil
+	}
+	return self.SetMetadata(ctx, api.DISK_META_LAST_ATTACHED_HOST, hostId, userCred)
+}
+
+func (self *SDisk) GetLastAttachedHost(ctx context.Context, userCred mcclient.TokenCredential) string {
+	return self.GetMetadata(ctx, api.DISK_META_LAST_ATTACHED_HOST, userCred)
 }
 
 // 同步磁盘状态

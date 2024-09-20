@@ -25,6 +25,9 @@ import (
 
 	"yunion.io/x/log"
 	"yunion.io/x/pkg/errors"
+
+	"yunion.io/x/onecloud/pkg/util/iproute2"
+	"yunion.io/x/onecloud/pkg/util/netutils2"
 )
 
 type FlowSource interface {
@@ -63,27 +66,51 @@ func (h *HostLocal) Who() string {
 	return "hostlocal." + h.Bridge
 }
 
-func (h *HostLocal) FlowsMap() (map[string][]*ovs.Flow, error) {
-	var (
-		hexMac = "0x" + strings.TrimLeft(strings.ReplaceAll(h.MAC.String(), ":", ""), "0")
+func FakeArpRespActions(macStr string) string {
+	hexMac := "0x" + strings.TrimLeft(strings.ReplaceAll(macStr, ":", ""), "0")
 
-		mdArpRespActions = []string{
-			"move:NXM_OF_ETH_SRC[]->NXM_OF_ETH_DST[]",
-			fmt.Sprintf("load:%s->NXM_OF_ETH_SRC[]", hexMac),
-			"load:0x2->NXM_OF_ARP_OP[]",
-			fmt.Sprintf("load:%s->NXM_NX_ARP_SHA[]", hexMac),
-			"move:NXM_OF_ARP_TPA[]->NXM_OF_ARP_SPA[]",
-			"move:NXM_NX_ARP_SHA[]->NXM_NX_ARP_THA[]",
-			"move:NXM_OF_ARP_SPA[]->NXM_OF_ARP_TPA[]",
-			"in_port",
+	mdArpRespActions := []string{
+		"move:NXM_OF_ETH_SRC[]->NXM_OF_ETH_DST[]",
+		fmt.Sprintf("load:%s->NXM_OF_ETH_SRC[]", hexMac),
+		"load:0x2->NXM_OF_ARP_OP[]",
+		fmt.Sprintf("load:%s->NXM_NX_ARP_SHA[]", hexMac),
+		"move:NXM_OF_ARP_TPA[]->NXM_OF_ARP_SPA[]",
+		"move:NXM_NX_ARP_SHA[]->NXM_NX_ARP_THA[]",
+		"move:NXM_OF_ARP_SPA[]->NXM_OF_ARP_TPA[]",
+		"in_port",
+	}
+
+	return strings.Join(mdArpRespActions, ",")
+}
+
+func (h *HostLocal) EnsureFakeLocalMetadataRoute() error {
+	prefix, _, _ := h.fakeMdSrcIpMac(0)
+	nic := netutils2.NewNetInterface(h.Bridge)
+	routes := nic.GetRouteSpecs()
+	find := false
+	for i := range routes {
+		if routes[i].Dst.String() == prefix {
+			find = true
+			break
 		}
-	)
+	}
+	if !find {
+		rt := iproute2.NewRoute(h.Bridge)
+		err := rt.AddByCidr(prefix, "").Err()
+		if err != nil {
+			return errors.Wrap(err, "AddRouteByCidr")
+		}
+	}
+	return nil
+}
+
+func (h *HostLocal) FlowsMap() (map[string][]*ovs.Flow, error) {
 	ps, err := DumpPort(h.Bridge, h.Ifname)
 	if err != nil {
 		return nil, err
 	}
 	m := map[string]interface{}{
-		"MetadataPort": h.HostConfig.MetadataPort(),
+		"MetadataPort": h.metadataPort,
 		"IP":           h.IP,
 		"MAC":          h.MAC,
 		"PortNoPhy":    ps.PortID,
@@ -93,8 +120,8 @@ func (h *HostLocal) FlowsMap() (map[string][]*ovs.Flow, error) {
 		// F(0, 40000, "ipv6", "drop"),
 	}
 	flows = append(flows,
-		F(0, 29311, "arp,arp_op=1,arp_tpa=169.254.169.254", strings.Join(mdArpRespActions, ",")),
-		F(0, 29310, "in_port=LOCAL,tcp,nw_dst=169.254.169.254,tp_dst=80", T("normal")),
+		F(0, 29311, "arp,arp_op=1,arp_tpa=169.254.169.254", FakeArpRespActions(h.MAC.String())),
+		// F(0, 29310, "in_port=LOCAL,tcp,nw_dst=169.254.169.254,tp_dst=80", T("normal")),
 		F(0, 27200, "in_port=LOCAL", "normal"),
 		F(0, 26900, T("in_port={{.PortNoPhy}},dl_dst={{.MAC}}"), "normal"),
 		// allow any IPv6 link local multicast
@@ -106,6 +133,13 @@ func (h *HostLocal) FlowsMap() (map[string][]*ovs.Flow, error) {
 		F(0, 30003, T("in_port=LOCAL,ipv6,icmp6,icmp_type=135"), "normal"),
 		F(0, 30004, T("in_port=LOCAL,ipv6,icmp6,icmp_type=136"), "normal"),
 	)
+	{
+		// direct all metadata response to table 12
+		prefix, _, mac := h.fakeMdSrcIpMac(0)
+		flows = append(flows,
+			F(0, 29310, fmt.Sprintf("in_port=LOCAL,tcp,dl_dst=%s,nw_dst=%s,tp_src=%d", mac, prefix, h.metadataPort), "resubmit(,12)"),
+		)
+	}
 	// NOTE we do not do check of existence of a "switch" guest and
 	// silently "AllowSwitchVMs" here.  That could be deemed as unexpected
 	// compromise for other guests.  Intentions must be explicit
@@ -214,6 +248,7 @@ func (g *Guest) FlowsMapForNic(nic *GuestNIC) ([]*ovs.Flow, error) {
 		var mdPortAction string
 		var mdInPort string
 		mdIP, mdMAC, mdPortNo, useLOCAL, err := g.getMetadataInfo(nic)
+		log.Debugf("getMetadataInfo %s %s: mdIP=%s mdMAC=%s mdPortNo=%d useLOCAL=%v", nic.IP, nic.Bridge, mdIP, mdMAC, mdPortNo, useLOCAL)
 		if useLOCAL {
 			if err != nil {
 				log.Warningf("find metadata: %v", err)
@@ -234,7 +269,10 @@ func (g *Guest) FlowsMapForNic(nic *GuestNIC) ([]*ovs.Flow, error) {
 			mdInPort = fmt.Sprintf("%d", mdPortNo)
 			mdPortAction = fmt.Sprintf("output:%d", mdPortNo)
 		}
-		m["MetadataServerPort"] = g.HostConfig.MetadataPort()
+		hostLocal := findHostLocalByBridge(hcn.Bridge)
+		if hostLocal != nil {
+			m["MetadataServerPort"] = hostLocal.metadataPort
+		}
 		m["MetadataServerIP"] = mdIP
 		m["MetadataServerMAC"] = mdMAC
 		m["MetadataPortInPort"] = mdInPort
@@ -247,14 +285,21 @@ func (g *Guest) FlowsMapForNic(nic *GuestNIC) ([]*ovs.Flow, error) {
 		m["_dl_vlan"] = T("vlan_tci={{.VLANTci}}")
 	}
 	flows := []*ovs.Flow{}
+	if mdPort, ok := m["MetadataServerPort"]; ok {
+		_, fakeSrcIp, fakeSrcMac := fakeMdSrcIpMac(m["MetadataServerIP"].(string), m["MetadataServerMAC"].(string), nic.PortNo)
+		m["MetadataClientFakeIP"] = fakeSrcIp
+		m["MetadataClientFakeMAC"] = fakeSrcMac
+		// rule from host metadata to VM was learnd
+		learnStr := fmt.Sprintf("learn(table=12,priority=10000,idle_timeout=30,in_port=LOCAL,dl_type=0x0800,nw_proto=6,nw_dst=%s,tcp_src=%d,load:NXM_OF_ETH_DST[]->NXM_OF_ETH_SRC[],load:NXM_OF_ETH_SRC[]->NXM_OF_ETH_DST[],load:NXM_OF_IP_DST[]->NXM_OF_IP_SRC[],load:NXM_OF_IP_SRC[]->NXM_OF_IP_DST[],load:0x50->NXM_OF_TCP_SRC[],output:NXM_OF_IN_PORT[]),", fakeSrcIp, mdPort)
+		flows = append(flows,
+			// arp response to fake metadata client IP and MAC
+			F(0, 29301, fmt.Sprintf("in_port=LOCAL,arp,arp_op=1,arp_tpa=%s", fakeSrcIp), FakeArpRespActions(fakeSrcMac)),
+			// from VM to host metadata
+			F(0, 29300, T("in_port={{.PortNo}},tcp,nw_dst=169.254.169.254,tp_dst=80"),
+				learnStr+T("mod_dl_src:{{.MetadataClientFakeMAC}},mod_dl_dst:{{.MetadataServerMAC}},mod_nw_src:{{.MetadataClientFakeIP}},mod_nw_dst:{{.MetadataServerIP}},mod_tp_dst:{{.MetadataServerPort}},{{.MetadataPortAction}}")),
+		)
+	}
 	flows = append(flows,
-		// from host metadata to VM
-		F(0, 29200,
-			T("in_port={{.MetadataPortInPort}},tcp,nw_dst={{.IP}},tp_src={{.MetadataServerPort}}"),
-			T("mod_dl_dst:{{.MAC}},mod_nw_src:169.254.169.254,mod_tp_src:80,output:{{.PortNo}}")),
-		// from VM to host metadata
-		F(0, 29300, T("in_port={{.PortNo}},tcp,nw_dst=169.254.169.254,tp_dst=80"),
-			T("mod_dl_dst:{{.MetadataServerMAC}},mod_nw_dst:{{.MetadataServerIP}},mod_tp_dst:{{.MetadataServerPort}},{{.MetadataPortAction}}")),
 		// dhcpv4 from VM to host
 		F(0, 28400, T("in_port={{.PortNo}},ip,udp,tp_src=68,tp_dst=67"), T("mod_tp_dst:{{.DHCPServerPort}},local")),
 		// dhcpv4 from host to VM

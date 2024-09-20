@@ -128,7 +128,7 @@ type IGuestDriver interface {
 
 	OnDeleteGuestFinalCleanup(ctx context.Context, guest *SGuest, userCred mcclient.TokenCredential) error
 
-	PerformStart(ctx context.Context, userCred mcclient.TokenCredential, guest *SGuest, data *jsonutils.JSONDict) error
+	PerformStart(ctx context.Context, userCred mcclient.TokenCredential, guest *SGuest, data *jsonutils.JSONDict, parentTaskId string) error
 
 	CheckDiskTemplateOnStorage(ctx context.Context, userCred mcclient.TokenCredential, imageId string, format string, storageId string, task taskman.ITask) error
 
@@ -238,7 +238,7 @@ type IGuestDriver interface {
 	QgaRequestSetUserPassword(ctx context.Context, task taskman.ITask, host *SHost, guest *SGuest, input *api.ServerQgaSetPasswordInput) error
 	RequestQgaCommand(ctx context.Context, userCred mcclient.TokenCredential, body jsonutils.JSONObject, host *SHost, guest *SGuest) (jsonutils.JSONObject, error)
 	QgaRequestGuestInfoTask(ctx context.Context, userCred mcclient.TokenCredential, body jsonutils.JSONObject, host *SHost, guest *SGuest) (jsonutils.JSONObject, error)
-	QgaRequestSetNetwork(ctx context.Context, userCred mcclient.TokenCredential, body jsonutils.JSONObject, host *SHost, guest *SGuest) (jsonutils.JSONObject, error)
+	QgaRequestSetNetwork(ctx context.Context, task taskman.ITask, body jsonutils.JSONObject, host *SHost, guest *SGuest) (jsonutils.JSONObject, error)
 	QgaRequestGetNetwork(ctx context.Context, userCred mcclient.TokenCredential, body jsonutils.JSONObject, host *SHost, guest *SGuest) (jsonutils.JSONObject, error)
 	QgaRequestGetOsInfo(ctx context.Context, userCred mcclient.TokenCredential, body jsonutils.JSONObject, host *SHost, guest *SGuest) (jsonutils.JSONObject, error)
 
