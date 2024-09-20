@@ -218,6 +218,12 @@ type loggingResponseWriter struct {
 	data   []byte
 }
 
+func (lrw *loggingResponseWriter) Flush() {
+	if fw, ok := lrw.ResponseWriter.(http.Flusher); ok {
+		fw.Flush()
+	}
+}
+
 func (lrw *loggingResponseWriter) Write(data []byte) (int, error) {
 	lrw.data = data
 	return lrw.ResponseWriter.Write(data)
@@ -435,7 +441,7 @@ func (app *Application) defaultHandle(w http.ResponseWriter, r *http.Request, ri
 		}
 	} else if !isCors {
 		ctx := appctx.WithRequestLang(context.TODO(), r)
-		httperrors.NotFoundError(ctx, w, "Handler not found")
+		httperrors.NotFoundError(ctx, w, "Handler %s not found", "/"+strings.Join(segs, "/"))
 	}
 	return nil, nil
 }

@@ -27,6 +27,7 @@ import (
 
 	"yunion.io/x/log"
 	"yunion.io/x/pkg/errors"
+	pkgutils "yunion.io/x/pkg/utils"
 
 	"yunion.io/x/onecloud/pkg/util/fileutils2"
 
@@ -60,7 +61,7 @@ type FlowMan struct {
 	waitCount int32
 }
 
-func (fm *FlowMan) doDumpFlows() (*utils.FlowSet, error) {
+func (fm *FlowMan) doDumpFlows(excludeOvsTables []int) (*utils.FlowSet, error) {
 	// check existence of ovs-db's sock file
 	const ovsDbSock = "/var/run/openvswitch/db.sock"
 	if !fileutils2.Exists(ovsDbSock) {
@@ -75,9 +76,28 @@ func (fm *FlowMan) doDumpFlows() (*utils.FlowSet, error) {
 	// for _, of := range flows {
 	// 	utils.OVSFlowOrderMatch(of)
 	// }
+	{
+		// filter out dynamic flow tables
+		nflows := make([]*ovs.Flow, 0, len(flows))
+		for i := range flows {
+			if len(excludeOvsTables) > 0 && pkgutils.IsInArray(flows[i].Table, excludeOvsTables) {
+				continue
+			}
+			nflows = append(nflows, flows[i])
+		}
+		flows = nflows
+	}
+
 	fs := utils.NewFlowSetFromList(flows)
 	return fs, nil
 }
+
+var (
+	excludeOvsTables = []int{
+		10,
+		12,
+	}
+)
 
 func (fm *FlowMan) doCheck() {
 	if atomic.LoadInt32(&fm.waitCount) != 0 {
@@ -86,7 +106,7 @@ func (fm *FlowMan) doCheck() {
 	defer log.Infof("flowman %s: check done", fm.bridge)
 	var err error
 	// fs0: current flows
-	fs0, err := fm.doDumpFlows()
+	fs0, err := fm.doDumpFlows(excludeOvsTables)
 	if err != nil {
 		log.Errorf("FlowMan doCheck doDumpFlows fail %s", err)
 		return
@@ -136,7 +156,7 @@ func (fm *FlowMan) bufWriteFlows(buf *bytes.Buffer, prefix string, flows []*ovs.
 	}
 }
 
-func (fm *FlowMan) doCommitChange(flowsAdd, flowsDel []*ovs.Flow) {
+func (fm *FlowMan) doCommitChange(flowsAdd, flowsDel []*ovs.Flow) error {
 	ofCli := ovs.New(ovs.Strict(), ovs.Debug(false)).OpenFlow
 	err := ofCli.AddFlowBundle(fm.bridge, func(tx *ovs.FlowTransaction) error {
 		mfs := make([]*ovs.MatchFlow, len(flowsDel))
@@ -150,8 +170,9 @@ func (fm *FlowMan) doCommitChange(flowsAdd, flowsDel []*ovs.Flow) {
 	})
 	if err != nil {
 		log.Errorf("flowman %s: add flow bundle failed: %s", fm.bridge, err)
-		return
+		return errors.Wrapf(err, "AddFlowBundle %s", fm.bridge)
 	}
+	return nil
 }
 
 func (fm *FlowMan) doCmd(cmd *flowManCmd) {
