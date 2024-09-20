@@ -87,14 +87,20 @@ type ElasticipListInput struct {
 	// example: elastic_ip
 	Mode string `json:"mode"`
 
+	// 是否已关联资源
+	IsAssociated *bool `json:"is_associated"`
+
 	// IP地址
 	IpAddr []string `json:"ip_addr"`
 
 	// 绑定资源类型
-	AssociateType string `json:"associate_type"`
+	AssociateType []string `json:"associate_type"`
+
+	// 绑定资源名称，模糊查询
+	AssociateName []string `json:"associate_name"`
 
 	// 绑定资源Id
-	AssociateId string `json:"associate_id"`
+	AssociateId []string `json:"associate_id"`
 
 	// 计费类型: 流量、带宽
 	// example: bandwidth

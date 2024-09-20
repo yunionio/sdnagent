@@ -171,13 +171,20 @@ func AddNicRoutes(routes [][]string, nicDesc *types.SServerNic, mainIp string, n
 			}
 		}
 	}
+
+	if nicDesc.Ip == mainIp {
+		// always add 169.254.169.254 for default NIC
+		routes = addRoute(routes, "169.254.169.254/32", "0.0.0.0")
+	}
 	return routes
 }
 
 func GetNicDns(nicdesc *types.SServerNic) []string {
 	dnslist := []string{}
 	if len(nicdesc.Dns) > 0 {
-		dnslist = append(dnslist, nicdesc.Dns)
+		for _, dns := range strings.Split(nicdesc.Dns, ",") {
+			dnslist = append(dnslist, dns)
+		}
 	}
 	return dnslist
 }

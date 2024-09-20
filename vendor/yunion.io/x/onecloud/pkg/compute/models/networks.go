@@ -127,7 +127,7 @@ type SNetwork struct {
 
 	// 服务器类型
 	// example: server
-	ServerType string `width:"16" charset:"ascii" default:"guest" nullable:"true" list:"user" create:"optional"`
+	ServerType string `width:"16" charset:"ascii" default:"guest" nullable:"true" list:"user" update:"admin" create:"optional"`
 
 	// 分配策略
 	AllocPolicy string `width:"16" charset:"ascii" nullable:"true" get:"user" update:"user" create:"optional"`
@@ -1728,6 +1728,7 @@ func (manager *SNetworkManager) ValidateCreateData(ctx context.Context, userCred
 	} else {
 		return input, httperrors.NewInputParameterError("zone and vpc info required when wire is absent")
 	}
+
 	input.WireId = wire.Id
 	if vpc.Status != api.VPC_STATUS_AVAILABLE {
 		return input, httperrors.NewInvalidStatusError("VPC not ready")
@@ -1980,7 +1981,8 @@ func (manager *SNetworkManager) ValidateCreateData(ctx context.Context, userCred
 	}
 
 	{
-		nets, err := vpc.GetNetworks()
+		provider := wire.GetProviderName()
+		nets, err := vpc.GetNetworksByProvider(provider)
 		if err != nil {
 			return input, httperrors.NewInternalServerError("fail to GetNetworks of vpc: %v", err)
 		}
@@ -2207,6 +2209,10 @@ func (snet *SNetwork) validateUpdateData(ctx context.Context, userCred mcclient.
 		}
 	}
 
+	if len(input.ServerType) > 0 && !utils.IsInArray(input.ServerType, api.ALL_NETWORK_TYPES) {
+		return input, errors.Wrapf(httperrors.ErrInputParameter, "invalid server_type %q", input.ServerType)
+	}
+
 	return input, nil
 }
 
@@ -2340,10 +2346,10 @@ func (net *SNetwork) PostCreate(ctx context.Context, userCred mcclient.TokenCred
 	if vpc != nil && vpc.IsManaged() {
 		task, err := taskman.TaskManager.NewTask(ctx, "NetworkCreateTask", net, userCred, data.(*jsonutils.JSONDict), "", "", nil)
 		if err != nil {
-			log.Errorf("networkcreateTask create fail: %s", err)
-		} else {
-			task.ScheduleRun(nil)
+			net.SetStatus(ctx, userCred, apis.STATUS_CREATE_FAILED, err.Error())
+			return
 		}
+		task.ScheduleRun(nil)
 	} else {
 		{
 			err := net.syncAdditionalWires(ctx, nil)
@@ -2355,6 +2361,10 @@ func (net *SNetwork) PostCreate(ctx context.Context, userCred mcclient.TokenCred
 		if err := net.ClearSchedDescCache(); err != nil {
 			log.Errorf("network post create clear schedcache error: %v", err)
 		}
+		notifyclient.EventNotify(ctx, userCred, notifyclient.SEventNotifyParam{
+			Obj:    net,
+			Action: notifyclient.ActionCreate,
+		})
 	}
 	// reserve gateway IP
 	{

@@ -52,7 +52,7 @@ type SHostBaseOptions struct {
 	ImageCacheExpireDays        int  `help:"Image cache expire duration in days" default:"30"`
 	ImageCacheCleanupPercentage int  `help:"The cleanup threshold ratio of image cache size v.s. total storage size" default:"12"`
 	ImageCacheCleanupOnStartup  bool `help:"Cleanup image cache on host startup" default:"false"`
-	ImageCacheCleanupDryRun     bool `help:"Dry run cleanup image cache" default:"true"`
+	ImageCacheCleanupDryRun     bool `help:"Dry run cleanup image cache" default:"false"`
 }
 
 type SHostOptions struct {
@@ -132,8 +132,9 @@ type SHostOptions struct {
 	SetVncPassword         bool `default:"true" help:"Auto set vnc password after monitor connected"`
 	UseBootVga             bool `default:"false" help:"Use boot VGA GPU for guest"`
 
-	EnableCpuBinding         bool `default:"true" help:"Enable cpu binding and rebalance"`
-	EnableOpenflowController bool `default:"false"`
+	EnableHostAgentNumaAllocate bool `default:"false" help:"Enable host agent numa allocate"`
+	EnableCpuBinding            bool `default:"true" help:"Enable cpu binding and rebalance"`
+	EnableOpenflowController    bool `default:"false"`
 
 	PingRegionInterval int      `default:"60" help:"interval to ping region, deefault is 1 minute"`
 	LogSystemdUnits    []string `help:"Systemd units log collected by fluent-bit"`
@@ -190,7 +191,7 @@ type SHostOptions struct {
 	AMDVgpuPFs          []string `help:"amd vgpu pf pci addresses"`
 	NVIDIAVgpuPFs       []string `help:"nvidia vgpu pf pci addresses"`
 
-	EthtoolEnableGso bool `help:"use ethtool to turn on or off GSO(generic segment offloading)" default:"false" json:"ethtool_enable_gso"`
+	EthtoolEnableGso bool `help:"use ethtool to turn on or off GSO(generic segment offloading)" default:"true" json:"ethtool_enable_gso"`
 
 	EthtoolEnableGsoInterfaces  []string `help:"use ethtool to turn on GSO for the specific interfaces" json:"ethtool_enable_gso_interfaces"`
 	EthtoolDisableGsoInterfaces []string `help:"use ethtool to turn off GSO for the specific interfaces" json:"ethtool_disable_gso_interfaces"`

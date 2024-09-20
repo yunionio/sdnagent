@@ -18,16 +18,20 @@ import (
 	"context"
 
 	"yunion.io/x/log"
+
 	"yunion.io/x/sdnagent/pkg/agent/utils"
 )
 
 type HostLocal struct {
 	watcher *serversWatcher
+
+	bridgeMap map[string]*utils.HostLocal
 }
 
 func NewHostLocal(watcher *serversWatcher) *HostLocal {
 	return &HostLocal{
-		watcher: watcher,
+		watcher:   watcher,
+		bridgeMap: make(map[string]*utils.HostLocal),
 	}
 }
 
@@ -45,6 +49,8 @@ func (hl *HostLocal) updateFlows(ctx context.Context) {
 			IP:         ip,
 			MAC:        mac,
 		}
+		hostLocal = utils.FetchHostLocal(hostLocal, hl.watcher)
+
 		flows, err := hostLocal.FlowsMap()
 		if err != nil {
 			log.Errorf("prepare %s hostlocal flows failed: %s", hcn.Bridge, err)
@@ -52,6 +58,12 @@ func (hl *HostLocal) updateFlows(ctx context.Context) {
 		}
 		flowman := hl.watcher.agent.GetFlowMan(hcn.Bridge)
 		flowman.updateFlows(ctx, hostLocal.Who(), flows[hcn.Bridge])
+
+		err = hostLocal.EnsureFakeLocalMetadataRoute()
+		if err != nil {
+			log.Errorf("EnsureFakeLocalMetadataRoute %s hostlocal flows failed: %s", hcn.Bridge, err)
+			continue
+		}
 	}
 }
 
