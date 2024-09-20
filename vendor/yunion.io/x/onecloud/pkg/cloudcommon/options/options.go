@@ -119,6 +119,8 @@ type BaseOptions struct {
 	PlatformNames map[string]string `help:"identity name of this platform by language"`
 
 	EnableAppProfiling bool `help:"enable profiling API" default:"false"`
+
+	EnableChangeOwnerAutoRename bool `help:"Allows renaming when changing names" default:"false"`
 }
 
 const (
@@ -153,6 +155,7 @@ type HostCommonOptions struct {
 	ExecutorConnectTimeoutSeconds int    `help:"executor client connection timeout in seconds, default is 30" default:"30"`
 	EnableIsolatedDeviceWhitelist bool   `help:"enable isolated device white list" default:"false"`
 	ImageDeployDriver             string `help:"Image deploy driver" default:"qemu-kvm" choices:"qemu-kvm|nbd|libguestfs"`
+	DeployConcurrent              int    `help:"qemu-kvm deploy driver concurrent" default:"5"`
 }
 
 type DBOptions struct {

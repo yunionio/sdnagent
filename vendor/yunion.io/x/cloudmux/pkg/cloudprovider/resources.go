@@ -1326,6 +1326,7 @@ type ICloudDnsRecord interface {
 	GetDnsValue() string
 	GetTTL() int64
 	GetMxPriority() int64
+	GetExtraAddresses() ([]string, error)
 
 	Update(*DnsRecord) error
 
@@ -1486,7 +1487,12 @@ type ICloudWafInstance interface {
 	GetHttpPorts() []int
 	GetHttpsPorts() []int
 	GetCname() string
+	// 源站地址
 	GetSourceIps() []string
+	// 回源地址
+	GetCcList() []string
+	GetCertId() string
+	GetCertName() string
 	GetUpstreamScheme() string
 	GetUpstreamPort() int
 

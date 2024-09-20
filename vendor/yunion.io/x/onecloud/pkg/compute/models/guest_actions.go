@@ -496,6 +496,8 @@ func (self *SGuest) GetSchedMigrateParams(
 	if input.PreferHostId != "" {
 		schedDesc.ServerConfig.PreferHost = input.PreferHostId
 	}
+
+	schedDesc.ResetCpuNumaPin = input.ResetCpuNumaPin
 	if input.LiveMigrate {
 		schedDesc.LiveMigrate = input.LiveMigrate
 		if self.GetMetadata(context.Background(), "__cpu_mode", userCred) != api.CPU_MODE_QEMU {
@@ -512,6 +514,11 @@ func (self *SGuest) GetSchedMigrateParams(
 			schedDesc.TargetHostKernel, _ = host.SysInfo.GetString("kernel_version")
 			schedDesc.SkipKernelCheck = &input.SkipKernelCheck
 			schedDesc.HostMemPageSizeKB = host.PageSizeKB
+		}
+		if self.CpuNumaPin != nil {
+			cpuNumaPin := make([]schedapi.SCpuNumaPin, 0)
+			self.CpuNumaPin.Unmarshal(&cpuNumaPin)
+			schedDesc.CpuNumaPin = cpuNumaPin
 		}
 	}
 	schedDesc.ReuseNetwork = true
@@ -530,7 +537,8 @@ func (self *SGuest) StartMigrateTask(
 	ctx context.Context, userCred mcclient.TokenCredential,
 	isRescueMode, autoStart bool, guestStatus, preferHostId, parentTaskId string,
 ) error {
-	self.SetStatus(ctx, userCred, api.VM_START_MIGRATE, "")
+	vmStatus := api.VM_START_MIGRATE
+
 	data := jsonutils.NewDict()
 	if isRescueMode {
 		data.Set("is_rescue_mode", jsonutils.JSONTrue)
@@ -541,11 +549,17 @@ func (self *SGuest) StartMigrateTask(
 	if autoStart {
 		data.Set("auto_start", jsonutils.JSONTrue)
 	}
+	if self.HostId == preferHostId {
+		vmStatus = api.VM_STARTING
+		data.Set("reset_cpu_numa_pin", jsonutils.JSONTrue)
+	}
+
 	data.Set("guest_status", jsonutils.NewString(guestStatus))
 	dedicateMigrateTask := "GuestMigrateTask"
 	if self.GetHypervisor() != api.HYPERVISOR_KVM {
 		dedicateMigrateTask = "ManagedGuestMigrateTask" //托管私有云
 	}
+	self.SetStatus(ctx, userCred, vmStatus, "")
 	if task, err := taskman.TaskManager.NewTask(ctx, dedicateMigrateTask, self, userCred, data, parentTaskId, "", nil); err != nil {
 		log.Errorln(err)
 		return err
@@ -745,6 +759,9 @@ func (self *SGuest) PerformSetPassword(ctx context.Context, userCred mcclient.To
 		inputDeploy.AutoStart = input.AutoStart
 		inputDeploy.Password = input.Password
 		inputDeploy.ResetPassword = input.ResetPassword
+		if input.Username != "" {
+			inputDeploy.LoginAccount = input.Username
+		}
 		return self.PerformDeploy(ctx, userCred, query, inputDeploy)
 	}
 }
@@ -821,6 +838,15 @@ func (self *SGuest) PerformDeploy(
 	// 变更密码/密钥时需要Restart才能生效。更新普通字段不需要Restart, Azure需要在运行状态下操作
 	doRestart := false
 	if input.ResetPassword {
+		if len(input.LoginAccount) > 0 {
+			if len(input.LoginAccount) > 32 {
+				return nil, httperrors.NewInputParameterError("login_account is longer than 32 chars")
+			}
+			if err := GuestManager.ValidateNameLoginAccount(input.LoginAccount); err != nil {
+				return nil, err
+			}
+		}
+
 		doRestart = self.GetDriver().IsNeedRestartForResetLoginInfo()
 	}
 
@@ -1044,7 +1070,7 @@ func (self *SGuest) PerformStart(
 		}
 		if self.isAllDisksReady() {
 			kwargs := jsonutils.Marshal(input).(*jsonutils.JSONDict)
-			err := self.GetDriver().PerformStart(ctx, userCred, self, kwargs)
+			err := self.GetDriver().PerformStart(ctx, userCred, self, kwargs, "")
 			return nil, err
 		} else {
 			return nil, httperrors.NewInvalidStatusError("Some disk not ready")
@@ -1440,7 +1466,20 @@ func (self *SGuest) StartGueststartTask(
 	ctx context.Context, userCred mcclient.TokenCredential,
 	data *jsonutils.JSONDict, parentTaskId string,
 ) error {
-	if self.Hypervisor == api.HYPERVISOR_KVM && self.guestDisksStorageTypeIsShared() {
+	schedStart := self.Hypervisor == api.HYPERVISOR_KVM && self.guestDisksStorageTypeIsShared()
+	if options.Options.IgnoreNonrunningGuests {
+		host := HostManager.FetchHostById(self.HostId)
+		if host != nil && host.EnableNumaAllocate {
+			schedStart = true
+		}
+	}
+
+	if self.CpuNumaPin != nil {
+		// clean cpu numa pin
+		self.SetCpuNumaPin(ctx, userCred, nil, nil)
+	}
+
+	if schedStart {
 		return self.GuestSchedStartTask(ctx, userCred, data, parentTaskId)
 	} else {
 		return self.GuestNonSchedStartTask(ctx, userCred, data, parentTaskId)
@@ -1703,6 +1742,16 @@ func (self *SGuest) PerformRebuildRoot(
 	}
 
 	input.ResetPassword = resetPasswd
+	if input.ResetPassword {
+		if len(input.LoginAccount) > 0 {
+			if len(input.LoginAccount) > 32 {
+				return nil, httperrors.NewInputParameterError("login_account is longer than 32 chars")
+			}
+			if err := GuestManager.ValidateNameLoginAccount(input.LoginAccount); err != nil {
+				return nil, err
+			}
+		}
+	}
 
 	return nil, self.StartRebuildRootTask(ctx, userCred, input.ImageId, needStop, autoStart, allDisks, &input.ServerDeployInputBase)
 }
@@ -2054,7 +2103,7 @@ func (self *SGuest) startAttachIsolatedDevices(ctx context.Context, userCred mcc
 	host, _ := self.GetHost()
 	lockman.LockObject(ctx, host)
 	defer lockman.ReleaseObject(ctx, host)
-	devs, err := IsolatedDeviceManager.GetDevsOnHost(host.Id, devModel, count)
+	devs, err := IsolatedDeviceManager.GetUnusedDevsOnHost(host.Id, devModel, count)
 	if err != nil {
 		return httperrors.NewInternalServerError("fetch gpu failed %s", err)
 	}
@@ -5142,6 +5191,16 @@ func (self *SGuest) PerformSnapshotAndClone(
 		count = *input.Count
 		if count <= 0 {
 			return nil, httperrors.NewInputParameterError("count must > 0")
+		}
+	}
+	if len(input.PreferHostId) > 0 {
+		if len(input.PreferHostId) > 0 {
+			iHost, _ := HostManager.FetchByIdOrName(ctx, userCred, input.PreferHostId)
+			if iHost == nil {
+				return nil, httperrors.NewBadRequestError("Host %s not found", input.PreferHostId)
+			}
+			host := iHost.(*SHost)
+			input.PreferHostId = host.Id
 		}
 	}
 

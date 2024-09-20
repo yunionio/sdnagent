@@ -58,6 +58,7 @@ type IHost interface {
 	IsHugepagesEnabled() bool
 	HugepageSizeKb() int
 	IsNumaAllocateEnabled() bool
+	CpuCmtBound() int
 
 	IsKvmSupport() bool
 	IsNestedVirtualization() bool
@@ -71,6 +72,7 @@ type IHost interface {
 	// SyncRootPartitionUsedCapacity() error
 
 	GetKubeletConfig() kubelet.KubeletConfig
+	OnCatalogChanged(catalog mcclient.KeystoneServiceCatalogV3)
 }
 
 func GetComputeSession(ctx context.Context) *mcclient.ClientSession {
