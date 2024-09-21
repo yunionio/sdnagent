@@ -48,6 +48,8 @@ func (hl *HostLocal) updateFlows(ctx context.Context) {
 			Ifname:     hcn.Ifname,
 			IP:         ip,
 			MAC:        mac,
+
+			HostLocalNets: hcn.HostLocalNets,
 		}
 		hostLocal = utils.FetchHostLocal(hostLocal, hl.watcher)
 

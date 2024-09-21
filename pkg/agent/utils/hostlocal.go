@@ -18,6 +18,7 @@ import (
 	"net"
 	"sync"
 
+	"yunion.io/x/onecloud/pkg/apis/compute"
 	"yunion.io/x/onecloud/pkg/appsrv"
 )
 
@@ -29,6 +30,8 @@ type HostLocal struct {
 	Ifname     string
 	IP         net.IP
 	MAC        net.HardwareAddr
+
+	HostLocalNets []compute.NetworkDetails
 
 	metadataPort int
 	metadataApp  *appsrv.Application
@@ -45,7 +48,11 @@ func FetchHostLocal(hl *HostLocal, watcher IServerWatcher) *HostLocal {
 		hostLocalMap.Store(hl.Bridge, hl)
 		return hl
 	} else {
-		return uhl.(*HostLocal)
+		// find, to update fields
+		nhl := uhl.(*HostLocal)
+		nhl.HostConfig = hl.HostConfig
+		nhl.HostLocalNets = hl.HostLocalNets
+		return nhl
 	}
 }
 
