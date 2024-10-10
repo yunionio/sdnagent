@@ -121,6 +121,7 @@ const (
 	CONTAINER_VOLUME_MOUNT_TYPE_DISK      ContainerVolumeMountType = "disk"
 	CONTAINER_VOLUME_MOUNT_TYPE_HOST_PATH ContainerVolumeMountType = "host_path"
 	CONTAINER_VOLUME_MOUNT_TYPE_TEXT      ContainerVolumeMountType = "text"
+	CONTAINER_VOLUME_MOUNT_TYPE_CEPHF_FS  ContainerVolumeMountType = "ceph_fs"
 )
 
 type ContainerDeviceType string
@@ -152,6 +153,7 @@ type ContainerVolumeMount struct {
 	Disk     *ContainerVolumeMountDisk     `json:"disk"`
 	HostPath *ContainerVolumeMountHostPath `json:"host_path"`
 	Text     *ContainerVolumeMountText     `json:"text"`
+	CephFS   *ContainerVolumeMountCephFS   `json:"ceph_fs"`
 	// Mounted read-only if true, read-write otherwise (false or unspecified).
 	ReadOnly bool `json:"read_only"`
 	// Path within the container at which the volume should be mounted.  Must
@@ -223,4 +225,20 @@ type ContainerVolumeMountHostPath struct {
 
 type ContainerVolumeMountText struct {
 	Content string `json:"content"`
+}
+
+type ContainerVolumeMountCephFS struct {
+	Id string `json:"id"`
+}
+
+type ContainerPullImageAuthConfig struct {
+	Username      string `json:"username,omitempty"`
+	Password      string `json:"password,omitempty"`
+	Auth          string `json:"auth,omitempty"`
+	ServerAddress string `json:"server_address,omitempty"`
+	// IdentityToken is used to authenticate the user and get
+	// an access token for the registry.
+	IdentityToken string `json:"identity_token,omitempty"`
+	// RegistryToken is a bearer token to be sent to a registry
+	RegistryToken string `json:"registry_token,omitempty"`
 }

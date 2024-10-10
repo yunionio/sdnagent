@@ -1567,7 +1567,10 @@ func (self *SGuest) StartGueststartTask(
 
 	if self.CpuNumaPin != nil {
 		// clean cpu numa pin
-		self.SetCpuNumaPin(ctx, userCred, nil, nil)
+		err := self.SetCpuNumaPin(ctx, userCred, nil, nil)
+		if err != nil {
+			return errors.Wrap(err, "clean cpu numa pin")
+		}
 	}
 
 	if schedStart {
@@ -1599,6 +1602,18 @@ func (self *SGuest) GuestNonSchedStartTask(
 	taskName := "GuestStartTask"
 	if self.BackupHostId != "" {
 		taskName = "HAGuestStartTask"
+	}
+	if self.CpuNumaPin != nil {
+		srcSchedCpuNumaPin := make([]schedapi.SCpuNumaPin, 0)
+		err := self.CpuNumaPin.Unmarshal(&srcSchedCpuNumaPin)
+		if err != nil {
+			return errors.Wrap(err, "unmarshal cpu_numa_pin")
+		}
+		// set cpu numa pin
+		err = self.SetCpuNumaPin(ctx, userCred, srcSchedCpuNumaPin, nil)
+		if err != nil {
+			return nil
+		}
 	}
 	task, err := taskman.TaskManager.NewTask(ctx, taskName, self, userCred, data, parentTaskId, "", nil)
 	if err != nil {
@@ -3446,7 +3461,7 @@ func (self *SGuest) PerformStatus(ctx context.Context, userCred mcclient.TokenCr
 func (self *SGuest) PerformStop(ctx context.Context, userCred mcclient.TokenCredential, query jsonutils.JSONObject,
 	input api.ServerStopInput) (jsonutils.JSONObject, error) {
 	// XXX if is force, force stop guest
-	if input.IsForce || utils.IsInStringArray(self.Status, []string{api.VM_RUNNING, api.VM_STOP_FAILED}) {
+	if input.IsForce || utils.IsInStringArray(self.Status, []string{api.VM_RUNNING, api.VM_STOP_FAILED, api.POD_STATUS_CRASH_LOOP_BACK_OFF, api.POD_STATUS_CONTAINER_EXITED}) {
 		if err := self.ValidateEncryption(ctx, userCred); err != nil {
 			return nil, errors.Wrap(httperrors.ErrForbidden, "encryption key not accessible")
 		}

@@ -27,6 +27,7 @@ import (
 	"yunion.io/x/pkg/util/regutils"
 
 	"yunion.io/x/onecloud/pkg/apis"
+	computeapi "yunion.io/x/onecloud/pkg/apis/compute"
 	hostapi "yunion.io/x/onecloud/pkg/apis/host"
 	"yunion.io/x/onecloud/pkg/appsrv"
 	"yunion.io/x/onecloud/pkg/cloudcommon/consts"
@@ -45,6 +46,20 @@ import (
 	"yunion.io/x/onecloud/pkg/util/fileutils2"
 	"yunion.io/x/onecloud/pkg/util/pod"
 )
+
+type SContainerCpufreqSimulateConfig struct {
+	CpuinfoMaxFreq            int    `json:"cpuinfo_max_freq"`
+	CpuinfoMinFreq            int    `json:"cpuinfo_min_freq"`
+	CpuinfoCurFreq            int    `json:"cpuinfo_cur_freq"`
+	CpuinfoTransitionLatency  int    `json:"cpuinfo_transition_latency"`
+	ScalingDriver             string `json:"scaling_driver"`
+	ScalingGovernors          string `json:"scaling_governor"`
+	ScalingMaxFreq            int    `json:"scaling_max_freq"`
+	ScalingMinFreq            int    `json:"scaling_min_freq"`
+	ScalingCurFreq            int    `json:"scaling_cur_freq"`
+	ScalingSetspeed           string `json:"scaling_setspeed"`
+	ScalingAvailableGovernors string `json:"scaling_available_governors"`
+}
 
 type IHost interface {
 	GetZoneId() string
@@ -80,6 +95,7 @@ type IHost interface {
 	GetContainerRuntimeEndpoint() string
 	GetCRI() pod.CRI
 	GetContainerCPUMap() *pod.HostContainerCPUMap
+	GetContainerCpufreqSimulateConfig() *jsonutils.JSONDict
 
 	OnCatalogChanged(catalog mcclient.KeystoneServiceCatalogV3)
 }
@@ -168,8 +184,8 @@ func UpdateResourceStatus(ctx context.Context, man modulebase.IResourceManager, 
 	return man.PerformAction(GetComputeSession(ctx), id, "status", jsonutils.Marshal(statusInput))
 }
 
-func UpdateContainerStatus(ctx context.Context, cid string, statusInput *apis.PerformStatusInput) (jsonutils.JSONObject, error) {
-	return UpdateResourceStatus(ctx, &modules.Containers, cid, statusInput)
+func UpdateContainerStatus(ctx context.Context, cid string, statusInput *computeapi.ContainerPerformStatusInput) (jsonutils.JSONObject, error) {
+	return modules.Containers.PerformAction(GetComputeSession(ctx), cid, "status", jsonutils.Marshal(statusInput))
 }
 
 func UpdateServerStatus(ctx context.Context, sid string, statusInput *apis.PerformStatusInput) (jsonutils.JSONObject, error) {
