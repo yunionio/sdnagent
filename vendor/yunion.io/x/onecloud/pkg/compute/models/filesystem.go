@@ -83,7 +83,7 @@ type SFileSystem struct {
 	// enmu: performance, capacity, standard, advance, advance_100, advance_200
 	StorageType string `width:"32" charset:"ascii" nullable:"false" list:"user" create:"required"`
 	// 协议类型
-	// enum: NFS, SMB, cpfs
+	// enum: ["NFS", "SMB", "cpfs"]
 	Protocol string `width:"32" charset:"ascii" nullable:"false" list:"user" create:"required"`
 	// 容量, 单位Gb
 	Capacity int64 `nullable:"false" list:"user" create:"optional"`
@@ -157,7 +157,19 @@ func (man *SFileSystemManager) ValidateCreateData(ctx context.Context, userCred 
 	input.CloudregionId = region.Id
 
 	if len(input.ManagerId) == 0 {
-		return input, httperrors.NewMissingParameterError("manager_id")
+		sq := CloudproviderManager.Query().Equals("provider", api.CLOUD_PROVIDER_CEPHFS).SubQuery()
+		q := CloudproviderRegionManager.Query().Equals("cloudregion_id", input.CloudregionId)
+		q = q.Join(sq, sqlchemy.Equals(q.Field("cloudprovider_id"), sq.Field("id")))
+		cprgs := []SCloudproviderregion{}
+		err = q.All(&cprgs)
+		if err != nil {
+			return input, err
+		}
+		if len(cprgs) == 1 {
+			input.ManagerId = cprgs[0].CloudproviderId
+		} else {
+			return input, httperrors.NewMissingParameterError("manager_id")
+		}
 	}
 
 	if len(input.Duration) > 0 {

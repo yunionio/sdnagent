@@ -134,9 +134,10 @@ type SHostOptions struct {
 	SetVncPassword         bool `default:"true" help:"Auto set vnc password after monitor connected"`
 	UseBootVga             bool `default:"false" help:"Use boot VGA GPU for guest"`
 
-	EnableHostAgentNumaAllocate bool `default:"false" help:"Enable host agent numa allocate"`
-	EnableCpuBinding            bool `default:"true" help:"Enable cpu binding and rebalance"`
-	EnableOpenflowController    bool `default:"false"`
+	EnableHostAgentNumaAllocate bool   `default:"false" help:"Enable host agent numa allocate"`
+	EnableCpuBinding            bool   `default:"true" help:"Enable cpu binding and rebalance"`
+	EnableOpenflowController    bool   `default:"false"`
+	BootVgaPciAddr              string `help:"Specific boot vga pci addr incase detect wrong device"`
 
 	PingRegionInterval int      `default:"60" help:"interval to ping region, deefault is 1 minute"`
 	LogSystemdUnits    []string `help:"Systemd units log collected by fluent-bit"`
@@ -217,9 +218,10 @@ type SHostOptions struct {
 
 	// container related endpoint
 	// EnableContainerRuntime   bool   `help:"enable container runtime" default:"false"`
-	ContainerRuntimeEndpoint  string `help:"endpoint of container runtime service" default:"unix:///var/run/onecloud/containerd/containerd.sock"`
-	ContainerDeviceConfigFile string `help:"container device configuration file path"`
-	LxcfsPath                 string `help:"lxcfs directory path" default:"/var/lib/lxcfs"`
+	ContainerRuntimeEndpoint                 string `help:"endpoint of container runtime service" default:"unix:///var/run/onecloud/containerd/containerd.sock"`
+	ContainerDeviceConfigFile                string `help:"container device configuration file path"`
+	LxcfsPath                                string `help:"lxcfs directory path" default:"/var/lib/lxcfs"`
+	ContainerSystemCpufreqSimulateConfigFile string `help:"container system cpu simulate config file path" default:"/etc/yunion/container_cpufreq_simulate.conf"`
 
 	EnableCudaMPS        bool   `help:"enable cuda mps" default:"false"`
 	CudaMPSPipeDirectory string `help:"cuda mps pipe dir" default:"/tmp/nvidia-mps/pipe"`
