@@ -15,9 +15,7 @@
 package server
 
 import (
-	"bytes"
 	"context"
-	"fmt"
 	"reflect"
 	"sync"
 	"sync/atomic"
@@ -99,11 +97,26 @@ var (
 	}
 )
 
+func (fm *FlowMan) mergeFlows() *utils.FlowSet {
+	merge := utils.NewFlowSet()
+	for _, fs := range fm.flowSets {
+		merge.Merge(fs)
+	}
+	return merge
+}
+
 func (fm *FlowMan) doCheck() {
+	log.Infof("flowman %s: do check waitCount %d", fm.bridge, fm.waitCount)
 	if atomic.LoadInt32(&fm.waitCount) != 0 {
 		return
 	}
-	defer log.Infof("flowman %s: check done", fm.bridge)
+	start := time.Now()
+
+	defer func() {
+		log.Infof("flowman %s: check done %f", fm.bridge, time.Since(start).Seconds())
+	}()
+
+	log.Infof("flowman %s: start check", fm.bridge)
 	var err error
 	// fs0: current flows
 	fs0, err := fm.doDumpFlows(excludeOvsTables)
@@ -111,34 +124,14 @@ func (fm *FlowMan) doCheck() {
 		log.Errorf("FlowMan doCheck doDumpFlows fail %s", err)
 		return
 	}
-	fsAdd := utils.NewFlowSet()
-	fsDel := utils.NewFlowSet()
-	// flows1: flows to install
-	// flows1 := []*ovs.Flow{}
-	for _, fs1 := range fm.flowSets {
-		for _, f1 := range fs1.Flows() {
-			// flows1 = append(flows1, f1)
-			if !fs0.Contains(f1) {
-				fsAdd.Add(f1)
-			}
-		}
-	}
-	for _, f0 := range fs0.Flows() {
-		found := false
-		for _, fs1 := range fm.flowSets {
-			if fs1.Contains(f0) {
-				found = true
-				break
-			}
-		}
-		if !found {
-			fsDel.Add(f0)
-		}
-	}
-	flowsAdd := fsAdd.Flows()
-	flowsDel := fsDel.Flows()
+	log.Infof("flowman %s: %d flows in table", fm.bridge, fs0.Len())
+
+	merged := fm.mergeFlows()
+	log.Infof("flowman %s: %d flows in table and %d flows in memory", fm.bridge, fs0.Len(), merged.Len())
+	flowsAdd, flowsDel := fs0.Diff(merged)
 	fm.doCommitChange(flowsAdd, flowsDel)
-	if len(flowsAdd) > 0 || len(flowsDel) > 0 {
+
+	/*if len(flowsAdd) > 0 || len(flowsDel) > 0 {
 		buf := &bytes.Buffer{}
 		buf.WriteString(fmt.Sprintf("flowman %s: commit:\n", fm.bridge))
 		//fm.bufWriteFlows(buf, "000-flow", fs0.Flows())
@@ -146,17 +139,18 @@ func (fm *FlowMan) doCheck() {
 		fm.bufWriteFlows(buf, "add-flow", flowsAdd)
 		fm.bufWriteFlows(buf, "del-flow", flowsDel)
 		log.Infof("%s", buf.String())
-	}
+	}*/
 }
 
-func (fm *FlowMan) bufWriteFlows(buf *bytes.Buffer, prefix string, flows []*ovs.Flow) {
+/*func (fm *FlowMan) bufWriteFlows(buf *bytes.Buffer, prefix string, flows []*ovs.Flow) {
 	for i, f := range flows {
 		txt, _ := f.MarshalText()
 		buf.WriteString(fmt.Sprintf("%s:%2d: %s\n", prefix, i, txt))
 	}
-}
+}*/
 
 func (fm *FlowMan) doCommitChange(flowsAdd, flowsDel []*ovs.Flow) error {
+	log.Infof("FlowMan %s doCommitChange flowsAdd %d flowsDel %d", fm.bridge, len(flowsAdd), len(flowsDel))
 	ofCli := ovs.New(ovs.Strict(), ovs.Debug(false)).OpenFlow
 	err := ofCli.AddFlowBundle(fm.bridge, func(tx *ovs.FlowTransaction) error {
 		mfs := make([]*ovs.MatchFlow, len(flowsDel))
@@ -291,6 +285,7 @@ func (fm *FlowMan) DelFlow(ctx context.Context, of *ovs.Flow) {
 }
 
 func (fm *FlowMan) SyncFlows(ctx context.Context) {
+	log.Debugf("flowman %s: SyncFlows", fm.bridge)
 	cmd := &flowManCmd{
 		Type: flowManCmdSyncFlows,
 	}
@@ -298,6 +293,7 @@ func (fm *FlowMan) SyncFlows(ctx context.Context) {
 }
 
 func (fm *FlowMan) updateFlows(ctx context.Context, who string, ofs []*ovs.Flow) {
+	log.Debugf("flowman %s: updateFlows %s", fm.bridge, who)
 	{
 		v := ctx.Value("waitData")
 		// The caller is responsible for coordinating access
@@ -324,7 +320,7 @@ func (fm *FlowMan) updateFlows(ctx context.Context, who string, ofs []*ovs.Flow)
 	fm.sendCmd(ctx, cmd)
 }
 
-func (fm *FlowMan) waitDecr(ctx context.Context, n int32) {
+func (fm *FlowMan) waitDecr(n int32) {
 	atomic.AddInt32(&fm.waitCount, -n)
 }
 

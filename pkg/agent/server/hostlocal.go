@@ -69,7 +69,7 @@ func (hl *HostLocal) updateFlows(ctx context.Context) {
 	}
 }
 
-func (hl *HostLocal) updateTc(ctx context.Context) {
+func (hl *HostLocal) updateTc(ctx context.Context, sync bool) {
 	if hl.watcher.tcMan == nil {
 		return
 	}
@@ -81,10 +81,10 @@ func (hl *HostLocal) updateTc(ctx context.Context) {
 		}
 		data = append(data, td)
 	}
-	hl.watcher.tcMan.AddIfaces(ctx, "hostlocal", data)
+	hl.watcher.tcMan.AddIfaces(ctx, "hostlocal", data, sync)
 }
 
-func (hl *HostLocal) UpdateSettings(ctx context.Context) {
+func (hl *HostLocal) UpdateSettings(ctx context.Context, sync bool) {
 	hl.updateFlows(ctx)
-	hl.updateTc(ctx)
+	hl.updateTc(ctx, sync)
 }
