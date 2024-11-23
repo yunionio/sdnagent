@@ -23,7 +23,7 @@ var (
 	UNIFIED_MONITOR_FIELD_OPT_TYPE   = []string{"Aggregations", "Selectors"}
 	UNIFIED_MONITOR_GROUPBY_OPT_TYPE = []string{"time", "tag", "fill"}
 	UNIFIED_MONITOR_FIELD_OPT_VALUE  = map[string][]string{
-		"Aggregations": {"MEAN", "SUM"}, // {"COUNT", "DISTINCT", "INTEGRAL", "MEAN", "MEDIAN", "MODE", "STDDEV", "SUM"},
+		"Aggregations": {"MEAN", "SUM", "MAX", "MIN"}, // {"COUNT", "DISTINCT", "INTEGRAL", "MEAN", "MEDIAN", "MODE", "STDDEV", "SUM"},
 		"Selectors":    {"BOTTOM", "FIRST", "LAST", "MAX", "MIN", "TOP"},
 	}
 	UNIFIED_MONITOR_GROUPBY_OPT_VALUE = map[string][]string{
@@ -64,6 +64,27 @@ var (
 		"percent_diff": "The difference between the new value and the old value,based on the percentage of the old value",
 	}
 )
+
+func GetMeasurementTagIdKeyByResType(resType string) string {
+	return MEASUREMENT_TAG_ID[resType]
+}
+
+func GetMeasurementTagIdKeyByResTypeWithDefault(resType string) string {
+	tagId := GetMeasurementTagIdKeyByResType(resType)
+	if len(tagId) == 0 {
+		tagId = "host_id"
+	}
+	return tagId
+}
+
+func GetMeasurementResourceId(tags map[string]string, resType string) string {
+	return tags[GetMeasurementTagIdKeyByResType(resType)]
+}
+
+func GetResourceIdFromTagWithDefault(tags map[string]string, resType string) string {
+	tagId := GetMeasurementTagIdKeyByResTypeWithDefault(resType)
+	return tags[tagId]
+}
 
 type MetricFunc struct {
 	FieldOptType  []string            `json:"field_opt_type"`

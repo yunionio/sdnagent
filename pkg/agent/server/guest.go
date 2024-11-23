@@ -192,7 +192,7 @@ func (g *Guest) clearClassicFlows(ctx context.Context) {
 	g.clearPending()
 }
 
-func (g *Guest) updateTc(ctx context.Context) {
+func (g *Guest) updateTc(ctx context.Context, sync bool) {
 	if g.watcher.tcMan == nil {
 		return
 	}
@@ -201,7 +201,7 @@ func (g *Guest) updateTc(ctx context.Context) {
 		d := nic.TcData()
 		data = append(data, d)
 	}
-	g.watcher.tcMan.AddIfaces(ctx, g.Who(), data)
+	g.watcher.tcMan.AddIfaces(ctx, g.Who(), data, sync)
 }
 
 func (g *Guest) clearTc(ctx context.Context) {
@@ -238,13 +238,18 @@ func (g *Guest) clearOvn(ctx context.Context) {
 	ovnMdMan.SetGuestNICs(ctx, g.Id, nil)
 }
 
-func (g *Guest) UpdateSettings(ctx context.Context) {
+func (g *Guest) UpdateSettings(ctx context.Context, sync bool) {
+	start := time.Now()
 	err := g.refresh(ctx)
+	log.Infof("guest UpdateSettings refresh %f", time.Since(start).Seconds())
 	switch err {
 	case nil:
 		g.updateClassicFlows(ctx)
-		g.updateTc(ctx)
+		log.Infof("guest UpdateSettings updateClassicFlows %f", time.Since(start).Seconds())
+		g.updateTc(ctx, sync)
+		log.Infof("guest UpdateSettings updateTc %f", time.Since(start).Seconds())
 		g.updateOvn(ctx)
+		log.Infof("guest UpdateSettings updateOvn %f", time.Since(start).Seconds())
 		if g.HostId != "" {
 			g.watcher.agent.HostId(g.HostId)
 		}

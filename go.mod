@@ -5,7 +5,7 @@ go 1.21
 require (
 	github.com/coreos/go-iptables v0.6.0
 	github.com/digitalocean/go-openvswitch v0.0.20240920
-	github.com/fsnotify/fsnotify v1.5.4
+	github.com/fsnotify/fsnotify v1.8.0
 	github.com/golang/protobuf v1.5.3
 	github.com/mitchellh/go-homedir v1.1.0
 	github.com/pkg/errors v0.9.1
@@ -17,10 +17,10 @@ require (
 	golang.org/x/net v0.21.0
 	google.golang.org/grpc v1.62.0
 	google.golang.org/protobuf v1.32.0
-	yunion.io/x/jsonutils v1.0.1-0.20240203102553-4096f103b401
+	yunion.io/x/jsonutils v1.0.1-0.20240930100528-1671a2d0d22f
 	yunion.io/x/log v1.0.1-0.20240305175729-7cf2d6cd5a91
-	yunion.io/x/onecloud v0.0.0-20241009134947-8e0507d0029f
-	yunion.io/x/pkg v1.10.1-0.20240905110705-77c46e716318
+	yunion.io/x/onecloud v0.0.0-20241217113931-4132f245acc4
+	yunion.io/x/pkg v1.10.2
 )
 
 require (
@@ -119,8 +119,8 @@ require (
 	moul.io/http2curl/v2 v2.3.0 // indirect
 	sigs.k8s.io/structured-merge-diff/v4 v4.0.1 // indirect
 	sigs.k8s.io/yaml v1.2.0 // indirect
-	yunion.io/x/cloudmux v0.3.10-0-alpha.1.0.20240929084351-30a36ccf2201 // indirect
-	yunion.io/x/executor v0.0.0-20230705125604-c5ac3141db32 // indirect
+	yunion.io/x/cloudmux v0.3.10-0-alpha.1.0.20241216075633-a8665686cf63 // indirect
+	yunion.io/x/executor v0.0.0-20241205080005-48f5b1212256 // indirect
 	yunion.io/x/s3cli v0.0.0-20190917004522-13ac36d8687e // indirect
 	yunion.io/x/sqlchemy v1.1.3-0.20240926163039-d41512b264e1 // indirect
 	yunion.io/x/structarg v0.0.0-20231017124457-df4d5009457c // indirect

@@ -818,6 +818,8 @@ type ServerChangeConfigInput struct {
 
 	// cpu大小
 	VcpuCount *int `json:"vcpu_count"`
+	// 任务分配CPU大小
+	ExtraCpuCount *int `json:"extra_cpu_count"`
 	// 内存大小, 1024M, 1G
 	VmemSize string `json:"vmem_size"`
 
@@ -932,6 +934,7 @@ type GuestJsonDesc struct {
 		InstanceSnapshotId string `json:"instance_snapshot_id"`
 		InstanceId         string `json:"instance_id"`
 	} `json:"instance_snapshot_info"`
+	EnableEsxiSwap bool `json:"enable_esxi_swap"`
 
 	EncryptKeyId string `json:"encrypt_key_id,omitempty"`
 
@@ -952,7 +955,8 @@ type SCpuNumaPin struct {
 	SizeMB *int `json:"size_mb"`
 	NodeId int  `json:"node_id"`
 
-	VcpuPin []SVCpuPin `json:"vcpu_pin"`
+	VcpuPin       []SVCpuPin `json:"vcpu_pin"`
+	ExtraCpuCount int        `json:"extra_cpu_count"`
 }
 
 type ServerSetBootIndexInput struct {
@@ -1308,10 +1312,11 @@ type ServerChangeBandwidthInput struct {
 }
 
 type ServerChangeConfigSpecs struct {
-	CpuSockets   int    `json:"cpu_sockets"`
-	VcpuCount    int    `json:"vcpu_count"`
-	VmemSize     int    `json:"vmem_size"`
-	InstanceType string `json:"instance_type"`
+	CpuSockets    int    `json:"cpu_sockets"`
+	VcpuCount     int    `json:"vcpu_count"`
+	ExtraCpuCount int    `json:"extra_cpu_count"`
+	VmemSize      int    `json:"vmem_size"`
+	InstanceType  string `json:"instance_type"`
 }
 
 type DiskResizeSpec struct {
@@ -1346,6 +1351,18 @@ func (conf ServerChangeConfigSettings) CpuChanged() bool {
 
 func (conf ServerChangeConfigSettings) AddedCpu() int {
 	addCpu := conf.VcpuCount - conf.Old.VcpuCount
+	if addCpu < 0 {
+		addCpu = 0
+	}
+	return addCpu
+}
+
+func (conf ServerChangeConfigSettings) ExtraCpuChanged() bool {
+	return conf.ExtraCpuCount != conf.Old.ExtraCpuCount
+}
+
+func (conf ServerChangeConfigSettings) AddedExtraCpu() int {
+	addCpu := conf.ExtraCpuCount - conf.Old.ExtraCpuCount
 	if addCpu < 0 {
 		addCpu = 0
 	}

@@ -55,6 +55,11 @@ type SHostBaseOptions struct {
 	ImageCacheCleanupPercentage int  `help:"The cleanup threshold ratio of image cache size v.s. total storage size" default:"12"`
 	ImageCacheCleanupOnStartup  bool `help:"Cleanup image cache on host startup" default:"false"`
 	ImageCacheCleanupDryRun     bool `help:"Dry run cleanup image cache" default:"false"`
+
+	TelegrafKafkaOutputTopic         string `json:"telegraf_kafka_output_topic" help:"telegraf kafka output topic"`
+	TelegrafKafkaOutputSaslUsername  string `json:"telegraf_kafka_output_sasl_username" help:"telegraf kafka output sasl_username"`
+	TelegrafKafkaOutputSaslPassword  string `json:"telegraf_kafka_output_sasl_password" help:"telegraf kafka output sasl_password"`
+	TelegrafKafkaOutputSaslMechanism string `json:"telegraf_kafka_output_sasl_mechanism" help:"telegraf kafka output sasl_mechanism"`
 }
 
 type SHostOptions struct {
@@ -105,10 +110,11 @@ type SHostOptions struct {
 	LinuxDefaultRootUser    bool `help:"Default account for linux system is root"`
 	WindowsDefaultAdminUser bool `default:"true" help:"Default account for Windows system is Administrator"`
 
-	BlockIoScheduler string `help:"Block IO scheduler, deadline or cfq" default:"deadline"`
-	EnableKsm        bool   `help:"Enable Kernel Same Page Merging"`
-	HugepagesOption  string `help:"Hugepages option: disable|native|transparent" default:"transparent"`
-	HugepageSizeMb   int    `help:"hugepage size mb default 1G" default:"1024"`
+	BlockIoScheduler    string `help:"HDD Block IO scheduler, deadline or cfq" default:"deadline"`
+	SsdBlockIoScheduler string `help:"SSD Block IO scheduler, none deadline or cfq" default:"none"`
+	EnableKsm           bool   `help:"Enable Kernel Same Page Merging"`
+	HugepagesOption     string `help:"Hugepages option: disable|native|transparent" default:"transparent"`
+	HugepageSizeMb      int    `help:"hugepage size mb default 1G" default:"1024"`
 
 	// PrivatePrefixes []string `help:"IPv4 private prefixes"`
 	LocalImagePath  []string `help:"Local image storage paths"`
@@ -134,6 +140,7 @@ type SHostOptions struct {
 	SetVncPassword         bool `default:"true" help:"Auto set vnc password after monitor connected"`
 	UseBootVga             bool `default:"false" help:"Use boot VGA GPU for guest"`
 
+	EnableStrictCpuBind         bool   `default:"false" help:"Enable strict cpu bind, one vcpu bind one pcpu"`
 	EnableHostAgentNumaAllocate bool   `default:"false" help:"Enable host agent numa allocate"`
 	EnableCpuBinding            bool   `default:"true" help:"Enable cpu binding and rebalance"`
 	EnableOpenflowController    bool   `default:"false"`
@@ -157,6 +164,8 @@ type SHostOptions struct {
 	MaxReservedMemory int `default:"10240" help:"host reserved memory"`
 
 	DefaultRequestWorkerCount int `default:"8" help:"default request worker count"`
+	ContainerStartWorkerCount int `default:"1" help:"container start worker count"`
+	ContainerStopWorkerCount  int `default:"1" help:"container stop worker count"`
 
 	AllowSwitchVMs bool `help:"allow machines run as switch (spoof mac)" default:"true"`
 	AllowRouterVMs bool `help:"allow machines run as router (spoof ip)" default:"true"`
@@ -232,6 +241,7 @@ type SHostOptions struct {
 
 	EnableDirtyRecoverySeconds int  `help:"Seconds to delay enable dirty guests recovery feature, default 15 minutes" default:"900"`
 	EnableContainerCniPortmap  bool `help:"Use container cni portmap plugin" default:"false"`
+	DisableReconcileContainer  bool `help:"disable reconcile container" default:"false"`
 }
 
 func (o SHostOptions) HostLocalNetconfPath(br string) string {

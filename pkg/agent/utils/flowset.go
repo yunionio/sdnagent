@@ -15,11 +15,22 @@
 package utils
 
 import (
+	"sort"
 	"strings"
 
 	"github.com/digitalocean/go-openvswitch/ovs"
+
 	"yunion.io/x/pkg/errors"
 )
+
+type sortedFlows []*ovs.Flow
+
+func (a sortedFlows) Len() int      { return len(a) }
+func (a sortedFlows) Swap(i, j int) { a[i], a[j] = a[j], a[i] }
+func (a sortedFlows) Less(i, j int) bool {
+	result := CompareOVSFlow(a[i], a[j])
+	return result < 0
+}
 
 type FlowSet struct {
 	flows []*ovs.Flow
@@ -30,11 +41,8 @@ func NewFlowSet() *FlowSet {
 }
 
 func NewFlowSetFromList(flows []*ovs.Flow) *FlowSet {
-	fs := NewFlowSet()
-	for _, of := range flows {
-		fs.Add(of)
-	}
-	return fs
+	sort.Sort(sortedFlows(flows))
+	return &FlowSet{flows: flows}
 }
 
 func (fs *FlowSet) findFlowIndex(f *ovs.Flow) (int, bool) {
@@ -56,6 +64,10 @@ func (fs *FlowSet) findFlowIndex(f *ovs.Flow) (int, bool) {
 
 func (fs *FlowSet) Flows() []*ovs.Flow {
 	return fs.flows
+}
+
+func (fs *FlowSet) Len() int {
+	return len(fs.flows)
 }
 
 func (fs *FlowSet) Add(f *ovs.Flow) bool {
@@ -96,15 +108,15 @@ func (fs *FlowSet) DumpFlows() (string, error) {
 	return buf.String(), nil
 }
 
-/*func (fs *FlowSet) Merge(fs1 *FlowSet) {
+func (fs *FlowSet) Merge(fs1 *FlowSet) {
 	for _, f := range fs1.flows {
 		fs.Add(f)
 	}
-}*/
+}
 
 // Diff return dels,adds that are needed to make the current set has the same
 // elements as with fs1
-/*func (fs0 *FlowSet) Diff(fs1 *FlowSet) (flowsAdd, flowsDel []*ovs.Flow) {
+func (fs0 *FlowSet) Diff(fs1 *FlowSet) (flowsAdd, flowsDel []*ovs.Flow) {
 	flowsAdd = []*ovs.Flow{}
 	flowsDel = []*ovs.Flow{}
 
@@ -130,4 +142,4 @@ func (fs *FlowSet) DumpFlows() (string, error) {
 		flowsAdd = append(flowsAdd, fs1.flows[j:]...)
 	}
 	return
-}*/
+}
