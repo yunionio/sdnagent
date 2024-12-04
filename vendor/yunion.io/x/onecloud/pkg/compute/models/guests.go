@@ -3000,17 +3000,21 @@ func (self *SGuest) SyncRemoveCloudVM(ctx context.Context, userCred mcclient.Tok
 					}
 					return q
 				})
-				if err == nil {
-					_, err = db.Update(self, func() error {
-						self.HostId = host.GetId()
-						self.Status = iVM.GetStatus()
-						self.PowerStates = iVM.GetPowerStates()
-						self.InferPowerStates()
-						return nil
-					})
-					return err
+				if err != nil {
+					log.Errorf("fetch vm %s(%s) host by id %s error: %v", self.Name, self.ExternalId, hostId, err)
+					return nil
 				}
+				_, err = db.Update(self, func() error {
+					self.HostId = host.GetId()
+					self.Status = iVM.GetStatus()
+					self.PowerStates = iVM.GetPowerStates()
+					self.InferPowerStates()
+					return nil
+				})
+				return err
 			}
+			// 公有云实例, 因为翻页查询导致实例返回结果漏查,且GetIHostId一般返回为空
+			return nil
 		} else if errors.Cause(err) != cloudprovider.ErrNotFound {
 			return errors.Wrap(err, "GetIVMById")
 		}
@@ -5065,6 +5069,8 @@ func (self *SGuest) GetJsonDescAtHypervisor(ctx context.Context, host *SHost) *a
 		IsDaemon: self.IsDaemon.Bool(),
 
 		LightMode: self.RescueMode,
+
+		EnableEsxiSwap: options.Options.EnableEsxiSwap,
 	}
 
 	if len(self.BackupHostId) > 0 {
@@ -5102,6 +5108,10 @@ func (self *SGuest) GetJsonDescAtHypervisor(ctx context.Context, host *SHost) *a
 	// nics, domain
 	desc.Domain = options.Options.DNSDomain
 	nics, _ := self.GetNetworks("")
+	changed, _ := self.fixDefaultGatewayByNics(ctx, auth.AdminCredential(), nics)
+	if changed {
+		nics, _ = self.GetNetworks("")
+	}
 	for _, nic := range nics {
 		nicDesc := nic.getJsonDescAtHost(ctx, host)
 		desc.Nics = append(desc.Nics, nicDesc)
@@ -5211,6 +5221,7 @@ func (self *SGuest) GetJsonDescAtBaremetal(ctx context.Context, host *SHost) *ap
 
 	desc.DiskConfig = host.getDiskConfig()
 
+	self.fixDefaultGateway(ctx, auth.AdminCredential())
 	netifs := host.GetAllNetInterfaces()
 	desc.Domain = options.Options.DNSDomain
 
