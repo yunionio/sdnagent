@@ -81,11 +81,23 @@ const (
 	// for health check
 	CONTAINER_STATUS_PROBING      = "probing"
 	CONTAINER_STATUS_PROBE_FAILED = "probe_failed"
+	CONTAINER_STATUS_NET_FAILED   = "net_failed"
+	// post overlay
+	CONTAINER_STATUS_ADD_POST_OVERLY           = "adding_post_overly"
+	CONTAINER_STATUS_ADD_POST_OVERLY_FAILED    = "add_post_overly_failed"
+	CONTAINER_STATUS_REMOVE_POST_OVERLY        = "removing_post_overly"
+	CONTAINER_STATUS_REMOVE_POST_OVERLY_FAILED = "remove_post_overly_failed"
 )
 
 var (
-	ContainerRunningStatus = sets.NewString(CONTAINER_STATUS_RUNNING, CONTAINER_STATUS_PROBING)
-	ContainerExitedStatus  = sets.NewString(CONTAINER_STATUS_EXITED, CONTAINER_STATUS_CRASH_LOOP_BACK_OFF)
+	ContainerRunningStatus = sets.NewString(
+		CONTAINER_STATUS_RUNNING,
+		CONTAINER_STATUS_PROBING,
+		CONTAINER_STATUS_PROBE_FAILED,
+		CONTAINER_STATUS_NET_FAILED,
+	)
+	ContainerNoFailedRunningStatus = sets.NewString(CONTAINER_STATUS_RUNNING, CONTAINER_STATUS_PROBING)
+	ContainerExitedStatus          = sets.NewString(CONTAINER_STATUS_EXITED, CONTAINER_STATUS_CRASH_LOOP_BACK_OFF)
 )
 
 const (
@@ -131,7 +143,8 @@ type ContainerListInput struct {
 }
 
 type ContainerStopInput struct {
-	Timeout int `json:"timeout"`
+	Timeout int  `json:"timeout"`
+	Force   bool `json:"force"`
 }
 
 type ContainerSyncStatusResponse struct {
@@ -243,4 +256,21 @@ type ContainerPerformStatusInput struct {
 	RestartCount   int        `json:"restart_count"`
 	StartedAt      *time.Time `json:"started_at"`
 	LastFinishedAt *time.Time `json:"last_finished_at"`
+}
+
+type ContainerResourcesSetInput struct {
+	apis.ContainerResources
+	DisableLimitCheck bool `json:"disable_limit_check"`
+}
+
+type ContainerVolumeMountAddPostOverlayInput struct {
+	Index       int                                         `json:"index"`
+	PostOverlay []*apis.ContainerVolumeMountDiskPostOverlay `json:"post_overlay"`
+}
+
+type ContainerVolumeMountRemovePostOverlayInput struct {
+	Index       int                                         `json:"index"`
+	PostOverlay []*apis.ContainerVolumeMountDiskPostOverlay `json:"post_overlay"`
+	UseLazy     bool                                        `json:"use_lazy"`
+	ClearLayers bool                                        `json:"clear_layers"`
 }

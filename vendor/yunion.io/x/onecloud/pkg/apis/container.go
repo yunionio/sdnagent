@@ -43,9 +43,26 @@ type ContainerLifecyle struct {
 	PostStart *ContainerLifecyleHandler `json:"post_start"`
 }
 
+type ContainerProcMountType string
+
+const (
+	// DefaultProcMount uses the container runtime defaults for readonly and masked
+	// paths for /proc.  Most container runtimes mask certain paths in /proc to avoid
+	// accidental security exposure of special devices or information.
+	ContainerDefaultProcMount ContainerProcMountType = "Default"
+
+	// UnmaskedProcMount bypasses the default masking behavior of the container
+	// runtime and ensures the newly created /proc the container stays in tact with
+	// no modifications.
+	ContainerUnmaskedProcMount ContainerProcMountType = "Unmasked"
+)
+
 type ContainerSecurityContext struct {
 	RunAsUser  *int64 `json:"run_as_user,omitempty"`
 	RunAsGroup *int64 `json:"run_as_group,omitempty"`
+	// procMount denotes the type of proc mount to use for the containers.
+	// The default is DefaultProcMount which uses the container runtime defaults for
+	ProcMount ContainerProcMountType `json:"proc_mount"`
 }
 
 type ContainerResources struct {
@@ -57,6 +74,10 @@ type ContainerResources struct {
 	PidsMax *int `json:"pids_max"`
 	// DevicesAllow will be set to devices.allow
 	DevicesAllow []string `json:"devices_allow"`
+	// This flag only affects the cpuset controller. If the clone_children
+	// flag is enabled in a cgroup, a new cpuset cgroup will copy its
+	// configuration fromthe parent during initialization.
+	CpusetCloneChildren bool `json:"cpuset_clone_children"`
 }
 
 type ContainerSpec struct {
@@ -64,6 +85,8 @@ type ContainerSpec struct {
 	Image string `json:"image"`
 	// Image pull policy
 	ImagePullPolicy ImagePullPolicy `json:"image_pull_policy"`
+	// Image credential id
+	ImageCredentialId string `json:"image_credential_id"`
 	// Command to execute (i.e., entrypoint for docker)
 	Command []string `json:"command"`
 	// Args for the Command (i.e. command for docker)
@@ -149,11 +172,13 @@ var (
 )
 
 type ContainerVolumeMount struct {
-	Type     ContainerVolumeMountType      `json:"type"`
-	Disk     *ContainerVolumeMountDisk     `json:"disk"`
-	HostPath *ContainerVolumeMountHostPath `json:"host_path"`
-	Text     *ContainerVolumeMountText     `json:"text"`
-	CephFS   *ContainerVolumeMountCephFS   `json:"ceph_fs"`
+	// 用于标识当前 pod volume mount 的唯一性
+	UniqueName string                        `json:"unique_name"`
+	Type       ContainerVolumeMountType      `json:"type"`
+	Disk       *ContainerVolumeMountDisk     `json:"disk"`
+	HostPath   *ContainerVolumeMountHostPath `json:"host_path"`
+	Text       *ContainerVolumeMountText     `json:"text"`
+	CephFS     *ContainerVolumeMountCephFS   `json:"ceph_fs"`
 	// Mounted read-only if true, read-write otherwise (false or unspecified).
 	ReadOnly bool `json:"read_only"`
 	// Path within the container at which the volume should be mounted.  Must
@@ -203,12 +228,24 @@ func (o ContainerVolumeMountDiskOverlay) IsValid() error {
 	return nil
 }
 
+type ContainerVolumeMountDiskPostOverlay struct {
+	// 宿主机底层目录
+	HostLowerDir []string `json:"host_lower_dir"`
+	// 合并后要挂载到容器的目录
+	ContainerTargetDir string `json:"container_target_dir"`
+}
+
 type ContainerVolumeMountDisk struct {
-	Index           *int                             `json:"index,omitempty"`
-	Id              string                           `json:"id"`
-	SubDirectory    string                           `json:"sub_directory"`
-	StorageSizeFile string                           `json:"storage_size_file"`
-	Overlay         *ContainerVolumeMountDiskOverlay `json:"overlay"`
+	Index           *int   `json:"index,omitempty"`
+	Id              string `json:"id"`
+	SubDirectory    string `json:"sub_directory"`
+	StorageSizeFile string `json:"storage_size_file"`
+	// lower overlay 设置，disk 的 volume 会作为 upper，最终 merged 的目录会传给容器
+	Overlay *ContainerVolumeMountDiskOverlay `json:"overlay"`
+	// case insensitive feature is incompatible with overlayfs
+	CaseInsensitivePaths []string `json:"case_insensitive_paths"`
+	// 当 disk volume 挂载完后，需要 overlay 的目录设置
+	PostOverlay []*ContainerVolumeMountDiskPostOverlay `json:"post_overlay"`
 }
 
 type ContainerVolumeMountHostPathType string
