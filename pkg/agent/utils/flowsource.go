@@ -173,8 +173,8 @@ func (h *HostLocal) FlowsMap() (map[string][]*ovs.Flow, error) {
 			ip4, _ := netutils.NewIPV4Addr(netConf.GuestIpStart)
 			addrMask := fmt.Sprintf("%s/%d", ip4.NetAddr(int8(netConf.GuestIpMask)).String(), netConf.GuestIpMask)
 			flows = append(flows,
-				F(0, 39000, T(fmt.Sprintf("in_port={{.PortNoPhy}},arp,arp_tpa=%s", addrMask)), "drop"),
-				F(0, 39001, T(fmt.Sprintf("in_port={{.PortNoPhy}},arp,arp_spa=%s", addrMask)), "drop"),
+				F(0, 39000, T(fmt.Sprintf("arp,arp_tpa=%s", addrMask)), "drop"),
+				F(0, 39001, T(fmt.Sprintf("arp,arp_spa=%s", addrMask)), "drop"),
 			)
 		}
 	}
@@ -259,6 +259,15 @@ func (g *Guest) getMetadataInfo(nic *GuestNIC) (mdIP string, mdMAC string, mdPor
 		mdPortNo = p.PortID
 	}
 	return
+}
+
+func isNicHostLocal(hcn *HostConfigNetwork, nic *GuestNIC) bool {
+	for i := range hcn.HostLocalNets {
+		if nic.NetId == hcn.HostLocalNets[i].Id {
+			return true
+		}
+	}
+	return false
 }
 
 func (g *Guest) FlowsMapForNic(nic *GuestNIC) ([]*ovs.Flow, error) {
@@ -377,11 +386,20 @@ func (g *Guest) FlowsMapForNic(nic *GuestNIC) ([]*ovs.Flow, error) {
 			}
 		} else {
 			// allow arp from VM src IP
-			g.eachIP(m, func(T2 func(string) string) {
-				flows = append(flows,
-					F(0, 27770, T2("in_port={{.PortNo}},arp,dl_src={{.MAC}},arp_sha={{.MAC}},arp_spa={{.IP}}"), "normal"),
-				)
-			})
+			if isNicHostLocal(hcn, nic) {
+				g.eachIP(m, func(T2 func(string) string) {
+					flows = append(flows,
+						F(0, 39011, T2(fmt.Sprintf("in_port=LOCAL,arp,arp_spa=%s,arp_tpa={{.IP}}", nic.Gateway)), FakeArpRespActions(nic.MAC)),
+						F(0, 39010, T2(fmt.Sprintf("in_port={{.PortNo}},arp,dl_src={{.MAC}},arp_sha={{.MAC}},arp_spa={{.IP}},arp_tpa=%s", nic.Gateway)), FakeArpRespActions(hcn.mac.String())),
+					)
+				})
+			} else {
+				g.eachIP(m, func(T2 func(string) string) {
+					flows = append(flows,
+						F(0, 27770, T2("in_port={{.PortNo}},arp,dl_src={{.MAC}},arp_sha={{.MAC}},arp_spa={{.IP}}"), "normal"),
+					)
+				})
+			}
 			if nic.EnableIPv6() {
 				flows = append(flows,
 					// allow nb solicitate from VM src IP to outside
