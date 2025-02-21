@@ -151,3 +151,5 @@ case "$ARCH" in
         build_process
         ;;
 esac
+
+echo "kubectl patch oc -n onecloud default --type='json' -p='[{op: replace, path: /spec/hostagent/SdnAgent/imageName, value: sdnagent},{"op": "replace", "path": "/spec/hostagent/repository", "value": "${REGISTRY}"},{"op": "add", "path": "/spec/hostagent/SdnAgent/tag", "value": "${TAG}"}]'"
