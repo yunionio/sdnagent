@@ -70,7 +70,7 @@ buildx_and_push() {
     local path=$3
     local arch=$4
     docker buildx build -t "$tag" --platform "linux/$arch" -f "$2" "$3" --push
-    docker pull "$tag"
+    docker pull "$tag" --platform "linux/$arch"
 }
 
 push_image() {
@@ -145,6 +145,9 @@ case "$ARCH" in
         make_manifest_image $image_keyword
         ;;
     arm64)
+        build_process_with_buildx $ARCH "false"
+        ;;
+    amd64)
         build_process_with_buildx $ARCH "false"
         ;;
     *)
