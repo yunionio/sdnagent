@@ -69,8 +69,8 @@ buildx_and_push() {
     local file=$2
     local path=$3
     local arch=$4
-    docker buildx build -t "$tag" --platform "linux/$arch" -f "$2" "$3" --push
-    docker pull "$tag" --platform "linux/$arch"
+    docker buildx build -t "$tag" --platform "linux/$arch" -f "$file" "$path" --push
+    docker pull --platform "linux/$arch" "$tag"
 }
 
 push_image() {
@@ -126,11 +126,17 @@ make_manifest_image() {
         echo "[$(readlink -f ${BASH_SOURCE}):${LINENO} ${FUNCNAME[0]}] return for DRY_RUN"
         return
     fi
-    docker manifest create --amend $img_name \
+    docker buildx imagetools create -t $img_name \
         $img_name-amd64 \
         $img_name-arm64
-    docker manifest annotate $img_name $img_name-arm64 --arch arm64
-    docker manifest push $img_name
+	docker manifest inspect ${img_name} | grep -wq amd64
+    docker manifest inspect ${img_name} | grep -wq arm64
+}
+
+show_update_cmd() {
+	local name="sdnagent"
+	local spec="hostagent/SdnAgent"
+    echo "kubectl patch oc -n onecloud default --type='json' -p='[{op: replace, path: /spec/${spec}/imageName, value: ${name}},{"op": "replace", "path": "/spec/${spec}/repository", "value": "${REGISTRY}"},{"op": "add", "path": "/spec/${spec}/tag", "value": "${TAG}"}]'"
 }
 
 cd $SRC_DIR
@@ -155,4 +161,4 @@ case "$ARCH" in
         ;;
 esac
 
-echo "kubectl patch oc -n onecloud default --type='json' -p='[{op: replace, path: /spec/hostagent/SdnAgent/imageName, value: sdnagent},{"op": "replace", "path": "/spec/hostagent/SdnAgent/repository", "value": "${REGISTRY}"},{"op": "add", "path": "/spec/hostagent/SdnAgent/tag", "value": "${TAG}"}]'"
+show_update_cmd
