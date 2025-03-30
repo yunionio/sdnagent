@@ -129,6 +129,8 @@ type SGuest struct {
 	VmemSize int `nullable:"false" list:"user" create:"required"`
 	// CPU 内存绑定信息
 	CpuNumaPin jsonutils.JSONObject `nullable:"true" get:"user" update:"user" create:"optional"`
+	// 额外分配的 CPU 数量
+	ExtraCpuCount int `nullable:"false" default:"0" list:"user" create:"optional"`
 
 	// 启动顺序
 	BootOrder string `width:"8" charset:"ascii" nullable:"true" default:"cdn" list:"user" update:"user" create:"optional"`
@@ -1324,8 +1326,9 @@ func (guest *SGuest) SetCpuNumaPin(
 		vcpuId := 0
 		for i := range schedCpuNumaPin {
 			cpuNumaPin[i] = api.SCpuNumaPin{
-				SizeMB: schedCpuNumaPin[i].MemSizeMB,
-				NodeId: schedCpuNumaPin[i].NodeId,
+				SizeMB:        schedCpuNumaPin[i].MemSizeMB,
+				NodeId:        schedCpuNumaPin[i].NodeId,
+				ExtraCpuCount: schedCpuNumaPin[i].ExtraCpuCount,
 			}
 
 			if len(schedCpuNumaPin[i].CpuPin) > 0 {
@@ -3083,17 +3086,21 @@ func (self *SGuest) SyncRemoveCloudVM(ctx context.Context, userCred mcclient.Tok
 					}
 					return q
 				})
-				if err == nil {
-					_, err = db.Update(self, func() error {
-						self.HostId = host.GetId()
-						self.Status = iVM.GetStatus()
-						self.PowerStates = iVM.GetPowerStates()
-						self.InferPowerStates()
-						return nil
-					})
-					return err
+				if err != nil {
+					log.Errorf("fetch vm %s(%s) host by id %s error: %v", self.Name, self.ExternalId, hostId, err)
+					return nil
 				}
+				_, err = db.Update(self, func() error {
+					self.HostId = host.GetId()
+					self.Status = iVM.GetStatus()
+					self.PowerStates = iVM.GetPowerStates()
+					self.InferPowerStates()
+					return nil
+				})
+				return err
 			}
+			// 公有云实例, 因为翻页查询导致实例返回结果漏查,且GetIHostId一般返回为空
+			return nil
 		} else if errors.Cause(err) != cloudprovider.ErrNotFound {
 			return errors.Wrap(err, "GetIVMById")
 		}
@@ -3147,7 +3154,7 @@ func (guest *SGuest) SyncAllWithCloudVM(ctx context.Context, userCred mcclient.T
 		return errors.Wrap(err, "guest.syncWithCloudVM")
 	}
 
-	syncVMPeripherals(ctx, userCred, guest, extVM, host, provider, driver)
+	SyncVMPeripherals(ctx, userCred, guest, extVM, host, provider, driver)
 
 	return nil
 }
@@ -4318,7 +4325,7 @@ func (self *SGuest) allocSriovNicDevice(
 	}
 	netConfig.SriovDevice.NetworkIndex = &gn.Index
 	netConfig.SriovDevice.WireId = net.WireId
-	err = self.createIsolatedDeviceOnHost(ctx, userCred, host, netConfig.SriovDevice, pendingUsageZone, nil)
+	err = self.createIsolatedDeviceOnHost(ctx, userCred, host, netConfig.SriovDevice, pendingUsageZone, nil, nil)
 	if err != nil {
 		return errors.Wrap(err, "self.createIsolatedDeviceOnHost")
 	}
@@ -4507,7 +4514,7 @@ func (self *SGuest) attachNVMEDevice(
 ) error {
 	gd := self.GetGuestDisk(disk.Id)
 	diskConfig.NVMEDevice.DiskIndex = &gd.Index
-	err := self.createIsolatedDeviceOnHost(ctx, userCred, host, diskConfig.NVMEDevice, pendingUsage, nil)
+	err := self.createIsolatedDeviceOnHost(ctx, userCred, host, diskConfig.NVMEDevice, pendingUsage, nil, nil)
 	if err != nil {
 		return errors.Wrap(err, "self.createIsolatedDeviceOnHost")
 	}
@@ -4660,12 +4667,23 @@ func (self *SGuest) createDiskOnHost(
 }
 
 func (self *SGuest) CreateIsolatedDeviceOnHost(ctx context.Context, userCred mcclient.TokenCredential, host *SHost, devs []*api.IsolatedDeviceConfig, pendingUsage quotas.IQuota) error {
+	var numaNodes []int
+	if self.CpuNumaPin != nil {
+		numaNodes = make([]int, 0)
+		cpuNumaPin := make([]schedapi.SCpuNumaPin, 0)
+		self.CpuNumaPin.Unmarshal(&cpuNumaPin)
+
+		for i := range cpuNumaPin {
+			numaNodes = append(numaNodes, cpuNumaPin[i].NodeId)
+		}
+	}
+
 	usedDeviceMap := map[string]*SIsolatedDevice{}
 	for _, devConfig := range devs {
 		if devConfig.DevType == api.NIC_TYPE || devConfig.DevType == api.NVME_PT_TYPE {
 			continue
 		}
-		err := self.createIsolatedDeviceOnHost(ctx, userCred, host, devConfig, pendingUsage, usedDeviceMap)
+		err := self.createIsolatedDeviceOnHost(ctx, userCred, host, devConfig, pendingUsage, usedDeviceMap, numaNodes)
 		if err != nil {
 			return err
 		}
@@ -4673,11 +4691,11 @@ func (self *SGuest) CreateIsolatedDeviceOnHost(ctx context.Context, userCred mcc
 	return nil
 }
 
-func (self *SGuest) createIsolatedDeviceOnHost(ctx context.Context, userCred mcclient.TokenCredential, host *SHost, devConfig *api.IsolatedDeviceConfig, pendingUsage quotas.IQuota, usedDevMap map[string]*SIsolatedDevice) error {
+func (self *SGuest) createIsolatedDeviceOnHost(ctx context.Context, userCred mcclient.TokenCredential, host *SHost, devConfig *api.IsolatedDeviceConfig, pendingUsage quotas.IQuota, usedDevMap map[string]*SIsolatedDevice, preferNumaNodes []int) error {
 	lockman.LockClass(ctx, QuotaManager, self.ProjectId)
 	defer lockman.ReleaseClass(ctx, QuotaManager, self.ProjectId)
 
-	err := IsolatedDeviceManager.attachHostDeviceToGuestByDesc(ctx, self, host, devConfig, userCred, usedDevMap)
+	err := IsolatedDeviceManager.attachHostDeviceToGuestByDesc(ctx, self, host, devConfig, userCred, usedDevMap, preferNumaNodes)
 	if err != nil {
 		return err
 	}
@@ -5185,6 +5203,8 @@ func (self *SGuest) GetJsonDescAtHypervisor(ctx context.Context, host *SHost) *a
 
 		LightMode:  self.RescueMode,
 		Hypervisor: self.GetHypervisor(),
+
+		EnableEsxiSwap: options.Options.EnableEsxiSwap,
 	}
 
 	if len(self.BackupHostId) > 0 {
@@ -5222,6 +5242,10 @@ func (self *SGuest) GetJsonDescAtHypervisor(ctx context.Context, host *SHost) *a
 	// nics, domain
 	desc.Domain = options.Options.DNSDomain
 	nics, _ := self.GetNetworks("")
+	changed, _ := self.fixDefaultGatewayByNics(ctx, auth.AdminCredential(), nics)
+	if changed {
+		nics, _ = self.GetNetworks("")
+	}
 	for _, nic := range nics {
 		nicDesc := nic.getJsonDescAtHost(ctx, host)
 		desc.Nics = append(desc.Nics, nicDesc)
@@ -5331,6 +5355,7 @@ func (self *SGuest) GetJsonDescAtBaremetal(ctx context.Context, host *SHost) *ap
 
 	desc.DiskConfig = host.getDiskConfig()
 
+	self.fixDefaultGateway(ctx, auth.AdminCredential())
 	netifs := host.GetAllNetInterfaces()
 	desc.Domain = options.Options.DNSDomain
 
@@ -6249,6 +6274,7 @@ func (self *SGuest) ToSchedDesc() *schedapi.ScheduleInput {
 	config.Hypervisor = self.GetHypervisor()
 	desc.ServerConfig = *config
 	desc.OsArch = self.OsArch
+	desc.ExtraCpuCount = self.ExtraCpuCount
 	return desc
 }
 

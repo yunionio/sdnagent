@@ -105,12 +105,15 @@ type TcManCmdType int
 const (
 	TcManCmdAdd = iota
 	TcManCmdDel
+	TcManCmdSync
 )
 
 type TcManCmd struct {
 	typ     TcManCmdType
 	who     string
 	section *TcManSection
+	// if the command is executed synchronizedly
+	sync bool
 }
 
 // TODO
@@ -216,9 +219,13 @@ func (tm *TcMan) doCmd(ctx context.Context, cmd *TcManCmd) {
 		} else {
 			section.Update(cmd.section)
 		}
-		tm.doCheckSection(ctx, section)
+		if cmd.sync {
+			tm.doCheckSection(ctx, section)
+		}
 	case TcManCmdDel:
 		delete(tm.book, cmd.who)
+	case TcManCmdSync:
+		tm.doIdleCheck(ctx)
 	}
 }
 
@@ -231,7 +238,7 @@ func (tm *TcMan) sendCmd(ctx context.Context, cmd *TcManCmd) {
 	}
 }
 
-func (tm *TcMan) AddIfaces(ctx context.Context, who string, data []*utils.TcData) {
+func (tm *TcMan) AddIfaces(ctx context.Context, who string, data []*utils.TcData, sync bool) {
 	section := &TcManSection{
 		pages: map[string]*TcManPage{},
 	}
@@ -253,6 +260,7 @@ func (tm *TcMan) AddIfaces(ctx context.Context, who string, data []*utils.TcData
 		typ:     TcManCmdAdd,
 		who:     who,
 		section: section,
+		sync:    sync,
 	}
 	tm.sendCmd(ctx, cmd)
 }
@@ -261,6 +269,13 @@ func (tm *TcMan) ClearIfaces(ctx context.Context, who string) {
 	cmd := &TcManCmd{
 		typ: TcManCmdDel,
 		who: who,
+	}
+	tm.sendCmd(ctx, cmd)
+}
+
+func (tm *TcMan) SyncAll(ctx context.Context) {
+	cmd := &TcManCmd{
+		typ: TcManCmdSync,
 	}
 	tm.sendCmd(ctx, cmd)
 }

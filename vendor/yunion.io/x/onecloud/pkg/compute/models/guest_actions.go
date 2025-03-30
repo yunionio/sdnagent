@@ -29,6 +29,7 @@ import (
 	"yunion.io/x/jsonutils"
 	"yunion.io/x/log"
 	"yunion.io/x/pkg/errors"
+	"yunion.io/x/pkg/gotypes"
 	"yunion.io/x/pkg/tristate"
 	"yunion.io/x/pkg/util/billing"
 	"yunion.io/x/pkg/util/httputils"
@@ -55,6 +56,7 @@ import (
 	"yunion.io/x/onecloud/pkg/cloudcommon/policy"
 	"yunion.io/x/onecloud/pkg/cloudcommon/userdata"
 	"yunion.io/x/onecloud/pkg/cloudcommon/validators"
+	"yunion.io/x/onecloud/pkg/compute/baremetal"
 	guestdriver_types "yunion.io/x/onecloud/pkg/compute/guestdrivers/types"
 	"yunion.io/x/onecloud/pkg/compute/options"
 	"yunion.io/x/onecloud/pkg/httperrors"
@@ -588,7 +590,7 @@ func (self *SGuest) StartMigrateTask(
 
 	data.Set("guest_status", jsonutils.NewString(guestStatus))
 	dedicateMigrateTask := "GuestMigrateTask"
-	if !utils.IsInStringArray(self.GetHypervisor(), []string{api.HYPERVISOR_KVM, api.HYPERVISOR_POD}) {
+	if len(self.ExternalId) > 0 {
 		dedicateMigrateTask = "ManagedGuestMigrateTask" //托管私有云
 	}
 	self.SetStatus(ctx, userCred, vmStatus, "")
@@ -647,7 +649,7 @@ func (self *SGuest) StartGuestLiveMigrateTask(
 
 	data.Set("guest_status", jsonutils.NewString(guestStatus))
 	dedicateMigrateTask := "GuestLiveMigrateTask"
-	if self.GetHypervisor() != api.HYPERVISOR_KVM {
+	if len(self.ExternalId) > 0 {
 		dedicateMigrateTask = "ManagedGuestLiveMigrateTask" //托管私有云
 	}
 	if task, err := taskman.TaskManager.NewTask(ctx, dedicateMigrateTask, self, userCred, data, parentTaskId, "", nil); err != nil {
@@ -1558,14 +1560,18 @@ func (self *SGuest) StartGueststartTask(
 	data *jsonutils.JSONDict, parentTaskId string,
 ) error {
 	schedStart := self.Hypervisor == api.HYPERVISOR_KVM && self.guestDisksStorageTypeIsShared()
+	startFromCreate := false
+	if !gotypes.IsNil(data) {
+		startFromCreate = jsonutils.QueryBoolean(data, "start_from_create", false)
+	}
 	if options.Options.IgnoreNonrunningGuests {
 		host := HostManager.FetchHostById(self.HostId)
-		if host != nil && host.EnableNumaAllocate {
+		if !startFromCreate && host != nil && host.EnableNumaAllocate {
 			schedStart = true
 		}
 	}
 
-	if self.CpuNumaPin != nil {
+	if !startFromCreate && self.CpuNumaPin != nil {
 		// clean cpu numa pin
 		err := self.SetCpuNumaPin(ctx, userCred, nil, nil)
 		if err != nil {
@@ -2308,17 +2314,43 @@ func (self *SGuest) AttachIsolatedDevices(ctx context.Context, userCred mcclient
 			}
 		}
 		if dev.DevType == api.LEGACY_VGPU_TYPE {
-			devs, err := self.GetIsolatedDevices()
+			attachedGpus, err := self.GetIsolatedDevices()
 			if err != nil {
 				return errors.Wrap(err, "get isolated devices")
 			}
-			for i := range devs {
-				if devs[i].DevType == api.LEGACY_VGPU_TYPE {
+			for i := range attachedGpus {
+				if attachedGpus[i].DevType == api.LEGACY_VGPU_TYPE {
 					return httperrors.NewBadRequestError("Nvidia vgpu count exceed > 1")
-				} else if utils.IsInStringArray(devs[i].DevType, api.VALID_GPU_TYPES) {
+				} else if utils.IsInStringArray(attachedGpus[i].DevType, api.VALID_GPU_TYPES) {
 					return httperrors.NewBadRequestError("Nvidia vgpu can't passthrough with other gpus")
 				}
 			}
+		} else if dev.DevType == api.CONTAINER_DEV_NVIDIA_MPS {
+			allDevs, err := IsolatedDeviceManager.GetUnusedDevsOnHost(host.Id, devModel, -1)
+			if err != nil {
+				return httperrors.NewInternalServerError("fetch gpu failed %s", err)
+			}
+			attachedGpus, err := self.GetIsolatedDevices()
+			if err != nil {
+				return httperrors.NewInternalServerError("get attached isolated devices %s", err)
+			}
+			attachedAddrs := map[string]struct{}{}
+			for i := range attachedGpus {
+				addr := strings.Split(attachedGpus[i].Addr, "-")[0]
+				attachedAddrs[addr] = struct{}{}
+			}
+			validDevs := []SIsolatedDevice{}
+			for i := range allDevs {
+				devAddr := strings.Split(allDevs[i].Addr, "-")[0]
+				if _, ok := attachedAddrs[devAddr]; ok {
+					continue
+				}
+				validDevs = append(validDevs, allDevs[i])
+			}
+			if len(validDevs) < count {
+				return httperrors.NewInsufficientResourceError("require %d %s isolated device of host %s is not enough", count, devModel, host.GetName())
+			}
+			devs = validDevs[:count]
 		}
 		unusedDevs = append(unusedDevs, devs...)
 	}
@@ -2863,10 +2895,22 @@ func (self *SGuest) PerformDetachnetwork(
 	return nil, nil
 }
 
-func (guest *SGuest) fixDefaultGateway(ctx context.Context, userCred mcclient.TokenCredential) error {
+func (guest *SGuest) fixDefaultGatewayByNics(ctx context.Context, userCred mcclient.TokenCredential, nics []SGuestnetwork) (bool, error) {
 	defaultGwCnt := 0
+	for i := range nics {
+		if nics[i].Virtual || len(nics[i].TeamWith) > 0 {
+			continue
+		}
+		if nics[i].IsDefault {
+			defaultGwCnt++
+		}
+	}
+
+	if defaultGwCnt == 1 {
+		return false, nil
+	}
+
 	nicList := netutils2.SNicInfoList{}
-	nics, _ := guest.GetNetworks("")
 	for i := range nics {
 		if nics[i].Virtual || len(nics[i].TeamWith) > 0 {
 			continue
@@ -2874,22 +2918,24 @@ func (guest *SGuest) fixDefaultGateway(ctx context.Context, userCred mcclient.To
 		net, _ := nics[i].GetNetwork()
 		if net != nil {
 			nicList = nicList.Add(nics[i].IpAddr, nics[i].MacAddr, net.GuestGateway)
-			if nics[i].IsDefault {
-				defaultGwCnt++
-			}
 		}
 	}
-	if defaultGwCnt != 1 {
-		gwMac, _ := nicList.FindDefaultNicMac()
-		if gwMac != "" {
-			err := guest.setDefaultGateway(ctx, userCred, gwMac)
-			if err != nil {
-				log.Errorf("setDefaultGateway fail %s", err)
-				return errors.Wrap(err, "setDefaultGateway")
-			}
+
+	gwMac, _ := nicList.FindDefaultNicMac()
+	if gwMac != "" {
+		err := guest.setDefaultGateway(ctx, userCred, gwMac)
+		if err != nil {
+			log.Errorf("setDefaultGateway fail %s", err)
+			return true, errors.Wrap(err, "setDefaultGateway")
 		}
 	}
-	return nil
+	return true, nil
+}
+
+func (guest *SGuest) fixDefaultGateway(ctx context.Context, userCred mcclient.TokenCredential) error {
+	nics, _ := guest.GetNetworks("")
+	_, err := guest.fixDefaultGatewayByNics(ctx, userCred, nics)
+	return err
 }
 
 // 挂载网卡
@@ -3176,6 +3222,9 @@ func (self *SGuest) PerformChangeConfig(ctx context.Context, userCred mcclient.T
 	if added := confs.AddedCpu(); added > 0 {
 		pendingUsage.Cpu = added
 	}
+	if added := confs.AddedExtraCpu(); added > 0 {
+		pendingUsage.Cpu += added
+	}
 	if added := confs.AddedMem(); added > 0 {
 		pendingUsage.Memory = added
 	}
@@ -3199,7 +3248,7 @@ func (self *SGuest) PerformChangeConfig(ctx context.Context, userCred mcclient.T
 	return nil, nil
 }
 
-func (self *SGuest) ChangeConfToSchedDesc(addCpu, addMem int, schedInputDisks []*api.DiskConfig) *schedapi.ScheduleInput {
+func (self *SGuest) ChangeConfToSchedDesc(addCpu, addExtraCpu, addMem int, schedInputDisks []*api.DiskConfig) *schedapi.ScheduleInput {
 	region, _ := self.GetRegion()
 	devs, _ := self.GetIsolatedDevices()
 	desc := &schedapi.ScheduleInput{
@@ -3218,6 +3267,7 @@ func (self *SGuest) ChangeConfToSchedDesc(addCpu, addMem int, schedInputDisks []
 		OsArch:            self.OsArch,
 		ChangeConfig:      true,
 		HasIsolatedDevice: len(devs) > 0,
+		ExtraCpuCount:     addExtraCpu,
 	}
 	return desc
 }
@@ -6534,4 +6584,17 @@ func (self *SGuest) PerformSyncOsInfo(ctx context.Context, userCred mcclient.Tok
 		// try qga get os info
 		return nil, self.startQgaSyncOsInfoTask(ctx, userCred, "")
 	}
+}
+
+func (g *SGuest) PerformSetRootDiskMatcher(ctx context.Context, userCred mcclient.TokenCredential, _ jsonutils.JSONObject, data *api.BaremetalRootDiskMatcher) (jsonutils.JSONObject, error) {
+	if g.GetHypervisor() != api.HYPERVISOR_BAREMETAL {
+		return nil, httperrors.NewNotAcceptableError("only %s support for setting root disk matcher", api.HYPERVISOR_BAREMETAL)
+	}
+	if err := baremetal.ValidateRootDiskMatcher(data); err != nil {
+		return nil, err
+	}
+	if err := g.SetMetadata(ctx, api.BAREMETAL_SERVER_METATA_ROOT_DISK_MATCHER, jsonutils.Marshal(data), userCred); err != nil {
+		return nil, errors.Wrapf(err, "set %s", api.BAREMETAL_SERVER_METATA_ROOT_DISK_MATCHER)
+	}
+	return nil, nil
 }

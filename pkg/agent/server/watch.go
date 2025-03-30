@@ -17,10 +17,12 @@ package server
 import (
 	"context"
 	"fmt"
-	"io/ioutil"
+	"os"
 	"path"
 	"path/filepath"
+	"reflect"
 	"regexp"
+	"runtime"
 	"sync"
 	"time"
 
@@ -36,10 +38,10 @@ import (
 
 var REGEX_UUID = regexp.MustCompile(`^[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}$`)
 
-type pendingGuest struct {
+/*type pendingGuest struct {
 	guest     *utils.Guest
 	firstSeen time.Time
-}
+}*/
 
 type wCmd int
 
@@ -127,7 +129,7 @@ func (w *watchEvent) String() string {
 
 func (w *serversWatcher) scan(ctx context.Context) {
 	serversPath := w.hostConfig.ServersPath
-	fis, err := ioutil.ReadDir(serversPath)
+	fis, err := os.ReadDir(serversPath)
 	if err != nil {
 		log.Errorf("scan servers path %s failed: %s", serversPath, err)
 		return
@@ -138,12 +140,16 @@ func (w *serversWatcher) scan(ctx context.Context) {
 		}
 		id := fi.Name()
 		if REGEX_UUID.MatchString(id) {
+			guestStart := time.Now()
+			log.Infof("scan guest %s", id)
 			path := path.Join(serversPath, id)
 			g, err := w.addGuestWatch(id, path)
 			if err != nil {
-				log.Errorf("watch guest failed during scan: %s: %s", path, err)
+				log.Errorf("inotify events watch guest failed during scan: %s: %s", path, err)
 			}
-			g.UpdateSettings(ctx)
+			log.Infof("end of scan guest %s addGuestWatch: %f", id, time.Since(guestStart).Seconds())
+			g.UpdateSettings(ctx, false)
+			log.Infof("end of scan guest %s: %f", id, time.Since(guestStart).Seconds())
 		}
 	}
 }
@@ -165,14 +171,23 @@ func (w *serversWatcher) addGuestWatch(id, path string) (*Guest, error) {
 	return g, err
 }
 
+func GetFunctionName(i interface{}) string {
+	return runtime.FuncForPC(reflect.ValueOf(i).Pointer()).Name()
+}
+
 func (w *serversWatcher) withWait(ctx context.Context, f func(context.Context)) {
 	waitData := map[string]*FlowManWaitData{}
 	ctx = context.WithValue(ctx, "waitData", waitData)
+	start := time.Now()
+	funcName := GetFunctionName(f)
+	log.Debugf("[serversWatcher] start wait %s context ....", funcName)
 	f(ctx)
+	log.Debugf("[serversWatcher] end wait %s context %f....", funcName, time.Since(start).Seconds())
 	for _, wd := range waitData {
-		wd.FlowMan.waitDecr(ctx, wd.Count)
+		wd.FlowMan.waitDecr(wd.Count)
 		wd.FlowMan.SyncFlows(ctx)
 	}
+	w.tcMan.SyncAll(ctx)
 }
 
 func (w *serversWatcher) hasRecentPending() bool {
@@ -198,7 +213,7 @@ func (w *serversWatcher) Start(ctx context.Context, agent *AgentServer) {
 	// start watcher before scan
 	w.watcher, err = fsnotify.NewWatcher()
 	if err != nil {
-		log.Errorf("creating inotify watcher failed: %s", err)
+		log.Errorf("creating inotify events watcher failed: %s", err)
 		return
 	}
 	defer w.watcher.Close()
@@ -225,8 +240,9 @@ func (w *serversWatcher) Start(ctx context.Context, agent *AgentServer) {
 	// init scan
 	w.hostLocal = NewHostLocal(w)
 	w.withWait(ctx, func(ctx context.Context) {
-		w.hostLocal.UpdateSettings(ctx)
+		w.hostLocal.UpdateSettings(ctx, false)
 		w.scan(ctx)
+		log.Infof("serversWatcher.Start: Finish initial guests scan")
 	})
 
 	refreshTicker := time.NewTicker(WatcherRefreshRate)
@@ -244,11 +260,12 @@ func (w *serversWatcher) Start(ctx context.Context, agent *AgentServer) {
 				log.Errorf("fsnotity.watch.Events error")
 				goto out
 			}
+			log.Infof("receive inotify events!")
 			wev := w.watchEvent(&ev)
 			if wev == nil {
-				log.Debugf("inotify event ignored: %s", ev)
+				log.Debugf("inotify events ignored: %s", ev)
 			} else {
-				log.Debugf("to handle inotify event %s %s", ev, wev)
+				log.Debugf("to handle inotify events %s %s", ev, wev)
 				guestId := wev.guestId
 				guestPath := wev.guestPath
 				switch wev.evType {
@@ -258,7 +275,7 @@ func (w *serversWatcher) Start(ctx context.Context, agent *AgentServer) {
 					if err != nil {
 						log.Errorf("watch guest failed: %s: %s", guestPath, err)
 					}
-					g.UpdateSettings(ctx)
+					g.UpdateSettings(ctx, true)
 				case watchEventTypeDelServerDir:
 					if g, ok := w.guests[guestId]; ok {
 						// this is needed for containers
@@ -267,8 +284,9 @@ func (w *serversWatcher) Start(ctx context.Context, agent *AgentServer) {
 					}
 					log.Infof("guest path deleted: %s", guestPath)
 				case watchEventTypeUpdServer:
+					log.Infof("watchEventTypeUpdServer %s", guestId)
 					if g, ok := w.guests[guestId]; ok {
-						g.UpdateSettings(ctx)
+						g.UpdateSettings(ctx, true)
 					} else {
 						log.Warningf("unexpected guest update event: %s", guestPath)
 					}
@@ -286,14 +304,14 @@ func (w *serversWatcher) Start(ctx context.Context, agent *AgentServer) {
 			w.withWait(ctx, func(ctx context.Context) {
 				for _, g := range w.guests {
 					if g.IsPending() {
-						g.UpdateSettings(ctx)
+						g.UpdateSettings(ctx, false)
 					}
 				}
 			})
 		case <-refreshTicker.C:
 			log.Infof("watcher refresh time ;)")
 			w.withWait(ctx, func(ctx context.Context) {
-				w.hostLocal.UpdateSettings(ctx)
+				w.hostLocal.UpdateSettings(ctx, false)
 				w.scan(ctx)
 				// for _, g := range w.guests {
 				//	g.UpdateSettings(ctx)

@@ -21,12 +21,14 @@ import (
 )
 
 type ContainerVolumeMountDisk struct {
-	Index           *int                                  `json:"index,omitempty"`
-	Id              string                                `json:"id"`
-	TemplateId      string                                `json:"template_id"`
-	SubDirectory    string                                `json:"sub_directory"`
-	StorageSizeFile string                                `json:"storage_size_file"`
-	Overlay         *apis.ContainerVolumeMountDiskOverlay `json:"overlay"`
+	Index                *int                                        `json:"index,omitempty"`
+	Id                   string                                      `json:"id"`
+	TemplateId           string                                      `json:"template_id"`
+	SubDirectory         string                                      `json:"sub_directory"`
+	StorageSizeFile      string                                      `json:"storage_size_file"`
+	Overlay              *apis.ContainerVolumeMountDiskOverlay       `json:"overlay"`
+	CaseInsensitivePaths []string                                    `json:"case_insensitive_paths"`
+	PostOverlay          []*apis.ContainerVolumeMountDiskPostOverlay `json:"post_overlay"`
 }
 
 type ContainerVolumeMountCephFS struct {
@@ -38,11 +40,13 @@ type ContainerVolumeMountCephFS struct {
 }
 
 type ContainerVolumeMount struct {
-	Type     apis.ContainerVolumeMountType      `json:"type"`
-	Disk     *ContainerVolumeMountDisk          `json:"disk"`
-	HostPath *apis.ContainerVolumeMountHostPath `json:"host_path"`
-	Text     *apis.ContainerVolumeMountText     `json:"text"`
-	CephFS   *ContainerVolumeMountCephFS        `json:"ceph_fs"`
+	// 用于标识当前 pod volume mount 的唯一性
+	UniqueName string                             `json:"unique_name"`
+	Type       apis.ContainerVolumeMountType      `json:"type"`
+	Disk       *ContainerVolumeMountDisk          `json:"disk"`
+	HostPath   *apis.ContainerVolumeMountHostPath `json:"host_path"`
+	Text       *apis.ContainerVolumeMountText     `json:"text"`
+	CephFS     *ContainerVolumeMountCephFS        `json:"ceph_fs"`
 	// Mounted read-only if true, read-write otherwise (false or unspecified).
 	ReadOnly bool `json:"read_only"`
 	// Path within the container at which the volume should be mounted.  Must
@@ -58,8 +62,9 @@ type ContainerVolumeMount struct {
 
 type ContainerSpec struct {
 	apis.ContainerSpec
-	VolumeMounts []*ContainerVolumeMount `json:"volume_mounts"`
-	Devices      []*ContainerDevice      `json:"devices"`
+	ImageCredentialToken string                  `json:"image_credential_token"`
+	VolumeMounts         []*ContainerVolumeMount `json:"volume_mounts"`
+	Devices              []*ContainerDevice      `json:"devices"`
 }
 
 type ContainerDevice struct {
@@ -130,4 +135,5 @@ type ContainerStopInput struct {
 	Timeout       int64  `json:"timeout"`
 	ShmSizeMB     int    `json:"shm_size_mb"`
 	ContainerName string `json:"container_name"`
+	Force         bool   `json:"force"`
 }

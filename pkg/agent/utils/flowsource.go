@@ -38,7 +38,7 @@ type FlowSource interface {
 
 func F(table, priority int, matches, actions string) *ovs.Flow {
 	txt := fmt.Sprintf("table=%d,priority=%d,%s,actions=%s", table, priority, matches, actions)
-	log.Debugln(txt)
+	// log.Debugln(txt)
 	of := &ovs.Flow{}
 	err := of.UnmarshalText([]byte(txt))
 	if err != nil {
