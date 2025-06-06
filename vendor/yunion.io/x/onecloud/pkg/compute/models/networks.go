@@ -516,8 +516,10 @@ func (snet *SNetwork) GetNTP() string {
 func (snet *SNetwork) GetDomain() string {
 	if len(snet.GuestDomain) > 0 {
 		return snet.GuestDomain
-	} else {
+	} else if !apis.IsIllegalSearchDomain(options.Options.DNSDomain) {
 		return options.Options.DNSDomain
+	} else {
+		return ""
 	}
 }
 
@@ -1290,6 +1292,9 @@ func (manager *SNetworkManager) FetchCustomizeColumns(
 		rows[i].Exit = false
 		if network.IsExitNetwork() {
 			rows[i].Exit = true
+		}
+		if network.IsClassic() {
+			rows[i].IsClassic = true
 		}
 		rows[i].Ports = network.GetPorts()
 		rows[i].Routes = network.GetRoutes()

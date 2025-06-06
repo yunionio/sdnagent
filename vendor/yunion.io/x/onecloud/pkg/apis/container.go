@@ -15,6 +15,8 @@
 package apis
 
 import (
+	"encoding/json"
+
 	"yunion.io/x/pkg/errors"
 	"yunion.io/x/pkg/util/sets"
 )
@@ -43,9 +45,27 @@ type ContainerLifecyle struct {
 	PostStart *ContainerLifecyleHandler `json:"post_start"`
 }
 
+type ContainerProcMountType string
+
+const (
+	// DefaultProcMount uses the container runtime defaults for readonly and masked
+	// paths for /proc.  Most container runtimes mask certain paths in /proc to avoid
+	// accidental security exposure of special devices or information.
+	ContainerDefaultProcMount ContainerProcMountType = "Default"
+
+	// UnmaskedProcMount bypasses the default masking behavior of the container
+	// runtime and ensures the newly created /proc the container stays in tact with
+	// no modifications.
+	ContainerUnmaskedProcMount ContainerProcMountType = "Unmasked"
+)
+
 type ContainerSecurityContext struct {
 	RunAsUser  *int64 `json:"run_as_user,omitempty"`
 	RunAsGroup *int64 `json:"run_as_group,omitempty"`
+	// procMount denotes the type of proc mount to use for the containers.
+	// The default is DefaultProcMount which uses the container runtime defaults for
+	ProcMount       ContainerProcMountType `json:"proc_mount"`
+	ApparmorProfile string                 `json:"apparmor_profile"`
 }
 
 type ContainerResources struct {
@@ -57,6 +77,21 @@ type ContainerResources struct {
 	PidsMax *int `json:"pids_max"`
 	// DevicesAllow will be set to devices.allow
 	DevicesAllow []string `json:"devices_allow"`
+	// This flag only affects the cpuset controller. If the clone_children
+	// flag is enabled in a cgroup, a new cpuset cgroup will copy its
+	// configuration fromthe parent during initialization.
+	CpusetCloneChildren bool `json:"cpuset_clone_children"`
+}
+
+type ContainerEnvRefValueType string
+
+const (
+	ContainerEnvRefValueTypeIsolatedDevice ContainerEnvRefValueType = "isolated_device"
+)
+
+type ContainerIsolatedDeviceOnlyEnv struct {
+	Key            string `json:"key"`
+	FromRenderPath bool   `json:"from_render_path"`
 }
 
 type ContainerSpec struct {
@@ -64,6 +99,8 @@ type ContainerSpec struct {
 	Image string `json:"image"`
 	// Image pull policy
 	ImagePullPolicy ImagePullPolicy `json:"image_pull_policy"`
+	// Image credential id
+	ImageCredentialId string `json:"image_credential_id"`
 	// Command to execute (i.e., entrypoint for docker)
 	Command []string `json:"command"`
 	// Args for the Command (i.e. command for docker)
@@ -90,7 +127,9 @@ type ContainerSpec struct {
 	//LivenessProbe *ContainerProbe `json:"liveness_probe,omitempty"`
 	// StartupProbe indicates that the Pod has successfully initialized.
 	// If specified, no other probes are executed until this completes successfully.
-	StartupProbe *ContainerProbe `json:"startup_probe,omitempty"`
+	StartupProbe  *ContainerProbe `json:"startup_probe,omitempty"`
+	AlwaysRestart bool            `json:"always_restart"`
+	Primary       bool            `json:"primary"`
 }
 
 func (c *ContainerSpec) NeedProbe() bool {
@@ -149,11 +188,13 @@ var (
 )
 
 type ContainerVolumeMount struct {
-	Type     ContainerVolumeMountType      `json:"type"`
-	Disk     *ContainerVolumeMountDisk     `json:"disk"`
-	HostPath *ContainerVolumeMountHostPath `json:"host_path"`
-	Text     *ContainerVolumeMountText     `json:"text"`
-	CephFS   *ContainerVolumeMountCephFS   `json:"ceph_fs"`
+	// 用于标识当前 pod volume mount 的唯一性
+	UniqueName string                        `json:"unique_name"`
+	Type       ContainerVolumeMountType      `json:"type"`
+	Disk       *ContainerVolumeMountDisk     `json:"disk"`
+	HostPath   *ContainerVolumeMountHostPath `json:"host_path"`
+	Text       *ContainerVolumeMountText     `json:"text"`
+	CephFS     *ContainerVolumeMountCephFS   `json:"ceph_fs"`
 	// Mounted read-only if true, read-write otherwise (false or unspecified).
 	ReadOnly bool `json:"read_only"`
 	// Path within the container at which the volume should be mounted.  Must
@@ -203,12 +244,75 @@ func (o ContainerVolumeMountDiskOverlay) IsValid() error {
 	return nil
 }
 
+type ContainerVolumeMountDiskPostImageOverlay struct {
+	Id      string            `json:"id"`
+	PathMap map[string]string `json:"path_map"`
+}
+
+type ContainerVolumeMountDiskPostImageOverlayUnpacker ContainerVolumeMountDiskPostImageOverlay
+
+func (ov *ContainerVolumeMountDiskPostImageOverlay) UnmarshalJSON(data []byte) error {
+	nov := new(ContainerVolumeMountDiskPostImageOverlayUnpacker)
+	if err := json.Unmarshal(data, nov); err != nil {
+		return err
+	}
+	ov.Id = nov.Id
+	// 防止 PathMap 被合并，总是用 Unarmshal data 里面的 path_map
+	ov.PathMap = nov.PathMap
+	return nil
+}
+
+type ContainerVolumeMountDiskPostOverlayType string
+
+const (
+	CONTAINER_VOLUME_MOUNT_DISK_POST_OVERLAY_HOSTPATH ContainerVolumeMountDiskPostOverlayType = "host_path"
+	CONTAINER_VOLUME_MOUNT_DISK_POST_OVERLAY_IMAGE    ContainerVolumeMountDiskPostOverlayType = "image"
+)
+
+type ContainerVolumeMountDiskPostOverlay struct {
+	// 宿主机底层目录
+	HostLowerDir []string `json:"host_lower_dir"`
+	// 合并后要挂载到容器的目录
+	ContainerTargetDir string                                    `json:"container_target_dir"`
+	Image              *ContainerVolumeMountDiskPostImageOverlay `json:"image"`
+	FsUser             *int64                                    `json:"fs_user,omitempty"`
+	FsGroup            *int64                                    `json:"fs_group,omitempty"`
+}
+
+func (o ContainerVolumeMountDiskPostOverlay) IsEqual(input ContainerVolumeMountDiskPostOverlay) bool {
+	if o.GetType() != input.GetType() {
+		return false
+	}
+	switch o.GetType() {
+	case CONTAINER_VOLUME_MOUNT_DISK_POST_OVERLAY_HOSTPATH:
+		return o.ContainerTargetDir == input.ContainerTargetDir
+	case CONTAINER_VOLUME_MOUNT_DISK_POST_OVERLAY_IMAGE:
+		return o.Image.Id == input.Image.Id
+	}
+	return false
+}
+
+func (o ContainerVolumeMountDiskPostOverlay) GetType() ContainerVolumeMountDiskPostOverlayType {
+	if o.Image != nil {
+		return CONTAINER_VOLUME_MOUNT_DISK_POST_OVERLAY_IMAGE
+	}
+	return CONTAINER_VOLUME_MOUNT_DISK_POST_OVERLAY_HOSTPATH
+}
+
 type ContainerVolumeMountDisk struct {
-	Index           *int                             `json:"index,omitempty"`
-	Id              string                           `json:"id"`
-	SubDirectory    string                           `json:"sub_directory"`
-	StorageSizeFile string                           `json:"storage_size_file"`
-	Overlay         *ContainerVolumeMountDiskOverlay `json:"overlay"`
+	Index           *int   `json:"index,omitempty"`
+	Id              string `json:"id"`
+	SubDirectory    string `json:"sub_directory"`
+	StorageSizeFile string `json:"storage_size_file"`
+	// lower overlay 设置，disk 的 volume 会作为 upper，最终 merged 的目录会传给容器
+	Overlay *ContainerVolumeMountDiskOverlay `json:"overlay"`
+	// case insensitive feature is incompatible with overlayfs
+	CaseInsensitivePaths []string `json:"case_insensitive_paths"`
+	// 当 disk volume 挂载完后，需要 overlay 的目录设置
+	PostOverlay []*ContainerVolumeMountDiskPostOverlay `json:"post_overlay"`
+	// The ext2 filesystem reserves a certain percentage of the available space (by default 5%, see mke2fs(8) and tune2fs(8)). These options determine who can use the reserved blocks. (Roughly: whoever has the specified uid, or belongs to the specified group.)
+	ResGid int `json:"res_gid"`
+	ResUid int `json:"res_uid"`
 }
 
 type ContainerVolumeMountHostPathType string
@@ -241,4 +345,10 @@ type ContainerPullImageAuthConfig struct {
 	IdentityToken string `json:"identity_token,omitempty"`
 	// RegistryToken is a bearer token to be sent to a registry
 	RegistryToken string `json:"registry_token,omitempty"`
+}
+
+type ContainerRootfs struct {
+	Type ContainerVolumeMountType  `json:"type"`
+	Disk *ContainerVolumeMountDisk `json:"disk"`
+	//CephFS *ContainerVolumeMountCephFS `json:"ceph_fs"`
 }

@@ -23,8 +23,13 @@ import (
 	"yunion.io/x/onecloud/pkg/apis"
 )
 
+const (
+	ErrMsgIsolatedDeviceUsedByServer = "Isolated device used by server"
+)
+
 type IsolateDeviceDetails struct {
 	apis.StandaloneResourceDetails
+	apis.SharableResourceBaseInfo
 	HostResourceInfo
 
 	SIsolatedDevice
@@ -37,6 +42,7 @@ type IsolateDeviceDetails struct {
 
 type IsolatedDeviceListInput struct {
 	apis.StandaloneResourceListInput
+	apis.ExternalizedResourceBaseListInput
 	apis.DomainizedResourceListInput
 
 	HostFilterListInput
@@ -58,8 +64,14 @@ type IsolatedDeviceListInput struct {
 	// # pci address of `Bus:Device.Function` format, or usb bus address of `bus.addr`
 	Addr []string `json:"addr"`
 
+	// 设备路径
+	DevicePath []string `json:"device_path"`
+
 	// 设备VENDOE编号
 	VendorDeviceId []string `json:"vendor_device_id"`
+
+	// NUMA节点序号
+	NumaNode []uint8 `json:"numa_node"`
 
 	// 展示物理机的上的设备
 	ShowBaremetalIsolatedDevices bool `json:"show_baremetal_isolated_devices"`
