@@ -22,11 +22,13 @@ import (
 	"time"
 	"unicode/utf8"
 
+	"yunion.io/x/log"
 	"yunion.io/x/pkg/errors"
 	"yunion.io/x/pkg/gotypes"
 	"yunion.io/x/pkg/sortedmap"
 )
 
+// swagger:type object
 type JSONObject interface {
 	gotypes.ISerializable
 
@@ -68,6 +70,7 @@ var (
 	JSONFalse = &JSONBool{data: false}
 )
 
+// swagger:type object
 type JSONDict struct {
 	JSONValue
 	data sortedmap.SSortedMap
@@ -294,26 +297,25 @@ func (s *sJsonParseSession) parseJSONValue(str []byte, offset int) (JSONObject, 
 
 // https://www.ietf.org/rfc/rfc4627.txt
 //
-//         string = quotation-mark *char quotation-mark
+//	string = quotation-mark *char quotation-mark
 //
-//         char = unescaped /
-//                escape (
-//                    %x22 /          ; "    quotation mark  U+0022
-//                    %x5C /          ; \    reverse solidus U+005C
-//                    %x2F /          ; /    solidus         U+002F
-//                    %x62 /          ; b    backspace       U+0008
-//                    %x66 /          ; f    form feed       U+000C
-//                    %x6E /          ; n    line feed       U+000A
-//                    %x72 /          ; r    carriage return U+000D
-//                    %x74 /          ; t    tab             U+0009
-//                    %x75 4HEXDIG )  ; uXXXX                U+XXXX
+//	char = unescaped /
+//	       escape (
+//	           %x22 /          ; "    quotation mark  U+0022
+//	           %x5C /          ; \    reverse solidus U+005C
+//	           %x2F /          ; /    solidus         U+002F
+//	           %x62 /          ; b    backspace       U+0008
+//	           %x66 /          ; f    form feed       U+000C
+//	           %x6E /          ; n    line feed       U+000A
+//	           %x72 /          ; r    carriage return U+000D
+//	           %x74 /          ; t    tab             U+0009
+//	           %x75 4HEXDIG )  ; uXXXX                U+XXXX
 //
-//         escape = %x5C              ; \
+//	escape = %x5C              ; \
 //
-//         quotation-mark = %x22      ; "
+//	quotation-mark = %x22      ; "
 //
-//         unescaped = %x20-21 / %x23-5B / %x5D-10FFFF
-//
+//	unescaped = %x20-21 / %x23-5B / %x5D-10FFFF
 func escapeJsonChar(sb *strings.Builder, ch byte) {
 	switch ch {
 	case '"':
@@ -646,8 +648,13 @@ func ParseString(str string) (JSONObject, error) {
 }
 
 func Parse(str []byte) (JSONObject, error) {
+	json, _, err := ParseStream(str, 0)
+	return json, err
+}
+
+func ParseStream(str []byte, offset int) (JSONObject, int, error) {
 	s := newJsonParseSession()
-	var i = 0
+	i := offset
 	i = skipEmpty(str, i)
 	var val JSONObject = nil
 	var e error = nil
@@ -664,11 +671,40 @@ func Parse(str []byte) (JSONObject, error) {
 			// return nil, NewJSONError(str, i, "Invalid JSON string")
 		}
 		if e != nil {
-			return nil, errors.Wrap(e, "parse misc")
+			return nil, i, errors.Wrap(e, "parse misc")
 		} else {
-			return val, nil
+			return val, i, nil
 		}
 	} else {
-		return nil, NewJSONError(str, i, "Empty string")
+		return nil, i, NewJSONError(str, i, "Empty string")
 	}
+}
+
+func ParseJsonStreams(stream []byte) ([]JSONObject, error) {
+	ret := make([]JSONObject, 0)
+	errs := make([]error, 0)
+	offset := 0
+	for offset < len(stream) {
+		for offset < len(stream) && stream[offset] != '[' && stream[offset] != '{' {
+			offset++
+		}
+		if offset >= len(stream) {
+			break
+		}
+		json, noffset, err := ParseStream(stream, offset)
+		if err != nil {
+			errs = append(errs, errors.Wrapf(err, "jsonutils.ParseStream fail at %d", offset))
+			offset++
+		} else {
+			ret = append(ret, json)
+			offset = noffset
+		}
+	}
+	if len(errs) > 0 && len(ret) == 0 {
+		return nil, errors.NewAggregate(errs)
+	}
+	if len(errs) > 0 {
+		log.Warningf("jsonutils.ParseJsonStreams: %d errors, %s", len(errs), errors.NewAggregate(errs))
+	}
+	return ret, nil
 }

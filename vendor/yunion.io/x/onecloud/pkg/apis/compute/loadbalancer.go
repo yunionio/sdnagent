@@ -96,6 +96,12 @@ type LoadbalancerDetails struct {
 
 	// 关联安全组列表
 	Secgroups []SimpleSecurityGroup `json:"secgroups"`
+	LoadbalancerUsage
+}
+
+type LoadbalancerUsage struct {
+	BackendGroupCount int `json:"backend_group_count"`
+	ListenerCount     int `json:"listener_count"`
 }
 
 type SimpleSecurityGroup struct {
@@ -255,6 +261,8 @@ func (self LoadbalancerDetails) GetMetricTags() map[string]string {
 		"status":         self.Status,
 		"tenant":         self.Project,
 		"tenant_id":      self.ProjectId,
+		"account":        self.Account,
+		"account_id":     self.AccountId,
 		"external_id":    self.ExternalId,
 	}
 	return AppendMetricTags(ret, self.MetadataResourceInfo, self.ProjectizedResourceInfo)

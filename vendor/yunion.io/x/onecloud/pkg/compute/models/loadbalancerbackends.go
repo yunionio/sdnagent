@@ -40,6 +40,8 @@ import (
 	"yunion.io/x/onecloud/pkg/util/stringutils2"
 )
 
+// +onecloud:swagger-gen-model-singular=loadbalancerbackend
+// +onecloud:swagger-gen-model-plural=loadbalancerbackends
 type SLoadbalancerBackendManager struct {
 	SLoadbalancerLogSkipper
 	db.SStatusStandaloneResourceBaseManager
@@ -97,7 +99,7 @@ func (manager *SLoadbalancerBackendManager) FetchOwnerId(ctx context.Context, da
 		if err != nil {
 			return nil, errors.Wrapf(err, "db.FetchById(LoadbalancerBackendGroupManager, %s)", lbbgId)
 		}
-		return lbbg.(*SLoadbalancer).GetOwnerId(), nil
+		return lbbg.(*SLoadbalancerBackendGroup).GetOwnerId(), nil
 	}
 	return db.FetchProjectInfo(ctx, data)
 }
