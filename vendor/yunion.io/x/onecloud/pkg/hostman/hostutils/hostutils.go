@@ -70,12 +70,14 @@ type IHost interface {
 	IsAarch64() bool
 	IsX8664() bool
 	GetHostTopology() *hostapi.HostTopology
-	GetReservedCpusInfo() *cpuset.CPUSet
+	GetReservedCpusInfo() (*cpuset.CPUSet, *cpuset.CPUSet)
+	GetReservedMemMb() int
 
 	IsHugepagesEnabled() bool
 	HugepageSizeKb() int
 	IsNumaAllocateEnabled() bool
-	CpuCmtBound() int
+	CpuCmtBound() float32
+	MemCmtBound() float32
 
 	IsKvmSupport() bool
 	IsNestedVirtualization() bool
@@ -98,6 +100,8 @@ type IHost interface {
 	GetContainerCpufreqSimulateConfig() *jsonutils.JSONDict
 
 	OnCatalogChanged(catalog mcclient.KeystoneServiceCatalogV3)
+
+	OnHostFilesChanged(hostfiles []computeapi.SHostFile) error
 }
 
 func GetComputeSession(ctx context.Context) *mcclient.ClientSession {
@@ -192,12 +196,20 @@ func UpdateServerStatus(ctx context.Context, sid string, statusInput *apis.Perfo
 	return UpdateResourceStatus(ctx, &modules.Servers, sid, statusInput)
 }
 
+func UpdateServerContainersStatus(ctx context.Context, sid string, input *computeapi.ServerPerformStatusInput) (jsonutils.JSONObject, error) {
+	return modules.Servers.PerformAction(GetComputeSession(ctx), sid, "status", jsonutils.Marshal(input))
+}
+
 func UpdateServerProgress(ctx context.Context, sid string, progress, progressMbps float64) (jsonutils.JSONObject, error) {
 	params := map[string]float64{
 		"progress":      progress,
 		"progress_mbps": progressMbps,
 	}
 	return modules.Servers.Update(GetComputeSession(ctx), sid, jsonutils.Marshal(params))
+}
+
+func UploadGuestsStatus(ctx context.Context, resp *computeapi.HostUploadGuestsStatusInput) (jsonutils.JSONObject, error) {
+	return modules.Servers.PerformClassAction(GetComputeSession(ctx), "upload-status", jsonutils.Marshal(resp))
 }
 
 func IsGuestDir(f os.FileInfo, serversPath string) bool {
@@ -236,7 +248,12 @@ func Response(ctx context.Context, w http.ResponseWriter, res interface{}) {
 
 var (
 	wm          *workmanager.SWorkManager
+	imageCacheW *workmanager.SWorkManager
+	backupW     *workmanager.SWorkManager
 	k8sWm       *workmanager.SWorkManager
+
+	imagePreCacheW *workmanager.SWorkManager
+
 	ParamsError = fmt.Errorf("Delay task parse params error")
 )
 
@@ -246,6 +263,18 @@ func GetWorkManager() *workmanager.SWorkManager {
 
 func DelayTask(ctx context.Context, task workmanager.DelayTaskFunc, params interface{}) {
 	wm.DelayTask(ctx, task, params)
+}
+
+func DelayImageCacheTask(ctx context.Context, task workmanager.DelayTaskFunc, params interface{}) {
+	imageCacheW.DelayTask(ctx, task, params)
+}
+
+func DelayImagePreCacheTask(ctx context.Context, task workmanager.DelayTaskFunc, params interface{}) {
+	imagePreCacheW.DelayTask(ctx, task, params)
+}
+
+func DelayBackupTask(ctx context.Context, task workmanager.DelayTaskFunc, params interface{}) {
+	backupW.DelayTask(ctx, task, params)
 }
 
 func DelayKubeTask(ctx context.Context, task workmanager.DelayTaskFunc, params interface{}) {
@@ -265,17 +294,28 @@ func DelayTaskWithWorker(
 
 func InitWorkerManager() {
 	InitWorkerManagerWithCount(options.HostOptions.DefaultRequestWorkerCount)
+	initImageCacheWorkerManager()
+}
+
+func initImageCacheWorkerManager() {
+	imageCacheW = workmanager.NewWorkManger("ImageCacheDelayTaskWorkers", TaskFailed, TaskComplete, options.HostOptions.ImageCacheWorkerCount)
+	imagePreCacheW = workmanager.NewWorkManger("ImagePrefetchCacheDelayTaskWorkers", TaskFailed, TaskComplete, options.HostOptions.ImageCacheWorkerCount)
+}
+
+func initBackupWorkerManager() {
+	backupW = workmanager.NewWorkManger("BackupDelayTaskWorkers", TaskFailed, TaskComplete, options.HostOptions.DefaultRequestWorkerCount)
 }
 
 func InitWorkerManagerWithCount(count int) {
-	wm = workmanager.NewWorkManger(TaskFailed, TaskComplete, count)
+	wm = workmanager.NewWorkManger("GeneralDelayedTaskWorkers", TaskFailed, TaskComplete, count)
 }
 
 func InitK8sWorkerManager() {
-	k8sWm = workmanager.NewWorkManger(K8sTaskFailed, K8sTaskComplete, options.HostOptions.DefaultRequestWorkerCount)
+	k8sWm = workmanager.NewWorkManger("K8sDelayedTaskWorkers", K8sTaskFailed, K8sTaskComplete, options.HostOptions.DefaultRequestWorkerCount)
 }
 
 func Init() {
 	InitWorkerManager()
 	InitK8sWorkerManager()
+	initBackupWorkerManager()
 }

@@ -175,6 +175,13 @@ type DiskConfig struct {
 	// requried: false
 	Fs string `json:"fs"`
 
+	// 文件系统特性
+	FsFeatures *DiskFsFeatures `json:"fs_features"`
+
+	// 关机后自动重置磁盘
+	// required: false
+	AutoReset bool `json:"auto_reset"`
+
 	// 磁盘存储格式
 	// enum: ["qcow2", "raw", "docker", "iso", "vmdk", "vmdkflatver1", "vmdkflatver2", "vmdkflat", "vmdksparse", "vmdksparsever1", "vmdksparsever2", "vmdksepsparse", "vhd"]
 	// requried: false
@@ -470,6 +477,10 @@ type ServerCreateInput struct {
 	// 目前仅vmware支持此参数
 	// default: 1
 	CpuSockets int `json:"cpu_sockets"`
+
+	// 额外分配 cpu 数量
+	// required: false
+	ExtraCpuCount int `json:"extra_cpu_count"`
 
 	// 用户自定义启动脚本
 	// 支持 #cloud-config yaml 格式及shell脚本

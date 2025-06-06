@@ -80,6 +80,9 @@ const (
 	HYPERVISOR_VOLCENGINE     = "volcengine"
 	HYPERVISOR_ORACLE         = "oracle"
 	HYPERVISOR_SANGFOR        = "sangfor"
+	HYPERVISOR_ZETTAKIT       = "zettakit"
+	HYPERVISOR_UIS            = "uis"
+	HYPERVISOR_CAS            = "cas"
 )
 
 const (

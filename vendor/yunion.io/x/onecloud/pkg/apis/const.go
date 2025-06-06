@@ -48,6 +48,8 @@ const (
 	STATUS_UPDATE_TAGS        = "update_tags"
 	STATUS_UPDATE_TAGS_FAILED = "update_tags_fail"
 
+	STATUS_START_SYNC_STATUS = "start_sync_status"
+
 	STATUS_SYNC_STATUS   = "sync_status"
 	STATUS_DELETING      = "deleting"
 	STATUS_DELETE_FAILED = "delete_failed"
@@ -55,6 +57,10 @@ const (
 	STATUS_CREATING      = "creating"
 	STATUS_AVAILABLE     = "available"
 	STATUS_CREATE_FAILED = "create_failed"
+
+	// 更改计费模式
+	STATUS_CHANGE_BILLING_TYPE        = "change_billing_type"
+	STATUS_CHANGE_BILLING_TYPE_FAILED = "change_billing_type_failed"
 
 	CLOUD_TAG_PREFIX     = "ext:"
 	USER_TAG_PREFIX      = "user:"
@@ -84,6 +90,7 @@ var (
 		SERVICE_TYPE_CLOUDEVENT,
 		SERVICE_TYPE_ANSIBLE,
 		SERVICE_TYPE_INFLUXDB,
+		SERVICE_TYPE_VICTORIA_METRICS,
 		SERVICE_TYPE_APIMAP,
 		SERVICE_TYPE_LOG,
 		"autoupdate",
@@ -106,6 +113,30 @@ var (
 		SERVICE_TYPE_ETCD,
 		"itsm",
 		SERVICE_TYPE_NTP,
+		"kafka",
+	}
+
+	EXTERNAL_SERVICES = []string{
+		SERVICE_TYPE_OFFLINE_CLOUDMETA,
+		SERVICE_TYPE_CLOUDMETA,
+		SERVICE_TYPE_SCHEDULER,
+		SERVICE_TYPE_VNCPROXY,
+		SERVICE_TYPE_ETCD,
+		SERVICE_TYPE_INFLUXDB,
+		SERVICE_TYPE_INFLUXDB,
+		SERVICE_TYPE_VICTORIA_METRICS,
+		SERVICE_TYPE_LOG,
+		"s3gateway",
+		"common",
+		"websocket",
+		"echarts-ssr",
+		"cloudwatcher",
+		"cloudnet",
+		"repo",
+		SERVICE_TYPE_ETCD,
+		"itsm",
+		SERVICE_TYPE_NTP,
+		"kafka",
 	}
 )
 
@@ -141,4 +172,12 @@ var (
 
 func IsARM(osArch string) bool {
 	return utils.IsInStringArray(osArch, ARCH_ARM)
+}
+
+func IsIllegalSearchDomain(domain string) bool {
+	switch domain {
+	case "cloud.onecloud.io":
+		return true
+	}
+	return false
 }

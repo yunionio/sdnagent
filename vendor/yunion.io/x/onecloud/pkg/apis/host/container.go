@@ -21,12 +21,16 @@ import (
 )
 
 type ContainerVolumeMountDisk struct {
-	Index           *int                                  `json:"index,omitempty"`
-	Id              string                                `json:"id"`
-	TemplateId      string                                `json:"template_id"`
-	SubDirectory    string                                `json:"sub_directory"`
-	StorageSizeFile string                                `json:"storage_size_file"`
-	Overlay         *apis.ContainerVolumeMountDiskOverlay `json:"overlay"`
+	Index                *int                                        `json:"index,omitempty"`
+	Id                   string                                      `json:"id"`
+	TemplateId           string                                      `json:"template_id"`
+	SubDirectory         string                                      `json:"sub_directory"`
+	StorageSizeFile      string                                      `json:"storage_size_file"`
+	Overlay              *apis.ContainerVolumeMountDiskOverlay       `json:"overlay"`
+	CaseInsensitivePaths []string                                    `json:"case_insensitive_paths"`
+	PostOverlay          []*apis.ContainerVolumeMountDiskPostOverlay `json:"post_overlay"`
+	ResGid               int                                         `json:"res_gid"`
+	ResUid               int                                         `json:"res_uid"`
 }
 
 type ContainerVolumeMountCephFS struct {
@@ -37,12 +41,20 @@ type ContainerVolumeMountCephFS struct {
 	Name    string `json:"name"`
 }
 
+type ContainerRootfs struct {
+	Type apis.ContainerVolumeMountType `json:"type"`
+	Disk *ContainerVolumeMountDisk     `json:"disk"`
+	// CephFS *ContainerVolumeMountCephFS   `json:"ceph_fs"`
+}
+
 type ContainerVolumeMount struct {
-	Type     apis.ContainerVolumeMountType      `json:"type"`
-	Disk     *ContainerVolumeMountDisk          `json:"disk"`
-	HostPath *apis.ContainerVolumeMountHostPath `json:"host_path"`
-	Text     *apis.ContainerVolumeMountText     `json:"text"`
-	CephFS   *ContainerVolumeMountCephFS        `json:"ceph_fs"`
+	// 用于标识当前 pod volume mount 的唯一性
+	UniqueName string                             `json:"unique_name"`
+	Type       apis.ContainerVolumeMountType      `json:"type"`
+	Disk       *ContainerVolumeMountDisk          `json:"disk"`
+	HostPath   *apis.ContainerVolumeMountHostPath `json:"host_path"`
+	Text       *apis.ContainerVolumeMountText     `json:"text"`
+	CephFS     *ContainerVolumeMountCephFS        `json:"ceph_fs"`
 	// Mounted read-only if true, read-write otherwise (false or unspecified).
 	ReadOnly bool `json:"read_only"`
 	// Path within the container at which the volume should be mounted.  Must
@@ -58,8 +70,10 @@ type ContainerVolumeMount struct {
 
 type ContainerSpec struct {
 	apis.ContainerSpec
-	VolumeMounts []*ContainerVolumeMount `json:"volume_mounts"`
-	Devices      []*ContainerDevice      `json:"devices"`
+	ImageCredentialToken string                  `json:"image_credential_token"`
+	Rootfs               *ContainerRootfs        `json:"rootfs"`
+	VolumeMounts         []*ContainerVolumeMount `json:"volume_mounts"`
+	Devices              []*ContainerDevice      `json:"devices"`
 }
 
 type ContainerDevice struct {
@@ -72,10 +86,13 @@ type ContainerDevice struct {
 }
 
 type ContainerIsolatedDevice struct {
-	Id         string `json:"id"`
-	Addr       string `json:"addr"`
-	Path       string `json:"path"`
-	DeviceType string `json:"device_type"`
+	Id         string                                 `json:"id"`
+	Addr       string                                 `json:"addr"`
+	Path       string                                 `json:"path"`
+	DeviceType string                                 `json:"device_type"`
+	CardPath   string                                 `json:"card_path"`
+	RenderPath string                                 `json:"render_path"`
+	OnlyEnv    []*apis.ContainerIsolatedDeviceOnlyEnv `json:"only_env"`
 }
 
 type ContainerHostDevice struct {
@@ -119,6 +136,9 @@ type ContainerSaveVolumeMountToImageInput struct {
 
 	VolumeMountIndex int                   `json:"volume_mount_index"`
 	VolumeMount      *ContainerVolumeMount `json:"volume_mount"`
+	VolumeMountDirs  []string              `json:"volume_mount_dirs"`
+
+	VolumeMountPrefix string `json:"volume_mount_prefix"`
 }
 
 type ContainerCommitInput struct {
@@ -130,4 +150,5 @@ type ContainerStopInput struct {
 	Timeout       int64  `json:"timeout"`
 	ShmSizeMB     int    `json:"shm_size_mb"`
 	ContainerName string `json:"container_name"`
+	Force         bool   `json:"force"`
 }

@@ -58,6 +58,8 @@ const (
 	STORAGE_CLOUD_BASIC   = "cloud_basic"
 	STORAGE_CLOUD_PREMIUM = "cloud_premium" //高性能云硬盘
 	STORAGE_CLOUD_HSSD    = "cloud_hssd"    //增强型SSD云硬盘
+	STORAGE_CLOUD_TSSD    = "cloud_tssd"    //极速型SSD云硬盘
+	STORAGE_CLOUD_BSSD    = "cloud_bssd"    //通用型SSD云硬盘
 
 	// huawei storage type
 	STORAGE_HUAWEI_SSD    = "SSD"    // 超高IO云硬盘
@@ -115,6 +117,17 @@ const (
 
 	STORAGE_FULL        = "full"
 	STORAGE_SYSTEM_FULL = "system_full"
+
+	// baidu storage type
+	STORAGE_BAIDU_SSD              = "ssd"              // 通用型SSD
+	STORAGE_BAIDU_PREMIUM_SSD      = "premium_ssd"      // 高性能云磁盘
+	STORAGE_BAIDU_HDD              = "hdd"              // 通用型HDD
+	STORAGE_BAIDU_ENHANCED_SSD_PL1 = "enhanced_ssd_pl1" // 增强型SSD_PL1
+	STORAGE_BAIDU_ENHANCED_SSD_PL2 = "enhanced_ssd_pl2" // 增强型SSD_PL2
+	STORAGE_BAIDU_ENHANCED_SSD_PL3 = "enhanced_ssd_pl3" // 增强型SSD_PL2
+
+	// ZettaKit
+	STORAGE_ZETTAKIT_NORMAL = "normal"
 )
 
 const (

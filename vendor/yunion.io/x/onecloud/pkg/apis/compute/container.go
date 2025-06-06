@@ -19,6 +19,7 @@ import (
 	"time"
 
 	"yunion.io/x/jsonutils"
+	"yunion.io/x/pkg/errors"
 	"yunion.io/x/pkg/gotypes"
 	"yunion.io/x/pkg/util/sets"
 
@@ -38,6 +39,7 @@ const (
 	CONTAINER_DEV_NETINT_CA_QUADRA = "NETINT_CA_QUADRA"
 	CONTAINER_DEV_NVIDIA_GPU       = "NVIDIA_GPU"
 	CONTAINER_DEV_NVIDIA_MPS       = "NVIDIA_MPS"
+	CONTAINER_DEV_NVIDIA_GPU_SHARE = "NVIDIA_GPU_SHARE"
 	CONTAINER_DEV_ASCEND_NPU       = "ASCEND_NPU"
 	CONTAINER_DEV_VASTAITECH_GPU   = "VASTAITECH_GPU"
 )
@@ -47,9 +49,16 @@ var (
 		CONTAINER_DEV_CPH_AMD_GPU,
 		CONTAINER_DEV_NVIDIA_GPU,
 		CONTAINER_DEV_NVIDIA_MPS,
+		CONTAINER_DEV_NVIDIA_GPU_SHARE,
 		CONTAINER_DEV_VASTAITECH_GPU,
 	}
 )
+
+var NVIDIA_GPU_TYPES = []string{
+	CONTAINER_DEV_NVIDIA_GPU,
+	CONTAINER_DEV_NVIDIA_MPS,
+	CONTAINER_DEV_NVIDIA_GPU_SHARE,
+}
 
 const (
 	CONTAINER_STORAGE_LOCAL_RAW = "local_raw"
@@ -81,11 +90,36 @@ const (
 	// for health check
 	CONTAINER_STATUS_PROBING      = "probing"
 	CONTAINER_STATUS_PROBE_FAILED = "probe_failed"
+	CONTAINER_STATUS_NET_FAILED   = "net_failed"
+	// post overlay
+	CONTAINER_STATUS_ADD_POST_OVERLY           = "adding_post_overly"
+	CONTAINER_STATUS_ADD_POST_OVERLY_FAILED    = "add_post_overly_failed"
+	CONTAINER_STATUS_REMOVE_POST_OVERLY        = "removing_post_overly"
+	CONTAINER_STATUS_REMOVE_POST_OVERLY_FAILED = "remove_post_overly_failed"
+	CONTAINER_STATUS_CACHE_IMAGE               = "caching_image"
+	CONTAINER_STATUS_CACHE_IMAGE_FAILED        = "caching_image_failed"
 )
 
 var (
-	ContainerRunningStatus = sets.NewString(CONTAINER_STATUS_RUNNING, CONTAINER_STATUS_PROBING)
-	ContainerExitedStatus  = sets.NewString(CONTAINER_STATUS_EXITED, CONTAINER_STATUS_CRASH_LOOP_BACK_OFF)
+	ContainerRunningStatus = sets.NewString(
+		CONTAINER_STATUS_RUNNING,
+		CONTAINER_STATUS_PROBING,
+		CONTAINER_STATUS_PROBE_FAILED,
+		CONTAINER_STATUS_NET_FAILED,
+	)
+	ContainerNoFailedRunningStatus = sets.NewString(CONTAINER_STATUS_RUNNING, CONTAINER_STATUS_PROBING)
+	ContainerExitedStatus          = sets.NewString(
+		CONTAINER_STATUS_EXITED,
+		CONTAINER_STATUS_CRASH_LOOP_BACK_OFF,
+	)
+	ContainerFinalStatus = sets.NewString(
+		CONTAINER_STATUS_RUNNING,
+		CONTAINER_STATUS_PROBING,
+		CONTAINER_STATUS_PROBE_FAILED,
+		CONTAINER_STATUS_NET_FAILED,
+		CONTAINER_STATUS_EXITED,
+		CONTAINER_STATUS_CRASH_LOOP_BACK_OFF,
+	)
 )
 
 const (
@@ -96,6 +130,7 @@ const (
 type ContainerSpec struct {
 	apis.ContainerSpec
 	// Volume mounts
+	RootFs       *apis.ContainerRootfs        `json:"rootfs"`
 	VolumeMounts []*apis.ContainerVolumeMount `json:"volume_mounts"`
 	Devices      []*ContainerDevice           `json:"devices"`
 }
@@ -128,10 +163,12 @@ type ContainerUpdateInput struct {
 type ContainerListInput struct {
 	apis.VirtualResourceListInput
 	GuestId string `json:"guest_id"`
+	HostId  string `json:"host_id"`
 }
 
 type ContainerStopInput struct {
-	Timeout int `json:"timeout"`
+	Timeout int  `json:"timeout"`
+	Force   bool `json:"force"`
 }
 
 type ContainerSyncStatusResponse struct {
@@ -153,8 +190,9 @@ type ContainerHostDevice struct {
 }
 
 type ContainerIsolatedDevice struct {
-	Index *int   `json:"index"`
-	Id    string `json:"id"`
+	Index   *int                                   `json:"index"`
+	Id      string                                 `json:"id"`
+	OnlyEnv []*apis.ContainerIsolatedDeviceOnlyEnv `json:"only_env"`
 }
 
 type ContainerDevice struct {
@@ -164,10 +202,14 @@ type ContainerDevice struct {
 }
 
 type ContainerSaveVolumeMountToImageInput struct {
-	Name         string `json:"name"`
-	GenerateName string `json:"generate_name"`
-	Notes        string `json:"notes"`
-	Index        int    `json:"index"`
+	Name              string   `json:"name"`
+	GenerateName      string   `json:"generate_name"`
+	Notes             string   `json:"notes"`
+	Index             int      `json:"index"`
+	Dirs              []string `json:"dirs"`
+	UsedByPostOverlay bool     `json:"used_by_post_overlay"`
+
+	DirPrefix string `json:"dir_prefix"`
 }
 
 type ContainerExecInfoOutput struct {
@@ -179,6 +221,9 @@ type ContainerExecInfoOutput struct {
 type ContainerExecInput struct {
 	Command []string `json:"command"`
 	Tty     bool     `json:"tty"`
+	SetIO   bool     `json:"set_io"`
+	Stdin   bool     `json:"stdin"`
+	Stdout  bool     `json:"stdout"`
 }
 
 type ContainerExecSyncInput struct {
@@ -243,4 +288,69 @@ type ContainerPerformStatusInput struct {
 	RestartCount   int        `json:"restart_count"`
 	StartedAt      *time.Time `json:"started_at"`
 	LastFinishedAt *time.Time `json:"last_finished_at"`
+}
+
+type ContainerResourcesSetInput struct {
+	apis.ContainerResources
+	DisableLimitCheck bool `json:"disable_limit_check"`
+}
+
+type ContainerVolumeMountAddPostOverlayInput struct {
+	Index       int                                         `json:"index"`
+	PostOverlay []*apis.ContainerVolumeMountDiskPostOverlay `json:"post_overlay"`
+}
+
+type ContainerVolumeMountRemovePostOverlayInput struct {
+	Index       int                                         `json:"index"`
+	PostOverlay []*apis.ContainerVolumeMountDiskPostOverlay `json:"post_overlay"`
+	UseLazy     bool                                        `json:"use_lazy"`
+	ClearLayers bool                                        `json:"clear_layers"`
+}
+
+type ContainerCacheImageInput struct {
+	DiskId string           `json:"disk_id"`
+	Image  *CacheImageInput `json:"image"`
+}
+
+type ContainerCacheImagesInput struct {
+	Images []*ContainerCacheImageInput `json:"images"`
+}
+
+func (i *ContainerCacheImagesInput) isImageExists(diskId string, imgId string) bool {
+	for idx := range i.Images {
+		img := i.Images[idx]
+		if img.DiskId != diskId {
+			return false
+		}
+		if img.Image == nil {
+			return false
+		}
+		if img.Image.ImageId == imgId {
+			return true
+		}
+	}
+	return false
+}
+
+func (i *ContainerCacheImagesInput) Add(diskId string, imgId string, format string) error {
+	if diskId == "" {
+		return errors.Errorf("diskId is empty")
+	}
+	if imgId == "" {
+		return errors.Errorf("imageId is empty")
+	}
+	if !i.isImageExists(diskId, imgId) {
+		if i.Images == nil {
+			i.Images = []*ContainerCacheImageInput{}
+		}
+		i.Images = append(i.Images, &ContainerCacheImageInput{
+			DiskId: diskId,
+			Image: &CacheImageInput{
+				ImageId:              imgId,
+				Format:               format,
+				SkipChecksumIfExists: true,
+			},
+		})
+	}
+	return nil
 }
