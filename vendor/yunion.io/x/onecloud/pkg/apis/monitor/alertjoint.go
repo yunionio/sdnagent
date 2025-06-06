@@ -12,4 +12,17 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-package notify
+package monitor
+
+import "yunion.io/x/onecloud/pkg/apis"
+
+type AlertJointCreateInput struct {
+	apis.Meta
+
+	AlertId string `json:"alert_id"`
+}
+
+type AlertJointListInput struct {
+	apis.JointResourceBaseListInput
+	AlertIds []string `json:"alert_ids"`
+}

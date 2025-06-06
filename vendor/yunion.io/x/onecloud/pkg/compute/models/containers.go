@@ -16,6 +16,7 @@ package models
 
 import (
 	"context"
+	"encoding/base64"
 	"fmt"
 	"path/filepath"
 	"strings"
@@ -31,13 +32,16 @@ import (
 	"yunion.io/x/onecloud/pkg/apis"
 	api "yunion.io/x/onecloud/pkg/apis/compute"
 	hostapi "yunion.io/x/onecloud/pkg/apis/host"
+	identityapi "yunion.io/x/onecloud/pkg/apis/identity"
 	imageapi "yunion.io/x/onecloud/pkg/apis/image"
 	"yunion.io/x/onecloud/pkg/cloudcommon/consts"
 	"yunion.io/x/onecloud/pkg/cloudcommon/db"
 	"yunion.io/x/onecloud/pkg/cloudcommon/db/taskman"
+	"yunion.io/x/onecloud/pkg/compute/options"
 	"yunion.io/x/onecloud/pkg/httperrors"
 	"yunion.io/x/onecloud/pkg/mcclient"
 	"yunion.io/x/onecloud/pkg/mcclient/auth"
+	identitymod "yunion.io/x/onecloud/pkg/mcclient/modules/identity"
 	kubemod "yunion.io/x/onecloud/pkg/mcclient/modules/k8s"
 )
 
@@ -74,7 +78,7 @@ type SContainer struct {
 	Spec *api.ContainerSpec `length:"long" create:"required" list:"user" update:"user"`
 
 	// 启动时间
-	StartedAt time.Time `nullable:"false" created_at:"false" index:"true" get:"user" list:"user" json:"started_at"`
+	StartedAt time.Time `nullable:"true" created_at:"false" index:"true" get:"user" list:"user" json:"started_at"`
 	// 上次退出时间
 	LastFinishedAt time.Time `nullable:"true" created_at:"false" index:"true" get:"user" list:"user" json:"last_finished_at"`
 
@@ -123,6 +127,15 @@ func (m *SContainerManager) ListItemFilter(ctx context.Context, q *sqlchemy.SQue
 		}
 		q = q.Equals("guest_id", gst.GetId())
 	}
+	if query.HostId != "" {
+		host, _ := HostManager.FetchByIdOrName(ctx, nil, query.HostId)
+		if host == nil {
+			return nil, httperrors.NewResourceNotFoundError("host %s not found", query.HostId)
+		}
+		gst := GuestManager.Query().SubQuery()
+		q = q.Join(gst, sqlchemy.Equals(q.Field("guest_id"), gst.Field("id")))
+		q = q.Filter(sqlchemy.Equals(gst.Field("host_id"), host.GetId()))
+	}
 	return q, nil
 }
 
@@ -145,22 +158,30 @@ func (m *SContainerManager) ValidateCreateData(ctx context.Context, userCred mcc
 	}
 	pod := obj.(*SGuest)
 	input.GuestId = pod.GetId()
-	if err := m.ValidateSpec(ctx, userCred, &input.Spec, pod); err != nil {
+	if err := m.ValidateSpec(ctx, userCred, &input.Spec, pod, nil); err != nil {
 		return nil, errors.Wrap(err, "validate spec")
 	}
 	return input, nil
 }
 
-func (m *SContainerManager) ValidateSpec(ctx context.Context, userCred mcclient.TokenCredential, spec *api.ContainerSpec, pod *SGuest) error {
+func (m *SContainerManager) ValidateSpec(ctx context.Context, userCred mcclient.TokenCredential, spec *api.ContainerSpec, pod *SGuest, ctr *SContainer) error {
 	if spec.ImagePullPolicy == "" {
 		spec.ImagePullPolicy = apis.ImagePullPolicyIfNotPresent
 	}
 	if !sets.NewString(apis.ImagePullPolicyAlways, apis.ImagePullPolicyIfNotPresent).Has(string(spec.ImagePullPolicy)) {
 		return httperrors.NewInputParameterError("invalid image_pull_policy %s", spec.ImagePullPolicy)
 	}
+	if spec.ImageCredentialId != "" {
+		if _, err := m.GetImageCredential(ctx, userCred, spec.ImageCredentialId); err != nil {
+			return errors.Wrapf(err, "get image credential by id: %s", spec.ImageCredentialId)
+		}
+	}
 
 	if pod != nil {
-		if err := m.ValidateSpecVolumeMounts(ctx, userCred, pod, spec); err != nil {
+		if err := m.ValidateSpecRootFs(ctx, userCred, pod, spec, ctr); err != nil {
+			return errors.Wrap(err, "ValidateSpecRootFs")
+		}
+		if err := m.ValidateSpecVolumeMounts(ctx, userCred, pod, spec, ctr); err != nil {
 			return errors.Wrap(err, "ValidateSpecVolumeMounts")
 		}
 		for idx, dev := range spec.Devices {
@@ -213,12 +234,47 @@ func (m *SContainerManager) ValidateSpecDevice(ctx context.Context, userCred mcc
 	return drv.ValidateCreateData(ctx, userCred, pod, dev)
 }
 
-func (m *SContainerManager) ValidateSpecVolumeMounts(ctx context.Context, userCred mcclient.TokenCredential, pod *SGuest, spec *api.ContainerSpec) error {
+func (m *SContainerManager) ValidateSpecRootFs(ctx context.Context, userCred mcclient.TokenCredential, pod *SGuest, spec *api.ContainerSpec, ctr *SContainer) error {
+	if spec.RootFs == nil {
+		return nil
+	}
+	rootFs := spec.RootFs
+	drv, err := GetContainerRootFsDriverWithError(rootFs.Type)
+	if err != nil {
+		return errors.Wrapf(err, "get container volume mount driver %q", rootFs.Type)
+	}
+	if err := drv.ValidateRootFsCreateData(ctx, userCred, pod, rootFs); err != nil {
+		return errors.Wrapf(err, "validate %s create data", drv.GetType())
+	}
+	return nil
+}
+
+func (m *SContainerManager) ValidateSpecVolumeMounts(ctx context.Context, userCred mcclient.TokenCredential, pod *SGuest, spec *api.ContainerSpec, ctr *SContainer) error {
 	relation, err := m.GetVolumeMountRelations(pod, spec)
 	if err != nil {
 		return errors.Wrap(err, "GetVolumeMountRelations")
 	}
+
+	curCtrs, _ := m.GetContainersByPod(pod.GetId())
+	volUniqNames := sets.NewString()
+	for idx := range curCtrs {
+		if ctr != nil && ctr.GetId() == curCtrs[idx].GetId() {
+			continue
+		}
+		for _, vol := range curCtrs[idx].Spec.VolumeMounts {
+			if vol.UniqueName != "" {
+				volUniqNames.Insert(vol.UniqueName)
+			}
+		}
+	}
 	for idx, vm := range spec.VolumeMounts {
+		if vm.UniqueName != "" {
+			if volUniqNames.Has(vm.UniqueName) {
+				return httperrors.NewDuplicateNameError("volume_mount unique_name %s", fmt.Sprintf("%s: %s, index: %d", vm.UniqueName, jsonutils.Marshal(vm), idx))
+			} else {
+				volUniqNames.Insert(vm.UniqueName)
+			}
+		}
 		newVm, err := m.ValidateSpecVolumeMount(ctx, userCred, pod, vm)
 		if err != nil {
 			return errors.Wrapf(err, "validate volume mount %s", jsonutils.Marshal(vm))
@@ -343,6 +399,36 @@ func (m *SContainerManager) validateSpecProbeHandler(probe apis.ContainerProbeHa
 	return nil
 }
 
+func (m *SContainerManager) startBatchTask(ctx context.Context, userCred mcclient.TokenCredential, taskName string, ctrs []SContainer, taskData *jsonutils.JSONDict, parentTaskId string) error {
+	ctrPtrs := make([]db.IStandaloneModel, len(ctrs))
+	for i := range ctrs {
+		ctrPtrs[i] = &ctrs[i]
+	}
+	task, err := taskman.TaskManager.NewParallelTask(ctx, taskName, ctrPtrs, userCred, taskData, parentTaskId, "")
+	if err != nil {
+		return errors.Wrapf(err, "NewParallelTask %s", taskName)
+	}
+	return task.ScheduleRun(nil)
+}
+
+func (m *SContainerManager) StartBatchStartTask(ctx context.Context, userCred mcclient.TokenCredential, ctrs []SContainer, parentTaskId string) error {
+	return m.startBatchTask(ctx, userCred, "ContainerBatchStartTask", ctrs, nil, parentTaskId)
+}
+
+func (m *SContainerManager) StartBatchStopTask(ctx context.Context, userCred mcclient.TokenCredential, ctrs []SContainer, timeout int, force bool, parentTaskId string) error {
+	params := make([]api.ContainerStopInput, len(ctrs))
+	for i := range ctrs {
+		params[i] = api.ContainerStopInput{
+			Timeout: timeout,
+			Force:   force,
+		}
+	}
+	taskParams := jsonutils.NewDict()
+	taskParams.Add(jsonutils.Marshal(params), "params")
+
+	return m.startBatchTask(ctx, userCred, "ContainerBatchStopTask", ctrs, taskParams, parentTaskId)
+}
+
 func (c *SContainer) PostCreate(ctx context.Context, userCred mcclient.TokenCredential, ownerId mcclient.IIdentityProvider, query jsonutils.JSONObject, data jsonutils.JSONObject) {
 	c.SVirtualResourceBase.PostCreate(ctx, userCred, ownerId, query, data)
 	if !jsonutils.QueryBoolean(data, "skip_task", false) {
@@ -371,11 +457,18 @@ func (c *SContainer) ValidateUpdateData(ctx context.Context, userCred mcclient.T
 	}
 	input.VirtualResourceBaseUpdateInput = baseInput
 
-	if err := GetContainerManager().ValidateSpec(ctx, userCred, &input.Spec, c.GetPod()); err != nil {
+	if err := GetContainerManager().ValidateSpec(ctx, userCred, &input.Spec, c.GetPod(), c); err != nil {
 		return nil, errors.Wrap(err, "validate spec")
 	}
 
 	return input, nil
+}
+
+func (c *SContainer) PostUpdate(ctx context.Context, userCred mcclient.TokenCredential, query jsonutils.JSONObject, data jsonutils.JSONObject) {
+	c.SVirtualResourceBase.PostUpdate(ctx, userCred, query, data)
+	if err := c.GetPod().StartSyncTaskWithoutSyncstatus(ctx, userCred, false, ""); err != nil {
+		log.Errorf("container %s StartSyncTaskWithoutSyncstatus error: %v", c.GetName(), err)
+	}
 }
 
 func (c *SContainer) GetPod() *SGuest {
@@ -384,6 +477,23 @@ func (c *SContainer) GetPod() *SGuest {
 
 func (c *SContainer) GetVolumeMounts() []*apis.ContainerVolumeMount {
 	return c.Spec.VolumeMounts
+}
+
+type ContainerRootFsRelation struct {
+	RootFs *apis.ContainerRootfs
+	pod    *SGuest
+}
+
+func (rr *ContainerRootFsRelation) ToHostRootFs() (*hostapi.ContainerRootfs, error) {
+	drv, err := GetContainerRootFsDriverWithError(rr.RootFs.Type)
+	if err != nil {
+		return nil, errors.Wrapf(err, "get container root fs driver %q", rr.RootFs.Type)
+	}
+	rootFs, err := drv.ToHostRootFs(rr.RootFs)
+	if err != nil {
+		return nil, errors.Wrapf(err, "to host root fs")
+	}
+	return rootFs, nil
 }
 
 type ContainerVolumeMountRelation struct {
@@ -398,12 +508,16 @@ func (vm *ContainerVolumeMountRelation) toHostDiskMount(disk *apis.ContainerVolu
 		return nil, errors.Errorf("fetch disk by id %s", disk.Id)
 	}
 	ret := &hostapi.ContainerVolumeMountDisk{
-		Index:           disk.Index,
-		Id:              disk.Id,
-		TemplateId:      diskObj.TemplateId,
-		SubDirectory:    disk.SubDirectory,
-		StorageSizeFile: disk.StorageSizeFile,
-		Overlay:         disk.Overlay,
+		Index:                disk.Index,
+		Id:                   disk.Id,
+		TemplateId:           diskObj.TemplateId,
+		SubDirectory:         disk.SubDirectory,
+		StorageSizeFile:      disk.StorageSizeFile,
+		Overlay:              disk.Overlay,
+		CaseInsensitivePaths: disk.CaseInsensitivePaths,
+		PostOverlay:          disk.PostOverlay,
+		ResUid:               disk.ResUid,
+		ResGid:               disk.ResGid,
 	}
 	return ret, nil
 }
@@ -438,6 +552,7 @@ func (vm *ContainerVolumeMountRelation) toCephFSMount(fs *apis.ContainerVolumeMo
 
 func (vm *ContainerVolumeMountRelation) ToHostMount(ctx context.Context, userCred mcclient.TokenCredential) (*hostapi.ContainerVolumeMount, error) {
 	ret := &hostapi.ContainerVolumeMount{
+		UniqueName:     vm.VolumeMount.UniqueName,
 		Type:           vm.VolumeMount.Type,
 		Disk:           nil,
 		CephFS:         nil,
@@ -467,6 +582,13 @@ func (vm *ContainerVolumeMountRelation) ToHostMount(ctx context.Context, userCre
 	return ret, nil
 }
 
+func (m *SContainerManager) GetRootFsRelation(pod *SGuest, spec *api.ContainerSpec) (*ContainerRootFsRelation, error) {
+	return &ContainerRootFsRelation{
+		RootFs: spec.RootFs,
+		pod:    pod,
+	}, nil
+}
+
 func (m *SContainerManager) GetVolumeMountRelations(pod *SGuest, spec *api.ContainerSpec) ([]*ContainerVolumeMountRelation, error) {
 	relation := make([]*ContainerVolumeMountRelation, len(spec.VolumeMounts))
 	for idx, vm := range spec.VolumeMounts {
@@ -477,6 +599,10 @@ func (m *SContainerManager) GetVolumeMountRelations(pod *SGuest, spec *api.Conta
 		}
 	}
 	return relation, nil
+}
+
+func (c *SContainer) GetRootFsRelation() (*ContainerRootFsRelation, error) {
+	return GetContainerManager().GetRootFsRelation(c.GetPod(), c.Spec)
 }
 
 func (c *SContainer) GetVolumeMountRelations() ([]*ContainerVolumeMountRelation, error) {
@@ -500,8 +626,13 @@ func (c *SContainer) StartStartTask(ctx context.Context, userCred mcclient.Token
 }
 
 func (c *SContainer) PerformStop(ctx context.Context, userCred mcclient.TokenCredential, query jsonutils.JSONObject, data *api.ContainerStopInput) (jsonutils.JSONObject, error) {
-	if !sets.NewString(api.CONTAINER_STATUS_RUNNING, api.CONTAINER_STATUS_STOP_FAILED).Has(c.Status) {
-		return nil, httperrors.NewInvalidStatusError("Can't stop container in status %s", c.Status)
+	if !data.Force {
+		if !sets.NewString(
+			api.CONTAINER_STATUS_RUNNING,
+			api.CONTAINER_STATUS_PROBING,
+			api.CONTAINER_STATUS_STOP_FAILED).Has(c.Status) {
+			return nil, httperrors.NewInvalidStatusError("Can't stop container in status %s", c.Status)
+		}
 	}
 	return nil, c.StartStopTask(ctx, userCred, data, "")
 }
@@ -529,16 +660,79 @@ func (c *SContainer) StartSyncStatusTask(ctx context.Context, userCred mcclient.
 }
 
 func (c *SContainer) CustomizeDelete(ctx context.Context, userCred mcclient.TokenCredential, query, data jsonutils.JSONObject) error {
-	return c.StartDeleteTask(ctx, userCred, "")
+	return c.StartDeleteTask(ctx, userCred, "", jsonutils.QueryBoolean(data, "purge", false))
 }
 
-func (c *SContainer) StartDeleteTask(ctx context.Context, userCred mcclient.TokenCredential, parentTaskId string) error {
+func (c *SContainer) StartDeleteTask(ctx context.Context, userCred mcclient.TokenCredential, parentTaskId string, purge bool) error {
 	c.SetStatus(ctx, userCred, api.CONTAINER_STATUS_DELETING, "")
-	task, err := taskman.TaskManager.NewTask(ctx, "ContainerDeleteTask", c, userCred, nil, parentTaskId, "", nil)
+	task, err := taskman.TaskManager.NewTask(ctx, "ContainerDeleteTask", c, userCred, jsonutils.Marshal(map[string]interface{}{
+		"purge": purge,
+	}).(*jsonutils.JSONDict), parentTaskId, "", nil)
 	if err != nil {
 		return errors.Wrap(err, "NewTask")
 	}
 	return task.ScheduleRun(nil)
+}
+
+func (m *SContainerManager) GetImageCredential(ctx context.Context, userCred mcclient.TokenCredential, id string) (*apis.ContainerPullImageAuthConfig, error) {
+	s := auth.GetSession(ctx, userCred, options.Options.Region)
+	ret, err := identitymod.Credentials.GetById(s, id, nil)
+	if err != nil {
+		if errors.Cause(err) == errors.ErrNotFound || strings.Contains(err.Error(), "NotFound") {
+			ret, err = identitymod.Credentials.GetByName(s, id, nil)
+			if err != nil {
+				return nil, errors.Wrapf(err, "get credential by id or name of %s", id)
+			}
+		}
+		return nil, errors.Wrapf(err, "get credentials by id with %s", userCred.String())
+	}
+	credType, _ := ret.GetString("type")
+	if credType != identityapi.CONTAINER_IMAGE_TYPE {
+		return nil, httperrors.NewNotSupportedError("unsupported credential type %s", credType)
+	}
+	blobStr, err := ret.GetString("blob")
+	if err != nil {
+		return nil, errors.Wrap(err, "get blob")
+	}
+	obj, err := jsonutils.ParseString(blobStr)
+	if err != nil {
+		return nil, errors.Wrapf(err, "json parse string: %s", blobStr)
+	}
+	blob := new(identityapi.CredentialContainerImageBlob)
+	if err := obj.Unmarshal(blob); err != nil {
+		return nil, errors.Wrap(err, "unmarshal blob")
+	}
+	out := &apis.ContainerPullImageAuthConfig{
+		Username:      blob.Username,
+		Password:      blob.Password,
+		Auth:          blob.Auth,
+		ServerAddress: blob.ServerAddress,
+		IdentityToken: blob.IdentityToken,
+		RegistryToken: blob.RegistryToken,
+	}
+	return out, nil
+}
+
+func (c *SContainer) GetImageCredential(ctx context.Context, userCred mcclient.TokenCredential) (*apis.ContainerPullImageAuthConfig, error) {
+	if c.Spec.ImageCredentialId == "" {
+		return nil, errors.Wrap(errors.ErrEmpty, "image_credential_id is empty")
+	}
+	return GetContainerManager().GetImageCredential(ctx, userCred, c.Spec.ImageCredentialId)
+}
+
+func (c *SContainer) GetHostPullImageInput(ctx context.Context, userCred mcclient.TokenCredential) (*hostapi.ContainerPullImageInput, error) {
+	input := &hostapi.ContainerPullImageInput{
+		Image:      c.Spec.Image,
+		PullPolicy: c.Spec.ImagePullPolicy,
+	}
+	if c.Spec.ImageCredentialId != "" {
+		cred, err := c.GetImageCredential(ctx, userCred)
+		if err != nil {
+			return nil, errors.Wrapf(err, "GetImageCredential %s", c.Spec.ImageCredentialId)
+		}
+		input.Auth = cred
+	}
+	return input, nil
 }
 
 func (c *SContainer) StartPullImageTask(ctx context.Context, userCred mcclient.TokenCredential, input *hostapi.ContainerPullImageInput, parentTaskId string) error {
@@ -568,7 +762,27 @@ func (m *SContainerManager) ConvertVolumeMountRelationToSpec(ctx context.Context
 	return mounts, nil
 }
 
+func (m *SContainerManager) ConvertRootFsRelationToSpec(ctx context.Context, userCred mcclient.TokenCredential, relation *ContainerRootFsRelation) (*hostapi.ContainerRootfs, error) {
+	if relation.RootFs == nil {
+		return nil, nil
+	}
+	rootFs, err := relation.ToHostRootFs()
+	if err != nil {
+		return nil, errors.Wrap(err, "ToHostRootFs")
+	}
+	return rootFs, nil
+}
+
 func (c *SContainer) ToHostContainerSpec(ctx context.Context, userCred mcclient.TokenCredential) (*hostapi.ContainerSpec, error) {
+	rootFsRelation, err := c.GetRootFsRelation()
+	if err != nil {
+		return nil, errors.Wrap(err, "GetRootFsRelation")
+	}
+	rootFs, err := GetContainerManager().ConvertRootFsRelationToSpec(ctx, userCred, rootFsRelation)
+	if err != nil {
+		return nil, errors.Wrap(err, "ConvertRootFsRelationToSpec")
+	}
+
 	vmRelation, err := c.GetVolumeMountRelations()
 	if err != nil {
 		return nil, errors.Wrap(err, "GetVolumeMountRelations")
@@ -589,9 +803,15 @@ func (c *SContainer) ToHostContainerSpec(ctx context.Context, userCred mcclient.
 	spec := c.Spec.ContainerSpec
 	hSpec := &hostapi.ContainerSpec{
 		ContainerSpec: spec,
+		Rootfs:        rootFs,
 		VolumeMounts:  mounts,
 		Devices:       ctrDevs,
 	}
+	pullInput, err := c.GetHostPullImageInput(ctx, userCred)
+	if err != nil {
+		return nil, errors.Wrap(err, "GetHostPullImageInput")
+	}
+	hSpec.ImageCredentialToken = base64.StdEncoding.EncodeToString([]byte(jsonutils.Marshal(pullInput.Auth).String()))
 	return hSpec, nil
 }
 
@@ -620,6 +840,16 @@ func (c *SContainer) PrepareSaveImage(ctx context.Context, userCred mcclient.Tok
 		},
 		// inherit the ownership of disk
 		ProjectId: c.ProjectId,
+	}
+	if len(input.Dirs) > 0 {
+		dirMap := make(map[string]string, 0)
+		for _, dir := range input.Dirs {
+			dirMap[dir] = dir
+		}
+		imageInput.Properties[imageapi.IMAGE_INTERNAL_PATH_MAP] = jsonutils.Marshal(dirMap).String()
+	}
+	if input.UsedByPostOverlay {
+		imageInput.Properties[imageapi.IMAGE_USED_BY_POST_OVERLAY] = jsonutils.Marshal(input.UsedByPostOverlay).String()
 	}
 	// check class metadata
 	cm, err := c.GetAllClassMetadata()
@@ -654,10 +884,32 @@ func (c *SContainer) PerformSaveVolumeMountImage(ctx context.Context, userCred m
 	if err != nil {
 		return nil, errors.Wrap(err, "ToHostMount")
 	}
+
+	cleanupDirPath := func(dirPath string) string {
+		nPath := ""
+		pathSegs := strings.Split(dirPath, "/")
+		for _, seg := range pathSegs {
+			if len(seg) > 0 {
+				nPath = filepath.Join(nPath, seg)
+			}
+		}
+		return nPath
+	}
+
+	cleanupDirPaths := func(dirPaths []string) []string {
+		for i := range dirPaths {
+			dirPaths[i] = cleanupDirPath(dirPaths[i])
+		}
+		return dirPaths
+	}
+
 	hostInput := &hostapi.ContainerSaveVolumeMountToImageInput{
 		ImageId:          imageId,
 		VolumeMountIndex: input.Index,
 		VolumeMount:      hvm,
+
+		VolumeMountDirs:   cleanupDirPaths(input.Dirs),
+		VolumeMountPrefix: cleanupDirPath(input.DirPrefix),
 	}
 
 	return hostInput, c.StartSaveVolumeMountImage(ctx, userCred, hostInput, "")
@@ -695,14 +947,18 @@ func (c *SContainer) GetDetailsExecInfo(ctx context.Context, userCred mcclient.T
 }
 
 func (c *SContainer) PerformExecSync(ctx context.Context, userCred mcclient.TokenCredential, query jsonutils.JSONObject, input *api.ContainerExecSyncInput) (jsonutils.JSONObject, error) {
-	if c.Status != api.CONTAINER_STATUS_RUNNING {
+	if sets.NewString(
+		api.CONTAINER_STATUS_EXITED,
+		api.CONTAINER_STATUS_CREATED,
+	).Has(c.GetStatus()) {
 		return nil, httperrors.NewInvalidStatusError("Can't exec container in status %s", c.Status)
 	}
 	return c.GetPodDriver().RequestExecSyncContainer(ctx, userCred, c, input)
 }
 
-func (c *SContainer) PerformSetResourcesLimit(ctx context.Context, userCred mcclient.TokenCredential, _ jsonutils.JSONObject, limit *apis.ContainerResources) (jsonutils.JSONObject, error) {
-	if err := c.ValidateResourcesLimit(limit); err != nil {
+func (c *SContainer) PerformSetResourcesLimit(ctx context.Context, userCred mcclient.TokenCredential, _ jsonutils.JSONObject, input *api.ContainerResourcesSetInput) (jsonutils.JSONObject, error) {
+	limit := &input.ContainerResources
+	if err := c.ValidateResourcesLimit(limit, input.DisableLimitCheck); err != nil {
 		return nil, errors.Wrap(err, "ValidateResourcesLimit")
 	}
 	if _, err := db.Update(c, func() error {
@@ -717,7 +973,7 @@ func (c *SContainer) PerformSetResourcesLimit(ctx context.Context, userCred mccl
 	return c.GetPodDriver().RequestSetContainerResourcesLimit(ctx, userCred, c, limit)
 }
 
-func (c *SContainer) ValidateResourcesLimit(limit *apis.ContainerResources) error {
+func (c *SContainer) ValidateResourcesLimit(limit *apis.ContainerResources, disableLimitCheck bool) error {
 	if limit == nil {
 		return httperrors.NewInputParameterError("limit cannot be nil")
 	}
@@ -726,8 +982,10 @@ func (c *SContainer) ValidateResourcesLimit(limit *apis.ContainerResources) erro
 		if *limit.CpuCfsQuota <= 0 {
 			return httperrors.NewInputParameterError("invalid cpu_cfs_quota %f", *limit.CpuCfsQuota)
 		}
-		if *limit.CpuCfsQuota > float64(pod.VcpuCount) {
-			return httperrors.NewInputParameterError("cpu_cfs_quota %f can't large than %d", *limit.CpuCfsQuota, pod.VcpuCount)
+		if !disableLimitCheck {
+			if *limit.CpuCfsQuota > float64(pod.VcpuCount) {
+				return httperrors.NewInputParameterError("cpu_cfs_quota %f can't large than %d", *limit.CpuCfsQuota, pod.VcpuCount)
+			}
 		}
 	}
 	return nil
@@ -768,13 +1026,17 @@ func (c *SContainer) GetReleasedDevices(ctx context.Context, userCred mcclient.T
 
 func (c *SContainer) PerformStatus(ctx context.Context, userCred mcclient.TokenCredential, query jsonutils.JSONObject, input api.ContainerPerformStatusInput) (jsonutils.JSONObject, error) {
 	if api.ContainerExitedStatus.Has(c.GetStatus()) {
-		if input.Status == api.CONTAINER_STATUS_PROBE_FAILED {
+		if sets.NewString(api.CONTAINER_STATUS_PROBE_FAILED, api.CONTAINER_STATUS_NET_FAILED).Has(input.Status) {
 			return nil, httperrors.NewInputParameterError("can't set container status to %s when %s", input.Status, c.Status)
 		}
 	}
 	if _, err := db.Update(c, func() error {
 		if input.RestartCount > 0 {
 			c.RestartCount = input.RestartCount
+		}
+		if api.ContainerRunningStatus.Has(input.Status) {
+			// 当容器状态是运行时 restart_count 重新计数
+			c.RestartCount = 0
 		}
 		if input.StartedAt != nil {
 			c.StartedAt = *input.StartedAt
@@ -869,4 +1131,177 @@ func (c *SContainer) StartCommit(ctx context.Context, userCred mcclient.TokenCre
 		return errors.Wrap(err, "NewTask")
 	}
 	return task.ScheduleRun(nil)
+}
+
+func (c *SContainer) isPostOverlayExist(vm *apis.ContainerVolumeMount, ov *apis.ContainerVolumeMountDiskPostOverlay) (*apis.ContainerVolumeMountDiskPostOverlay, bool) {
+	for i := range vm.Disk.PostOverlay {
+		cov := vm.Disk.PostOverlay[i]
+		if cov.IsEqual(*ov) {
+			return cov, true
+		}
+	}
+	return nil, false
+}
+
+func (c *SContainer) validateVolumeMountPostOverlayAction(action string, index int) (*apis.ContainerVolumeMount, error) {
+	if !api.ContainerExitedStatus.Has(c.Status) && !api.ContainerRunningStatus.Has(c.Status) {
+		return nil, httperrors.NewInvalidStatusError("can't %s post overlay on status %s", action, c.Status)
+	}
+	if index >= len(c.Spec.VolumeMounts) {
+		return nil, httperrors.NewInputParameterError("index %d out of volume_mount size %d", index, len(c.Spec.VolumeMounts))
+	}
+	vm := new(apis.ContainerVolumeMount)
+	curVm := c.Spec.VolumeMounts[index]
+	if err := jsonutils.Marshal(curVm).Unmarshal(vm); err != nil {
+		return nil, errors.Wrap(err, "use json unmarshal to new volume mount")
+	}
+	if vm.Type != apis.CONTAINER_VOLUME_MOUNT_TYPE_DISK {
+		return nil, httperrors.NewInputParameterError("invalid volume mount type %s", vm.Type)
+	}
+	return vm, nil
+}
+
+func (c *SContainer) GetVolumeMountCopy(index int) (*apis.ContainerVolumeMount, error) {
+	if index >= len(c.Spec.VolumeMounts) {
+		return nil, httperrors.NewInputParameterError("index %d out of volume_mount size %d", index, len(c.Spec.VolumeMounts))
+	}
+	vm := new(apis.ContainerVolumeMount)
+	curVm := c.Spec.VolumeMounts[index]
+	if err := jsonutils.Marshal(curVm).Unmarshal(vm); err != nil {
+		return nil, errors.Wrap(err, "use json unmarshal to new volume mount")
+	}
+	return vm, nil
+}
+
+func (c *SContainer) getPostOverlayVolumeMount(
+	index int,
+	updateF func(mount *apis.ContainerVolumeMount) (*apis.ContainerVolumeMount, error),
+) (*apis.ContainerVolumeMount, error) {
+	vm, err := c.GetVolumeMountCopy(index)
+	if err != nil {
+		return nil, err
+	}
+	return updateF(vm)
+}
+
+func (c *SContainer) GetAddPostOverlayVolumeMount(index int, ovs []*apis.ContainerVolumeMountDiskPostOverlay) (*apis.ContainerVolumeMount, error) {
+	return c.getPostOverlayVolumeMount(index, func(vm *apis.ContainerVolumeMount) (*apis.ContainerVolumeMount, error) {
+		if vm.Disk.PostOverlay == nil {
+			vm.Disk.PostOverlay = []*apis.ContainerVolumeMountDiskPostOverlay{}
+		}
+		vm.Disk.PostOverlay = append(vm.Disk.PostOverlay, ovs...)
+		return vm, nil
+	})
+}
+
+func (c *SContainer) GetRemovePostOverlayVolumeMount(index int, ovs []*apis.ContainerVolumeMountDiskPostOverlay) (*apis.ContainerVolumeMount, error) {
+	return c.getPostOverlayVolumeMount(index, func(vm *apis.ContainerVolumeMount) (*apis.ContainerVolumeMount, error) {
+		// remove post overlay
+		for _, ov := range ovs {
+			vm.Disk = c.removePostOverlay(vm.Disk, ov)
+		}
+		return vm, nil
+	})
+}
+
+func (c *SContainer) PerformAddVolumeMountPostOverlay(ctx context.Context, userCred mcclient.TokenCredential, _ jsonutils.JSONObject, input *api.ContainerVolumeMountAddPostOverlayInput) (jsonutils.JSONObject, error) {
+	vm, err := c.validateVolumeMountPostOverlayAction("add", input.Index)
+	if err != nil {
+		return nil, err
+	}
+	totalOvs := []*apis.ContainerVolumeMountDiskPostOverlay{}
+	totalOvs = append(totalOvs, vm.Disk.PostOverlay...)
+	drv := GetContainerVolumeMountDriver(vm.Type)
+	dDrv := drv.(IContainerVolumeMountDiskDriver)
+	for i := range input.PostOverlay {
+		ov := input.PostOverlay[i]
+		cov, isExist := c.isPostOverlayExist(vm, ov)
+		if isExist {
+			return nil, httperrors.NewInputParameterError("post overlay already exists: %s", jsonutils.Marshal(cov))
+		}
+		if err := dDrv.ValidatePostSingleOverlay(ctx, userCred, ov); err != nil {
+			return nil, errors.Wrapf(err, "validate post overlay %s", jsonutils.Marshal(ov))
+		}
+		totalOvs = append(totalOvs, ov)
+	}
+	if err := dDrv.ValidatePostOverlayTargetDirs(totalOvs); err != nil {
+		return nil, errors.Wrapf(err, "validate container target dirs")
+	}
+	return nil, c.StartAddVolumeMountPostOverlayTask(ctx, userCred, input, "")
+}
+
+func (c *SContainer) StartCacheImagesTask(ctx context.Context, userCred mcclient.TokenCredential, input *api.ContainerCacheImagesInput, parentTaskId string) error {
+	c.SetStatus(ctx, userCred, api.CONTAINER_STATUS_CACHE_IMAGE, "")
+	task, err := taskman.TaskManager.NewTask(ctx, "ContainerCacheImagesTask", c, userCred, jsonutils.Marshal(input).(*jsonutils.JSONDict), parentTaskId, "", nil)
+	if err != nil {
+		return errors.Wrap(err, "New ContainerCacheImagesTask")
+	}
+	return task.ScheduleRun(nil)
+}
+
+func (c *SContainer) StartAddVolumeMountPostOverlayTask(ctx context.Context, userCred mcclient.TokenCredential, input *api.ContainerVolumeMountAddPostOverlayInput, parentTaskId string) error {
+	c.SetStatus(ctx, userCred, api.CONTAINER_STATUS_ADD_POST_OVERLY, "")
+	task, err := taskman.TaskManager.NewTask(ctx, "ContainerAddVolumeMountPostOverlayTask", c, userCred, jsonutils.Marshal(input).(*jsonutils.JSONDict), parentTaskId, "", nil)
+	if err != nil {
+		return errors.Wrap(err, "New ContainerAddVolumeMountPostOverlayTask")
+	}
+	return task.ScheduleRun(nil)
+}
+
+func (c *SContainer) StartRemoveVolumeMountPostOverlayTask(ctx context.Context, userCred mcclient.TokenCredential, input *api.ContainerVolumeMountRemovePostOverlayInput, parentTaskId string) error {
+	c.SetStatus(ctx, userCred, api.CONTAINER_STATUS_REMOVE_POST_OVERLY, "")
+	task, err := taskman.TaskManager.NewTask(ctx, "ContainerRemoveVolumeMountPostOverlayTask", c, userCred, jsonutils.Marshal(input).(*jsonutils.JSONDict), parentTaskId, "", nil)
+	if err != nil {
+		return errors.Wrap(err, "New ContainerRemoveVolumeMountPostOverlayTask")
+	}
+	return task.ScheduleRun(nil)
+}
+
+func (c *SContainer) PerformRemoveVolumeMountPostOverlay(ctx context.Context, userCred mcclient.TokenCredential, _ jsonutils.JSONObject, input *api.ContainerVolumeMountRemovePostOverlayInput) (jsonutils.JSONObject, error) {
+	vm, err := c.validateVolumeMountPostOverlayAction("remove", input.Index)
+	if err != nil {
+		return nil, err
+	}
+	if len(vm.Disk.PostOverlay) == 0 {
+		return nil, httperrors.NewInputParameterError("no post overlay")
+	}
+	for i, ov := range input.PostOverlay {
+		cov, isExist := c.isPostOverlayExist(vm, ov)
+		if !isExist {
+			return nil, httperrors.NewInputParameterError("post overlay not exists: %s", jsonutils.Marshal(ov))
+		}
+		input.PostOverlay[i] = cov
+	}
+	return nil, c.StartRemoveVolumeMountPostOverlayTask(ctx, userCred, input, "")
+}
+
+func (c *SContainer) removePostOverlay(vmd *apis.ContainerVolumeMountDisk, ov *apis.ContainerVolumeMountDiskPostOverlay) *apis.ContainerVolumeMountDisk {
+	curOvs := vmd.PostOverlay
+	resultOvs := []*apis.ContainerVolumeMountDiskPostOverlay{}
+	for i := range curOvs {
+		cov := curOvs[i]
+		if cov.IsEqual(*ov) {
+			continue
+		}
+		resultOvs = append(resultOvs, cov)
+	}
+	vmd.PostOverlay = resultOvs
+	return vmd
+}
+
+func (c *SContainer) SetStatusFromHost(ctx context.Context, userCred mcclient.TokenCredential, resp api.ContainerSyncStatusResponse, reason string) error {
+	errs := []error{}
+	if err := c.SetStatus(ctx, userCred, resp.Status, reason); err != nil {
+		errs = append(errs, errors.Wrap(err, "SetStatus"))
+	}
+	if _, err := db.Update(c, func() error {
+		if resp.RestartCount > 0 {
+			c.RestartCount = resp.RestartCount
+		}
+		c.StartedAt = resp.StartedAt
+		return nil
+	}); err != nil {
+		errs = append(errs, errors.Wrap(err, "Update container started_at: %s"))
+	}
+	return errors.NewAggregate(errs)
 }

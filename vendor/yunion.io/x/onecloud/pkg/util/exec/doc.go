@@ -12,11 +12,4 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-package notify
-
-import "yunion.io/x/onecloud/pkg/apis"
-
-type SNotifyElementCreateInput struct {
-	apis.EnabledStatusStandaloneResourceCreateInput
-	Name string
-}
+package exec // import "yunion.io/x/onecloud/pkg/util/exec"

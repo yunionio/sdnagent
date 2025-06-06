@@ -37,8 +37,12 @@ func InitApp(options *common_options.BaseOptions, dbAccess bool) *appsrv.Applica
 	// if dbConn != nil {
 	//	app.SetContext(appsrv.APP_CONTEXT_KEY_DB, dbConn)
 	//}
+	appsrv.SetDefaultHandlersWhitelistUserAgents(options.DefaultHandlersWhitelistUserAgents)
 	if options.EnableAppProfiling {
 		app.EnableProfiling()
+	}
+	if options.AllowTLS1x {
+		app.AllowTLS1x()
 	}
 	return app
 }

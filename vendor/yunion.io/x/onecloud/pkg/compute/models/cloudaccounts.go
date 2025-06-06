@@ -145,7 +145,6 @@ type SCloudaccount struct {
 	Sysinfo jsonutils.JSONObject `get:"domain"`
 
 	// 品牌信息, 一般和provider相同
-	// example: DStack
 	Brand string `width:"64" charset:"utf8" nullable:"true" list:"domain" create:"optional"`
 
 	// 额外信息
@@ -253,7 +252,7 @@ func (acnt *SCloudaccount) enableAccountOnly(ctx context.Context, userCred mccli
 }
 
 func (acnt *SCloudaccount) PerformEnable(ctx context.Context, userCred mcclient.TokenCredential, query jsonutils.JSONObject, input apis.PerformEnableInput) (jsonutils.JSONObject, error) {
-	if strings.Index(acnt.Status, "delet") >= 0 {
+	if strings.Contains(acnt.Status, "delet") {
 		return nil, httperrors.NewInvalidStatusError("Cannot enable deleting account")
 	}
 	_, err := acnt.enableAccountOnly(ctx, userCred, query, input)
@@ -760,7 +759,12 @@ func (acnt *SCloudaccount) PerformTestConnectivity(ctx context.Context, userCred
 	return nil, nil
 }
 
-func (acnt *SCloudaccount) PerformUpdateCredential(ctx context.Context, userCred mcclient.TokenCredential, query jsonutils.JSONObject, data jsonutils.JSONObject) (jsonutils.JSONObject, error) {
+func (acnt *SCloudaccount) PerformUpdateCredential(
+	ctx context.Context,
+	userCred mcclient.TokenCredential,
+	query jsonutils.JSONObject,
+	input cloudprovider.SCloudaccountCredential,
+) (jsonutils.JSONObject, error) {
 	if !acnt.GetEnabled() {
 		return nil, httperrors.NewInvalidStatusError("Account disabled")
 	}
@@ -768,12 +772,6 @@ func (acnt *SCloudaccount) PerformUpdateCredential(ctx context.Context, userCred
 	providerDriver, err := acnt.GetProviderFactory()
 	if err != nil {
 		return nil, httperrors.NewBadRequestError("failed to found provider factory error: %v", err)
-	}
-
-	input := cloudprovider.SCloudaccountCredential{}
-	err = data.Unmarshal(&input)
-	if err != nil {
-		return nil, httperrors.NewInputParameterError("failed to unmarshal input params: %v", err)
 	}
 
 	account, err := providerDriver.ValidateUpdateCloudaccountCredential(ctx, input, acnt.Account)
@@ -2300,18 +2298,18 @@ func (manager *SCloudaccountManager) AutoSyncCloudaccountStatusTask(ctx context.
 	for i := range accounts {
 		if accounts[i].GetEnabled() && accounts[i].shouldProbeStatus() && accounts[i].CanSync() {
 			id, name, account := accounts[i].Id, accounts[i].Name, &accounts[i]
-			cloudaccountProbeMutex.Lock()
-			if _, ok := cloudaccountProbe[id]; ok {
-				cloudaccountProbeMutex.Unlock()
+			cloudaccountPendingSyncsMutex.Lock()
+			if _, ok := cloudaccountPendingSyncs[id]; ok {
+				cloudaccountPendingSyncsMutex.Unlock()
 				continue
 			}
-			cloudaccountProbe[id] = struct{}{}
-			cloudaccountProbeMutex.Unlock()
+			cloudaccountPendingSyncs[id] = struct{}{}
+			cloudaccountPendingSyncsMutex.Unlock()
 			RunSyncCloudAccountTask(ctx, func() {
 				defer func() {
-					cloudaccountProbeMutex.Lock()
-					defer cloudaccountProbeMutex.Unlock()
-					delete(cloudaccountProbe, id)
+					cloudaccountPendingSyncsMutex.Lock()
+					defer cloudaccountPendingSyncsMutex.Unlock()
+					delete(cloudaccountPendingSyncs, id)
 				}()
 				log.Debugf("syncAccountStatus %s %s", id, name)
 				idctx := context.WithValue(ctx, "id", id)
@@ -2495,9 +2493,6 @@ func (account *SCloudaccount) syncAccountStatus(ctx context.Context, userCred mc
 var (
 	cloudaccountPendingSyncs      = map[string]struct{}{}
 	cloudaccountPendingSyncsMutex = &sync.Mutex{}
-
-	cloudaccountProbe      = map[string]struct{}{}
-	cloudaccountProbeMutex = &sync.Mutex{}
 )
 
 func (account *SCloudaccount) SubmitSyncAccountTask(ctx context.Context, userCred mcclient.TokenCredential, waitChan chan error) {

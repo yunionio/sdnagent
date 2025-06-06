@@ -75,6 +75,9 @@ type SCapabilities struct {
 	DisabledModelartsPoolsBrands []string `json:",allowempty"`
 	ModelartsPoolsBrands         []string `json:",allowempty"`
 
+	DisabledDnsBrands []string `json:",allowempty"`
+	DnsBrands         []string `json:",allowempty"`
+
 	ContainerBrands         []string `json:",allowempty"`
 	DisabledContainerBrands []string `json:",allowempty"`
 
@@ -118,6 +121,9 @@ type SCapabilities struct {
 	ReadOnlyDisabledObjectStorageBrands  []string `json:",allowempty"`
 	ReadOnlyModelartsPoolsBrands         []string `json:",allowempty"`
 	ReadOnlyDisabledModelartsPoolsBrands []string `json:",allowempty"`
+
+	ReadOnlyDnsBrands         []string `json:",allowempty"`
+	ReadOnlyDisabledDnsBrands []string `json:",allowempty"`
 
 	ReadOnlyContainerBrands         []string `json:",allowempty"`
 	ReadOnlyDisabledContainerBrands []string `json:",allowempty"`
@@ -181,8 +187,9 @@ func GetCapabilities(ctx context.Context, userCred mcclient.TokenCredential, que
 	var ownerId mcclient.IIdentityProvider
 	scopeStr := jsonutils.GetAnyString(query, []string{"scope"})
 	scope := rbacscope.String2Scope(scopeStr)
-	var domainId string
+	var domainId, tenantId string
 	domainStr := jsonutils.GetAnyString(query, []string{"domain", "domain_id", "project_domain", "project_domain_id"})
+	tenantStr := jsonutils.GetAnyString(query, []string{"tenant", "tenant_id", "project", "project_id"})
 	if len(domainStr) > 0 {
 		domain, err := db.TenantCacheManager.FetchDomainByIdOrName(ctx, domainStr)
 		if err != nil {
@@ -197,6 +204,16 @@ func GetCapabilities(ctx context.Context, userCred mcclient.TokenCredential, que
 	} else {
 		domainId = userCred.GetProjectDomainId()
 		ownerId = userCred
+	}
+	if len(tenantStr) > 0 {
+		project, err := db.TenantCacheManager.FetchTenantById(ctx, tenantStr)
+		if err != nil {
+			if err == sql.ErrNoRows {
+				return capa, httperrors.NewResourceNotFoundError2("projects", tenantStr)
+			}
+			return capa, httperrors.NewGeneralError(err)
+		}
+		tenantId = project.GetId()
 	}
 	if scope == rbacscope.ScopeSystem {
 		result := policy.PolicyManager.Allow(scope, userCred, consts.GetServiceType(), "capabilities", policy.PolicyActionList)
@@ -239,7 +256,7 @@ func GetCapabilities(ctx context.Context, userCred mcclient.TokenCredential, que
 	if err != nil {
 		return capa, errors.Wrapf(err, "getStorageTypes")
 	}
-	capa.GPUModels, capa.PCIModelTypes = getIsolatedDeviceInfo(ctx, userCred, region, zone, domainId)
+	capa.GPUModels, capa.PCIModelTypes = getIsolatedDeviceInfo(ctx, userCred, region, zone, domainId, tenantId)
 	capa.SchedPolicySupport = isSchedPolicySupported(region, zone)
 	capa.MinNicCount = getMinNicCount(region, zone)
 	capa.MaxNicCount = getMaxNicCount(region, zone)
@@ -411,6 +428,7 @@ func getBrands(region *SCloudregion, domainId string, capa *SCapabilities) {
 			capa.SecurityGroupBrands = append(capa.SecurityGroupBrands, api.ONECLOUD_BRAND_ONECLOUD)
 			capa.ComputeEngineBrands = append(capa.ComputeEngineBrands, api.ONECLOUD_BRAND_ONECLOUD)
 			capa.SnapshotPolicyBrands = append(capa.SnapshotPolicyBrands, api.ONECLOUD_BRAND_ONECLOUD)
+			capa.DnsBrands = append(capa.DnsBrands, api.ONECLOUD_BRAND_ONECLOUD)
 		} else if utils.IsInStringArray(api.HYPERVISOR_POD, capa.Hypervisors) {
 			capa.Brands = append(capa.Brands, api.ONECLOUD_BRAND_ONECLOUD)
 			capa.ComputeEngineBrands = append(capa.ComputeEngineBrands, api.ONECLOUD_BRAND_ONECLOUD)
@@ -508,6 +526,8 @@ func getBrands(region *SCloudregion, domainId string, capa *SCapabilities) {
 				appendBrand(&capa.SnapshotPolicyBrands, &capa.DisabledSnapshotPolicyBrands, &capa.ReadOnlySnapshotPolicyBrands, &capa.ReadOnlyDisabledSnapshotPolicyBrands, brand, capability, enabled, readOnly)
 			case cloudprovider.CLOUD_CAPABILITY_MODELARTES:
 				appendBrand(&capa.ModelartsPoolsBrands, &capa.DisabledModelartsPoolsBrands, &capa.ReadOnlyModelartsPoolsBrands, &capa.ReadOnlyDisabledModelartsPoolsBrands, brand, capability, enabled, readOnly)
+			case cloudprovider.CLOUD_CAPABILITY_DNSZONE:
+				appendBrand(&capa.DnsBrands, &capa.DisabledDnsBrands, &capa.ReadOnlyDnsBrands, &capa.ReadOnlyDisabledDnsBrands, brand, capability, enabled, readOnly)
 			default:
 			}
 		}
@@ -845,17 +865,47 @@ type PCIDevModelTypes struct {
 	Hypervisor string
 }
 
-func getIsolatedDeviceInfo(ctx context.Context, userCred mcclient.TokenCredential, region *SCloudregion, zone *SZone, domainId string) ([]string, []PCIDevModelTypes) {
-	devices := IsolatedDeviceManager.Query().SubQuery()
+func getIsolatedDeviceInfo(ctx context.Context, userCred mcclient.TokenCredential, region *SCloudregion, zone *SZone, domainId, tenantId string) ([]string, []PCIDevModelTypes) {
+	devicesQ := IsolatedDeviceManager.Query()
 	hostQuery := HostManager.Query()
 	if len(domainId) > 0 {
 		ownerId := &db.SOwnerId{DomainId: domainId}
 		hostQuery = StorageManager.FilterByOwner(ctx, hostQuery, StorageManager, userCred, ownerId, rbacscope.ScopeDomain)
 	}
+	if len(tenantId) > 0 {
+		devicesQ = devicesQ.IsNullOrEmpty("guest_id")
+		subq := db.SharedResourceManager.Query("resource_id")
+		subq = subq.Equals("resource_type", IsolatedDeviceManager.Keyword())
+		subq = subq.Equals("target_project_id", tenantId)
+		subq = subq.Equals("target_type", db.SharedTargetProject)
+		conds := []sqlchemy.ICondition{
+			sqlchemy.AND(
+				sqlchemy.IsTrue(devicesQ.Field("is_public")),
+				sqlchemy.Equals(devicesQ.Field("public_scope"), rbacscope.ScopeSystem),
+			),
+			sqlchemy.In(devicesQ.Field("id"), subq.SubQuery()),
+		}
+		if len(domainId) > 0 {
+			subq2 := db.SharedResourceManager.Query("resource_id")
+			subq2 = subq2.Equals("resource_type", IsolatedDeviceManager.Keyword())
+			subq2 = subq2.Equals("target_project_id", domainId)
+			subq2 = subq2.Equals("target_type", db.SharedTargetDomain)
+			conds = append(conds, sqlchemy.AND(
+				sqlchemy.IsTrue(devicesQ.Field("is_public")),
+				sqlchemy.Equals(devicesQ.Field("public_scope"), rbacscope.ScopeDomain),
+				sqlchemy.OR(
+					sqlchemy.In(devicesQ.Field("id"), subq2.SubQuery()),
+				),
+			),
+			)
+		}
+		devicesQ = devicesQ.Filter(sqlchemy.OR(conds...))
+	}
+	devices := devicesQ.SubQuery()
 	hosts := hostQuery.SubQuery()
 
-	q := devices.Query(devices.Field("model"), devices.Field("dev_type"), devices.Field("nvme_size_mb"))
-	q = q.Filter(sqlchemy.NotIn(devices.Field("dev_type"), []string{api.USB_TYPE, api.NIC_TYPE, api.NVME_PT_TYPE}))
+	q := devices.Query(hosts.Field("host_type"), devices.Field("model"), devices.Field("dev_type"), devices.Field("nvme_size_mb"))
+	q = q.Filter(sqlchemy.NotIn(devices.Field("dev_type"), []string{api.USB_TYPE, api.NIC_TYPE}))
 	if zone != nil {
 		q = q.Join(hosts, sqlchemy.Equals(devices.Field("host_id"), hosts.Field("id")))
 		q = q.Filter(sqlchemy.Equals(hosts.Field("zone_id"), zone.Id))
@@ -863,6 +913,8 @@ func getIsolatedDeviceInfo(ctx context.Context, userCred mcclient.TokenCredentia
 		subq := getRegionZoneSubq(region)
 		q = q.Join(hosts, sqlchemy.Equals(devices.Field("host_id"), hosts.Field("id")))
 		q = q.Filter(sqlchemy.In(hosts.Field("zone_id"), subq))
+	} else {
+		q = q.Join(hosts, sqlchemy.Equals(devices.Field("host_id"), hosts.Field("id")))
 	}
 	/*if len(domainId) > 0 {
 		subq := getDomainManagerSubq(domainId)
@@ -871,7 +923,7 @@ func getIsolatedDeviceInfo(ctx context.Context, userCred mcclient.TokenCredentia
 			sqlchemy.IsNullOrEmpty(hosts.Field("manager_id")),
 		))
 	}*/
-	q = q.GroupBy(devices.Field("model"), devices.Field("dev_type"), devices.Field("nvme_size_mb"))
+	q = q.GroupBy(hosts.Field("host_type"), devices.Field("model"), devices.Field("dev_type"), devices.Field("nvme_size_mb"))
 
 	rows, err := q.Rows()
 	if err != nil {
@@ -886,7 +938,8 @@ func getIsolatedDeviceInfo(ctx context.Context, userCred mcclient.TokenCredentia
 		var sizeMB int
 		var vdev bool
 		var hypervisor string
-		rows.Scan(&m, &t, &sizeMB)
+		var hostType string
+		rows.Scan(&hostType, &m, &t, &sizeMB)
 
 		if m == "" {
 			continue
@@ -898,6 +951,10 @@ func getIsolatedDeviceInfo(ctx context.Context, userCred mcclient.TokenCredentia
 			hypervisor = api.HYPERVISOR_POD
 		} else {
 			hypervisor = api.HYPERVISOR_KVM
+		}
+
+		if hostType == api.HOST_TYPE_ZETTAKIT {
+			hypervisor = api.HYPERVISOR_ZETTAKIT
 		}
 
 		gpus = append(gpus, PCIDevModelTypes{m, t, sizeMB, vdev, hypervisor})
@@ -952,7 +1009,11 @@ func getAutoAllocNetworkCount(ctx context.Context, userCred mcclient.TokenCreden
 
 func getNetworkCountByFilter(ctx context.Context, userCred mcclient.TokenCredential, ownerId mcclient.IIdentityProvider, scope rbacscope.TRbacScope, region *SCloudregion, zone *SZone, isAutoAlloc tristate.TriState, serverType string) (int, error) {
 	if zone != nil && region == nil {
-		region, _ = zone.GetRegion()
+		var err error
+		region, err = zone.GetRegion()
+		if err != nil {
+			return 0, errors.Wrapf(err, "GetRegion")
+		}
 	}
 
 	networks := NetworkManager.Query().SubQuery()
