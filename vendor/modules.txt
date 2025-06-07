@@ -120,6 +120,9 @@ github.com/google/gofuzz
 github.com/googleapis/gnostic/compiler
 github.com/googleapis/gnostic/extensions
 github.com/googleapis/gnostic/openapiv2
+# github.com/gorilla/mux v1.8.0
+## explicit; go 1.12
+github.com/gorilla/mux
 # github.com/gotestyourself/gotestyourself v1.4.0
 ## explicit
 # github.com/hako/durafmt v0.0.0-20180520121703-7b7ae1e72ead
@@ -224,7 +227,7 @@ github.com/shirou/gopsutil/v3/internal/common
 github.com/shirou/gopsutil/v3/mem
 github.com/shirou/gopsutil/v3/net
 github.com/shirou/gopsutil/v3/process
-# github.com/sirupsen/logrus v1.9.0
+# github.com/sirupsen/logrus v1.9.3
 ## explicit; go 1.13
 github.com/sirupsen/logrus
 # github.com/spf13/afero v1.2.2
@@ -385,10 +388,10 @@ golang.org/x/net/trace
 ## explicit; go 1.18
 golang.org/x/oauth2
 golang.org/x/oauth2/internal
-# golang.org/x/sync v0.6.0
+# golang.org/x/sync v0.8.0
 ## explicit; go 1.18
 golang.org/x/sync/errgroup
-# golang.org/x/sys v0.17.0
+# golang.org/x/sys v0.26.0
 ## explicit; go 1.18
 golang.org/x/sys/cpu
 golang.org/x/sys/plan9
@@ -503,14 +506,16 @@ google.golang.org/grpc/serviceconfig
 google.golang.org/grpc/stats
 google.golang.org/grpc/status
 google.golang.org/grpc/tap
-# google.golang.org/protobuf v1.32.0
-## explicit; go 1.17
+# google.golang.org/protobuf v1.35.1
+## explicit; go 1.21
 google.golang.org/protobuf/encoding/protojson
 google.golang.org/protobuf/encoding/prototext
 google.golang.org/protobuf/encoding/protowire
 google.golang.org/protobuf/internal/descfmt
 google.golang.org/protobuf/internal/descopts
 google.golang.org/protobuf/internal/detrand
+google.golang.org/protobuf/internal/editiondefaults
+google.golang.org/protobuf/internal/editionssupport
 google.golang.org/protobuf/internal/encoding/defval
 google.golang.org/protobuf/internal/encoding/json
 google.golang.org/protobuf/internal/encoding/messageset
@@ -535,6 +540,7 @@ google.golang.org/protobuf/reflect/protoregistry
 google.golang.org/protobuf/runtime/protoiface
 google.golang.org/protobuf/runtime/protoimpl
 google.golang.org/protobuf/types/descriptorpb
+google.golang.org/protobuf/types/gofeaturespb
 google.golang.org/protobuf/types/known/anypb
 google.golang.org/protobuf/types/known/durationpb
 google.golang.org/protobuf/types/known/timestamppb
@@ -718,7 +724,7 @@ sigs.k8s.io/structured-merge-diff/v4/value
 # sigs.k8s.io/yaml v1.2.0
 ## explicit; go 1.12
 sigs.k8s.io/yaml
-# yunion.io/x/cloudmux v0.3.10-0-alpha.1.0.20240929084351-30a36ccf2201
+# yunion.io/x/cloudmux v0.3.10-0-alpha.1.0.20250606110734-0a60d09de2c5
 ## explicit; go 1.21
 yunion.io/x/cloudmux/pkg/apis
 yunion.io/x/cloudmux/pkg/apis/billing
@@ -728,18 +734,20 @@ yunion.io/x/cloudmux/pkg/cloudprovider
 yunion.io/x/cloudmux/pkg/multicloud
 yunion.io/x/cloudmux/pkg/multicloud/esxi
 yunion.io/x/cloudmux/pkg/multicloud/esxi/vcenter
-# yunion.io/x/executor v0.0.0-20230705125604-c5ac3141db32
+yunion.io/x/cloudmux/pkg/multicloud/objectstore
+yunion.io/x/cloudmux/pkg/multicloud/objectstore/provider
+# yunion.io/x/executor v0.0.0-20250518005516-5402e9e0bed0
 ## explicit; go 1.12
 yunion.io/x/executor/apis
 yunion.io/x/executor/client
-# yunion.io/x/jsonutils v1.0.1-0.20240203102553-4096f103b401
+# yunion.io/x/jsonutils v1.0.1-0.20250507052344-1abcf4f443b1
 ## explicit; go 1.18
 yunion.io/x/jsonutils
 # yunion.io/x/log v1.0.1-0.20240305175729-7cf2d6cd5a91
 ## explicit; go 1.12
 yunion.io/x/log
 yunion.io/x/log/hooks
-# yunion.io/x/onecloud v0.0.0-20241009134947-8e0507d0029f
+# yunion.io/x/onecloud v0.0.0-20250607004206-301bd2e705e6
 ## explicit; go 1.21
 yunion.io/x/onecloud/locales
 yunion.io/x/onecloud/pkg/apihelper
@@ -839,6 +847,7 @@ yunion.io/x/onecloud/pkg/util/choices
 yunion.io/x/onecloud/pkg/util/conditionparser
 yunion.io/x/onecloud/pkg/util/ctx
 yunion.io/x/onecloud/pkg/util/dbutils
+yunion.io/x/onecloud/pkg/util/exec
 yunion.io/x/onecloud/pkg/util/fileutils2
 yunion.io/x/onecloud/pkg/util/filterclause
 yunion.io/x/onecloud/pkg/util/hashcache
@@ -871,7 +880,7 @@ yunion.io/x/onecloud/pkg/util/tagutils
 yunion.io/x/onecloud/pkg/util/yunionmeta
 yunion.io/x/onecloud/pkg/vpcagent/models
 yunion.io/x/onecloud/pkg/vpcagent/ovn/mac
-# yunion.io/x/pkg v1.10.1-0.20240905110705-77c46e716318
+# yunion.io/x/pkg v1.10.4-0.20250519013345-54017bf6c1f0
 ## explicit; go 1.18
 yunion.io/x/pkg/appctx
 yunion.io/x/pkg/errors
@@ -906,6 +915,7 @@ yunion.io/x/pkg/util/samlutils
 yunion.io/x/pkg/util/seclib
 yunion.io/x/pkg/util/secrules
 yunion.io/x/pkg/util/sets
+yunion.io/x/pkg/util/shellutils
 yunion.io/x/pkg/util/signalutils
 yunion.io/x/pkg/util/sortutils
 yunion.io/x/pkg/util/streamutils
@@ -915,10 +925,10 @@ yunion.io/x/pkg/util/version
 yunion.io/x/pkg/util/vmdkutils
 yunion.io/x/pkg/util/wait
 yunion.io/x/pkg/utils
-# yunion.io/x/s3cli v0.0.0-20190917004522-13ac36d8687e
+# yunion.io/x/s3cli v0.0.0-20241221171442-1c11599d28e1
 ## explicit; go 1.12
 yunion.io/x/s3cli
-# yunion.io/x/sqlchemy v1.1.3-0.20240926163039-d41512b264e1
+# yunion.io/x/sqlchemy v1.1.3-0.20250531010554-ce98f840b833
 ## explicit; go 1.17
 yunion.io/x/sqlchemy
 yunion.io/x/sqlchemy/backends/clickhouse

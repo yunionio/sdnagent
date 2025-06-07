@@ -40,6 +40,8 @@ import (
 	"yunion.io/x/onecloud/pkg/util/stringutils2"
 )
 
+// +onecloud:swagger-gen-model-singular=loadbalancerbackend
+// +onecloud:swagger-gen-model-plural=loadbalancerbackends
 type SLoadbalancerBackendManager struct {
 	SLoadbalancerLogSkipper
 	db.SStatusStandaloneResourceBaseManager
@@ -97,7 +99,7 @@ func (manager *SLoadbalancerBackendManager) FetchOwnerId(ctx context.Context, da
 		if err != nil {
 			return nil, errors.Wrapf(err, "db.FetchById(LoadbalancerBackendGroupManager, %s)", lbbgId)
 		}
-		return lbbg.(*SLoadbalancer).GetOwnerId(), nil
+		return lbbg.(*SLoadbalancerBackendGroup).GetOwnerId(), nil
 	}
 	return db.FetchProjectInfo(ctx, data)
 }
@@ -640,9 +642,6 @@ func (lbb *SLoadbalancerBackend) SyncWithCloudLoadbalancerBackend(ctx context.Co
 	if err != nil {
 		return err
 	}
-	if account, _ := provider.GetCloudaccount(); account != nil {
-		syncMetadata(ctx, userCred, lbb, ext, account.ReadOnly)
-	}
 	db.OpsLog.LogSyncUpdate(lbb, diff, userCred)
 	return nil
 }
@@ -664,7 +663,6 @@ func (lbbg *SLoadbalancerBackendGroup) newFromCloudLoadbalancerBackend(ctx conte
 	if err != nil {
 		return nil, errors.Wrapf(err, "Insert")
 	}
-	syncMetadata(ctx, userCred, lbb, ext, false)
 	db.OpsLog.LogEvent(lbb, db.ACT_CREATE, lbb.GetShortDesc(ctx), userCred)
 	return lbb, nil
 }

@@ -29,6 +29,7 @@ import (
 	"yunion.io/x/jsonutils"
 	"yunion.io/x/log"
 	"yunion.io/x/pkg/errors"
+	"yunion.io/x/pkg/gotypes"
 	"yunion.io/x/pkg/tristate"
 	"yunion.io/x/pkg/util/billing"
 	"yunion.io/x/pkg/util/httputils"
@@ -55,6 +56,7 @@ import (
 	"yunion.io/x/onecloud/pkg/cloudcommon/policy"
 	"yunion.io/x/onecloud/pkg/cloudcommon/userdata"
 	"yunion.io/x/onecloud/pkg/cloudcommon/validators"
+	"yunion.io/x/onecloud/pkg/compute/baremetal"
 	guestdriver_types "yunion.io/x/onecloud/pkg/compute/guestdrivers/types"
 	"yunion.io/x/onecloud/pkg/compute/options"
 	"yunion.io/x/onecloud/pkg/httperrors"
@@ -588,7 +590,7 @@ func (self *SGuest) StartMigrateTask(
 
 	data.Set("guest_status", jsonutils.NewString(guestStatus))
 	dedicateMigrateTask := "GuestMigrateTask"
-	if !utils.IsInStringArray(self.GetHypervisor(), []string{api.HYPERVISOR_KVM, api.HYPERVISOR_POD}) {
+	if len(self.ExternalId) > 0 {
 		dedicateMigrateTask = "ManagedGuestMigrateTask" //托管私有云
 	}
 	self.SetStatus(ctx, userCred, vmStatus, "")
@@ -647,7 +649,7 @@ func (self *SGuest) StartGuestLiveMigrateTask(
 
 	data.Set("guest_status", jsonutils.NewString(guestStatus))
 	dedicateMigrateTask := "GuestLiveMigrateTask"
-	if self.GetHypervisor() != api.HYPERVISOR_KVM {
+	if len(self.ExternalId) > 0 {
 		dedicateMigrateTask = "ManagedGuestLiveMigrateTask" //托管私有云
 	}
 	if task, err := taskman.TaskManager.NewTask(ctx, dedicateMigrateTask, self, userCred, data, parentTaskId, "", nil); err != nil {
@@ -1558,14 +1560,18 @@ func (self *SGuest) StartGueststartTask(
 	data *jsonutils.JSONDict, parentTaskId string,
 ) error {
 	schedStart := self.Hypervisor == api.HYPERVISOR_KVM && self.guestDisksStorageTypeIsShared()
+	startFromCreate := false
+	if !gotypes.IsNil(data) {
+		startFromCreate = jsonutils.QueryBoolean(data, "start_from_create", false)
+	}
 	if options.Options.IgnoreNonrunningGuests {
 		host := HostManager.FetchHostById(self.HostId)
-		if host != nil && host.EnableNumaAllocate {
+		if !startFromCreate && host != nil && host.EnableNumaAllocate {
 			schedStart = true
 		}
 	}
 
-	if self.CpuNumaPin != nil {
+	if !startFromCreate && self.CpuNumaPin != nil {
 		// clean cpu numa pin
 		err := self.SetCpuNumaPin(ctx, userCred, nil, nil)
 		if err != nil {
@@ -1680,6 +1686,9 @@ func (self *SGuest) fixFakeServerInfo(ctx context.Context, userCred mcclient.Tok
 }
 
 func (self *SGuest) StartSyncstatus(ctx context.Context, userCred mcclient.TokenCredential, parentTaskId string) error {
+	if len(parentTaskId) == 0 {
+		self.SetStatus(ctx, userCred, apis.STATUS_START_SYNC_STATUS, "")
+	}
 	driver, err := self.GetDriver()
 	if err != nil {
 		return errors.Wrapf(err, "GetDriver")
@@ -1789,6 +1798,9 @@ func (self *SGuest) PerformRebuildRoot(
 		}
 
 		diskCat := self.CategorizeDisks()
+		if gotypes.IsNil(diskCat.Root) {
+			return nil, httperrors.NewInputParameterError("no root disk is found")
+		}
 		if img.MinDiskMB == 0 || img.Status != imageapi.IMAGE_STATUS_ACTIVE {
 			return nil, httperrors.NewInputParameterError("invlid image")
 		}
@@ -2308,17 +2320,43 @@ func (self *SGuest) AttachIsolatedDevices(ctx context.Context, userCred mcclient
 			}
 		}
 		if dev.DevType == api.LEGACY_VGPU_TYPE {
-			devs, err := self.GetIsolatedDevices()
+			attachedGpus, err := self.GetIsolatedDevices()
 			if err != nil {
 				return errors.Wrap(err, "get isolated devices")
 			}
-			for i := range devs {
-				if devs[i].DevType == api.LEGACY_VGPU_TYPE {
+			for i := range attachedGpus {
+				if attachedGpus[i].DevType == api.LEGACY_VGPU_TYPE {
 					return httperrors.NewBadRequestError("Nvidia vgpu count exceed > 1")
-				} else if utils.IsInStringArray(devs[i].DevType, api.VALID_GPU_TYPES) {
+				} else if utils.IsInStringArray(attachedGpus[i].DevType, api.VALID_GPU_TYPES) {
 					return httperrors.NewBadRequestError("Nvidia vgpu can't passthrough with other gpus")
 				}
 			}
+		} else if dev.DevType == api.CONTAINER_DEV_NVIDIA_MPS {
+			allDevs, err := IsolatedDeviceManager.GetUnusedDevsOnHost(host.Id, devModel, -1)
+			if err != nil {
+				return httperrors.NewInternalServerError("fetch gpu failed %s", err)
+			}
+			attachedGpus, err := self.GetIsolatedDevices()
+			if err != nil {
+				return httperrors.NewInternalServerError("get attached isolated devices %s", err)
+			}
+			attachedAddrs := map[string]struct{}{}
+			for i := range attachedGpus {
+				addr := strings.Split(attachedGpus[i].Addr, "-")[0]
+				attachedAddrs[addr] = struct{}{}
+			}
+			validDevs := []SIsolatedDevice{}
+			for i := range allDevs {
+				devAddr := strings.Split(allDevs[i].Addr, "-")[0]
+				if _, ok := attachedAddrs[devAddr]; ok {
+					continue
+				}
+				validDevs = append(validDevs, allDevs[i])
+			}
+			if len(validDevs) < count {
+				return httperrors.NewInsufficientResourceError("require %d %s isolated device of host %s is not enough", count, devModel, host.GetName())
+			}
+			devs = validDevs[:count]
 		}
 		unusedDevs = append(unusedDevs, devs...)
 	}
@@ -2570,7 +2608,11 @@ func (self *SGuest) PerformChangeIpaddr(
 	if input.NetConf != nil {
 		conf = input.NetConf
 	} else if len(input.NetDesc) > 0 {
-		netConf, err := cmdline.ParseNetworkConfigByJSON(jsonutils.NewString(input.NetDesc), -1)
+		netDescJson, err := jsonutils.ParseString(input.NetDesc)
+		if err != nil {
+			netDescJson = jsonutils.NewString(input.NetDesc)
+		}
+		netConf, err := cmdline.ParseNetworkConfigByJSON(netDescJson, -1)
 		if err != nil {
 			return nil, httperrors.NewInputParameterError("fail to parse net_desc %s: %s", input.NetDesc, err)
 		}
@@ -2863,10 +2905,22 @@ func (self *SGuest) PerformDetachnetwork(
 	return nil, nil
 }
 
-func (guest *SGuest) fixDefaultGateway(ctx context.Context, userCred mcclient.TokenCredential) error {
+func (guest *SGuest) fixDefaultGatewayByNics(ctx context.Context, userCred mcclient.TokenCredential, nics []SGuestnetwork) (bool, error) {
 	defaultGwCnt := 0
+	for i := range nics {
+		if nics[i].Virtual || len(nics[i].TeamWith) > 0 {
+			continue
+		}
+		if nics[i].IsDefault {
+			defaultGwCnt++
+		}
+	}
+
+	if defaultGwCnt == 1 {
+		return false, nil
+	}
+
 	nicList := netutils2.SNicInfoList{}
-	nics, _ := guest.GetNetworks("")
 	for i := range nics {
 		if nics[i].Virtual || len(nics[i].TeamWith) > 0 {
 			continue
@@ -2874,22 +2928,24 @@ func (guest *SGuest) fixDefaultGateway(ctx context.Context, userCred mcclient.To
 		net, _ := nics[i].GetNetwork()
 		if net != nil {
 			nicList = nicList.Add(nics[i].IpAddr, nics[i].MacAddr, net.GuestGateway)
-			if nics[i].IsDefault {
-				defaultGwCnt++
-			}
 		}
 	}
-	if defaultGwCnt != 1 {
-		gwMac, _ := nicList.FindDefaultNicMac()
-		if gwMac != "" {
-			err := guest.setDefaultGateway(ctx, userCred, gwMac)
-			if err != nil {
-				log.Errorf("setDefaultGateway fail %s", err)
-				return errors.Wrap(err, "setDefaultGateway")
-			}
+
+	gwMac, _ := nicList.FindDefaultNicMac()
+	if gwMac != "" {
+		err := guest.setDefaultGateway(ctx, userCred, gwMac)
+		if err != nil {
+			log.Errorf("setDefaultGateway fail %s", err)
+			return true, errors.Wrap(err, "setDefaultGateway")
 		}
 	}
-	return nil
+	return true, nil
+}
+
+func (guest *SGuest) fixDefaultGateway(ctx context.Context, userCred mcclient.TokenCredential) error {
+	nics, _ := guest.GetNetworks("")
+	_, err := guest.fixDefaultGatewayByNics(ctx, userCred, nics)
+	return err
 }
 
 // 挂载网卡
@@ -3145,14 +3201,6 @@ func (self *SGuest) PerformChangeConfig(ctx context.Context, userCred mcclient.T
 		return nil, httperrors.NewBadRequestError("Guest have backup not allow to change config")
 	}
 
-	changeStatus, err := driver.GetChangeConfigStatus(self)
-	if err != nil {
-		return nil, httperrors.NewInputParameterError("%v", err)
-	}
-	if !utils.IsInStringArray(self.Status, changeStatus) {
-		return nil, httperrors.NewInvalidStatusError("Cannot change config in %s for %s, requires %s", self.Status, self.GetHypervisor(), changeStatus)
-	}
-
 	_, err = self.GetHost()
 	if err != nil {
 		return nil, httperrors.NewInvalidStatusError("no valid host")
@@ -3163,10 +3211,30 @@ func (self *SGuest) PerformChangeConfig(ctx context.Context, userCred mcclient.T
 		return nil, errors.Wrap(err, "ValidateGuestChangeConfigInput")
 	}
 
+	if confs.CpuChanged() || confs.MemChanged() || confs.InstanceTypeChanged() {
+		changeStatus, err := driver.GetChangeInstanceTypeStatus()
+		if err != nil {
+			return nil, httperrors.NewInputParameterError("%v", err)
+		}
+		if !utils.IsInStringArray(self.Status, changeStatus) {
+			return nil, httperrors.NewInvalidStatusError("Cannot change config in %s for %s, requires %s", self.Status, self.GetHypervisor(), changeStatus)
+		}
+	}
+
 	if self.PowerStates == api.VM_POWER_STATES_ON && (confs.CpuChanged() || confs.MemChanged()) {
 		confs, err = driver.ValidateGuestHotChangeConfigInput(ctx, self, confs)
 		if err != nil {
 			return nil, httperrors.NewInvalidStatusError("cannot change CPU/Memory spec in power status %s: %s", self.PowerStates, err)
+		}
+	}
+
+	if len(confs.Create) > 0 {
+		attachStatus, err := driver.GetAttachDiskStatus()
+		if err != nil {
+			return nil, httperrors.NewInputParameterError("%v", err)
+		}
+		if !utils.IsInStringArray(self.Status, attachStatus) {
+			return nil, httperrors.NewInvalidStatusError("Cannot attach disk in %s for %s, requires %s", self.Status, self.GetHypervisor(), attachStatus)
 		}
 	}
 
@@ -3175,6 +3243,9 @@ func (self *SGuest) PerformChangeConfig(ctx context.Context, userCred mcclient.T
 	pendingUsage := &SQuota{}
 	if added := confs.AddedCpu(); added > 0 {
 		pendingUsage.Cpu = added
+	}
+	if added := confs.AddedExtraCpu(); added > 0 {
+		pendingUsage.Cpu += added
 	}
 	if added := confs.AddedMem(); added > 0 {
 		pendingUsage.Memory = added
@@ -3199,7 +3270,7 @@ func (self *SGuest) PerformChangeConfig(ctx context.Context, userCred mcclient.T
 	return nil, nil
 }
 
-func (self *SGuest) ChangeConfToSchedDesc(addCpu, addMem int, schedInputDisks []*api.DiskConfig) *schedapi.ScheduleInput {
+func (self *SGuest) ChangeConfToSchedDesc(addCpu, addExtraCpu, addMem int, schedInputDisks []*api.DiskConfig) *schedapi.ScheduleInput {
 	region, _ := self.GetRegion()
 	devs, _ := self.GetIsolatedDevices()
 	desc := &schedapi.ScheduleInput{
@@ -3218,6 +3289,7 @@ func (self *SGuest) ChangeConfToSchedDesc(addCpu, addMem int, schedInputDisks []
 		OsArch:            self.OsArch,
 		ChangeConfig:      true,
 		HasIsolatedDevice: len(devs) > 0,
+		ExtraCpuCount:     addExtraCpu,
 	}
 	return desc
 }
@@ -3394,8 +3466,88 @@ func (self *SGuest) SetBackupGuestStatus(userCred mcclient.TokenCredential, stat
 	return nil
 }
 
+func (g *SGuest) SetStatusFromHost(ctx context.Context, userCred mcclient.TokenCredential, resp api.HostUploadGuestStatusInput, hasParentTask bool, originStatus string) error {
+	statusStr := resp.Status
+	switch statusStr {
+	case cloudprovider.CloudVMStatusRunning:
+		statusStr = api.VM_RUNNING
+	case cloudprovider.CloudVMStatusSuspend:
+		statusStr = api.VM_SUSPEND
+	case cloudprovider.CloudVMStatusStopped:
+		statusStr = api.VM_READY
+	case api.VM_BLOCK_STREAM, api.VM_BLOCK_STREAM_FAIL:
+		break
+	default:
+		if g.GetHypervisor() != api.HYPERVISOR_POD {
+			statusStr = api.VM_UNKNOWN
+		}
+	}
+	if !hasParentTask {
+		// migrating status hack
+		// not change migrating when:
+		//   guest.Status is migrating and task not has parent task
+		if originStatus == api.VM_MIGRATING && statusStr == api.VM_RUNNING && len(g.ExternalId) == 0 {
+			statusStr = originStatus
+		}
+	}
+	input := api.ServerPerformStatusInput{
+		PerformStatusInput: resp.PerformStatusInput,
+	}
+	input.Status = statusStr
+	if _, err := g.PerformStatus(ctx, userCred, nil, input); err != nil {
+		return errors.Wrapf(err, "perform status of %s", jsonutils.Marshal(resp))
+	}
+	return nil
+}
+
+func (m *SGuestManager) PerformUploadStatus(ctx context.Context, userCred mcclient.TokenCredential, query jsonutils.JSONObject, input *api.HostUploadGuestsStatusInput) (*api.GuestUploadStatusesResponse, error) {
+	out := &api.GuestUploadStatusesResponse{
+		Guests: make(map[string]*api.GuestUploadStatusResponse),
+	}
+	for id, status := range input.Guests {
+		gst := m.FetchGuestById(id)
+		if gst == nil {
+			out.Guests[id] = &api.GuestUploadStatusResponse{
+				Error: "not found guest",
+			}
+			continue
+		}
+		if err := gst.SetStatusFromHost(ctx, userCred, *status, false, ""); err != nil {
+			out.Guests[id] = &api.GuestUploadStatusResponse{
+				Error: err.Error(),
+			}
+		} else {
+			out.Guests[id] = &api.GuestUploadStatusResponse{
+				OK: true,
+			}
+		}
+		for cId, cStatus := range status.Containers {
+			if len(out.Guests[id].Containers) == 0 {
+				out.Guests[id].Containers = make(map[string]*api.GuestUploadContainerStatusResponse)
+			}
+			ctr, err := GetContainerManager().FetchById(cId)
+			if err != nil {
+				out.Guests[id].Containers[cId] = &api.GuestUploadContainerStatusResponse{
+					Error: err.Error(),
+				}
+				continue
+			}
+			if _, err := ctr.(*SContainer).PerformStatus(ctx, userCred, query, *cStatus); err != nil {
+				out.Guests[id].Containers[cId] = &api.GuestUploadContainerStatusResponse{
+					Error: err.Error(),
+				}
+			} else {
+				out.Guests[id].Containers[cId] = &api.GuestUploadContainerStatusResponse{
+					OK: true,
+				}
+			}
+		}
+	}
+	return out, nil
+}
+
 // 同步状态
-func (self *SGuest) PerformStatus(ctx context.Context, userCred mcclient.TokenCredential, query jsonutils.JSONObject, input apis.PerformStatusInput) (jsonutils.JSONObject, error) {
+func (self *SGuest) PerformStatus(ctx context.Context, userCred mcclient.TokenCredential, query jsonutils.JSONObject, input api.ServerPerformStatusInput) (jsonutils.JSONObject, error) {
 	if input.HostId != "" && self.BackupHostId != "" && input.HostId == self.BackupHostId {
 		// perform status called from slave guest
 		return nil, self.SetBackupGuestStatus(userCred, input.Status, input.Reason)
@@ -3413,7 +3565,7 @@ func (self *SGuest) PerformStatus(ctx context.Context, userCred mcclient.TokenCr
 	}
 
 	preStatus := self.Status
-	_, err := self.SVirtualResourceBase.PerformStatus(ctx, userCred, query, input)
+	_, err := self.SVirtualResourceBase.PerformStatus(ctx, userCred, query, input.PerformStatusInput)
 	if err != nil {
 		return nil, errors.Wrap(err, "SVirtualResourceBase.PerformStatus")
 	}
@@ -3452,6 +3604,15 @@ func (self *SGuest) PerformStatus(ctx context.Context, userCred mcclient.TokenCr
 		if self.Status == api.VM_READY && !self.DisableDelete.Bool() && self.ShutdownBehavior == api.SHUTDOWN_TERMINATE {
 			err = self.StartAutoDeleteGuestTask(ctx, userCred, "")
 			return nil, err
+		}
+	}
+	for cId, cStatus := range input.Containers {
+		ctr, err := GetContainerManager().FetchById(cId)
+		if err != nil {
+			return nil, errors.Wrapf(err, "GetContainerManager(%s)", cId)
+		}
+		if _, err := ctr.(*SContainer).PerformStatus(ctx, userCred, query, *cStatus); err != nil {
+			return nil, errors.Wrapf(err, "PerformStatus(%s) of container", cId)
 		}
 	}
 	return nil, nil
@@ -6079,7 +6240,21 @@ func (self *SGuest) PerformChangeDiskStorage(ctx context.Context, userCred mccli
 		return nil, err
 	}
 
-	// create a disk on target storage from source disk
+	{
+		copyInput := api.ServerCopyDiskToStorageInput{
+			KeepOriginDisk: input.KeepOriginDisk,
+			GuestRunning:   self.Status == api.VM_RUNNING,
+		}
+		err := self.CopyDiskToStorage(ctx, userCred, srcDisk, storage, copyInput, "")
+		if err != nil {
+			return nil, errors.Wrap(err, "CopyDiskToStorage")
+		}
+	}
+
+	return nil, nil
+}
+
+func (guest *SGuest) CopyDiskToStorage(ctx context.Context, userCred mcclient.TokenCredential, srcDisk *SDisk, storage *SStorage, input api.ServerCopyDiskToStorageInput, parentTaskId string) error {
 	diskConf := &api.DiskConfig{
 		Index:    -1,
 		ImageId:  srcDisk.TemplateId,
@@ -6088,19 +6263,39 @@ func (self *SGuest) PerformChangeDiskStorage(ctx context.Context, userCred mccli
 		DiskType: srcDisk.DiskType,
 	}
 
-	targetDisk, err := self.CreateDiskOnStorage(ctx, userCred, storage, diskConf, nil, true, true)
+	targetDisk, err := guest.CreateDiskOnStorage(ctx, userCred, storage, diskConf, nil, true, true)
 	if err != nil {
-		return nil, errors.Wrapf(err, "Create target disk on storage %s", storage.GetName())
+		return errors.Wrapf(err, "Create target disk on storage %s", storage.GetName())
+	}
+
+	{
+		err := db.InheritFromTo(ctx, userCred, srcDisk, targetDisk)
+		if err != nil {
+			return errors.Wrapf(err, "Inherit class metadata from src %s to target %s", srcDisk.GetName(), targetDisk.GetName())
+		}
 	}
 
 	internalInput := &api.ServerChangeDiskStorageInternalInput{
-		ServerChangeDiskStorageInput: *input,
-		StorageId:                    srcDisk.StorageId,
-		TargetDiskId:                 targetDisk.GetId(),
-		GuestRunning:                 self.Status == api.VM_RUNNING,
+		ServerChangeDiskStorageInput: api.ServerChangeDiskStorageInput{
+			DiskId:          srcDisk.Id,
+			TargetStorageId: storage.Id,
+			KeepOriginDisk:  input.KeepOriginDisk,
+		},
+		StorageId:          srcDisk.StorageId,
+		TargetDiskId:       targetDisk.GetId(),
+		GuestRunning:       input.GuestRunning,
+		CloneDiskCount:     input.CloneDiskCount,
+		CompletedDiskCount: input.CompletedDiskCount,
 	}
 
-	return nil, self.StartChangeDiskStorageTask(ctx, userCred, internalInput, "")
+	{
+		err := guest.StartChangeDiskStorageTask(ctx, userCred, internalInput, parentTaskId)
+		if err != nil {
+			return errors.Wrap(err, "StartChangeDiskStorageTask")
+		}
+	}
+
+	return nil
 }
 
 func (self *SGuest) StartChangeDiskStorageTask(ctx context.Context, userCred mcclient.TokenCredential, input *api.ServerChangeDiskStorageInternalInput, parentTaskId string) error {
@@ -6210,6 +6405,14 @@ func (self *SGuest) PerformSetBootIndex(ctx context.Context, userCred mcclient.T
 		}
 	}
 
+	if self.Bios == api.VM_BOOT_MODE_UEFI {
+		data := jsonutils.NewDict()
+		data.Set("set_uefi_boot_order", jsonutils.JSONTrue)
+		if err := self.startSyncTask(ctx, userCred, false, "", data); err != nil {
+			return nil, err
+		}
+	}
+
 	return nil, nil
 }
 
@@ -6263,27 +6466,36 @@ func (self *SGuest) PerformCpuset(ctx context.Context, userCred mcclient.TokenCr
 		return nil, httperrors.NewInputParameterError("Host cores %v not contains input %v", allCores, data.CPUS)
 	}
 
-	pinnedMap, err := host.GetPinnedCpusetCores(ctx, userCred)
+	hostReservedCpus, err := host.GetReservedCpus()
+	if err != nil {
+		return nil, errors.Wrap(err, "host get reserved cpus")
+	}
+	for i := range data.CPUS {
+		if hostReservedCpus.Contains(data.CPUS[i]) {
+			return nil, httperrors.NewBadRequestError("request cpu %d has been reserved", data.CPUS[i])
+		}
+	}
+
+	pinnedMap, err := host.GetPinnedCpusetCores(ctx, userCred, []string{self.Id})
 	if err != nil {
 		return nil, errors.Wrap(err, "Get host pinned cpu cores")
 	}
 
-	pinnedSets := sets.NewInt()
-	for key, pinned := range pinnedMap {
-		if key == self.GetId() {
-			continue
+	if pinnedMap != nil {
+		for i := range data.CPUS {
+			if pinnedMap.Contains(data.CPUS[i]) {
+				return nil, httperrors.NewBadRequestError("request cpu %d has been set by other guests", data.CPUS[i])
+			}
 		}
-		pinnedSets.Insert(pinned...)
-	}
-
-	if pinnedSets.HasAny(data.CPUS...) {
-		return nil, httperrors.NewInputParameterError("More than one of input cores %v already set in host %v", data.CPUS, pinnedSets.List())
 	}
 
 	if err := self.SetMetadata(ctx, api.VM_METADATA_CGROUP_CPUSET, data, userCred); err != nil {
 		return nil, errors.Wrap(err, "set metadata")
 	}
 
+	if err := host.updateHostReservedCpus(ctx, userCred); err != nil {
+		return nil, errors.Wrap(err, "updateHostReservedCpus")
+	}
 	return nil, self.StartGuestCPUSetTask(ctx, userCred, data)
 }
 
@@ -6346,18 +6558,16 @@ func (self *SGuest) GetDetailsCpusetCores(ctx context.Context, userCred mcclient
 		return nil, err
 	}
 
-	usedMap, err := host.GetPinnedCpusetCores(ctx, userCred)
+	usedMap, err := host.GetPinnedCpusetCores(ctx, userCred, nil)
 	if err != nil {
 		return nil, err
 	}
-	usedSets := sets.NewInt()
-	for _, used := range usedMap {
-		usedSets.Insert(used...)
-	}
 
 	resp := &api.ServerGetCPUSetCoresResp{
-		HostCores:     allCores,
-		HostUsedCores: usedSets.List(),
+		HostCores: allCores,
+	}
+	if usedMap != nil {
+		resp.HostUsedCores = usedMap.ToSlice()
 	}
 
 	// fetch cpuset pinned
@@ -6534,4 +6744,43 @@ func (self *SGuest) PerformSyncOsInfo(ctx context.Context, userCred mcclient.Tok
 		// try qga get os info
 		return nil, self.startQgaSyncOsInfoTask(ctx, userCred, "")
 	}
+}
+
+func (g *SGuest) PerformSetRootDiskMatcher(ctx context.Context, userCred mcclient.TokenCredential, _ jsonutils.JSONObject, data *api.BaremetalRootDiskMatcher) (jsonutils.JSONObject, error) {
+	if g.GetHypervisor() != api.HYPERVISOR_BAREMETAL {
+		return nil, httperrors.NewNotAcceptableError("only %s support for setting root disk matcher", api.HYPERVISOR_BAREMETAL)
+	}
+	if err := baremetal.ValidateRootDiskMatcher(data); err != nil {
+		return nil, err
+	}
+	if err := g.SetMetadata(ctx, api.BAREMETAL_SERVER_METATA_ROOT_DISK_MATCHER, jsonutils.Marshal(data), userCred); err != nil {
+		return nil, errors.Wrapf(err, "set %s", api.BAREMETAL_SERVER_METATA_ROOT_DISK_MATCHER)
+	}
+	return nil, nil
+}
+
+func (g *SGuest) PerformChangeBillingType(ctx context.Context, userCred mcclient.TokenCredential, _ jsonutils.JSONObject, input *api.ServerChangeBillingTypeInput) (jsonutils.JSONObject, error) {
+	if !utils.IsInStringArray(g.Status, []string{api.VM_RUNNING, api.VM_READY}) {
+		return nil, httperrors.NewServerStatusError("Cannot change guest billing type in status %s", g.Status)
+	}
+	if len(input.BillingType) == 0 {
+		return nil, httperrors.NewMissingParameterError("billing_type")
+	}
+	if !utils.IsInStringArray(input.BillingType, []string{billing_api.BILLING_TYPE_POSTPAID, billing_api.BILLING_TYPE_PREPAID}) {
+		return nil, httperrors.NewInputParameterError("invalid billing_type %s", input.BillingType)
+	}
+	if g.BillingType == input.BillingType {
+		return nil, nil
+	}
+	return nil, g.StartChangeBillingTypeTask(ctx, userCred, "")
+}
+
+func (self *SGuest) StartChangeBillingTypeTask(ctx context.Context, userCred mcclient.TokenCredential, parentTaskId string) error {
+	self.SetStatus(ctx, userCred, apis.STATUS_CHANGE_BILLING_TYPE, "")
+	kwargs := jsonutils.NewDict()
+	task, err := taskman.TaskManager.NewTask(ctx, "GuestChangeBillingTypeTask", self, userCred, kwargs, parentTaskId, "", nil)
+	if err != nil {
+		return err
+	}
+	return task.ScheduleRun(nil)
 }

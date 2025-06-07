@@ -83,6 +83,7 @@ type ServerListInput struct {
 
 	OrderByIp string `json:"order_by_ip"`
 	// 根据ip查找机器
+	// swagger:ignore
 	IpAddr string `json:"ip_addr" yunion-deprecated-by:"ip_addrs"`
 	// 根据多个ip查找机器
 	IpAddrs []string `json:"ip_addrs"`
@@ -94,6 +95,7 @@ type ServerListInput struct {
 	AttachableServersForDisk string `json:"attachable_servers_for_disk"`
 	// Deprecated
 	// 列出可以挂载磁盘的主机
+	// swagger:ignore
 	Disk string `json:"disk" yunion-deprecated-by:"attachable_servers_for_disk"`
 
 	// 按主机资源类型进行排序
@@ -141,13 +143,13 @@ func (input *ServerListInput) AfterUnmarshal() {
 type ServerRebuildRootInput struct {
 	apis.Meta
 
-	// swagger: ignore
+	// swagger:ignore
 	Image string `json:"image" yunion-deprecated-by:"image_id"`
 	// 关机且停机不收费情况下不允许重装系统
 	// 镜像 id
 	// required: true
 	ImageId string `json:"image_id"`
-	// swagger: ignore
+	// swagger:ignore
 	// Keypair string `json:"keypair" yunion-deprecated-by:"keypair_id"`
 	// 秘钥Id
 	// KeypairId     string `json:"keypair_id"`
@@ -324,6 +326,8 @@ func (self ServerDetails) GetMetricTags() map[string]string {
 		"paltform":            self.Hypervisor,
 		"host":                self.Host,
 		"host_id":             self.HostId,
+		"ips":                 self.IPs,
+		"vm_ip":               self.IPs,
 		"vm_id":               self.Id,
 		"vm_name":             self.Name,
 		"zone":                self.Zone,
@@ -343,6 +347,9 @@ func (self ServerDetails) GetMetricTags() map[string]string {
 		"account":             self.Account,
 		"account_id":          self.AccountId,
 		"external_id":         self.ExternalId,
+	}
+	if len(self.HostAccessIp) > 0 {
+		ret["host_ip"] = self.HostAccessIp
 	}
 
 	return AppendMetricTags(ret, self.MetadataResourceInfo, self.ProjectizedResourceInfo)
@@ -370,9 +377,11 @@ type GuestDiskInfo struct {
 	Driver        string `json:"driver"`
 	CacheMode     string `json:"cache_mode"`
 	AioMode       string `json:"aio_mode"`
+	AutoReset     bool   `json:"auto_reset"`
 	MediumType    string `json:"medium_type"`
 	StorageType   string `json:"storage_type"`
 	Iops          int    `json:"iops"`
+	Throughput    int    `json:"throughput"`
 	Bps           int    `json:"bps"`
 	ImageId       string `json:"image_id,omitempty"`
 	Image         string `json:"image,omitemtpy"`
@@ -505,7 +514,7 @@ type GuestSyncFixNicsInput struct {
 }
 
 type GuestMigrateInput struct {
-	// swagger: ignore
+	// swagger:ignore
 	PreferHost   string `json:"prefer_host" yunion-deprecated-by:"prefer_host_id"`
 	PreferHostId string `json:"prefer_host_id"`
 	AutoStart    bool   `json:"auto_start"`
@@ -513,7 +522,7 @@ type GuestMigrateInput struct {
 }
 
 type GuestLiveMigrateInput struct {
-	// swagger: ignore
+	// swagger:ignore
 	PreferHost string `json:"prefer_host" yunion-deprecated-by:"prefer_host_id"`
 	// 指定期望的迁移目标宿主机
 	PreferHostId string `json:"prefer_host_id"`
@@ -635,6 +644,7 @@ type ServerStopInput struct {
 	TimeoutSecs int `json:"timeout_secs"`
 
 	// 是否关机停止计费, 若平台不支持停止计费，此参数无作用
+	// 若包年包月机器关机设置此参数，则先转换计费模式到按量计费，再关机不收费
 	// 目前仅阿里云，腾讯云此参数生效
 	StopCharging bool `json:"stop_charging"`
 }
@@ -652,16 +662,16 @@ type ServerSaveImageInput struct {
 	// 公有云若支持开机保存镜像，此参数则不生效
 	// default: false
 	AutoStart bool
-	// swagger: ignore
+	// swagger:ignore
 	Restart bool
 
-	// swagger: ignore
+	// swagger:ignore
 	OsType string
 
-	// swagger: ignore
+	// swagger:ignore
 	OsArch string
 
-	// swagger: ignore
+	// swagger:ignore
 	ImageId string
 }
 
@@ -716,6 +726,7 @@ func (input ServerDetachnetworkInput) IsForce() bool {
 type ServerMigrateForecastInput struct {
 	PreferHostId string `json:"prefer_host_id"`
 	// Deprecated
+	// swagger:ignore
 	PreferHost      string `json:"prefer_host" yunion-deprecated-by:"prefer_host_id"`
 	LiveMigrate     bool   `json:"live_migrate"`
 	SkipCpuCheck    bool   `json:"skip_cpu_check"`
@@ -726,7 +737,7 @@ type ServerMigrateForecastInput struct {
 }
 
 type ServerResizeDiskInput struct {
-	// swagger: ignore
+	// swagger:ignore
 	Disk string `json:"disk" yunion-deprecated-by:"disk_id"`
 	// 磁盘Id
 	DiskId string `json:"disk_id"`
@@ -753,7 +764,7 @@ type ServerDeployInput struct {
 }
 
 type ServerDeployInputBase struct {
-	// swagger: ignore
+	// swagger:ignore
 	Keypair string `json:"keypair" yunion-deprecated-by:"keypair_id"`
 	// 秘钥Id
 	KeypairId string `json:"keypair_id"`
@@ -772,15 +783,15 @@ type ServerDeployInputBase struct {
 	// 支持特殊user data平台: Aliyun, Qcloud, Azure, Apsara, Ucloud
 	// required: false
 	UserData string `json:"user_data"`
-	// swagger: ignore
+	// swagger:ignore
 	LoginAccount string `json:"login_account"`
 
-	// swagger: ignore
+	// swagger:ignore
 	Restart bool `json:"restart"`
 
-	// swagger: ignore
+	// swagger:ignore
 	DeployConfigs []*DeployConfig `json:"deploy_configs"`
-	// swagger: ignore
+	// swagger:ignore
 	DeployTelegraf bool `json:"deploy_telegraf"`
 }
 
@@ -806,9 +817,9 @@ type ServerChangeConfigInput struct {
 	// 关机且停机不收费情况下不允许调整配置
 	// 实例类型, 优先级高于vcpu_count和vmem_size
 	InstanceType string `json:"instance_type"`
-	// swagger: ignore
+	// swagger:ignore
 	Sku string `json:"sku" yunion-deprecated-by:"instance_type"`
-	// swagger: ignore
+	// swagger:ignore
 	Flavor string `json:"flavor" yunion-deprecated-by:"instance_type"`
 
 	// cpu卡槽数
@@ -818,6 +829,8 @@ type ServerChangeConfigInput struct {
 
 	// cpu大小
 	VcpuCount *int `json:"vcpu_count"`
+	// 任务分配CPU大小
+	ExtraCpuCount *int `json:"extra_cpu_count"`
 	// 内存大小, 1024M, 1G
 	VmemSize string `json:"vmem_size"`
 
@@ -852,7 +865,7 @@ type ServerUpdateInput struct {
 
 	SshPort int `json:"ssh_port"`
 
-	// swagger: ignore
+	// swagger:ignore
 	ProgressMbps float32 `json:"progress_mbps"`
 }
 
@@ -932,6 +945,7 @@ type GuestJsonDesc struct {
 		InstanceSnapshotId string `json:"instance_snapshot_id"`
 		InstanceId         string `json:"instance_id"`
 	} `json:"instance_snapshot_info"`
+	EnableEsxiSwap bool `json:"enable_esxi_swap"`
 
 	EncryptKeyId string `json:"encrypt_key_id,omitempty"`
 
@@ -952,7 +966,8 @@ type SCpuNumaPin struct {
 	SizeMB *int `json:"size_mb"`
 	NodeId int  `json:"node_id"`
 
-	VcpuPin []SVCpuPin `json:"vcpu_pin"`
+	VcpuPin       []SVCpuPin `json:"vcpu_pin"`
+	ExtraCpuCount int        `json:"extra_cpu_count"`
 }
 
 type ServerSetBootIndexInput struct {
@@ -998,6 +1013,13 @@ type ServerChangeDiskStorageInternalInput struct {
 	// clone progress
 	CompletedDiskCount int `json:"completed_disk_count"`
 	CloneDiskCount     int `json:"disk_count"`
+}
+
+type ServerCopyDiskToStorageInput struct {
+	KeepOriginDisk     bool `json:"keep_origin_disk"`
+	GuestRunning       bool `json:"guest_running"`
+	CompletedDiskCount int  `json:"completed_disk_count"`
+	CloneDiskCount     int  `json:"disk_count"`
 }
 
 type ServerSetExtraOptionInput struct {
@@ -1185,7 +1207,7 @@ type ServerQgaGetNetworkInput struct {
 }
 
 type ServerQgaTimeoutInput struct {
-	// qga execute timeout millisecond
+	// qga execute timeout second
 	Timeout int
 }
 
@@ -1269,6 +1291,8 @@ type GuestPerformStartInput struct {
 	// 指定启动虚拟机的Qemu版本，可选值：2.12.1, 4.2.0
 	// 仅适用于KVM虚拟机
 	QemuVersion string `json:"qemu_version"`
+	// 按量机器自动转换为包年包月
+	AutoPrepaid bool `json:"auto_prepaid"`
 }
 
 type ServerSetOSInfoInput struct {
@@ -1308,10 +1332,11 @@ type ServerChangeBandwidthInput struct {
 }
 
 type ServerChangeConfigSpecs struct {
-	CpuSockets   int    `json:"cpu_sockets"`
-	VcpuCount    int    `json:"vcpu_count"`
-	VmemSize     int    `json:"vmem_size"`
-	InstanceType string `json:"instance_type"`
+	CpuSockets    int    `json:"cpu_sockets"`
+	VcpuCount     int    `json:"vcpu_count"`
+	ExtraCpuCount int    `json:"extra_cpu_count"`
+	VmemSize      int    `json:"vmem_size"`
+	InstanceType  string `json:"instance_type"`
 }
 
 type DiskResizeSpec struct {
@@ -1352,8 +1377,24 @@ func (conf ServerChangeConfigSettings) AddedCpu() int {
 	return addCpu
 }
 
+func (conf ServerChangeConfigSettings) ExtraCpuChanged() bool {
+	return conf.ExtraCpuCount != conf.Old.ExtraCpuCount
+}
+
+func (conf ServerChangeConfigSettings) AddedExtraCpu() int {
+	addCpu := conf.ExtraCpuCount - conf.Old.ExtraCpuCount
+	if addCpu < 0 {
+		addCpu = 0
+	}
+	return addCpu
+}
+
 func (conf ServerChangeConfigSettings) MemChanged() bool {
 	return conf.VmemSize != conf.Old.VmemSize
+}
+
+func (conf ServerChangeConfigSettings) InstanceTypeChanged() bool {
+	return len(conf.InstanceType) > 0 && conf.InstanceType != conf.Old.InstanceType
 }
 
 func (conf ServerChangeConfigSettings) AddedMem() int {
@@ -1378,4 +1419,16 @@ func (conf ServerChangeConfigSettings) AddedDisk() int {
 type ServerReleasedIsolatedDevice struct {
 	DevType string `json:"dev_type"`
 	Model   string `json:"model"`
+}
+
+type ServerChangeBillingTypeInput struct {
+	// 仅在虚拟机开机或关机状态下调用
+	// enmu: [postpaid, prepaid]
+	// required: true
+	BillingType string `json:"billing_type"`
+}
+
+type ServerPerformStatusInput struct {
+	apis.PerformStatusInput
+	Containers map[string]*ContainerPerformStatusInput `json:"containers"`
 }

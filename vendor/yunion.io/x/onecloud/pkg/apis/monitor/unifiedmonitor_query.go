@@ -16,6 +16,7 @@ package monitor
 
 import (
 	"strconv"
+	"strings"
 	"time"
 )
 
@@ -23,7 +24,7 @@ var (
 	UNIFIED_MONITOR_FIELD_OPT_TYPE   = []string{"Aggregations", "Selectors"}
 	UNIFIED_MONITOR_GROUPBY_OPT_TYPE = []string{"time", "tag", "fill"}
 	UNIFIED_MONITOR_FIELD_OPT_VALUE  = map[string][]string{
-		"Aggregations": {"MEAN", "SUM"}, // {"COUNT", "DISTINCT", "INTEGRAL", "MEAN", "MEDIAN", "MODE", "STDDEV", "SUM"},
+		"Aggregations": {"MEAN", "SUM", "MAX", "MIN"}, // {"COUNT", "DISTINCT", "INTEGRAL", "MEAN", "MEDIAN", "MODE", "STDDEV", "SUM"},
 		"Selectors":    {"BOTTOM", "FIRST", "LAST", "MAX", "MIN", "TOP"},
 	}
 	UNIFIED_MONITOR_GROUPBY_OPT_VALUE = map[string][]string{
@@ -65,6 +66,27 @@ var (
 	}
 )
 
+func GetMeasurementTagIdKeyByResType(resType string) string {
+	return MEASUREMENT_TAG_ID[resType]
+}
+
+func GetMeasurementTagIdKeyByResTypeWithDefault(resType string) string {
+	tagId := GetMeasurementTagIdKeyByResType(resType)
+	if len(tagId) == 0 {
+		tagId = "host_id"
+	}
+	return tagId
+}
+
+func GetMeasurementResourceId(tags map[string]string, resType string) string {
+	return tags[GetMeasurementTagIdKeyByResType(resType)]
+}
+
+func GetResourceIdFromTagWithDefault(tags map[string]string, resType string) string {
+	tagId := GetMeasurementTagIdKeyByResTypeWithDefault(resType)
+	return tags[tagId]
+}
+
 type MetricFunc struct {
 	FieldOptType  []string            `json:"field_opt_type"`
 	FieldOptValue map[string][]string `json:"field_opt_value"`
@@ -88,6 +110,20 @@ type SimpleQueryInput struct {
 	Tags map[string]string `json:"tag_pairs"`
 }
 
+type CdfQueryInput struct {
+	// 查询指定数据库
+	// default: telegraf
+	Database string `json:"database"`
+	// 监控指标: https://github.com/codelinz/cloudpods/blob/monitor/pkg/cloudprovider/metrics.go
+	MetricName string `json:"metric_name"`
+	// 查询周期
+	// exaple: 4h
+	// default: 1h
+	Period string `json:"period"`
+	// 指定标签
+	Tags map[string]string `json:"tag_pairs"`
+}
+
 type SimpleQueryOutput struct {
 	Id    string    `json:"id"`
 	Time  time.Time `json:"time"`
@@ -107,11 +143,12 @@ type TimeSeriesSlice []*TimeSeries
 
 type TimeSeries struct {
 	// RawName is used to frontend displaying the curve name
-	RawName string            `json:"raw_name"`
-	Columns []string          `json:"columns"`
-	Name    string            `json:"name"`
-	Points  TimeSeriesPoints  `json:"points"`
-	Tags    map[string]string `json:"tags,omitempty"`
+	RawName   string            `json:"raw_name"`
+	Columns   []string          `json:"columns"`
+	Name      string            `json:"name"`
+	Points    TimeSeriesPoints  `json:"points"`
+	Tags      map[string]string `json:"tags,omitempty"`
+	CloudTags map[string]string `json:"cloud_tags,omitempty"`
 }
 
 type TimePoint []interface{}
@@ -195,3 +232,56 @@ type QueryResultMeta struct {
 }
 
 const ConditionTypeMetricQuery = "metricquery"
+
+type CdfQueryData struct {
+	Vmrange   string
+	Metric    float64
+	Value     int
+	ValueAsc  int
+	ValueDesc int
+	Total     int
+}
+
+func (c CdfQueryData) Copy() CdfQueryData {
+	return CdfQueryData{
+		Vmrange:   c.Vmrange,
+		Metric:    c.Metric,
+		Value:     c.Value,
+		ValueAsc:  c.ValueAsc,
+		ValueDesc: c.ValueDesc,
+		Total:     c.Total,
+	}
+}
+
+func (c CdfQueryData) Start() float64 {
+	s := strings.Split(c.Vmrange, "...")[0]
+	v, _ := strconv.ParseFloat(s, 64)
+	return v
+}
+
+func (c CdfQueryData) End() float64 {
+	info := strings.Split(c.Vmrange, "...")
+	v := 0.0
+	if len(info) == 2 {
+		v, _ = strconv.ParseFloat(info[1], 64)
+	}
+	return v
+}
+
+type CdfQueryDataSet []CdfQueryData
+
+func (c CdfQueryDataSet) Len() int {
+	return len(c)
+}
+
+func (c CdfQueryDataSet) Swap(i, j int) {
+	c[i], c[j] = c[j], c[i]
+}
+
+func (c CdfQueryDataSet) Less(i, j int) bool {
+	return c[i].Start() < c[j].Start()
+}
+
+type CdfQueryOutput struct {
+	Data CdfQueryDataSet
+}
