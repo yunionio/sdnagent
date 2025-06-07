@@ -63,6 +63,7 @@ type IBillingResource interface {
 	GetExpiredAt() time.Time
 	SetAutoRenew(bc billing.SBillingCycle) error
 	Renew(bc billing.SBillingCycle) error
+	ChangeBillingType(billType string) error
 	IsAutoRenew() bool
 }
 
@@ -318,6 +319,19 @@ type ICloudHost interface {
 	GetSchedtags() ([]string, error)
 
 	GetOvnVersion() string // just for cloudpods host
+
+	GetIsolateDevices() ([]IsolateDevice, error)
+}
+
+type IsolateDevice interface {
+	GetName() string
+	GetGlobalId() string
+	GetModel() string
+	GetAddr() string
+	GetDevType() string
+	GetNumaNode() int8
+	GetVendorDeviceId() string
+	GetSharedProjectIds() ([]string, error)
 }
 
 type ICloudVM interface {
@@ -400,6 +414,7 @@ type ICloudVM interface {
 
 	AllocatePublicIpAddress() (string, error)
 	GetPowerStates() string
+	GetIsolateDeviceIds() ([]string, error)
 }
 
 type ICloudNic interface {
@@ -827,7 +842,13 @@ type ICloudLoadbalancerBackendGroup interface {
 }
 
 type ICloudLoadbalancerBackend interface {
-	ICloudResource
+	GetId() string
+	GetName() string
+	GetGlobalId() string
+	GetCreatedAt() time.Time
+	GetDescription() string
+
+	GetStatus() string
 
 	GetWeight() int
 	GetPort() int
@@ -1235,6 +1256,12 @@ type ICloudQuota interface {
 	GetCurrentQuotaUsedCount() int
 }
 
+type SClouduserEnableOptions struct {
+	Password              string
+	EnableMfa             bool
+	PasswordResetRequired bool
+}
+
 // 公有云子账号
 type IClouduser interface {
 	GetGlobalId() string
@@ -1249,6 +1276,9 @@ type IClouduser interface {
 
 	AttachPolicy(policyName string, policyType api.TPolicyType) error
 	DetachPolicy(policyName string, policyType api.TPolicyType) error
+
+	SetEnable(opts *SClouduserEnableOptions) error
+	SetDisable() error
 
 	Delete() error
 
@@ -1314,6 +1344,7 @@ type ICloudDnsRecord interface {
 
 	GetDnsName() string
 	GetStatus() string
+	IsProxied() bool
 	GetEnabled() bool
 	GetDnsType() TDnsType
 	GetDnsValue() string
@@ -1401,6 +1432,8 @@ type ICloudFileSystem interface {
 
 	GetMountTargets() ([]ICloudMountTarget, error)
 	CreateMountTarget(opts *SMountTargetCreateOptions) (ICloudMountTarget, error)
+
+	SetQuota(input *SFileSystemSetQuotaInput) error
 
 	Delete() error
 }
@@ -1505,9 +1538,15 @@ type ICloudWafRule interface {
 	GetDesc() string
 	GetGlobalId() string
 	GetPriority() int
+	GetType() string
 	GetAction() *DefaultAction
 	GetStatementCondition() TWafStatementCondition
+	GetExpression() string
 	GetStatements() ([]SWafStatement, error)
+	GetConfig() (jsonutils.JSONObject, error)
+	GetEnabled() bool
+	Enable() error
+	Disable() error
 
 	Update(opts *SWafRule) error
 	Delete() error

@@ -32,6 +32,7 @@ const (
 	METRIC_RES_TYPE_ELB          = "elb"
 	METRIC_RES_TYPE_K8S          = "k8s"
 	METRIC_RES_TYPE_CONTAINER    = "container"
+	METRIC_RES_TYPE_SYSTEM       = "system"
 
 	//ext is prefix！
 	METRIC_RES_TYPE_JENKINS      = "ext_jenkins"
@@ -52,8 +53,9 @@ const (
 	METRIC_UNIT_MB      = "Mb"
 	METRIC_UNIT_NULL    = "NULL"
 
-	METRIC_DATABASE_TELE  = "telegraf"
-	METRIC_DATABASE_METER = "meter_db"
+	METRIC_DATABASE_TELE   = "telegraf"
+	METRIC_DATABASE_METER  = "meter_db"
+	METRIC_DATABASE_SYSTEM = "system"
 )
 
 var (
@@ -62,14 +64,15 @@ var (
 	MetricUnit = []string{METRIC_UNIT_PERCENT, METRIC_UNIT_BPS, METRIC_UNIT_MBPS, METRIC_UNIT_BYTEPS, "count/s",
 		METRIC_UNIT_COUNT, METRIC_UNIT_MS, METRIC_UNIT_BYTE, METRIC_UNIT_NULL}
 	ResTypeScoreMap = map[string]float64{
-		METRIC_RES_TYPE_GUEST:        1,
-		METRIC_RES_TYPE_AGENT:        1.1,
-		METRIC_RES_TYPE_HOST:         2,
-		METRIC_RES_TYPE_OSS:          3,
-		METRIC_RES_TYPE_RDS:          4,
-		METRIC_RES_TYPE_REDIS:        5,
-		METRIC_RES_TYPE_CLOUDACCOUNT: 6,
-		METRIC_RES_TYPE_STORAGE:      7,
+		METRIC_RES_TYPE_HOST:         -100,
+		METRIC_RES_TYPE_GUEST:        -99,
+		METRIC_RES_TYPE_AGENT:        -98,
+		METRIC_RES_TYPE_CONTAINER:    -97,
+		METRIC_RES_TYPE_SYSTEM:       -96,
+		METRIC_RES_TYPE_K8S:          -95,
+		METRIC_RES_TYPE_ELB:          -94,
+		METRIC_RES_TYPE_CLOUDACCOUNT: -93,
+		METRIC_RES_TYPE_STORAGE:      -93,
 	}
 )
 

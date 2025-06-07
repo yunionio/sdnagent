@@ -122,7 +122,7 @@ type SHost struct {
 	ManagerUri string `width:"256" charset:"ascii" nullable:"true" list:"domain" update:"domain" create:"domain_optional"`
 
 	// 系统信息
-	SysInfo jsonutils.JSONObject `length:"medium" nullable:"true" search:"domain" list:"domain" update:"domain" create:"domain_optional"`
+	SysInfo jsonutils.JSONObject `length:"long" nullable:"true" search:"domain" list:"domain" update:"domain" create:"domain_optional"`
 	// 物理机序列号信息
 	SN string `width:"128" charset:"ascii" nullable:"true" list:"domain" update:"domain" create:"domain_optional"`
 
@@ -139,7 +139,7 @@ type SHost struct {
 	// 预留CPU大小
 	CpuReserved int `nullable:"true" default:"0" list:"domain" update:"domain" create:"domain_optional"`
 	// CPU超分比
-	CpuCmtbound float32 `nullable:"true" default:"8" list:"domain" update:"domain" create:"domain_optional"`
+	CpuCmtbound float32 `nullable:"true" list:"domain" create:"domain_optional"`
 	// CPUMicrocode
 	CpuMicrocode string `width:"64" charset:"ascii" nullable:"true" get:"domain" update:"domain" create:"domain_optional"`
 	// CPU架构
@@ -150,7 +150,7 @@ type SHost struct {
 	// 预留内存大小
 	MemReserved int `nullable:"true" default:"0" list:"domain" update:"domain" create:"domain_optional"`
 	// 内存超分比
-	MemCmtbound float32 `nullable:"true" default:"1" list:"domain" update:"domain" create:"domain_optional"`
+	MemCmtbound float32 `nullable:"true" list:"domain" create:"domain_optional"`
 	// 页大小
 	PageSizeKB         int  `nullable:"false" default:"4" list:"domain" update:"domain" create:"domain_optional"`
 	EnableNumaAllocate bool `nullable:"true" default:"false" list:"domain" update:"domain" create:"domain_optional"`
@@ -214,7 +214,7 @@ type SHost struct {
 	UefiInfo jsonutils.JSONObject `nullable:"true" get:"domain" update:"domain" create:"domain_optional"`
 
 	// 公网Ip地址
-	PublicIp string `width:"16" charset:"ascii" nullable:"true" list:"domain" update:"domain"`
+	PublicIp string `width:"128" charset:"ascii" nullable:"true" list:"domain" update:"domain"`
 }
 
 func (manager *SHostManager) GetContextManagers() [][]db.IModelManager {
@@ -582,6 +582,24 @@ func (manager *SHostManager) OrderByExtraFields(
 		db.OrderByFields(q, []string{query.OrderByCpuCommitRate}, []sqlchemy.IQueryField{sq.Field("cpu_commit_rate")})
 	}
 
+	if db.NeedOrderQuery([]string{query.OrderByCpuCommit}) {
+		guestsQ := GuestManager.Query()
+		if options.Options.IgnoreNonrunningGuests {
+			guestsQ = guestsQ.Equals("status", api.VM_RUNNING)
+		}
+		guests := guestsQ.SubQuery()
+		guestQ := guests.Query(
+			guests.Field("host_id"),
+			sqlchemy.SUM("guest_vcpu_count", guests.Field("vcpu_count")),
+		)
+
+		guestSQ := guestQ.GroupBy(guestQ.Field("host_id")).SubQuery()
+
+		q = q.LeftJoin(guestSQ, sqlchemy.Equals(q.Field("id"), guestSQ.Field("host_id")))
+
+		db.OrderByFields(q, []string{query.OrderByCpuCommit}, []sqlchemy.IQueryField{q.Field("guest_vcpu_count")})
+	}
+
 	if db.NeedOrderQuery([]string{query.OrderByStorage}) {
 		hoststorages := HoststorageManager.Query().SubQuery()
 		storages := StorageManager.Query().IsTrue("enabled").In("storage_type", api.HOST_STORAGE_LOCAL_TYPES).SubQuery()
@@ -667,6 +685,51 @@ func (manager *SHostManager) OrderByExtraFields(
 		q = q.LeftJoin(sq, sqlchemy.Equals(q.Field("id"), sq.Field("host_id")))
 
 		db.OrderByFields(q, []string{query.OrderByMemCommitRate}, []sqlchemy.IQueryField{sq.Field("mem_commit_rate")})
+	}
+
+	if db.NeedOrderQuery([]string{query.OrderByMemCommit}) {
+		guestsQ := GuestManager.Query()
+		if options.Options.IgnoreNonrunningGuests {
+			guestsQ = guestsQ.Equals("status", api.VM_RUNNING)
+		}
+		guests := guestsQ.SubQuery()
+		guestQ := guests.Query(
+			guests.Field("host_id"),
+			sqlchemy.SUM("guest_vmem_size", guests.Field("vmem_size")),
+		)
+
+		guestSQ := guestQ.GroupBy(guestQ.Field("host_id")).SubQuery()
+
+		q = q.LeftJoin(guestSQ, sqlchemy.Equals(q.Field("id"), guestSQ.Field("host_id")))
+
+		db.OrderByFields(q, []string{query.OrderByMemCommit}, []sqlchemy.IQueryField{q.Field("guest_vmem_size")})
+	}
+
+	if db.NeedOrderQuery([]string{query.OrderByStorageUsed}) {
+		disks := DiskManager.Query().Equals("status", api.DISK_READY).SubQuery()
+		storages := StorageManager.Query().IsTrue("enabled").In("storage_type", api.HOST_STORAGE_LOCAL_TYPES).SubQuery()
+		hs := HoststorageManager.Query()
+		hoststorages := hs.Join(storages, sqlchemy.Equals(storages.Field("id"), hs.Field("storage_id"))).SubQuery()
+
+		disksQ := disks.Query(
+			disks.Field("storage_id"),
+			sqlchemy.SUM("total_disk_size", disks.Field("disk_size")),
+		)
+		disksQ = disksQ.LeftJoin(storages, sqlchemy.Equals(disksQ.Field("storage_id"), storages.Field("id")))
+
+		disksSQ := disksQ.GroupBy(disksQ.Field("storage_id")).SubQuery()
+
+		hoststoragesQ := hoststorages.Query(
+			hoststorages.Field("host_id"),
+			sqlchemy.SUM("storage_used", disksSQ.Field("total_disk_size")),
+		)
+		hoststoragesQ = hoststoragesQ.Join(disksSQ, sqlchemy.Equals(hoststoragesQ.Field("storage_id"), disksSQ.Field("storage_id")))
+
+		storageSQ := hoststoragesQ.GroupBy(hoststoragesQ.Field("host_id")).SubQuery()
+
+		q = q.LeftJoin(storageSQ, sqlchemy.Equals(q.Field("id"), storageSQ.Field("host_id")))
+
+		db.OrderByFields(q, []string{query.OrderByStorageUsed}, []sqlchemy.IQueryField{q.Field("storage_used")})
 	}
 
 	return q, nil
@@ -992,6 +1055,29 @@ func (hh *SHost) saveUpdates(doUpdate func() error, doSchedClean bool) (map[stri
 		hh.ClearSchedDescCache()
 	}
 	return diff, nil
+}
+
+func (hh *SHost) PerformSetCommitBound(
+	ctx context.Context,
+	userCred mcclient.TokenCredential,
+	query jsonutils.JSONObject,
+	input api.HostSetCommitBoundInput,
+) (jsonutils.JSONObject, error) {
+	_, err := db.Update(hh, func() error {
+		if input.CpuCmtbound != nil {
+			hh.CpuCmtbound = *input.CpuCmtbound
+		}
+		if input.MemCmtbound != nil {
+			hh.MemCmtbound = *input.MemCmtbound
+		}
+		return nil
+	})
+	if err != nil {
+		return nil, err
+	}
+	db.OpsLog.LogEvent(hh, db.ACT_SET_COMMIT_BOUND, input, userCred)
+	logclient.AddActionLogWithContext(ctx, hh, logclient.ACT_SET_COMMIT_BOUND, input, userCred, true)
+	return nil, nil
 }
 
 func (hh *SHost) PerformUpdateStorage(
@@ -1996,6 +2082,7 @@ func (hh *SHost) syncRemoveCloudHost(ctx context.Context, userCred mcclient.Toke
 }
 
 func (hh *SHost) SyncWithCloudHost(ctx context.Context, userCred mcclient.TokenCredential, extHost cloudprovider.ICloudHost) error {
+	provider := hh.GetCloudprovider()
 	diff, err := db.UpdateWithLock(ctx, hh, func() error {
 		// hh.Name = extHost.GetName()
 
@@ -2005,16 +2092,6 @@ func (hh *SHost) SyncWithCloudHost(ctx context.Context, userCred mcclient.TokenC
 		hh.AccessMac = extHost.GetAccessMac()
 		hh.SN = extHost.GetSN()
 		hh.SysInfo = extHost.GetSysInfo()
-		hh.CpuCount = extHost.GetCpuCount()
-		hh.NodeCount = extHost.GetNodeCount()
-		cpuDesc := extHost.GetCpuDesc()
-		if len(cpuDesc) > 128 {
-			cpuDesc = cpuDesc[:128]
-		}
-		hh.CpuDesc = cpuDesc
-		hh.CpuMhz = extHost.GetCpuMhz()
-		hh.MemSize = extHost.GetMemSizeMB()
-		hh.StorageSize = extHost.GetStorageSizeMB()
 		hh.StorageType = extHost.GetStorageType()
 		hh.HostType = extHost.GetHostType()
 		if hh.HostType == api.HOST_TYPE_BAREMETAL {
@@ -2026,20 +2103,33 @@ func (hh *SHost) SyncWithCloudHost(ctx context.Context, userCred mcclient.TokenC
 		}
 		hh.OvnVersion = extHost.GetOvnVersion()
 
-		if cpuCmt := extHost.GetCpuCmtbound(); cpuCmt > 0 {
-			hh.CpuCmtbound = cpuCmt
-		}
+		if provider != nil && !utils.IsInStringArray(provider.Provider, strings.Split(options.Options.SkipSyncHostConfigInfoProviders, ",")) {
+			hh.CpuCount = extHost.GetCpuCount()
+			hh.NodeCount = extHost.GetNodeCount()
+			cpuDesc := extHost.GetCpuDesc()
+			if len(cpuDesc) > 128 {
+				cpuDesc = cpuDesc[:128]
+			}
+			hh.CpuDesc = cpuDesc
+			hh.CpuMhz = extHost.GetCpuMhz()
+			hh.MemSize = extHost.GetMemSizeMB()
+			hh.StorageSize = extHost.GetStorageSizeMB()
 
-		if memCmt := extHost.GetMemCmtbound(); memCmt > 0 {
-			hh.MemCmtbound = memCmt
-		}
+			if cpuCmt := extHost.GetCpuCmtbound(); cpuCmt > 0 {
+				hh.CpuCmtbound = cpuCmt
+			}
 
-		if arch := extHost.GetCpuArchitecture(); len(arch) > 0 {
-			hh.CpuArchitecture = arch
-		}
+			if memCmt := extHost.GetMemCmtbound(); memCmt > 0 {
+				hh.MemCmtbound = memCmt
+			}
 
-		if reservedMem := extHost.GetReservedMemoryMb(); reservedMem > 0 {
-			hh.MemReserved = reservedMem
+			if arch := extHost.GetCpuArchitecture(); len(arch) > 0 {
+				hh.CpuArchitecture = arch
+			}
+
+			if reservedMem := extHost.GetReservedMemoryMb(); reservedMem > 0 {
+				hh.MemReserved = reservedMem
+			}
 		}
 
 		hh.IsEmulated = extHost.IsEmulated()
@@ -2056,7 +2146,6 @@ func (hh *SHost) SyncWithCloudHost(ctx context.Context, userCred mcclient.TokenC
 
 	db.OpsLog.LogSyncUpdate(hh, diff, userCred)
 
-	provider := hh.GetCloudprovider()
 	if provider != nil {
 		SyncCloudDomain(userCred, hh, provider.GetOwnerId())
 		hh.SyncShareState(ctx, userCred, provider.getAccountShareInfo())
@@ -2630,6 +2719,119 @@ func IsNeedSkipSync(ext cloudprovider.ICloudResource) (bool, string) {
 
 func (self *SGuest) Purge(ctx context.Context, userCred mcclient.TokenCredential) error {
 	return self.purge(ctx, userCred)
+}
+
+func (hh *SHost) GetIsolateDevices() ([]SIsolatedDevice, error) {
+	q := IsolatedDeviceManager.Query().Equals("host_id", hh.Id)
+	ret := []SIsolatedDevice{}
+	err := db.FetchModelObjects(IsolatedDeviceManager, q, &ret)
+	if err != nil {
+		return nil, err
+	}
+	return ret, nil
+}
+
+func (hh *SHost) SyncHostIsolateDevices(ctx context.Context, userCred mcclient.TokenCredential, iprovider cloudprovider.ICloudProvider, devs []cloudprovider.IsolateDevice, syncOwnerId mcclient.IIdentityProvider, xor bool) compare.SyncResult {
+	lockman.LockRawObject(ctx, IsolatedDeviceManager.Keyword(), hh.Id)
+	defer lockman.ReleaseRawObject(ctx, IsolatedDeviceManager.Keyword(), hh.Id)
+
+	result := compare.SyncResult{}
+
+	dbDevs, err := hh.GetIsolateDevices()
+	if err != nil {
+		result.Error(errors.Wrapf(err, "GetIsolateDevices"))
+		return result
+	}
+
+	removed := make([]SIsolatedDevice, 0)
+	commondb := make([]SIsolatedDevice, 0)
+	commonext := make([]cloudprovider.IsolateDevice, 0)
+	added := make([]cloudprovider.IsolateDevice, 0)
+	duplicated := make(map[string][]cloudprovider.IsolateDevice)
+
+	err = compare.CompareSets2(dbDevs, devs, &removed, &commondb, &commonext, &added, &duplicated)
+	if err != nil {
+		result.Error(err)
+		return result
+	}
+
+	for i := 0; i < len(removed); i += 1 {
+		err := removed[i].Delete(ctx, userCred)
+		if err != nil {
+			result.DeleteError(err)
+			continue
+		}
+		result.Delete()
+	}
+
+	if !xor {
+		for i := 0; i < len(commondb); i += 1 {
+			err := commondb[i].syncWithCloudIsolateDevice(ctx, userCred, commonext[i])
+			if err != nil {
+				result.UpdateError(err)
+				continue
+			}
+			result.Update()
+		}
+	}
+
+	for i := 0; i < len(added); i += 1 {
+		err := hh.newIsolateDevice(ctx, userCred, added[i])
+		if err != nil {
+			result.AddError(err)
+			continue
+		}
+		result.Add()
+	}
+
+	if len(duplicated) > 0 {
+		errs := make([]error, 0)
+		for k, vms := range duplicated {
+			errs = append(errs, errors.Wrapf(errors.ErrDuplicateId, "Duplicate Id %s (%d)", k, len(vms)))
+		}
+		result.AddError(errors.NewAggregate(errs))
+	}
+
+	return result
+}
+
+func (hh *SHost) newIsolateDevice(ctx context.Context, userCred mcclient.TokenCredential, dev cloudprovider.IsolateDevice) error {
+	ret := &SIsolatedDevice{}
+	ret.SetModelManager(IsolatedDeviceManager, ret)
+	ret.HostId = hh.Id
+	ret.ExternalId = dev.GetGlobalId()
+	ret.Name = dev.GetName()
+	ret.Model = dev.GetModel()
+	ret.Addr = dev.GetAddr()
+	ret.DevType = dev.GetDevType()
+	ret.NumaNode = dev.GetNumaNode()
+	ret.VendorDeviceId = dev.GetVendorDeviceId()
+	err := IsolatedDeviceManager.TableSpec().Insert(ctx, ret)
+	if err != nil {
+		return err
+	}
+	sharedProjectIds, err := dev.GetSharedProjectIds()
+	if err != nil {
+		if errors.Cause(err) == cloudprovider.ErrNotImplemented {
+			return nil
+		}
+		return err
+	}
+	if len(sharedProjectIds) == 0 {
+		return nil
+	}
+	if len(sharedProjectIds) > 0 {
+		projectIds, err := db.FetchField(ExternalProjectManager, "tenant_id", func(q *sqlchemy.SQuery) *sqlchemy.SQuery {
+			return q.Equals("manager_id", hh.ManagerId).In("external_id", sharedProjectIds)
+		})
+		if err != nil {
+			return err
+		}
+		input := apis.PerformPublicProjectInput{SharedProjectIds: projectIds}
+		input.Scope = "project"
+		db.SharablePerformPublic(ret, ctx, userCred, input)
+	}
+	return nil
 }
 
 func (hh *SHost) SyncHostVMs(ctx context.Context, userCred mcclient.TokenCredential, iprovider cloudprovider.ICloudProvider, vms []cloudprovider.ICloudVM, syncOwnerId mcclient.IIdentityProvider, xor bool) ([]SGuestSyncResult, compare.SyncResult) {
@@ -3535,6 +3737,7 @@ func (manager *SHostManager) FetchCustomizeColumns(
 	if query.Contains("show_fail_reason") {
 		showReason = true
 	}
+	var hideCpuTypoInfo = jsonutils.QueryBoolean(query, "hide_cpu_topo_info", false)
 	hostIds := make([]string, len(objs))
 	hosts := make([]*SHost, len(objs))
 	for i := range rows {
@@ -3598,22 +3801,28 @@ func (manager *SHostManager) FetchCustomizeColumns(
 	schedtags, err := fetchHostSchedtags(hostIds)
 	if err != nil {
 		log.Errorf("fetchHostSchedtags error: %v", err)
-		return rows
+		// return rows
 	}
 
 	storages, err := fetchHostStorages(hostIds)
 	if err != nil {
 		log.Errorf("host storages error: %v", err)
-		return rows
+		// return rows
 	}
 
 	nics, err := fetchHostNics(hostIds)
 	if err != nil {
 		log.Errorf("fetchHostNics error: %v", err)
-		return rows
+		// return rows
 	}
 
 	guestCnts := manager.FetchGuestCnt(hostIds)
+
+	hostFiles, err := fetchHostHostFiles(hostIds)
+	if err != nil {
+		log.Errorf("fetchHostHostFiles error: %v", err)
+	}
+
 	for i := range rows {
 		cnt, ok := guestCnts[hostIds[i]]
 		if ok {
@@ -3658,6 +3867,12 @@ func (manager *SHostManager) FetchCustomizeColumns(
 				}
 			}
 		}
+		if !isList {
+			pinnedCpus, _ := hosts[i].GetPinnedCpusetCores(ctx, userCred, nil)
+			if pinnedCpus != nil {
+				rows[i].GuestPinnedCpus = pinnedCpus.ToSlice()
+			}
+		}
 
 		if usage, ok := guestResources[hostIds[i]]; ok {
 			rows[i].CpuCommit = usage.GuestVcpuCount
@@ -3679,6 +3894,17 @@ func (manager *SHostManager) FetchCustomizeColumns(
 
 		if devs, ok := isolatedDeviceMap[hostIds[i]]; ok {
 			rows[i].IsolatedDeviceCount = len(devs)
+			for j := range devs {
+				dev := devs[j]
+				if rows[i].IsolatedDeviceTypeCount == nil {
+					rows[i].IsolatedDeviceTypeCount = make(map[string]int, 0)
+				}
+				if cnt, ok := rows[i].IsolatedDeviceTypeCount[dev.DevType]; ok {
+					rows[i].IsolatedDeviceTypeCount[dev.DevType] = cnt + 1
+				} else {
+					rows[i].IsolatedDeviceTypeCount[dev.DevType] = 1
+				}
+			}
 			rows[i].ReservedResourceForGpu = hosts[i].GetDevsReservedResource(devs)
 		}
 
@@ -3699,8 +3925,40 @@ func (manager *SHostManager) FetchCustomizeColumns(
 		rows[i].Schedtags, _ = schedtags[hostIds[i]]
 		rows[i].NicInfo, _ = nics[hostIds[i]]
 		rows[i].NicCount = len(rows[i].NicInfo)
+		rows[i].HostFiles = hostFiles[hostIds[i]]
+
+		if hideCpuTypoInfo {
+			sysInfo, ok := hosts[i].SysInfo.(*jsonutils.JSONDict)
+			if ok {
+				sysInfo.Remove("cpu_info")
+				sysInfo.Remove("topology")
+			}
+			delete(rows[i].Metadata, "cpu_info")
+			delete(rows[i].Metadata, "topology")
+		}
 	}
 	return rows
+}
+
+func (manager *SHostManager) CustomizedTotalCount(ctx context.Context, userCred mcclient.TokenCredential, query jsonutils.JSONObject, totalQ *sqlchemy.SQuery) (int, jsonutils.JSONObject, error) {
+	results := struct {
+		apis.TotalCountBase
+		StatusInfo []apis.StatusStatisticStatusInfo
+	}{}
+
+	err := totalQ.First(&results.TotalCountBase)
+	if err != nil && errors.Cause(err) != sql.ErrNoRows {
+		return -1, nil, errors.Wrapf(err, "First")
+	}
+
+	totalSQ := totalQ.ResetFields().SubQuery()
+	statQ := totalSQ.Query(totalSQ.Field("status"), sqlchemy.COUNT("total_count", totalSQ.Field("id")))
+	statQ = statQ.GroupBy(totalSQ.Field("status"))
+	err = statQ.All(&results.StatusInfo)
+	if err != nil {
+		return -1, nil, errors.Wrapf(err, "status query")
+	}
+	return results.Count, jsonutils.Marshal(results), nil
 }
 
 func fetchBaremetalServer(hostIds []string) (map[string]*SGuest, error) {
@@ -4586,7 +4844,7 @@ func (hh *SHost) PerformOnline(ctx context.Context, userCred mcclient.TokenCrede
 		db.OpsLog.LogEvent(hh, db.ACT_ONLINE, "", userCred)
 		logclient.AddActionLogWithContext(ctx, hh, logclient.ACT_ONLINE, data, userCred, true)
 		hh.SyncAttachedStorageStatus(ctx)
-		hh.StartSyncAllGuestsStatusTask(ctx, userCred)
+		hh.StartUploadAllGuestsStatusTask(ctx, userCred)
 	}
 	return nil, nil
 }
@@ -4631,11 +4889,12 @@ func (hh *SHost) PerformAutoMigrateOnHostDown(
 		return nil, err
 	}
 
+	logclient.AddActionLogWithContext(ctx, hh, logclient.ACT_AUTO_MIGRATE_ON_HOST_DOWN, nil, userCred, true)
 	return nil, hh.SetAllMetadata(ctx, meta, userCred)
 }
 
-func (hh *SHost) StartSyncAllGuestsStatusTask(ctx context.Context, userCred mcclient.TokenCredential) error {
-	if task, err := taskman.TaskManager.NewTask(ctx, "BaremetalSyncAllGuestsStatusTask", hh, userCred, nil, "", "", nil); err != nil {
+func (hh *SHost) StartUploadAllGuestsStatusTask(ctx context.Context, userCred mcclient.TokenCredential) error {
+	if task, err := taskman.TaskManager.NewTask(ctx, "BaremetalUploadAllGuestsStatusTask", hh, userCred, nil, "", "", nil); err != nil {
 		log.Errorln(err)
 		return err
 	} else {
@@ -4644,13 +4903,34 @@ func (hh *SHost) StartSyncAllGuestsStatusTask(ctx context.Context, userCred mccl
 	}
 }
 
+func (hh *SHost) GetStoragesByMasterHost() ([]string, error) {
+	sq := StorageManager.Query()
+	sq = sq.In("storage_type", api.SHARED_STORAGE)
+	sq = sq.Filter(sqlchemy.OR(sqlchemy.Equals(sq.Field("master_host"), hh.Id), sqlchemy.IsNullOrEmpty(sq.Field("master_host"))))
+	subq := sq.SubQuery()
+	hsq := HoststorageManager.Query().Equals("host_id", hh.Id)
+	hsq = hsq.Join(subq, sqlchemy.Equals(subq.Field("id"), hsq.Field("storage_id")))
+
+	hostStorages := make([]SHoststorage, 0)
+	if err := hsq.All(&hostStorages); err != nil && err != sql.ErrNoRows {
+		return nil, errors.Wrap(err, "get hostStorages")
+	} else if err == sql.ErrNoRows {
+		return nil, nil
+	}
+	storages := make([]string, len(hostStorages))
+	for i := range storages {
+		storages[i] = hostStorages[i].StorageId
+	}
+	return storages, nil
+}
+
 func (hh *SHost) PerformPing(ctx context.Context, userCred mcclient.TokenCredential, query jsonutils.JSONObject, input api.SHostPingInput) (jsonutils.JSONObject, error) {
 	if hh.HostType == api.HOST_TYPE_BAREMETAL {
 		return nil, httperrors.NewNotSupportedError("ping host type %s not support", hh.HostType)
 	}
 	if input.WithData {
 		// piggyback storage stats info
-		log.Debugf("host ping %s", jsonutils.Marshal(input))
+		log.Debugf("host ping %#v", input)
 		for _, si := range input.StorageStats {
 			storageObj, err := StorageManager.FetchById(si.StorageId)
 			if err != nil {
@@ -4669,6 +4949,7 @@ func (hh *SHost) PerformPing(ctx context.Context, userCred mcclient.TokenCredent
 		}
 		hh.SetMetadata(ctx, "root_partition_used_capacity_mb", input.RootPartitionUsedCapacityMb, userCred)
 		hh.SetMetadata(ctx, "memory_used_mb", input.MemoryUsedMb, userCred)
+		hh.SetMetadata(ctx, "cpu_usage_percent", input.CpuUsagePercent, userCred)
 
 		guests, _ := hh.GetGuests()
 		for _, guest := range guests {
@@ -4691,17 +4972,27 @@ func (hh *SHost) PerformPing(ctx context.Context, userCred mcclient.TokenCredent
 			return nil
 		})
 		if hh.hasUnknownGuests() {
-			hh.StartSyncAllGuestsStatusTask(ctx, userCred)
+			hh.StartUploadAllGuestsStatusTask(ctx, userCred)
 		}
 	}
 	result := jsonutils.NewDict()
 	result.Set("name", jsonutils.NewString(hh.GetName()))
-	dependSvcs := []string{"ntpd", "kafka", apis.SERVICE_TYPE_INFLUXDB, apis.SERVICE_TYPE_VICTORIA_METRICS, "elasticsearch"}
+	dependSvcs := []string{"ntpd", "kafka", apis.SERVICE_TYPE_INFLUXDB, apis.SERVICE_TYPE_VICTORIA_METRICS, "elasticsearch", "opentsdb"}
 	catalog := auth.GetCatalogData(dependSvcs, options.Options.Region)
 	if catalog == nil {
-		return nil, fmt.Errorf("Get catalog error")
+		return nil, errors.Wrap(errors.ErrServer, "Get catalog error")
 	}
 	result.Set("catalog", catalog)
+	if storages, err := hh.GetStoragesByMasterHost(); err != nil {
+		return nil, errors.Wrap(err, "get storages by master host")
+	} else {
+		result.Set("master_host_storages", jsonutils.NewStringArray(storages))
+	}
+	hostFiles, err := hh.getHostFiles()
+	if err != nil {
+		return nil, errors.Wrap(err, "get host files")
+	}
+	result.Set("host_files", jsonutils.Marshal(hostFiles))
 
 	appParams := appsrv.AppContextGetParams(ctx)
 	if appParams != nil {
@@ -4711,6 +5002,50 @@ func (hh *SHost) PerformPing(ctx context.Context, userCred mcclient.TokenCredent
 	}
 
 	return result, nil
+}
+
+func (host *SHost) getHostNodeReservePercent(reservedCpusStr string) (map[string]float32, error) {
+	reservedCpuset, err := cpuset.Parse(reservedCpusStr)
+	if err != nil {
+		return nil, errors.Wrap(err, "cpuset parse reserved cpus")
+	}
+
+	topoObj, err := host.SysInfo.Get("topology")
+	if err != nil {
+		return nil, errors.Wrap(err, "get topology from host sys_info")
+	}
+	info := new(hostapi.HostTopology)
+	if err := topoObj.Unmarshal(info); err != nil {
+		return nil, errors.Wrap(err, "Unmarshal host topology struct")
+	}
+	nodecpus := map[int]int{}
+	nodeReservedCpus := map[int]int{}
+	for i := range info.Nodes {
+		cSet := cpuset.NewBuilder()
+		for j := 0; j < len(info.Nodes[i].Cores); j++ {
+			for k := 0; k < len(info.Nodes[i].Cores[j].LogicalProcessors); k++ {
+				if reservedCpuset.Contains(info.Nodes[i].Cores[j].LogicalProcessors[k]) {
+					if cnt, ok := nodeReservedCpus[info.Nodes[i].ID]; !ok {
+						nodeReservedCpus[info.Nodes[i].ID] = 1
+					} else {
+						nodeReservedCpus[info.Nodes[i].ID] = 1 + cnt
+					}
+				}
+
+				cSet.Add(info.Nodes[i].Cores[j].LogicalProcessors[k])
+			}
+		}
+		nodecpus[info.Nodes[i].ID] = cSet.Result().Size()
+	}
+	reserveRate := map[string]float32{}
+	for nodeId, cnt := range nodecpus {
+		reserveCnt, ok := nodeReservedCpus[nodeId]
+		if !ok {
+			reserveCnt = 0
+		}
+		reserveRate[strconv.Itoa(nodeId)] = float32(reserveCnt) / float32(cnt)
+	}
+	return reserveRate, nil
 }
 
 func (host *SHost) getHostLogicalCores() ([]int, error) {
@@ -4768,14 +5103,6 @@ func (hh *SHost) PerformReserveCpus(
 		return nil, httperrors.NewNotSupportedError("host type %s not support reserve cpus", hh.HostType)
 	}
 
-	cnt, err := hh.GetRunningGuestCount()
-	if err != nil {
-		return nil, err
-	}
-	if cnt > 0 {
-		return nil, httperrors.NewBadRequestError("host %s has %d guests, can't update reserve cpus", hh.Id, cnt)
-	}
-
 	if input.Cpus == "" {
 		return nil, httperrors.NewInputParameterError("missing cpus")
 	}
@@ -4798,6 +5125,17 @@ func (hh *SHost) PerformReserveCpus(
 		return nil, httperrors.NewInputParameterError("Can't reserve host all cpus")
 	}
 
+	pinnedCores, err := hh.GetPinnedCpusetCores(ctx, userCred, nil)
+	if err != nil {
+		return nil, err
+	}
+
+	if pinnedCores != nil {
+		if cs.Union(*pinnedCores).Size() != (cs.Size() + pinnedCores.Size()) {
+			return nil, httperrors.NewBadRequestError("request cpus confilct with guest pinned cpus")
+		}
+	}
+
 	if input.Mems != "" {
 		mems, err := cpuset.Parse(input.Mems)
 		if err != nil {
@@ -4810,15 +5148,28 @@ func (hh *SHost) PerformReserveCpus(
 		}
 	}
 
+	if len(input.Cpus) > 0 {
+		reservePercent, err := hh.getHostNodeReservePercent(input.Cpus)
+		if err != nil {
+			return nil, errors.Errorf("failed getHostNodeReservePercent: %s", err)
+		}
+		err = hh.SetMetadata(ctx, api.HOSTMETA_RESERVED_CPUS_RATE, reservePercent, userCred)
+		if err != nil {
+			return nil, err
+		}
+	} else {
+		err = hh.RemoveMetadata(ctx, api.HOSTMETA_RESERVED_CPUS_RATE, userCred)
+		if err != nil {
+			return nil, err
+		}
+	}
+
 	err = hh.SetMetadata(ctx, api.HOSTMETA_RESERVED_CPUS_INFO, input, userCred)
 	if err != nil {
 		return nil, err
 	}
-	if hh.CpuReserved < cs.Size() {
-		_, err = db.Update(hh, func() error {
-			hh.CpuReserved = cs.Size()
-			return nil
-		})
+	if err = hh.updateHostReservedCpus(ctx, userCred); err != nil {
+		return nil, errors.Wrap(err, "update host reserved cpus")
 	}
 	return nil, err
 }
@@ -5788,7 +6139,9 @@ func (hh *SHost) PerformUndoConvert(ctx context.Context, userCred mcclient.Token
 		}
 		db.OpsLog.LogEvent(&guest, db.ACT_DELETE, "Unconvert baremetal", userCred)
 	}
+
 	db.OpsLog.LogEvent(hh, db.ACT_UNCONVERT_START, "", userCred)
+	logclient.AddActionLogWithContext(ctx, hh, logclient.ACT_UNCONVERT_START, nil, userCred, true)
 	task, err := taskman.TaskManager.NewTask(ctx, "BaremetalUnconvertHypervisorTask", hh, userCred, nil, "", "", nil)
 	if err != nil {
 		return nil, err
@@ -6277,6 +6630,7 @@ func (host *SHost) PerformHostExitMaintenance(ctx context.Context, userCred mccl
 	if err != nil {
 		return nil, err
 	}
+	logclient.AddSimpleActionLog(host, logclient.ACT_HOST_UNMAINTENANCE, "host unmaintenance", userCred, true)
 	return nil, nil
 }
 
@@ -6866,6 +7220,7 @@ func (host *SHost) PerformSetReservedResourceForIsolatedDevice(
 			return nil, errors.Wrap(err, "update isolated device")
 		}
 	}
+	logclient.AddSimpleActionLog(host, logclient.ACT_SET_RESERVE_RESOURCE_FOR_ISOLATED_DEVICES, nil, userCred, true)
 	return nil, nil
 }
 
@@ -7036,20 +7391,80 @@ func (hh *SHost) PerformSyncIsolatedDevices(ctx context.Context, userCred mcclie
 	return res, nil
 }
 
-func (hh *SHost) GetPinnedCpusetCores(ctx context.Context, userCred mcclient.TokenCredential) (map[string][]int, error) {
+func (hh *SHost) GetPinnedCpusetCores(ctx context.Context, userCred mcclient.TokenCredential, excludeGuestIds []string) (*cpuset.CPUSet, error) {
 	gsts, err := hh.GetGuests()
 	if err != nil {
 		return nil, errors.Wrap(err, "Get all guests")
 	}
-	ret := make(map[string][]int, 0)
+	ret := cpuset.NewBuilder()
 	for _, gst := range gsts {
+		if utils.IsInStringArray(gst.Id, excludeGuestIds) {
+			continue
+		}
 		pinned, err := gst.getPinnedCpusetCores(ctx, userCred)
 		if err != nil {
 			return nil, errors.Wrapf(err, "get guest %s pinned cpuset cores", gst.GetName())
 		}
-		ret[gst.GetId()] = pinned
+		ret.Add(pinned...)
 	}
-	return ret, nil
+	resCpuset := ret.Result()
+	if resCpuset.Size() == 0 {
+		return nil, nil
+	}
+	return &resCpuset, nil
+}
+
+func (hh *SHost) GetReservedCpus() (*cpuset.CPUSet, error) {
+	reservedCpusStr := hh.GetMetadata(context.Background(), api.HOSTMETA_RESERVED_CPUS_INFO, nil)
+	if reservedCpusStr != "" {
+		reservedCpusJson, err := jsonutils.ParseString(reservedCpusStr)
+		if err != nil {
+			return nil, errors.Wrap(err, "parse reserved cpus info failed")
+		}
+		reservedCpusInfo := api.HostReserveCpusInput{}
+		err = reservedCpusJson.Unmarshal(&reservedCpusInfo)
+		if err != nil {
+			return nil, errors.Wrap(err, "unmarshal host reserved cpus info failed")
+		}
+		if reservedCpusInfo.Cpus == "" {
+			return nil, nil
+		}
+		cs, err := cpuset.Parse(reservedCpusInfo.Cpus)
+		if err != nil {
+			return nil, errors.Wrap(err, "parse reserved cpuset")
+		}
+		return &cs, nil
+	}
+	return nil, nil
+}
+
+func (hh *SHost) updateHostReservedCpus(ctx context.Context, userCred mcclient.TokenCredential) error {
+	reservedCpus, err := hh.GetReservedCpus()
+	if err != nil {
+		return err
+	}
+	pinnedCpus, err := hh.GetPinnedCpusetCores(ctx, userCred, nil)
+	if err != nil {
+		return err
+	}
+	var reservedCpuCnt = 0
+	if reservedCpus != nil {
+		reservedCpuCnt += reservedCpus.Size()
+	}
+	if pinnedCpus != nil {
+		reservedCpuCnt += pinnedCpus.Size()
+	}
+	if hh.CpuReserved != reservedCpuCnt {
+		_, err = db.Update(hh, func() error {
+			hh.CpuReserved = reservedCpuCnt
+			return nil
+		})
+		if err != nil {
+			return err
+		}
+	}
+	hh.ClearSchedDescCache()
+	return nil
 }
 
 func (h *SHost) PerformSyncGuestNicTraffics(ctx context.Context, userCred mcclient.TokenCredential, query jsonutils.JSONObject, data jsonutils.JSONObject) (jsonutils.JSONObject, error) {
@@ -7087,6 +7502,10 @@ func (h *SHost) PerformSyncGuestNicTraffics(ctx context.Context, userCred mcclie
 
 func (h *SHost) GetDetailsAppOptions(ctx context.Context, userCred mcclient.TokenCredential, query jsonutils.JSONObject) (jsonutils.JSONObject, error) {
 	return h.Request(ctx, userCred, httputils.GET, "/app-options", nil, nil)
+}
+
+func (h *SHost) GetDetailsWorkerStats(ctx context.Context, userCred mcclient.TokenCredential, query jsonutils.JSONObject) (jsonutils.JSONObject, error) {
+	return h.Request(ctx, userCred, httputils.GET, "/worker_stats", nil, nil)
 }
 
 func (hh *SHost) IsAttach2Wire(wireId string) bool {

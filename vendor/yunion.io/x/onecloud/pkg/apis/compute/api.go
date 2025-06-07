@@ -23,7 +23,7 @@ import (
 type SchedtagConfig struct {
 	apis.Meta
 
-	// swagger: ignore
+	// swagger:ignore
 	Id string `json:"id"`
 	// 调度策略
 	// required: 必须使用
@@ -32,7 +32,7 @@ type SchedtagConfig struct {
 	// exclude: 禁止使用
 	// enmu: required, prefer, avoid, exclude
 	Strategy string `json:"strategy"`
-	// swagger: ignore
+	// swagger:ignore
 	Weight int `json:"weight"`
 	// 资源类型
 	// hosts: 宿主机
@@ -174,6 +174,13 @@ type DiskConfig struct {
 	// enum: ["swap", "ext2", "ext3", "ext4", "xfs", "ntfs", "fat", "hfsplus"]
 	// requried: false
 	Fs string `json:"fs"`
+
+	// 文件系统特性
+	FsFeatures *DiskFsFeatures `json:"fs_features"`
+
+	// 关机后自动重置磁盘
+	// required: false
+	AutoReset bool `json:"auto_reset"`
 
 	// 磁盘存储格式
 	// enum: ["qcow2", "raw", "docker", "iso", "vmdk", "vmdkflatver1", "vmdkflatver2", "vmdkflat", "vmdksparse", "vmdksparsever1", "vmdksparsever2", "vmdksepsparse", "vhd"]
@@ -368,7 +375,7 @@ type ServerConfigs struct {
 	// default: kvm
 	Hypervisor string `json:"hypervisor"`
 
-	// swagger: ignore
+	// swagger:ignore
 	Provider string `json:"provider"`
 
 	// 包年包月资源池
@@ -471,13 +478,17 @@ type ServerCreateInput struct {
 	// default: 1
 	CpuSockets int `json:"cpu_sockets"`
 
+	// 额外分配 cpu 数量
+	// required: false
+	ExtraCpuCount int `json:"extra_cpu_count"`
+
 	// 用户自定义启动脚本
 	// 支持 #cloud-config yaml 格式及shell脚本
 	// 支持特殊user data平台: Aliyun, Qcloud, Azure, Apsara, Ucloud
 	// required: false
 	UserData string `json:"user_data"`
 
-	// swagger: ignore
+	// swagger:ignore
 	// 创建测试数据，不实际创建资源
 	FakeCreate bool `json:"fake_create"`
 
