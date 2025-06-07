@@ -16,7 +16,6 @@ package compute
 
 import (
 	"yunion.io/x/cloudmux/pkg/cloudprovider"
-	"yunion.io/x/jsonutils"
 
 	"yunion.io/x/onecloud/pkg/apis"
 )
@@ -33,7 +32,7 @@ const (
 )
 
 type WafRuleListInput struct {
-	apis.EnabledStatusStandaloneResourceListInput
+	apis.StatusStandaloneResourceListInput
 	apis.ExternalizedResourceBaseListInput
 
 	// WAF实例Id
@@ -44,16 +43,10 @@ type WafRuleListInput struct {
 }
 
 type WafRuleCreateInput struct {
-	apis.EnabledStatusStandaloneResourceCreateInput
+	apis.StatusStandaloneResourceCreateInput
 
 	// WAF实例Id
 	WafInstanceId string `json:"waf_instance_id"`
-	// 规则类型
-	Type string `json:"type"`
-	// 规则表达式
-	Expression string `json:"expression"`
-	// 规则配置
-	Config jsonutils.JSONObject `json:"config"`
 
 	// 优先级,不可重复
 	// Azure优先级范围1-100
@@ -72,31 +65,14 @@ type WafRuleCreateInput struct {
 }
 
 type WafRuleDetails struct {
-	apis.EnabledStatusStandaloneResourceDetails
+	apis.StatusStandaloneResourceDetails
 	SWafRule
 
 	Statements []cloudprovider.SWafStatement
 }
 
 type WafRuleUpdateInput struct {
-	apis.EnabledStatusStandaloneResourceBaseUpdateInput
-	// 规则表达式
-	Expression string `json:"expression"`
-	// 规则配置
-	Config jsonutils.JSONObject `json:"config"`
-	// 匹配后默认行为
-	Action *cloudprovider.DefaultAction `json:"action"`
-	// 优先级
-	Priority *int `json:"priority"`
-
+	apis.StatusStandaloneResourceBaseUpdateInput
 	// 条件表达式
 	Statements []cloudprovider.SWafStatement
-}
-
-type WafRuleEnableInput struct {
-	apis.PerformEnableInput
-}
-
-type WafRuleDisableInput struct {
-	apis.PerformDisableInput
 }
