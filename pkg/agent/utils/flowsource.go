@@ -289,7 +289,7 @@ func (g *Guest) FlowsMapForNic(nic *GuestNIC) ([]*ovs.Flow, error) {
 	portNoPhy := ps.PortID
 	m := nic.Map()
 	m["DHCPServerPort"] = g.HostConfig.DhcpServerPort
-	m["DHCPServerPort6"] = g.HostConfig.DhcpServerPort
+	m["DHCPServerPort6"] = g.HostConfig.Dhcp6ServerPort
 	m["PortNoPhy"] = portNoPhy
 	{
 		var mdPortAction string
@@ -355,8 +355,10 @@ func (g *Guest) FlowsMapForNic(nic *GuestNIC) ([]*ovs.Flow, error) {
 		F(0, 28400, T("in_port={{.PortNo}},ipv6,udp6,tp_src=546,tp_dst=547"), T("mod_tp_dst:{{.DHCPServerPort6}},local")),
 		// dhcpv6 from host to VM
 		F(0, 28300, T("in_port=LOCAL,dl_dst={{.MAC}},ipv6,udp6,tp_src={{.DHCPServerPort6}},tp_dst=546"), T("mod_tp_src:547,output:{{.PortNo}}")),
-		// ra from VM to host
+		// ra solicitation from VM to host
+		F(0, 28400, T("in_port={{.PortNo}},ipv6,icmp6,icmp_type=133"), T("local")),
 		// ra advertisement from host to VM
+		F(0, 28300, T("in_port=LOCAL,dl_dst={{.MAC}},ipv6,icmp6,icmp_type=134"), T("output:{{.PortNo}}")),
 		// allow any other traffic from host to vm
 		F(0, 26700, T("in_port={{.PortNoPhy}},dl_dst={{.MAC}},{{._dl_vlan}}"), "normal"),
 	)
