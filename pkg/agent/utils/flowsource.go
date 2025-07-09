@@ -134,6 +134,9 @@ func (h *HostLocal) FlowsMap() (map[string][]*ovs.Flow, error) {
 		// allow ipv6 nb solicit and advertise from local
 		F(0, 30003, T("in_port=LOCAL,ipv6,icmp6,icmp_type=135"), "normal"),
 		F(0, 30004, T("in_port=LOCAL,ipv6,icmp6,icmp_type=136"), "normal"),
+		// hijack ipv6 router solicitation and advertisement from outside to local
+		F(0, 30005, T("in_port={{.PortNoPhy}},ipv6,icmp6,icmp_type=133"), T("mod_dl_dst:{{.MAC}},local")),
+		F(0, 30006, T("in_port={{.PortNoPhy}},ipv6,icmp6,icmp_type=134"), T("mod_dl_dst:{{.MAC}},local")),
 	)
 	{
 		// direct all metadata response to table 12
@@ -292,6 +295,15 @@ func (g *Guest) FlowsMapForNic(nic *GuestNIC) ([]*ovs.Flow, error) {
 	m["DHCPServerPort6"] = g.HostConfig.Dhcp6ServerPort
 	m["PortNoPhy"] = portNoPhy
 	{
+		ip, mac, err := hcn.IPMAC()
+		if err != nil {
+			log.Warningf("host network find ip mac: %v", err)
+			return nil, errors.Wrap(err, "host network find ip mac")
+		}
+		m["IPPhy"] = ip.String()
+		m["MACPhy"] = mac.String()
+	}
+	{
 		var mdPortAction string
 		var mdInPort string
 		mdIP, mdMAC, mdPortNo, useLOCAL, err := g.getMetadataInfo(nic)
@@ -300,15 +312,8 @@ func (g *Guest) FlowsMapForNic(nic *GuestNIC) ([]*ovs.Flow, error) {
 			if err != nil {
 				log.Warningf("find metadata: %v", err)
 			}
-			{
-				ip, mac, err := hcn.IPMAC()
-				if err != nil {
-					log.Warningf("host network find ip mac: %v", err)
-					return nil, errors.Wrap(err, "host network find ip mac")
-				}
-				mdIP = ip.String()
-				mdMAC = mac.String()
-			}
+			mdIP = m["IPPhy"].(string)
+			mdMAC = m["MACPhy"].(string)
 			// mdPortNo = portNoPhy
 			mdInPort = "LOCAL"
 			mdPortAction = "LOCAL"
@@ -352,13 +357,13 @@ func (g *Guest) FlowsMapForNic(nic *GuestNIC) ([]*ovs.Flow, error) {
 		// dhcpv4 from host to VM
 		F(0, 28300, T("in_port=LOCAL,dl_dst={{.MAC}},ip,udp,tp_src={{.DHCPServerPort}},tp_dst=68"), T("mod_tp_src:67,output:{{.PortNo}}")),
 		// dhcpv6 from VM to host
-		F(0, 28400, T("in_port={{.PortNo}},ipv6,udp6,tp_src=546,tp_dst=547"), T("mod_tp_dst:{{.DHCPServerPort6}},local")),
+		F(0, 28400, T("in_port={{.PortNo}},ipv6,udp6,tp_src=546,tp_dst=547"), T("mod_dl_dst:{{.MACPhy}},mod_tp_dst:{{.DHCPServerPort6}},local")),
 		// dhcpv6 from host to VM
 		F(0, 28300, T("in_port=LOCAL,dl_dst={{.MAC}},ipv6,udp6,tp_src={{.DHCPServerPort6}},tp_dst=546"), T("mod_tp_src:547,output:{{.PortNo}}")),
 		// ra solicitation from VM to host
-		F(0, 28400, T("in_port={{.PortNo}},ipv6,icmp6,icmp_type=133"), T("local")),
+		F(0, 28400, T("in_port={{.PortNo}},ipv6,icmp6,icmp_type=133"), T("mod_dl_dst:{{.MACPhy}},local")),
 		// ra advertisement from host to VM
-		F(0, 28300, T("in_port=LOCAL,dl_dst={{.MAC}},ipv6,icmp6,icmp_type=134"), T("output:{{.PortNo}}")),
+		F(0, 28300, T("in_port=LOCAL,dl_dst={{.MAC}},ipv6,icmp6,icmp_type=134"), T("mod_dl_dst:33:33:00:00:00:01,output:{{.PortNo}}")),
 		// allow any other traffic from host to vm
 		F(0, 26700, T("in_port={{.PortNoPhy}},dl_dst={{.MAC}},{{._dl_vlan}}"), "normal"),
 	)
