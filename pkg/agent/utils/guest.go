@@ -17,7 +17,7 @@ package utils
 import (
 	"encoding/json"
 	"fmt"
-	"io/ioutil"
+	"net"
 	"os"
 	"path"
 	"strings"
@@ -25,9 +25,11 @@ import (
 	"yunion.io/x/jsonutils"
 	"yunion.io/x/pkg/errors"
 	"yunion.io/x/pkg/util/netutils"
+	"yunion.io/x/pkg/util/regutils"
 
 	computeapi "yunion.io/x/onecloud/pkg/apis/compute"
 	"yunion.io/x/onecloud/pkg/hostman/guestman/desc"
+	"yunion.io/x/onecloud/pkg/util/netutils2"
 )
 
 type guestDesc struct {
@@ -90,6 +92,10 @@ type GuestNIC struct {
 	PortMappings computeapi.GuestPortMappings `json:"port_mappings"`
 }
 
+func (nic *GuestNIC) EnableIPv4() bool {
+	return len(nic.IP) > 0
+}
+
 func (nic *GuestNIC) EnableIPv6() bool {
 	return len(nic.IP6) > 0
 }
@@ -117,17 +123,24 @@ func (n *GuestNIC) TcData() *TcData {
 
 func (n *GuestNIC) Map() map[string]interface{} {
 	m := map[string]interface{}{
-		"IP":      n.IP,
+		// "IP":      n.IP,
 		"SubIPs":  n.SubIPs(),
 		"MAC":     n.MAC,
 		"VLAN":    n.VLAN & 0xfff,
 		"CT_ZONE": n.CtZoneId,
 		"PortNo":  n.PortNo,
 	}
+	if len(n.IP) > 0 {
+		m["IP"] = n.IP
+	}
 	if len(n.IP6) > 0 {
 		m["IP6"] = n.IP6
 		linkLocal, _ := netutils.Mac2LinkLocal(n.MAC)
 		m["IP6LOCAL"] = linkLocal.String() // "fe80::/64"
+
+		ip6 := net.ParseIP(n.IP6)
+		m["IP6McastIP"] = netutils2.IP2SolicitMcastIP(ip6).String()
+		m["IP6McastMac"] = netutils2.IP2SolicitMcastMac(ip6).String()
 	}
 	vlanTci := n.VLAN & 0xfff
 	if n.VLAN > 1 {
@@ -151,9 +164,7 @@ func (n *GuestNIC) SubIPs() []string {
 			ipAddrs = append(ipAddrs, na.IpAddr)
 		}
 	}
-	for _, ip := range n.VirtualIps {
-		ipAddrs = append(ipAddrs, ip)
-	}
+	ipAddrs = append(ipAddrs, n.VirtualIps...)
 	return ipAddrs
 }
 
@@ -186,7 +197,7 @@ func (g *Guest) IsVM() bool {
 
 func (g *Guest) Running() bool {
 	pidPath := path.Join(g.Path, "pid")
-	pidData, err := ioutil.ReadFile(pidPath)
+	pidData, err := os.ReadFile(pidPath)
 	if err != nil {
 		if os.IsNotExist(err) {
 			return false
@@ -220,7 +231,7 @@ func (g *Guest) IsVolatileHost() bool {
 
 func (g *Guest) GetJSONObjectDesc() (*desc.SGuestDesc, error) {
 	descPath := path.Join(g.Path, "desc")
-	data, err := ioutil.ReadFile(descPath)
+	data, err := os.ReadFile(descPath)
 	if err != nil {
 		return nil, errors.Wrap(err, "ReadFile")
 	}
@@ -330,9 +341,18 @@ func (g *Guest) FindNicByHostLocalIP(hostLocal *HostLocal, ip string) *GuestNIC 
 	var searchNic = func(nics []*GuestNIC) *GuestNIC {
 		for _, nic := range nics {
 			if nic.Bridge == hostLocal.Bridge {
-				_, fakeIp, _ := hostLocal.fakeMdSrcIpMac(nic.PortNo)
-				if fakeIp == ip {
-					return nic
+				if regutils.MatchIP4Addr(ip) {
+					_, fakeIp, _ := hostLocal.fakeMdSrcIpMac(nic.PortNo)
+					if fakeIp == ip {
+						return nic
+					}
+				} else {
+					for _, metaSrvIp6 := range g.HostConfig.MetadataServerIp6s {
+						_, fakeIp, _ := hostLocal.fakeMdSrcIp6Mac(nic.PortNo, metaSrvIp6)
+						if fakeIp == ip {
+							return nic
+						}
+					}
 				}
 			}
 		}

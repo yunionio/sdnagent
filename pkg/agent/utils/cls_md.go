@@ -27,17 +27,16 @@ import (
 	"yunion.io/x/onecloud/pkg/util/netutils2"
 )
 
-const (
-	fakeMdSrcIpPrefix   = "100.%d.%d.0/20"
-	fakeMdSrcIpPattern  = "100.%d.%d.%d"
-	fakeMdSrcMacPattern = "ee:ee:ee:%02x:%02x:00"
-)
-
 func (h *HostLocal) fakeMdSrcIpMac(port int) (string, string, string) {
 	return fakeMdSrcIpMac(h.IP.String(), h.MAC.String(), port)
 }
 
 func fakeMdSrcIpMac(ip, mac string, port int) (string, string, string) {
+	const (
+		fakeMdSrcIpPrefix   = "100.%d.%d.0/20"
+		fakeMdSrcIpPattern  = "100.%d.%d.%d"
+		fakeMdSrcMacPattern = "ee:ee:ee:%02x:%02x:00"
+	)
 	hash := sha256.New()
 	hash.Write([]byte(ip))
 	hash.Write([]byte(mac))
@@ -51,15 +50,48 @@ func fakeMdSrcIpMac(ip, mac string, port int) (string, string, string) {
 	return fmt.Sprintf(fakeMdSrcIpPrefix, a, b), fmt.Sprintf(fakeMdSrcIpPattern, a, b+c, d), fmt.Sprintf(fakeMdSrcMacPattern, a, b)
 }
 
+func (h *HostLocal) fakeMdSrcIp6Mac(port int, metaSrvIp6 string) (string, string, string) {
+	return fakeMdSrcIp6Mac(h.IP6Local.String(), h.MAC.String(), port, metaSrvIp6)
+}
+
+func mergeByte(a, b byte) uint16 {
+	return uint16(a)<<8 | uint16(b)
+}
+
+// prefix, ip6, mac
+func fakeMdSrcIp6Mac(ip6, mac string, port int, metaSrvIp6 string) (string, string, string) {
+	const (
+		fakeMdSrcIp6Prefix   = "fd00:fec2::%x:0/112"
+		fakeMdSrcIp6Pattern  = "fd00:fec2::%x:%x"
+		fakeMdSrcMac6Pattern = "ee:ee:ee:%02x:%02x:01"
+	)
+	hash := sha256.New()
+	hash.Write([]byte(ip6))
+	hash.Write([]byte(mac))
+	s := hash.Sum(nil)
+	a := s[0]
+	b := s[1]
+	hash.Write([]byte(fmt.Sprintf("%d", port)))
+	hash.Write([]byte(metaSrvIp6))
+	s = hash.Sum(nil)
+	c := s[0]
+	d := s[1]
+	return fmt.Sprintf(fakeMdSrcIp6Prefix, mergeByte(a, b)), fmt.Sprintf(fakeMdSrcIp6Pattern, mergeByte(a, b), mergeByte(c, d)), fmt.Sprintf(fakeMdSrcMac6Pattern, a, b)
+}
+
 func (h *HostLocal) StartMetadataServer(watcher IServerWatcher) {
+	var addr string
 	sport := h.HostConfig.MetadataPort() + 1
-	for port := sport; port < sport+20; port++ {
-		if !netutils2.IsTcpPortUsed(h.IP.String(), port) {
+	for port := sport; port < sport+64; port++ {
+		if !netutils2.IsTcpPortUsed(addr, port) {
 			h.metadataPort = port
 		}
 	}
+	if h.metadataPort == 0 {
+		log.Fatalf("Failed to find a free metadata port")
+	}
 	svc := &metadata.Service{
-		Address: h.IP.String(),
+		Address: addr,
 		Port:    h.metadataPort,
 
 		DescGetter: &sClassicMetadataDescGetter{
@@ -73,7 +105,7 @@ func (h *HostLocal) StartMetadataServer(watcher IServerWatcher) {
 		RequestWorkerCount: 4,
 		RequestWorkerQueueSize: 128,
 	}, dbAccess)
-	log.Infof("Start metadata server at %s on port %s:%d", h.Bridge, h.IP.String(), h.metadataPort)
+	log.Infof("Start metadata server at %s on port %s:%d", h.Bridge, addr, h.metadataPort)
 	metadata.Start(h.metadataApp, svc)
 }
 
