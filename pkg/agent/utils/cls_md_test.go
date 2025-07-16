@@ -14,7 +14,11 @@
 
 package utils
 
-import "testing"
+import (
+	"testing"
+
+	"yunion.io/x/pkg/util/netutils"
+)
 
 func TestFakeMdSrcIpMac(t *testing.T) {
 	cases := []struct {
@@ -56,5 +60,49 @@ func TestFakeMdSrcIpMac(t *testing.T) {
 	for _, c := range cases {
 		prefix, fakeIp, fakeMac := fakeMdSrcIpMac(c.ip, c.mac, c.port)
 		t.Logf("%s %s %s", prefix, fakeIp, fakeMac)
+	}
+}
+
+func TestFakeMdSrcIp6Mac(t *testing.T) {
+	cases := []struct {
+		mac        string
+		port       int
+		metaSrvIp6 string
+	}{
+		{
+			mac:        "e4:43:4b:06:65:42",
+			port:       1,
+			metaSrvIp6: "fd00:ec2::254",
+		},
+		{
+			mac:        "e4:43:4b:06:65:42",
+			port:       2,
+			metaSrvIp6: "fd00:ec2::254",
+		},
+		{
+			mac:        "e4:43:4b:06:65:42",
+			port:       3,
+			metaSrvIp6: "fd00:ec2::254",
+		},
+		{
+			mac:        "e4:43:4b:06:65:42",
+			port:       4,
+			metaSrvIp6: "fd00:ec2::254",
+		},
+		{
+			mac:        "e4:43:4b:06:65:42",
+			port:       5,
+			metaSrvIp6: "fd00:ec2::254",
+		},
+	}
+	for _, c := range cases {
+		linkLocalV6, err := netutils.Mac2LinkLocal(c.mac)
+		if err != nil {
+			t.Errorf("failed to convert mac %s to link local v6: %v", c.mac, err)
+		} else {
+			t.Logf("linkLocalV6: %s", linkLocalV6.String())
+			prefix, fakeIp6, fakeMac := fakeMdSrcIp6Mac(linkLocalV6.String(), c.mac, c.port, c.metaSrvIp6)
+			t.Logf("%s %s %s", prefix, fakeIp6, fakeMac)
+		}
 	}
 }

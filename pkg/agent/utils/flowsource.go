@@ -17,15 +17,18 @@ package utils
 import (
 	"bytes"
 	"fmt"
+	"net"
 	"strings"
 	"text/template"
 
 	"github.com/digitalocean/go-openvswitch/ovs"
 	"github.com/vishvananda/netlink"
 
+	"yunion.io/x/jsonutils"
 	"yunion.io/x/log"
 	"yunion.io/x/pkg/errors"
 	"yunion.io/x/pkg/util/netutils"
+	"yunion.io/x/pkg/util/stringutils"
 
 	"yunion.io/x/onecloud/pkg/util/iproute2"
 	"yunion.io/x/onecloud/pkg/util/netutils2"
@@ -38,7 +41,7 @@ type FlowSource interface {
 
 func F(table, priority int, matches, actions string) *ovs.Flow {
 	txt := fmt.Sprintf("table=%d,priority=%d,%s,actions=%s", table, priority, matches, actions)
-	log.Debugln(txt)
+	// log.Debugln(txt)
 	of := &ovs.Flow{}
 	err := of.UnmarshalText([]byte(txt))
 	if err != nil {
@@ -105,6 +108,27 @@ func (h *HostLocal) EnsureFakeLocalMetadataRoute() error {
 	return nil
 }
 
+func (h *HostLocal) EnsureFakeLocalMetadataRoute6() error {
+	prefix, _, _ := h.fakeMdSrcIp6Mac(0, "")
+	nic := netutils2.NewNetInterface(h.Bridge)
+	routes := nic.GetRouteSpecs()
+	find := false
+	for i := range routes {
+		if routes[i].Dst.String() == prefix {
+			find = true
+			break
+		}
+	}
+	if !find {
+		rt := iproute2.NewRoute(h.Bridge)
+		err := rt.AddByCidr(prefix, "").Err()
+		if err != nil {
+			return errors.Wrap(err, "AddRouteByCidr")
+		}
+	}
+	return nil
+}
+
 func (h *HostLocal) FlowsMap() (map[string][]*ovs.Flow, error) {
 	ps, err := DumpPort(h.Bridge, h.Ifname)
 	if err != nil {
@@ -112,9 +136,17 @@ func (h *HostLocal) FlowsMap() (map[string][]*ovs.Flow, error) {
 	}
 	m := map[string]interface{}{
 		"MetadataPort": h.metadataPort,
-		"IP":           h.IP,
 		"MAC":          h.MAC,
 		"PortNoPhy":    ps.PortID,
+	}
+	if h.IP != nil {
+		m["IP"] = h.IP
+	}
+	if h.IP6 != nil {
+		m["IP6"] = h.IP6
+	}
+	if h.IP6Local != nil {
+		m["IP6Local"] = h.IP6Local
 	}
 	T := t(m)
 	flows := []*ovs.Flow{
@@ -122,24 +154,48 @@ func (h *HostLocal) FlowsMap() (map[string][]*ovs.Flow, error) {
 		// F(0, 40000, "ipv6", "drop"),
 	}
 	flows = append(flows,
-		F(0, 29311, "arp,arp_op=1,arp_tpa=169.254.169.254", FakeArpRespActions(h.MAC.String())),
-		// F(0, 29310, "in_port=LOCAL,tcp,nw_dst=169.254.169.254,tp_dst=80", T("normal")),
 		F(0, 27200, "in_port=LOCAL", "normal"),
 		F(0, 26900, T("in_port={{.PortNoPhy}},dl_dst={{.MAC}}"), "normal"),
-		// allow any IPv6 link local multicast
-		F(0, 40000, T("dl_dst=01:00:00:00:00:00/01:00:00:00:00:00,ipv6,icmp6,ipv6_dst=ff02::/64"), "normal"),
-		// allow ipv6 nb solicit and advertise from outside
-		F(0, 30001, T("in_port={{.PortNoPhy}},ipv6,icmp6,icmp_type=135"), "normal"),
-		F(0, 30002, T("in_port={{.PortNoPhy}},ipv6,icmp6,icmp_type=136"), "normal"),
-		// allow ipv6 nb solicit and advertise from local
-		F(0, 30003, T("in_port=LOCAL,ipv6,icmp6,icmp_type=135"), "normal"),
-		F(0, 30004, T("in_port=LOCAL,ipv6,icmp6,icmp_type=136"), "normal"),
 	)
-	{
-		// direct all metadata response to table 12
+	if h.IP != nil {
+		flows = append(flows,
+			// drop arp request from outside to metadata IPv4 address
+			F(0, 29312, T("in_port={{.PortNoPhy}},arp,arp_op=1,arp_tpa=169.254.169.254"), "drop"),
+			// arp response to metadata IPv4 address for guest
+			F(0, 29311, "arp,arp_op=1,arp_tpa=169.254.169.254", FakeArpRespActions(h.MAC.String())),
+		)
+		// direct all ipv4 metadata response to table 12
 		prefix, _, mac := h.fakeMdSrcIpMac(0)
 		flows = append(flows,
 			F(0, 29310, fmt.Sprintf("in_port=LOCAL,tcp,dl_dst=%s,nw_dst=%s,tp_src=%d", mac, prefix, h.metadataPort), "resubmit(,12)"),
+		)
+	}
+	if h.IP6 != nil {
+		// drop nbp solicitation from outside to IPv6 metadata  address
+		for i := range h.HostConfig.MetadataServerIp6s {
+			metaSrvIp6 := h.HostConfig.MetadataServerIp6s[i]
+			flows = append(flows,
+				F(0, 40013+i, T(fmt.Sprintf("in_port={{.PortNoPhy}},ipv6,icmp6,icmp_type=135,nd_target=%s", metaSrvIp6)), "drop"),
+			)
+		}
+		flows = append(flows,
+			// allow any IPv6 link local multicast
+			F(0, 40000, T("dl_dst=01:00:00:00:00:00/01:00:00:00:00:00,ipv6,icmp6,ipv6_dst=ff02::/64"), "normal"),
+			// allow ipv6 nb solicit and advertise from outside
+			F(0, 30001, T("in_port={{.PortNoPhy}},ipv6,icmp6,icmp_type=135"), "normal"),
+			F(0, 30002, T("in_port={{.PortNoPhy}},ipv6,icmp6,icmp_type=136"), "normal"),
+			// allow ipv6 nb solicit and advertise from local
+			F(0, 30003, T("in_port=LOCAL,ipv6,icmp6,icmp_type=135"), "normal"),
+			F(0, 30004, T("in_port=LOCAL,ipv6,icmp6,icmp_type=136"), "normal"),
+			// hijack ipv6 router solicitation and advertisement from outside to local, priority should be higher than 40000
+			F(0, 40001, T("in_port={{.PortNoPhy}},ipv6,icmp6,icmp_type=133"), T("mod_dl_dst:{{.MAC}},local")),
+			F(0, 40002, T("in_port={{.PortNoPhy}},ipv6,icmp6,icmp_type=134"), T("mod_dl_dst:{{.MAC}},local")),
+		)
+
+		prefix, _, mac := h.fakeMdSrcIp6Mac(0, "")
+		flows = append(flows,
+			F(0, 29310, fmt.Sprintf("in_port=LOCAL,ipv6,tcp6,dl_dst=%s,ipv6_dst=%s,tp_src=%d", mac, prefix, h.metadataPort), "resubmit(,12)"),
+			F(0, 40050, fmt.Sprintf("ipv6,icmp6,icmp_type=136,dl_dst=%s,ipv6_dst=%s", mac, prefix), "resubmit(,12)"),
 		)
 	}
 	{
@@ -198,7 +254,7 @@ func (g *Guest) Who() string {
 	return g.Id
 }
 
-func (g *Guest) getMetadataInfo(nic *GuestNIC) (mdIP string, mdMAC string, mdPortNo int, useLOCAL bool, err error) {
+func (g *Guest) getMetadataInfo(nic *GuestNIC) (mdIP, mdIP6 string, mdMAC string, mdPortNo int, useLOCAL bool, err error) {
 	useLOCAL = true
 	route, err := RouteLookup(nic.IP)
 	if err != nil {
@@ -227,8 +283,9 @@ func (g *Guest) getMetadataInfo(nic *GuestNIC) (mdIP string, mdMAC string, mdPor
 
 	{
 		var (
-			p     *ovs.PortStats
-			addrs []netlink.Addr
+			p      *ovs.PortStats
+			addrs  []netlink.Addr
+			addrs6 []netlink.Addr
 		)
 		{
 			attrs := linkPeer.Attrs()
@@ -249,12 +306,27 @@ func (g *Guest) getMetadataInfo(nic *GuestNIC) (mdIP string, mdMAC string, mdPor
 		if err != nil {
 			return
 		}
-		if len(addrs) == 0 {
+
+		addrs6, err = netlink.AddrList(link, netlink.FAMILY_V6)
+		if err != nil {
+			return
+		}
+		if len(addrs) == 0 && len(addrs6) == 0 {
 			return
 		}
 		err = nil
 		useLOCAL = false
-		mdIP = addrs[0].IP.String()
+		if len(addrs) > 0 {
+			mdIP = addrs[0].IP.String()
+		}
+		if len(addrs6) > 0 {
+			for _, addr := range addrs6 {
+				if addr.IP.IsLinkLocalUnicast() {
+					mdIP6 = addr.IP.String()
+					break
+				}
+			}
+		}
 		mdMAC = link.Attrs().HardwareAddr.String()
 		mdPortNo = p.PortID
 	}
@@ -268,6 +340,16 @@ func isNicHostLocal(hcn *HostConfigNetwork, nic *GuestNIC) bool {
 		}
 	}
 	return false
+}
+
+func macToHex(b interface{}) string {
+	mac, _ := net.ParseMAC(b.(string))
+	return stringutils.Bytes2Str(mac)
+}
+
+func ip6ToHex(ip6str string) string {
+	ip6 := net.ParseIP(ip6str)
+	return stringutils.Bytes2Str(ip6[0:16])
 }
 
 func (g *Guest) FlowsMapForNic(nic *GuestNIC) ([]*ovs.Flow, error) {
@@ -289,26 +371,39 @@ func (g *Guest) FlowsMapForNic(nic *GuestNIC) ([]*ovs.Flow, error) {
 	portNoPhy := ps.PortID
 	m := nic.Map()
 	m["DHCPServerPort"] = g.HostConfig.DhcpServerPort
-	m["DHCPServerPort6"] = g.HostConfig.DhcpServerPort
+	m["DHCPServerPort6"] = g.HostConfig.Dhcp6ServerPort
 	m["PortNoPhy"] = portNoPhy
+	{
+		mac, err := hcn.MAC()
+		if err != nil {
+			log.Warningf("host network find ip mac: %v", err)
+			return nil, errors.Wrap(err, "host network find ip mac")
+		}
+		if hcn.IP != nil {
+			m["IPPhy"] = hcn.IP.String()
+		}
+		if hcn.IP6Local != nil {
+			// ipv6 use link local address to servce metadata service
+			m["IP6Phy"] = hcn.IP6Local.String()
+		}
+		m["MACPhy"] = mac.String()
+	}
 	{
 		var mdPortAction string
 		var mdInPort string
-		mdIP, mdMAC, mdPortNo, useLOCAL, err := g.getMetadataInfo(nic)
+		mdIP, mdIP6, mdMAC, mdPortNo, useLOCAL, err := g.getMetadataInfo(nic)
 		log.Debugf("getMetadataInfo %s %s: mdIP=%s mdMAC=%s mdPortNo=%d useLOCAL=%v", nic.IP, nic.Bridge, mdIP, mdMAC, mdPortNo, useLOCAL)
 		if useLOCAL {
 			if err != nil {
 				log.Warningf("find metadata: %v", err)
 			}
-			{
-				ip, mac, err := hcn.IPMAC()
-				if err != nil {
-					log.Warningf("host network find ip mac: %v", err)
-					return nil, errors.Wrap(err, "host network find ip mac")
-				}
-				mdIP = ip.String()
-				mdMAC = mac.String()
+			if m["IPPhy"] != nil {
+				mdIP = m["IPPhy"].(string)
 			}
+			if m["IP6Phy"] != nil {
+				mdIP6 = m["IP6Phy"].(string)
+			}
+			mdMAC = m["MACPhy"].(string)
 			// mdPortNo = portNoPhy
 			mdInPort = "LOCAL"
 			mdPortAction = "LOCAL"
@@ -320,7 +415,12 @@ func (g *Guest) FlowsMapForNic(nic *GuestNIC) ([]*ovs.Flow, error) {
 		if hostLocal != nil {
 			m["MetadataServerPort"] = hostLocal.metadataPort
 		}
-		m["MetadataServerIP"] = mdIP
+		if mdIP != "" {
+			m["MetadataServerIP"] = mdIP
+		}
+		if mdIP6 != "" {
+			m["MetadataServerIP6"] = mdIP6
+		}
 		m["MetadataServerMAC"] = mdMAC
 		m["MetadataPortInPort"] = mdInPort
 		m["MetadataPortAction"] = mdPortAction
@@ -333,18 +433,63 @@ func (g *Guest) FlowsMapForNic(nic *GuestNIC) ([]*ovs.Flow, error) {
 	}
 	flows := []*ovs.Flow{}
 	if mdPort, ok := m["MetadataServerPort"]; ok {
-		_, fakeSrcIp, fakeSrcMac := fakeMdSrcIpMac(m["MetadataServerIP"].(string), m["MetadataServerMAC"].(string), nic.PortNo)
-		m["MetadataClientFakeIP"] = fakeSrcIp
-		m["MetadataClientFakeMAC"] = fakeSrcMac
-		// rule from host metadata to VM was learnd
-		learnStr := fmt.Sprintf("learn(table=12,priority=10000,idle_timeout=30,in_port=LOCAL,dl_type=0x0800,nw_proto=6,nw_dst=%s,tcp_src=%d,load:NXM_OF_ETH_DST[]->NXM_OF_ETH_SRC[],load:NXM_OF_ETH_SRC[]->NXM_OF_ETH_DST[],load:NXM_OF_IP_DST[]->NXM_OF_IP_SRC[],load:NXM_OF_IP_SRC[]->NXM_OF_IP_DST[],load:0x50->NXM_OF_TCP_SRC[],output:NXM_OF_IN_PORT[]),", fakeSrcIp, mdPort)
-		flows = append(flows,
-			// arp response to fake metadata client IP and MAC
-			F(0, 29301, fmt.Sprintf("in_port=LOCAL,arp,arp_op=1,arp_tpa=%s", fakeSrcIp), FakeArpRespActions(fakeSrcMac)),
-			// from VM to host metadata
-			F(0, 29300, T("in_port={{.PortNo}},tcp,nw_dst=169.254.169.254,tp_dst=80"),
-				learnStr+T("mod_dl_src:{{.MetadataClientFakeMAC}},mod_dl_dst:{{.MetadataServerMAC}},mod_nw_src:{{.MetadataClientFakeIP}},mod_nw_dst:{{.MetadataServerIP}},mod_tp_dst:{{.MetadataServerPort}},{{.MetadataPortAction}}")),
-		)
+		if _, ok := m["MetadataServerIP"]; ok && nic.EnableIPv4() {
+			// enable IPv4 metadata service
+			_, fakeSrcIp, fakeSrcMac := fakeMdSrcIpMac(m["MetadataServerIP"].(string), m["MetadataServerMAC"].(string), nic.PortNo)
+			m["MetadataClientFakeIP"] = fakeSrcIp
+			m["MetadataClientFakeMAC"] = fakeSrcMac
+			// rule from host metadata to VM was learnd
+			learnStr := fmt.Sprintf("learn(table=12,priority=10000,idle_timeout=30,in_port=LOCAL,dl_type=0x0800,nw_proto=6,nw_dst=%s,tcp_src=%d,load:NXM_OF_ETH_DST[]->NXM_OF_ETH_SRC[],load:NXM_OF_ETH_SRC[]->NXM_OF_ETH_DST[],load:NXM_OF_IP_DST[]->NXM_OF_IP_SRC[],load:NXM_OF_IP_SRC[]->NXM_OF_IP_DST[],load:0x50->NXM_OF_TCP_SRC[],output:NXM_OF_IN_PORT[]),", fakeSrcIp, mdPort)
+			flows = append(flows,
+				// arp response to fake metadata client IP and MAC
+				F(0, 29301, fmt.Sprintf("in_port=LOCAL,arp,arp_op=1,arp_tpa=%s", fakeSrcIp), FakeArpRespActions(fakeSrcMac)),
+				// from VM to host metadata
+				F(0, 29300, T("in_port={{.PortNo}},tcp,nw_dst=169.254.169.254,tp_dst=80"),
+					learnStr+T("mod_dl_src:{{.MetadataClientFakeMAC}},mod_dl_dst:{{.MetadataServerMAC}},mod_nw_src:{{.MetadataClientFakeIP}},mod_nw_dst:{{.MetadataServerIP}},mod_tp_dst:{{.MetadataServerPort}},{{.MetadataPortAction}}")),
+			)
+		}
+		if mIP6Str, ok := m["MetadataServerIP6"]; ok && nic.EnableIPv6() {
+			// enable IPv6 metadata service
+			mIP6 := net.ParseIP(mIP6Str.(string))
+			mIP6McastIP := netutils2.IP2SolicitMcastIP(mIP6).String()
+			mIP6McastMac := netutils2.IP2SolicitMcastMac(mIP6).String()
+
+			// ndp solicitation from VM to metadata server
+			for i := range g.HostConfig.MetadataServerIp6s {
+				metaSrvIp6 := g.HostConfig.MetadataServerIp6s[i]
+				_, fakeVmSrcIp6, fakeVmSrcMac6 := fakeMdSrcIp6Mac(m["MetadataServerIP6"].(string), m["MetadataServerMAC"].(string), nic.PortNo, metaSrvIp6)
+
+				log.Debugf(" g.HostConfig.MetadataServerIp6s: %s metaSrcIP6: %s, fakeVmSrcIp6: %s, fakeVmSrcMac6: %s", jsonutils.Marshal(g.HostConfig.MetadataServerIp6s), metaSrvIp6, fakeVmSrcIp6, fakeVmSrcMac6)
+
+				learnMdNdpAdvStr := fmt.Sprintf("learn(table=12,priority=20000,idle_timeout=30,in_port=LOCAL,dl_type=0x86dd,nw_proto=58,icmpv6_type=136,dl_dst=%s,ipv6_dst=%s,nd_target={{.MetadataServerIP6}},load:NXM_OF_ETH_SRC[]->NXM_OF_ETH_DST[],load:0x%s->NXM_OF_ETH_SRC[],load:NXM_NX_IPV6_SRC[]->NXM_NX_IPV6_DST[],load:NXM_NX_ND_TARGET[]->NXM_NX_IPV6_SRC[],load:NXM_NX_ND_TARGET[]->NXM_NX_ND_TARGET[],load:0x%s->NXM_NX_ND_TLL[],output:NXM_OF_IN_PORT[]),", fakeVmSrcMac6, fakeVmSrcIp6, macToHex(m["MetadataServerMAC"]), macToHex(m["MetadataServerMAC"]))
+				learnHttpStr := fmt.Sprintf("learn(table=12,priority=10000,idle_timeout=30,in_port=LOCAL,dl_type=0x86dd,nw_proto=6,ipv6_dst=%s,tcp_src=%d,load:NXM_OF_ETH_DST[]->NXM_OF_ETH_SRC[],load:NXM_OF_ETH_SRC[]->NXM_OF_ETH_DST[],load:NXM_NX_IPV6_DST[]->NXM_NX_IPV6_SRC[],load:NXM_NX_IPV6_SRC[]->NXM_NX_IPV6_DST[],load:0x50->NXM_OF_TCP_SRC[],output:NXM_OF_IN_PORT[]),", fakeVmSrcIp6, mdPort)
+
+				fakeVmSrcIp6Str := ip6ToHex(fakeVmSrcIp6)
+				mIP6McastIPStr := ip6ToHex(mIP6McastIP)
+				mIP6HexStr := ip6ToHex(mIP6Str.(string))
+				metaSrvIp6Str := ip6ToHex(metaSrvIp6)
+				vmIP6Str := ip6ToHex(m["IP6"].(string))
+
+				flows = append(flows,
+					// ndp solication from VM to metadata server
+					F(0, 40011+i,
+						T("in_port={{.PortNo}},ipv6,icmp6,icmp_type=135,nd_target="+metaSrvIp6),
+						T(learnMdNdpAdvStr+fmt.Sprintf("mod_dl_src:%s,mod_dl_dst:%s,load:0x%s->NXM_NX_IPV6_SRC[0..127],load:0x%s->NXM_NX_IPV6_DST[0..127],load:0x%s->NXM_NX_ND_TARGET[0..127],load:0x%s->NXM_NX_ND_SLL[],local", fakeVmSrcMac6, mIP6McastMac, fakeVmSrcIp6Str, mIP6McastIPStr, mIP6HexStr, macToHex(fakeVmSrcMac6)))),
+					// ndp solication from metadata server to VM
+					F(0, 40012+i,
+						T(fmt.Sprintf("in_port=LOCAL,ipv6,icmp6,icmp_type=135,nd_target=%s", fakeVmSrcIp6)),
+						T(fmt.Sprintf("mod_dl_dst:{{.IP6McastMac}},load:0x%s->NXM_NX_IPV6_SRC[0..127],load:0x%s->NXM_NX_IPV6_DST[0..127],load:0x%s->NXM_NX_ND_TARGET[0..127],output:{{.PortNo}}", metaSrvIp6Str, mIP6McastIPStr, vmIP6Str))),
+					// ndp advertisement from VM to metadata server
+					F(0, 40013+i,
+						T(fmt.Sprintf("in_port={{.PortNo}},dl_src={{.MAC}},dl_dst={{.MetadataServerMAC}},ipv6_src={{.IP6}},ipv6_dst=%s,icmp6,icmp_type=136,nd_target={{.IP6}}", metaSrvIp6)),
+						T(fmt.Sprintf("mod_dl_src:%s,load:0x%s->NXM_NX_IPV6_SRC[0..127],load:0x%s->NXM_NX_IPV6_DST[0..127],load:0x%s->NXM_NX_ND_TARGET[0..127],load:0x%s->NXM_NX_ND_TLL[],local", fakeVmSrcMac6, fakeVmSrcIp6Str, mIP6HexStr, metaSrvIp6Str, macToHex(fakeVmSrcMac6)))),
+					// from VM to host metadata
+					F(0, 29301+i,
+						T(fmt.Sprintf("in_port={{.PortNo}},ipv6,tcp6,ipv6_dst=%s,tp_dst=80", metaSrvIp6)),
+						learnHttpStr+T(fmt.Sprintf("mod_dl_src:%s,mod_dl_dst:{{.MetadataServerMAC}},load:0x%s->NXM_NX_IPV6_SRC[0..127],load:0x%s->NXM_NX_IPV6_DST[0..127],mod_tp_dst:{{.MetadataServerPort}},{{.MetadataPortAction}}", fakeVmSrcMac6, fakeVmSrcIp6Str, mIP6HexStr))),
+				)
+			}
+		}
 	}
 	flows = append(flows,
 		// dhcpv4 from VM to host
@@ -352,11 +497,13 @@ func (g *Guest) FlowsMapForNic(nic *GuestNIC) ([]*ovs.Flow, error) {
 		// dhcpv4 from host to VM
 		F(0, 28300, T("in_port=LOCAL,dl_dst={{.MAC}},ip,udp,tp_src={{.DHCPServerPort}},tp_dst=68"), T("mod_tp_src:67,output:{{.PortNo}}")),
 		// dhcpv6 from VM to host
-		F(0, 28400, T("in_port={{.PortNo}},ipv6,udp6,tp_src=546,tp_dst=547"), T("mod_tp_dst:{{.DHCPServerPort6}},local")),
+		F(0, 28400, T("in_port={{.PortNo}},ipv6,udp6,tp_src=546,tp_dst=547"), T("mod_dl_dst:{{.MACPhy}},mod_tp_dst:{{.DHCPServerPort6}},local")),
 		// dhcpv6 from host to VM
 		F(0, 28300, T("in_port=LOCAL,dl_dst={{.MAC}},ipv6,udp6,tp_src={{.DHCPServerPort6}},tp_dst=546"), T("mod_tp_src:547,output:{{.PortNo}}")),
-		// ra from VM to host
+		// ra solicitation from VM to host
+		F(0, 28400, T("in_port={{.PortNo}},ipv6,icmp6,icmp_type=133"), T("mod_dl_dst:{{.MACPhy}},local")),
 		// ra advertisement from host to VM
+		F(0, 28300, T("in_port=LOCAL,dl_dst={{.MAC}},ipv6,icmp6,icmp_type=134"), T("mod_dl_dst:33:33:00:00:00:01,output:{{.PortNo}}")),
 		// allow any other traffic from host to vm
 		F(0, 26700, T("in_port={{.PortNoPhy}},dl_dst={{.MAC}},{{._dl_vlan}}"), "normal"),
 	)
@@ -386,19 +533,21 @@ func (g *Guest) FlowsMapForNic(nic *GuestNIC) ([]*ovs.Flow, error) {
 			}
 		} else {
 			// allow arp from VM src IP
-			if isNicHostLocal(hcn, nic) {
-				g.eachIP(m, func(T2 func(string) string) {
-					flows = append(flows,
-						F(0, 39011, T2(fmt.Sprintf("in_port=LOCAL,arp,arp_spa=%s,arp_tpa={{.IP}}", nic.Gateway)), FakeArpRespActions(nic.MAC)),
-						F(0, 39010, T2(fmt.Sprintf("in_port={{.PortNo}},arp,dl_src={{.MAC}},arp_sha={{.MAC}},arp_spa={{.IP}},arp_tpa=%s", nic.Gateway)), FakeArpRespActions(hcn.mac.String())),
-					)
-				})
-			} else {
-				g.eachIP(m, func(T2 func(string) string) {
-					flows = append(flows,
-						F(0, 27770, T2("in_port={{.PortNo}},arp,dl_src={{.MAC}},arp_sha={{.MAC}},arp_spa={{.IP}}"), "normal"),
-					)
-				})
+			if nic.EnableIPv4() {
+				if isNicHostLocal(hcn, nic) {
+					g.eachIP(m, func(T2 func(string) string) {
+						flows = append(flows,
+							F(0, 39011, T2(fmt.Sprintf("in_port=LOCAL,arp,arp_spa=%s,arp_tpa={{.IP}}", nic.Gateway)), FakeArpRespActions(nic.MAC)),
+							F(0, 39010, T2(fmt.Sprintf("in_port={{.PortNo}},arp,dl_src={{.MAC}},arp_sha={{.MAC}},arp_spa={{.IP}},arp_tpa=%s", nic.Gateway)), FakeArpRespActions(hcn.mac.String())),
+						)
+					})
+				} else {
+					g.eachIP(m, func(T2 func(string) string) {
+						flows = append(flows,
+							F(0, 27770, T2("in_port={{.PortNo}},arp,dl_src={{.MAC}},arp_sha={{.MAC}},arp_spa={{.IP}}"), "normal"),
+						)
+					})
+				}
 			}
 			if nic.EnableIPv6() {
 				flows = append(flows,
@@ -414,7 +563,7 @@ func (g *Guest) FlowsMapForNic(nic *GuestNIC) ([]*ovs.Flow, error) {
 			}
 		}
 
-		if nic.PortMappings != nil && len(nic.PortMappings) > 0 {
+		if nic.EnableIPv4() && len(nic.PortMappings) > 0 {
 			for _, pm := range nic.PortMappings {
 				if len(pm.RemoteIps) == 0 {
 					pm.RemoteIps = []string{"0.0.0.0/0"}
@@ -472,20 +621,22 @@ func (g *Guest) FlowsMapForNic(nic *GuestNIC) ([]*ovs.Flow, error) {
 					)
 				}
 			} else {
-				g.eachIP(m, func(T2 func(string) string) {
-					// allow anythin from local ip
+				if nic.EnableIPv4() {
+					g.eachIP(m, func(T2 func(string) string) {
+						// allow anythin from local ip
+						flows = append(flows,
+							F(0, 26870, T2("in_port={{.PortNoPhy}},dl_dst={{.MAC}},{{._dl_vlan}},ip,nw_dst={{.IP}}"), "normal"),
+							F(0, 25870, T2("in_port={{.PortNo}},dl_src={{.MAC}},ip,nw_src={{.IP}}"), "normal"),
+							F(0, 24770, T2("dl_dst={{.MAC}},ip,nw_dst={{.IP}}"), "normal"),
+						)
+					})
+					// drop others
 					flows = append(flows,
-						F(0, 26870, T2("in_port={{.PortNoPhy}},dl_dst={{.MAC}},{{._dl_vlan}},ip,nw_dst={{.IP}}"), "normal"),
-						F(0, 25870, T2("in_port={{.PortNo}},dl_src={{.MAC}},ip,nw_src={{.IP}}"), "normal"),
-						F(0, 24770, T2("dl_dst={{.MAC}},ip,nw_dst={{.IP}}"), "normal"),
+						F(0, 26860, T("in_port={{.PortNoPhy}},dl_dst={{.MAC}},{{._dl_vlan}},ip"), "drop"),
+						F(0, 25860, T("in_port={{.PortNo}},dl_src={{.MAC}},ip"), "drop"),
+						F(0, 24760, T("dl_dst={{.MAC}},ip"), "drop"),
 					)
-				})
-				// drop others
-				flows = append(flows,
-					F(0, 26860, T("in_port={{.PortNoPhy}},dl_dst={{.MAC}},{{._dl_vlan}},ip"), "drop"),
-					F(0, 25860, T("in_port={{.PortNo}},dl_src={{.MAC}},ip"), "drop"),
-					F(0, 24760, T("dl_dst={{.MAC}},ip"), "drop"),
-				)
+				}
 				if nic.EnableIPv6() {
 					flows = append(flows,
 						// allow for ipv6 IP
@@ -545,7 +696,9 @@ func (g *Guest) eachIP(data map[string]interface{}, cb func(func(string) string)
 		data2[k] = v
 	}
 	var ipAddrs = data2["SubIPs"].([]string)
-	ipAddrs = append(ipAddrs, data2["IP"].(string))
+	if ip, ok := data2["IP"]; ok {
+		ipAddrs = append(ipAddrs, ip.(string))
+	}
 	for _, ipAddr := range ipAddrs {
 		data2["IP"] = ipAddr
 		T2 := t(data2)
@@ -604,21 +757,23 @@ func (sr *SecurityRules) Flows(g *Guest, nic *GuestNIC, data map[string]interfac
 				loadZone+T(",ct(table=1,zone={{.CT_ZONE}})")),
 		)
 	} else {
-		g.eachIP(data, func(T2 func(string) string) {
+		if nic.EnableIPv4() {
+			g.eachIP(data, func(T2 func(string) string) {
+				flows = append(flows,
+					F(0, 26870, T2("in_port={{.PortNoPhy}},dl_dst={{.MAC}},{{._dl_vlan}},ip,nw_dst={{.IP}}"),
+						loadZone+T2(",ct(table=1,zone={{.CT_ZONE}})")),
+					F(0, 25870, T2("in_port={{.PortNo}},dl_src={{.MAC}},ip,nw_src={{.IP}}"),
+						loadReg0BitVm+","+loadZone+T2(",ct(table=1,zone={{.CT_ZONE}})")),
+					F(0, 24770, T2("dl_dst={{.MAC}},ip,nw_dst={{.IP}}"),
+						loadZone+T2(",ct(table=1,zone={{.CT_ZONE}})")),
+				)
+			})
 			flows = append(flows,
-				F(0, 26870, T2("in_port={{.PortNoPhy}},dl_dst={{.MAC}},{{._dl_vlan}},ip,nw_dst={{.IP}}"),
-					loadZone+T2(",ct(table=1,zone={{.CT_ZONE}})")),
-				F(0, 25870, T2("in_port={{.PortNo}},dl_src={{.MAC}},ip,nw_src={{.IP}}"),
-					loadReg0BitVm+","+loadZone+T2(",ct(table=1,zone={{.CT_ZONE}})")),
-				F(0, 24770, T2("dl_dst={{.MAC}},ip,nw_dst={{.IP}}"),
-					loadZone+T2(",ct(table=1,zone={{.CT_ZONE}})")),
+				F(0, 26860, T("in_port={{.PortNoPhy}},dl_dst={{.MAC}},{{._dl_vlan}},ip"), "drop"),
+				F(0, 25860, T("in_port={{.PortNo}},dl_src={{.MAC}},ip"), "drop"),
+				F(0, 24760, T("dl_dst={{.MAC}},ip"), "drop"),
 			)
-		})
-		flows = append(flows,
-			F(0, 26860, T("in_port={{.PortNoPhy}},dl_dst={{.MAC}},{{._dl_vlan}},ip"), "drop"),
-			F(0, 25860, T("in_port={{.PortNo}},dl_src={{.MAC}},ip"), "drop"),
-			F(0, 24760, T("dl_dst={{.MAC}},ip"), "drop"),
-		)
+		}
 
 		if len(nic.IP6) > 0 {
 			flows = append(flows,

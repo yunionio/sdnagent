@@ -15,14 +15,23 @@
 package utils
 
 import (
-	"io/ioutil"
+	"os"
 	"path"
 	"testing"
 )
 
 func TestGuestLoadDesc(t *testing.T) {
 	serversPath := "/opt/cloud/workspace/servers/"
-	fis, err := ioutil.ReadDir(serversPath)
+	fi, err := os.Stat(serversPath)
+	if err != nil {
+		t.Skipf("stat servers path %s failed: %s", serversPath, err)
+		return
+	}
+	if !fi.IsDir() {
+		t.Skipf("servers path %s not found", serversPath)
+		return
+	}
+	fis, err := os.ReadDir(serversPath)
 	if err != nil {
 		t.Skipf("scan servers path %s failed: %s", serversPath, err)
 		return
