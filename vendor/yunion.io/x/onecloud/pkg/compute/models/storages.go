@@ -25,6 +25,7 @@ import (
 	"yunion.io/x/jsonutils"
 	"yunion.io/x/log"
 	"yunion.io/x/pkg/errors"
+	"yunion.io/x/pkg/gotypes"
 	"yunion.io/x/pkg/tristate"
 	"yunion.io/x/pkg/util/compare"
 	"yunion.io/x/pkg/util/rbacscope"
@@ -88,7 +89,7 @@ type SStorage struct {
 	// example: ssd
 	MediumType string `width:"32" charset:"ascii" nullable:"false" list:"user" update:"domain" create:"domain_required"`
 	// 超售比
-	Cmtbound float32 `nullable:"true" default:"1" list:"domain" update:"domain"`
+	Cmtbound float32 `nullable:"true" list:"domain"`
 	// 存储配置信息
 	StorageConf jsonutils.JSONObject `nullable:"true" get:"domain" list:"domain" update:"domain"`
 
@@ -96,7 +97,7 @@ type SStorage struct {
 	StoragecacheId string `width:"36" charset:"ascii" nullable:"true" list:"domain" get:"domain" update:"domain" create:"domain_optional"`
 
 	// master host id
-	MasterHost string `width:"36" charset:"ascii" nullable:"true" list:"user" create:"optional" update:"user" json:"master_host"`
+	MasterHost string `width:"36" charset:"ascii" nullable:"true" list:"user" json:"master_host"`
 
 	// indicating whether system disk can be allocated in this storage
 	// 是否可以用作系统盘存储
@@ -117,7 +118,10 @@ func (self *SStorage) ValidateUpdateData(ctx context.Context, userCred mcclient.
 	if err != nil {
 		return input, err
 	}
-	input.StorageConf = jsonutils.NewDict()
+
+	if gotypes.IsNil(input.StorageConf) {
+		input.StorageConf = jsonutils.NewDict()
+	}
 	if self.StorageConf != nil {
 		confs, _ := self.StorageConf.GetMap()
 		for k, v := range confs {
@@ -596,6 +600,21 @@ func (manager *SStorageManager) FetchCustomizeColumns(
 		}
 		storage := objs[i].(*SStorage)
 		storageIds[i] = storage.Id
+		if rows[i].ManagerId == "" && rows[i].MasterHost == "" &&
+			utils.IsInStringArray(storage.StorageType, api.SHARED_STORAGE) {
+			if host, err := storage.GetMasterHost(); host != nil {
+				rows[i].MasterHost = host.Id
+				rows[i].MasterHostName = host.Name
+			} else {
+				log.Errorf("storage %s failed get master host %s", storageIds[i], err)
+			}
+		}
+		if rows[i].MasterHost != "" && rows[i].MasterHostName == "" {
+			if host := HostManager.FetchHostById(rows[i].MasterHost); host != nil {
+				rows[i].MasterHostName = host.Name
+			}
+		}
+
 		rows[i].Capacity = storage.GetCapacity()
 		rows[i].VCapacity = int64(float32(rows[i].Capacity) * storage.GetOvercommitBound())
 		rows[i].ActualUsed = storage.ActualCapacityUsed
@@ -719,15 +738,22 @@ func (self *SStorage) GetUsedCapacity(isReady tristate.TriState) int64 {
 	}
 }
 
-func (self *SStorage) GetOvercommitBound() float32 {
-	if self.Cmtbound > 0 {
-		return self.Cmtbound
+func (storage *SStorage) GetOvercommitBound() float32 {
+	if storage.Cmtbound > 0 {
+		return storage.Cmtbound
 	} else {
 		return options.Options.DefaultStorageOvercommitBound
 	}
 }
 
 func (self *SStorage) GetMasterHost() (*SHost, error) {
+	if self.MasterHost != "" {
+		host := HostManager.FetchHostById(self.MasterHost)
+		if host != nil && host.Enabled.IsTrue() && host.HostStatus == api.HOST_ONLINE {
+			return host, nil
+		}
+	}
+
 	hosts := HostManager.Query().SubQuery()
 	hoststorages := HoststorageManager.Query().SubQuery()
 
@@ -735,16 +761,29 @@ func (self *SStorage) GetMasterHost() (*SHost, error) {
 	q = q.Filter(sqlchemy.Equals(hoststorages.Field("storage_id"), self.Id))
 	q = q.IsTrue("enabled")
 	q = q.Equals("host_status", api.HOST_ONLINE).Asc("id")
-	if self.MasterHost != "" {
-		q.Equals("id", self.MasterHost)
-	}
+
 	host := SHost{}
 	host.SetModelManager(HostManager, &host)
 	err := q.First(&host)
 	if err != nil {
 		return nil, errors.Wrapf(err, "q.First")
 	}
+
+	if utils.IsInStringArray(self.StorageType, api.SHARED_STORAGE) {
+		if err := self.UpdateMasterHost(host.Id); err != nil {
+			log.Errorf("storage %s udpate master host failed %s: %s", self.GetName(), host.Id, err)
+		}
+	}
+
 	return &host, nil
+}
+
+func (self *SStorage) UpdateMasterHost(hostId string) error {
+	_, err := db.Update(self, func() error {
+		self.MasterHost = hostId
+		return nil
+	})
+	return err
 }
 
 func (self *SStorage) GetZoneId() string {
@@ -1253,6 +1292,7 @@ func (manager *SStorageManager) totalCapacityQ(
 		storages.Field("capacity"),
 		storages.Field("reserved"),
 		storages.Field("cmtbound"),
+		storages.Field("actual_capacity_used"),
 		storages.Field("storage_type"),
 		storages.Field("medium_type"),
 		stmt.Field("used_capacity"),
@@ -1276,6 +1316,7 @@ type StorageStat struct {
 	Capacity             int
 	Reserved             int
 	Cmtbound             float32
+	ActualCapacityUsed   int64
 	StorageType          string
 	MediumType           string
 	UsedCapacity         int
@@ -1289,16 +1330,17 @@ type StorageStat struct {
 }
 
 type StoragesCapacityStat struct {
-	Capacity         int64
-	CapacityVirtual  float64
-	CapacityUsed     int64
-	CountUsed        int
-	CapacityUnready  int64
-	CountUnready     int
-	AttachedCapacity int64
-	CountAttached    int
-	DetachedCapacity int64
-	CountDetached    int
+	Capacity           int64
+	CapacityVirtual    float64
+	CapacityUsed       int64
+	ActualCapacityUsed int64
+	CountUsed          int
+	CapacityUnready    int64
+	CountUnready       int
+	AttachedCapacity   int64
+	CountAttached      int
+	DetachedCapacity   int64
+	CountDetached      int
 
 	MediumeCapacity             map[string]int64
 	StorageTypeCapacity         map[string]int64
@@ -1320,6 +1362,7 @@ func (manager *SStorageManager) calculateCapacity(q *sqlchemy.SQuery) StoragesCa
 		tCapa   int64   = 0
 		tVCapa  float64 = 0
 		tUsed   int64   = 0
+		aUsed   int64   = 0
 		cUsed   int     = 0
 		tFailed int64   = 0
 		cFailed int     = 0
@@ -1362,6 +1405,7 @@ func (manager *SStorageManager) calculateCapacity(q *sqlchemy.SQuery) StoragesCa
 		tVCapa += float64(stat.Capacity-stat.Reserved) * float64(stat.Cmtbound)
 		mCapaUsed, sCapaUsed = add(mCapaUsed, sCapaUsed, stat.MediumType, stat.StorageType, int64(stat.UsedCapacity))
 		tUsed += int64(stat.UsedCapacity)
+		aUsed += int64(stat.ActualCapacityUsed)
 		cUsed += stat.UsedCount
 		tFailed += int64(stat.FailedCapacity)
 		mFailed, sFailed = add(mFailed, sFailed, stat.MediumType, stat.StorageType, int64(stat.FailedCapacity))
@@ -1379,6 +1423,7 @@ func (manager *SStorageManager) calculateCapacity(q *sqlchemy.SQuery) StoragesCa
 		StorageTypeCapacity:         sCapa,
 		CapacityVirtual:             tVCapa,
 		CapacityUsed:                tUsed,
+		ActualCapacityUsed:          aUsed,
 		MediumeCapacityUsed:         mCapaUsed,
 		StorageTypeCapacityUsed:     sCapaUsed,
 		CountUsed:                   cUsed,
@@ -1443,6 +1488,7 @@ func (self *SStorage) createDisk(ctx context.Context, name string, diskConfig *a
 	disk.Iops = diskConfig.Iops
 	disk.Throughput = diskConfig.Throughput
 	disk.Preallocation = diskConfig.Preallocation
+	disk.AutoReset = diskConfig.AutoReset
 
 	if self.MediumType == api.DISK_TYPE_SSD {
 		disk.IsSsd = true
@@ -1619,6 +1665,19 @@ func (manager *SStorageManager) InitializeData() error {
 			}
 		}
 	}
+	sq := CloudproviderManager.Query("id").Equals("provider", api.CLOUD_PROVIDER_ALIYUN).SubQuery()
+	q = manager.Query().NotEquals("medium_type", api.DISK_TYPE_SSD).In("manager_id", sq)
+	storages = make([]SStorage, 0)
+	err = db.FetchModelObjects(manager, q, &storages)
+	if err != nil {
+		return err
+	}
+	for i := range storages {
+		db.Update(&storages[i], func() error {
+			storages[i].MediumType = api.DISK_TYPE_SSD
+			return nil
+		})
+	}
 	return nil
 }
 
@@ -1669,6 +1728,10 @@ func (manager *SStorageManager) ListItemFilter(
 
 	if query.Local != nil && *query.Local {
 		q = q.Filter(sqlchemy.In(q.Field("storage_type"), api.STORAGE_LOCAL_TYPES))
+	}
+
+	if len(query.StorageType) > 0 {
+		q = q.Equals("storage_type", query.StorageType)
 	}
 
 	if len(query.SchedtagId) > 0 {
@@ -1865,6 +1928,26 @@ func (self *SStorage) PerformSetSchedtag(ctx context.Context, userCred mcclient.
 	return PerformSetResourceSchedtag(self, ctx, userCred, query, data)
 }
 
+func (self *SStorage) PerformSetCommitBound(
+	ctx context.Context,
+	userCred mcclient.TokenCredential,
+	query jsonutils.JSONObject,
+	input api.StorageSetCmtBoundInput,
+) (jsonutils.JSONObject, error) {
+	_, err := db.Update(self, func() error {
+		if input.Cmtbound != nil {
+			self.Cmtbound = *input.Cmtbound
+		}
+		return nil
+	})
+	if err != nil {
+		return nil, err
+	}
+	db.OpsLog.LogEvent(self, db.ACT_SET_COMMIT_BOUND, input, userCred)
+	logclient.AddActionLogWithContext(ctx, self, logclient.ACT_SET_COMMIT_BOUND, input, userCred, true)
+	return nil, nil
+}
+
 func (self *SStorage) GetSchedtagJointManager() ISchedtagJointManager {
 	return StorageschedtagManager
 }
@@ -2021,4 +2104,34 @@ func (storage *SStorage) GetDetailsHardwareInfo(ctx context.Context, userCred mc
 
 func (storage *SStorage) PerformSetHardwareInfo(ctx context.Context, userCred mcclient.TokenCredential, _ jsonutils.JSONObject, data *api.StorageHardwareInfo) (*api.StorageHardwareInfo, error) {
 	return data, storage.setHardwareInfo(ctx, userCred, data)
+}
+
+func StoragesCleanRecycleDiskfiles(ctx context.Context, userCred mcclient.TokenCredential, isStart bool) {
+	// get shared storages
+	q := StorageManager.Query().IsNullOrEmpty("manager_id")
+	q = q.In("storage_type", api.SHARED_STORAGE)
+
+	storages := make([]SStorage, 0)
+	err := q.All(&storages)
+	if err != nil {
+		log.Errorf("StoragesCleanRecycleDiskfiles failed get storages %s", err)
+		return
+	}
+
+	for i := range storages {
+		storages[i].SetModelManager(StorageManager, &storages[i])
+		log.Infof("storage %s start clean recycle diskfiles", storages[i].GetName())
+		host, err := storages[i].GetMasterHost()
+		if err != nil {
+			log.Errorf("StoragesCleanRecycleDiskfiles storage %s failed get master host: %s", storages[i].GetName(), err)
+			continue
+		}
+		url := fmt.Sprintf("/storages/%s/clean-recycle-diskfiles", storages[i].Id)
+		body := jsonutils.NewDict()
+		_, err = host.Request(ctx, userCred, "POST", url, mcclient.GetTokenHeaders(userCred), body)
+		if err != nil {
+			log.Errorf("StoragesCleanRecycleDiskfiles storage %s request failed %s", storages[i].GetName(), err)
+			continue
+		}
+	}
 }

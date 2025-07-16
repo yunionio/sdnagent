@@ -70,7 +70,8 @@ func (h *HostLocal) StartMetadataServer(watcher IServerWatcher) {
 	dbAccess := false
 	h.metadataApp = app.InitApp(&common_options.BaseOptions{
 		ApplicationID:      "metadata-server-class-network",
-		RequestWorkerCount: 1,
+		RequestWorkerCount: 4,
+		RequestWorkerQueueSize: 128,
 	}, dbAccess)
 	log.Infof("Start metadata server at %s on port %s:%d", h.Bridge, h.IP.String(), h.metadataPort)
 	metadata.Start(h.metadataApp, svc)
