@@ -4,7 +4,7 @@ go 1.21
 
 require (
 	github.com/coreos/go-iptables v0.6.0
-	github.com/digitalocean/go-openvswitch v0.0.20240920
+	github.com/digitalocean/go-openvswitch v0.0.20250716
 	github.com/fsnotify/fsnotify v1.8.0
 	github.com/golang/protobuf v1.5.3
 	github.com/mitchellh/go-homedir v1.1.0
@@ -20,7 +20,7 @@ require (
 	yunion.io/x/jsonutils v1.0.1-0.20250507052344-1abcf4f443b1
 	yunion.io/x/log v1.0.1-0.20240305175729-7cf2d6cd5a91
 	yunion.io/x/onecloud v0.0.0-20250716081906-49178a2ed42b
-	yunion.io/x/pkg v1.10.4-0.20250715023532-99a31ea00303
+	yunion.io/x/pkg v1.10.4-0.20250715170922-d5b8a92716b6
 )
 
 require (
@@ -129,6 +129,6 @@ require (
 )
 
 replace (
-	github.com/digitalocean/go-openvswitch => yunion.io/x/go-openvswitch v0.0.20240920
+	github.com/digitalocean/go-openvswitch => yunion.io/x/go-openvswitch v0.0.20250716
 	github.com/jaypipes/ghw => github.com/zexi/ghw v0.9.1
 )

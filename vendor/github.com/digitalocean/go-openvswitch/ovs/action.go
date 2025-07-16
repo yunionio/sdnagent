@@ -20,6 +20,7 @@ import (
 	"fmt"
 	"net"
 	"strconv"
+	"strings"
 )
 
 var (
@@ -595,11 +596,43 @@ func SetField(value string, field string) Action {
 // Load loads the specified value into the specified field.
 // If either string is empty, an error is returned.
 func Load(value string, field string) Action {
-	return &loadSetFieldAction{
+	startIdx := -1
+	endIdx := -1
+	indexOffset := strings.Index(field, "[")
+	if indexOffset > 0 {
+		indexStr := strings.TrimSpace(field[indexOffset:])
+		field = strings.TrimSpace(field[:indexOffset])
+		indexStr = strings.TrimSpace(indexStr[1 : len(indexStr)-1])
+		if strings.Contains(indexStr, "..") {
+			segs := strings.Split(indexStr, "..")
+			if len(segs) == 2 {
+				num1, _ := strconv.Atoi(segs[0])
+				num2, _ := strconv.Atoi(segs[1])
+				if num1 < num2 {
+					startIdx = num1
+					endIdx = num2
+				} else {
+					startIdx = num2
+					endIdx = num1
+				}
+			}
+		} else if len(indexStr) > 0 {
+			startIdx, _ = strconv.Atoi(indexStr)
+			endIdx = startIdx
+		}
+	}
+	load := &loadSetFieldAction{
 		value: value,
 		field: field,
 		typ:   actionLoad,
+
+		startIdx: startIdx,
+		endIdx:   endIdx,
 	}
+	if startIdx >= 0 {
+		load.value = "0x" + load.alignedValue()
+	}
+	return load
 }
 
 // Specifies whether SetField or Load was called to construct a
@@ -614,6 +647,9 @@ type loadSetFieldAction struct {
 	value string
 	field string
 	typ   int
+
+	startIdx int
+	endIdx   int
 }
 
 // MarshalText implements Action.
@@ -622,11 +658,42 @@ func (a *loadSetFieldAction) MarshalText() ([]byte, error) {
 		return nil, errLoadSetFieldZero
 	}
 
+	fieldStr := a.field
+	if a.startIdx >= 0 {
+		if a.startIdx == a.endIdx {
+			fieldStr += fmt.Sprintf("[%d]", a.startIdx)
+		} else if a.startIdx < a.endIdx {
+			fieldStr += fmt.Sprintf("[%d..%d]", a.startIdx, a.endIdx)
+		} else {
+			fieldStr += fmt.Sprintf("[%d..%d]", a.endIdx, a.startIdx)
+		}
+	} else {
+		fieldStr += "[]"
+	}
+
 	if a.typ == actionLoad {
-		return bprintf("load:%s->%s", a.value, a.field), nil
+		return bprintf("load:%s->%s", a.value, fieldStr), nil
 	}
 
 	return bprintf("set_field:%s->%s", a.value, a.field), nil
+}
+
+func (a *loadSetFieldAction) byteAligned() bool {
+	return a.startIdx >= 0 && a.endIdx > a.startIdx && (a.endIdx-a.startIdx+1)%4 == 0
+}
+
+func (a *loadSetFieldAction) alignedValue() string {
+	if a.startIdx >= 0 && a.endIdx > a.startIdx && a.byteAligned() {
+		bytes := (a.endIdx - a.startIdx + 1) / 4
+		value := strings.TrimPrefix(a.value, "0x")
+		buf := strings.Builder{}
+		for i := len(value); i < bytes; i++ {
+			buf.WriteString("0")
+		}
+		buf.WriteString(value)
+		return buf.String()
+	}
+	return strings.TrimPrefix(a.value, "0x")
 }
 
 // GoString implements Action.
