@@ -32,7 +32,7 @@ pkg/agent/proto/agent.pb.go: pkg/agent/proto/agent.proto
 pkg/agent/proto/agent_pb2.py: pkg/agent/proto/agent.proto
 	python -m grpc_tools.protoc -Ipkg/agent/proto --python_out=pkg/agent/proto --grpc_python_out=pkg/agent/proto pkg/agent/proto/agent.proto
 
-RELEASE_BRANCH:=release/3.11
+RELEASE_BRANCH:=release/3.11.11
 
 GOPROXY ?= direct
 

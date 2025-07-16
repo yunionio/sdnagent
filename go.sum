@@ -772,8 +772,8 @@ sigs.k8s.io/structured-merge-diff/v4 v4.0.1/go.mod h1:bJZC9H9iH24zzfZ/41RGcq60oK
 sigs.k8s.io/yaml v1.1.0/go.mod h1:UJmg0vDUVViEyp3mgSv9WPwZCDxu4rQW1olrI1uml+o=
 sigs.k8s.io/yaml v1.2.0 h1:kr/MCeFWJWTwyaHoR9c8EjH9OumOmoF9YGiZd7lFm/Q=
 sigs.k8s.io/yaml v1.2.0/go.mod h1:yfXDCHCao9+ENCvLSE62v9VSji2MKu5jeNfTrofGhJc=
-yunion.io/x/cloudmux v0.3.10-0-alpha.1.0.20250714063958-1a2370d82fd5 h1:mCdUtJPOT2/faXLHCY7IHg/wPkOD7dlWbfUPpxx0iio=
-yunion.io/x/cloudmux v0.3.10-0-alpha.1.0.20250714063958-1a2370d82fd5/go.mod h1:FXxAEbdNfWXX9gjME3K2nJhkydHY5EKEUZb+RLEzVwQ=
+yunion.io/x/cloudmux v0.3.10-0-alpha.1.0.20250714064138-81ce912f004b h1:ul5d1g7xoCN545aD8HLNbbjM33hhzHyJidlETKNVrQA=
+yunion.io/x/cloudmux v0.3.10-0-alpha.1.0.20250714064138-81ce912f004b/go.mod h1:FXxAEbdNfWXX9gjME3K2nJhkydHY5EKEUZb+RLEzVwQ=
 yunion.io/x/executor v0.0.0-20250518005516-5402e9e0bed0 h1:msG4SiDSVU7CrXH06WuHlNEZXIooTcmNbfrIGHuIHBU=
 yunion.io/x/executor v0.0.0-20250518005516-5402e9e0bed0/go.mod h1:Uxuou9WQIeJXNpy7t2fPLL0BYLvLiMvGQwY7Qc6aSws=
 yunion.io/x/go-openvswitch v0.0.20240920 h1:imjK9g2EZ3IzBdNZ3UEYobJJYw6bQCvUvgoTOIyis1o=
@@ -785,8 +785,8 @@ yunion.io/x/log v0.0.0-20190514041436-04ce53b17c6b/go.mod h1:+gauLs73omeJAPlsXce
 yunion.io/x/log v0.0.0-20190629062853-9f6483a7103d/go.mod h1:LC6f/4FozL0iaAbnFt2eDX9jlsyo3WiOUPm03d7+U4U=
 yunion.io/x/log v1.0.1-0.20240305175729-7cf2d6cd5a91 h1:inY5o3LDa/zgsIZuPN0HmpzKIsu/lLgsBmMttuDPGj4=
 yunion.io/x/log v1.0.1-0.20240305175729-7cf2d6cd5a91/go.mod h1:LC6f/4FozL0iaAbnFt2eDX9jlsyo3WiOUPm03d7+U4U=
-yunion.io/x/onecloud v0.0.0-20250715115811-6c4c73c79e8b h1:JcGcxKHo7lxX7VGYrLjmFiddW9kDZhhOikUBt/GmTsk=
-yunion.io/x/onecloud v0.0.0-20250715115811-6c4c73c79e8b/go.mod h1:kjVZzpf/7dUmdS/vsBUd6tV7WhNxZ6g6G6ECUncMQxk=
+yunion.io/x/onecloud v0.0.0-20250715120005-fe0f5ef52625 h1:pD6JfN7wC7/Y5MSWGn/8tqmrGR+bmuj23eNmUB5QhHM=
+yunion.io/x/onecloud v0.0.0-20250715120005-fe0f5ef52625/go.mod h1:ipWCV5Z9TSU4Il1MXzCGIgTC9baOZTZRELG8ifdvdps=
 yunion.io/x/pkg v0.0.0-20190620104149-945c25821dbf/go.mod h1:t6rEGG2sQ4J7DhFxSZVOTjNd0YO/KlfWQyK1W4tog+E=
 yunion.io/x/pkg v0.0.0-20190628082551-f4033ba2ea30/go.mod h1:t6rEGG2sQ4J7DhFxSZVOTjNd0YO/KlfWQyK1W4tog+E=
 yunion.io/x/pkg v1.10.4-0.20250715170922-d5b8a92716b6 h1:bcvKeB+j9oc1wS7/AjonkUlh+Dl6HSw/hfQuFI2JUXw=
