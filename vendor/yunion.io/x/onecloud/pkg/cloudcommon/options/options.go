@@ -43,6 +43,7 @@ import (
 	"yunion.io/x/onecloud/pkg/httperrors"
 	"yunion.io/x/onecloud/pkg/util/atexit"
 	"yunion.io/x/onecloud/pkg/util/fileutils2"
+	"yunion.io/x/onecloud/pkg/util/netutils2"
 )
 
 const (
@@ -70,6 +71,8 @@ type BaseOptions struct {
 
 	ApplicationID      string `help:"Application ID"`
 	RequestWorkerCount int    `default:"8" help:"Request worker thread count, default is 8"`
+
+	RequestWorkerQueueSize int `default:"10" help:"Request worker queue size, default is 10"`
 
 	TaskWorkerCount      int `default:"4" help:"Task manager worker thread count, default is 4"`
 	LocalTaskWorkerCount int `default:"4" help:"Worker thread count that runs local tasks, default is 4"`
@@ -113,6 +116,9 @@ type BaseOptions struct {
 	ApiServer string `help:"URL to access frontend webconsole"`
 
 	CustomizedPrivatePrefixes []string `help:"customized private prefixes"`
+
+	MetadataServerIp4s []string `help:"metadata server IPv4 addresses, default is 169.254.169.254" default:"169.254.169.254"`
+	MetadataServerIp6s []string `help:"metadata server IPv6 addresses, default is fd00:ec2::254" default:"'fd00:ec2::254'"`
 
 	structarg.BaseOptions
 
@@ -166,6 +172,7 @@ type HostCommonOptions struct {
 	ExecutorConnectTimeoutSeconds int    `help:"executor client connection timeout in seconds, default is 30" default:"30"`
 	ImageDeployDriver             string `help:"Image deploy driver" default:"qemu-kvm" choices:"qemu-kvm|nbd|libguestfs"`
 	DeployConcurrent              int    `help:"qemu-kvm deploy driver concurrent" default:"5"`
+	Qcow2Preallocation            string `help:"Qcow2 image create preallocation" default:"metadata" choices:"disable|metadata|falloc|full"`
 }
 
 type DBOptions struct {
@@ -362,6 +369,8 @@ func parseOptions(optStruct interface{}, args []string, configFileName string, s
 
 	consts.SetServiceName(optionsRef.ApplicationID)
 	httperrors.SetTimeZone(optionsRef.TimeZone)
+	netutils2.SetIp4MetadataServers(optionsRef.MetadataServerIp4s)
+	netutils2.SetIp6MetadataServers(optionsRef.MetadataServerIp6s)
 
 	// log configuration
 	log.SetVerboseLevel(int32(optionsRef.LogVerboseLevel))
