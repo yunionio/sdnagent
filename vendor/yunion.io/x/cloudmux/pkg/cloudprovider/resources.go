@@ -722,7 +722,7 @@ type ICloudLoadbalancer interface {
 	GetChargeType() string
 	GetEgressMbps() int
 
-	GetIEIP() (ICloudEIP, error)
+	GetIEIPs() ([]ICloudEIP, error)
 
 	Delete(ctx context.Context) error
 
@@ -1741,6 +1741,19 @@ type ICloudCDNDomain interface {
 	// 浏览器缓存配置
 	GetMaxAge() (*SCDNMaxAge, error)
 
+	GetDNSSECEnabled() bool
+	// SSL/TLS加密模式
+	GetSSLSetting() string
+
+	GetHTTPSRewrites() bool
+	GetCacheLevel() string
+	ClearCache(opts *CacheClearOptions) error
+	GetBrowserCacheTTL() int
+	ChangeConfig(opts *CacheConfig) error
+	GetCustomHostnames() ([]CustomHostname, error)
+	AddCustomHostname(opts *CustomHostnameCreateOptions) error
+	DeleteCustomHostname(id string) error
+
 	Delete() error
 }
 
@@ -1801,7 +1814,6 @@ type ICloudSSLCertificate interface {
 	GetCommon() string
 	GetCountry() string
 	GetIssuer() string
-	GetExpired() bool
 	GetEndDate() time.Time
 	GetFingerprint() string
 	GetCity() string
@@ -1809,4 +1821,20 @@ type ICloudSSLCertificate interface {
 	GetIsUpload() bool
 	GetCert() string
 	GetKey() string
+	GetDnsZoneId() string
+}
+
+type IAiGateway interface {
+	IVirtualResource
+
+	IsAuthentication() bool
+	IsCacheInvalidateOnUpdate() bool
+	GetCacheTTL() int
+	IsCollectLogs() bool
+	GetRateLimitingInterval() int
+	GetRateLimitingLimit() int
+	GetRateLimitingTechnique() string
+
+	ChangeConfig(opts *AiGatewayChangeConfigOptions) error
+	Delete() error
 }
