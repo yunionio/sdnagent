@@ -24,6 +24,8 @@ import (
 
 	"yunion.io/x/jsonutils"
 	"yunion.io/x/log"
+	"yunion.io/x/pkg/errors"
+	"yunion.io/x/pkg/util/regutils"
 
 	apis "yunion.io/x/onecloud/pkg/apis/compute"
 	"yunion.io/x/onecloud/pkg/apis/identity"
@@ -38,6 +40,9 @@ type HostConfigNetwork struct {
 	IP     net.IP
 	mac    net.HardwareAddr
 
+	IP6      net.IP
+	IP6Local net.IP
+
 	HostLocalNets []apis.NetworkDetails
 }
 
@@ -46,40 +51,78 @@ func NewHostConfigNetwork(network string) (*HostConfigNetwork, error) {
 	if len(chunks) >= 3 {
 		// the 3rd field can be an ip address or platform network name.
 		// net.ParseIP will return nil when it fails
+		var ip, ip6 net.IP
+		if regutils.MatchIP4Addr(chunks[2]) {
+			ip = net.ParseIP(chunks[2])
+		} else if regutils.MatchIP6Addr(chunks[2]) {
+			ip6 = net.ParseIP(chunks[2])
+		}
+		if len(chunks) >= 4 {
+			if regutils.MatchIP4Addr(chunks[3]) {
+				ip = net.ParseIP(chunks[3])
+			} else if regutils.MatchIP6Addr(chunks[3]) {
+				ip6 = net.ParseIP(chunks[3])
+			}
+		}
 		return &HostConfigNetwork{
 			Ifname: chunks[0],
 			Bridge: chunks[1],
-			IP:     net.ParseIP(chunks[2]),
+			IP:     ip,
+			IP6:    ip6,
 		}, nil
 	}
 	return nil, fmt.Errorf("invalid host.conf networks config: %q", network)
 }
 
-func (hcn *HostConfigNetwork) IPMAC() (net.IP, net.HardwareAddr, error) {
+func (hcn *HostConfigNetwork) MAC() (net.HardwareAddr, error) {
 	if hcn.mac == nil {
 		iface, err := net.InterfaceByName(hcn.Bridge)
 		if err != nil {
-			return nil, nil, err
+			return nil, errors.Wrap(err, "net.InterfaceByName")
 		}
 		addrs, err := iface.Addrs()
 		if err != nil {
-			return nil, nil, err
+			return nil, errors.Wrap(err, "iface.Addrs")
 		}
+		var v4ip, v6ip, v6llip net.IP
 		for _, addr := range addrs {
 			if ipnet, ok := addr.(*net.IPNet); ok {
-				ip := ipnet.IP.To4()
-				if ip != nil {
-					hcn.IP = ip
-					break
+				ip4 := ipnet.IP.To4()
+				ip6 := ipnet.IP.To16()
+				if ip4 != nil && ip6 == nil {
+					// v4 address
+					if v4ip == nil || (hcn.IP != nil && ip4.String() == hcn.IP.String()) {
+						v4ip = ip4
+					}
+				} else if ip6 != nil {
+					// v6 address
+					if ip6.IsLinkLocalUnicast() {
+						v6llip = ip6
+					} else if v6ip == nil || (hcn.IP6 != nil && ip6.String() == hcn.IP6.String()) {
+						v6ip = ip6
+					}
 				}
 			}
 		}
+		if v4ip == nil && v6ip == nil {
+			// no either v4ip or v6ip, interface is not ready yet, return error
+			return nil, errors.Wrap(errors.ErrInvalidStatus, "interface is not ready yet")
+		}
 		hcn.mac = iface.HardwareAddr
+		if v4ip != nil {
+			hcn.IP = v4ip
+		}
+		if v6ip != nil {
+			hcn.IP6 = v6ip
+		}
+		if v6llip != nil {
+			hcn.IP6Local = v6llip
+		}
 	}
 	if hcn.IP != nil && hcn.mac != nil {
-		return hcn.IP, hcn.mac, nil
+		return hcn.mac, nil
 	}
-	return nil, nil, fmt.Errorf("cannot find proper ip/mac")
+	return nil, fmt.Errorf("cannot find proper ip/mac for %s", hcn.Bridge)
 }
 
 func (hcn *HostConfigNetwork) loadHostLocalNetconfs(hc *HostConfig) {

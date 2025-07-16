@@ -80,6 +80,9 @@ type serversWatcher struct {
 	zoneMan    *utils.ZoneMan
 
 	cmdCh chan wCmdReq
+
+	bridgeIpNicCache map[string]*desc.SGuestDesc
+	netIdIpNicCache  map[string]*desc.SGuestDesc
 }
 
 func newServersWatcher() (*serversWatcher, error) {
@@ -88,6 +91,9 @@ func newServersWatcher() (*serversWatcher, error) {
 		zoneMan: utils.NewZoneMan(GuestCtZoneBase),
 
 		cmdCh: make(chan wCmdReq),
+
+		bridgeIpNicCache: make(map[string]*desc.SGuestDesc),
+		netIdIpNicCache:  make(map[string]*desc.SGuestDesc),
 	}
 	return w, nil
 }
@@ -334,14 +340,21 @@ func (w *serversWatcher) Start(ctx context.Context, agent *AgentServer) {
 					ip    = data.IP
 					robj  *desc.SGuestDesc
 				)
-				for guestId, guest := range w.guests {
-					if nic := guest.FindNicByNetIdIP(netId, ip); nic != nil {
-						obj, err := guest.GetJSONObjectDesc()
-						if err != nil {
-							log.Errorf("guest %s: GetJSONObjectDesc: %v", guestId, err)
+				if gDesc, ok := w.netIdIpNicCache[netId]; ok {
+					robj = gDesc
+				} else {
+					for guestId, guest := range w.guests {
+						if nic := guest.FindNicByNetIdIP(netId, ip); nic != nil {
+							obj, err := guest.GetJSONObjectDesc()
+							if err != nil {
+								log.Errorf("guest %s: GetJSONObjectDesc: %v", guestId, err)
+							}
+							robj = obj
+							break
 						}
-						robj = obj
-						break
+					}
+					if robj != nil {
+						w.netIdIpNicCache[netId] = robj
 					}
 				}
 				data.RespCh <- robj
@@ -352,14 +365,22 @@ func (w *serversWatcher) Start(ctx context.Context, agent *AgentServer) {
 					ip        = data.IP
 					robj      *desc.SGuestDesc
 				)
-				for guestId, guest := range w.guests {
-					if nic := guest.FindNicByHostLocalIP(hostLocal, ip); nic != nil {
-						obj, err := guest.GetJSONObjectDesc()
-						if err != nil {
-							log.Errorf("guest %s: GetJSONObjectDesc: %v", guestId, err)
+				mapKey := fmt.Sprintf("%s:%s", hostLocal.Bridge, ip)
+				if gDesc, ok := w.bridgeIpNicCache[mapKey]; ok {
+					robj = gDesc
+				} else {
+					for guestId, guest := range w.guests {
+						if nic := guest.FindNicByHostLocalIP(hostLocal, ip); nic != nil {
+							obj, err := guest.GetJSONObjectDesc()
+							if err != nil {
+								log.Errorf("guest %s: GetJSONObjectDesc: %v", guestId, err)
+							}
+							robj = obj
+							break
 						}
-						robj = obj
-						break
+					}
+					if robj != nil {
+						w.bridgeIpNicCache[mapKey] = robj
 					}
 				}
 				data.RespCh <- robj

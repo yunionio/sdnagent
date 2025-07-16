@@ -29,6 +29,8 @@ type HostLocal struct {
 	Bridge     string
 	Ifname     string
 	IP         net.IP
+	IP6        net.IP
+	IP6Local   net.IP
 	MAC        net.HardwareAddr
 
 	HostLocalNets []compute.NetworkDetails
