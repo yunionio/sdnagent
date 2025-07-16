@@ -211,6 +211,9 @@ github.com/mozillazg/go-pinyin
 # github.com/pelletier/go-toml v1.2.0
 ## explicit
 github.com/pelletier/go-toml
+# github.com/petermattis/goid v0.0.0-20250508124226-395b08cebbdb
+## explicit; go 1.17
+github.com/petermattis/goid
 # github.com/pkg/errors v0.9.1
 ## explicit
 github.com/pkg/errors
@@ -724,7 +727,7 @@ sigs.k8s.io/structured-merge-diff/v4/value
 # sigs.k8s.io/yaml v1.2.0
 ## explicit; go 1.12
 sigs.k8s.io/yaml
-# yunion.io/x/cloudmux v0.3.10-0-alpha.1.0.20250529120044-ca8efb3b0df2
+# yunion.io/x/cloudmux v0.3.10-0-alpha.1.0.20250716045727-7c698b982f66
 ## explicit; go 1.21
 yunion.io/x/cloudmux/pkg/apis
 yunion.io/x/cloudmux/pkg/apis/billing
@@ -747,7 +750,7 @@ yunion.io/x/jsonutils
 ## explicit; go 1.12
 yunion.io/x/log
 yunion.io/x/log/hooks
-# yunion.io/x/onecloud v0.0.0-20250607004225-6607ffc3f1a4
+# yunion.io/x/onecloud v0.0.0-20250716073604-e1f9c6bce7a8
 ## explicit; go 1.21
 yunion.io/x/onecloud/locales
 yunion.io/x/onecloud/pkg/apihelper
@@ -880,7 +883,7 @@ yunion.io/x/onecloud/pkg/util/tagutils
 yunion.io/x/onecloud/pkg/util/yunionmeta
 yunion.io/x/onecloud/pkg/vpcagent/models
 yunion.io/x/onecloud/pkg/vpcagent/ovn/mac
-# yunion.io/x/pkg v1.10.4-0.20250519013345-54017bf6c1f0
+# yunion.io/x/pkg v1.10.4-0.20250715170922-d5b8a92716b6
 ## explicit; go 1.18
 yunion.io/x/pkg/appctx
 yunion.io/x/pkg/errors

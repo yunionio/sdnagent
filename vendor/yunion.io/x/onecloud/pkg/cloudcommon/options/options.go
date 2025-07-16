@@ -71,6 +71,8 @@ type BaseOptions struct {
 	ApplicationID      string `help:"Application ID"`
 	RequestWorkerCount int    `default:"8" help:"Request worker thread count, default is 8"`
 
+	RequestWorkerQueueSize int `default:"10" help:"Request worker queue size, default is 10"`
+
 	TaskWorkerCount      int `default:"4" help:"Task manager worker thread count, default is 4"`
 	LocalTaskWorkerCount int `default:"4" help:"Worker thread count that runs local tasks, default is 4"`
 
@@ -166,6 +168,7 @@ type HostCommonOptions struct {
 	ExecutorConnectTimeoutSeconds int    `help:"executor client connection timeout in seconds, default is 30" default:"30"`
 	ImageDeployDriver             string `help:"Image deploy driver" default:"qemu-kvm" choices:"qemu-kvm|nbd|libguestfs"`
 	DeployConcurrent              int    `help:"qemu-kvm deploy driver concurrent" default:"5"`
+	Qcow2Preallocation            string `help:"Qcow2 image create preallocation" default:"metadata" choices:"disable|metadata|falloc|full"`
 }
 
 type DBOptions struct {
