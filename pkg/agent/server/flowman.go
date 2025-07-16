@@ -15,7 +15,9 @@
 package server
 
 import (
+	"bytes"
 	"context"
+	"fmt"
 	"reflect"
 	"sync"
 	"sync/atomic"
@@ -131,7 +133,7 @@ func (fm *FlowMan) doCheck() {
 	flowsAdd, flowsDel := fs0.Diff(merged)
 	fm.doCommitChange(flowsAdd, flowsDel)
 
-	/*if len(flowsAdd) > 0 || len(flowsDel) > 0 {
+	if len(flowsAdd) > 0 || len(flowsDel) > 0 {
 		buf := &bytes.Buffer{}
 		buf.WriteString(fmt.Sprintf("flowman %s: commit:\n", fm.bridge))
 		//fm.bufWriteFlows(buf, "000-flow", fs0.Flows())
@@ -139,15 +141,15 @@ func (fm *FlowMan) doCheck() {
 		fm.bufWriteFlows(buf, "add-flow", flowsAdd)
 		fm.bufWriteFlows(buf, "del-flow", flowsDel)
 		log.Infof("%s", buf.String())
-	}*/
+	}
 }
 
-/*func (fm *FlowMan) bufWriteFlows(buf *bytes.Buffer, prefix string, flows []*ovs.Flow) {
+func (fm *FlowMan) bufWriteFlows(buf *bytes.Buffer, prefix string, flows []*ovs.Flow) {
 	for i, f := range flows {
 		txt, _ := f.MarshalText()
 		buf.WriteString(fmt.Sprintf("%s:%2d: %s\n", prefix, i, txt))
 	}
-}*/
+}
 
 func (fm *FlowMan) doCommitChange(flowsAdd, flowsDel []*ovs.Flow) error {
 	log.Infof("FlowMan %s doCommitChange flowsAdd %d flowsDel %d", fm.bridge, len(flowsAdd), len(flowsDel))
