@@ -106,8 +106,7 @@ type ComputeOptions struct {
 	RetentionDaysLimit int `default:"49" help:"Days of snapshot retention, default 49 days"`
 	TimePointsLimit    int `default:"1" help:"time point of every days, default 1 point"`
 
-	ServerStatusSyncIntervalMinutes int `default:"5" help:"Interval to sync server status, defualt is 5 minutes"`
-	CloudAccountBatchSyncSize       int `default:"10" help:"How many cloud account syncing in a batch"`
+	CloudAccountBatchSyncSize int `default:"10" help:"How many cloud account syncing in a batch"`
 
 	ServerSkuSyncIntervalMinutes int `default:"60" help:"Interval to sync public cloud server skus, defualt is 1 hour"`
 	SkuBatchSync                 int `default:"5" help:"How many skus can be sync in a batch"`
@@ -142,7 +141,7 @@ type ComputeOptions struct {
 
 	CloudSyncWorkerCount         int `help:"how many current synchronization threads" default:"5"`
 	CloudProviderSyncWorkerCount int `help:"how many current providers synchronize their regions, practically no limit" default:"10"`
-	CloudAutoSyncIntervalSeconds int `help:"frequency to check auto sync tasks" default:"30"`
+	CloudAutoSyncIntervalSeconds int `help:"frequency to check auto sync tasks" default:"300"`
 	DefaultSyncIntervalSeconds   int `help:"minimal synchronization interval, default 15 minutes" default:"900"`
 	MaxCloudAccountErrorCount    int `help:"maximal consecutive error count allow for a cloud account" default:"5"`
 
@@ -192,10 +191,14 @@ type ComputeOptions struct {
 
 	KeepDeletedSnapshotDays int `help:"The day of cleanup snapshot" default:"30"`
 	// 弹性伸缩中的ecs一般会有特殊的系统标签，通过指定这些标签可以忽略这部分ecs的同步, 指定多个key需要以 ',' 分隔
-	SkipServerBySysTagKeys  string `help:"skip server,disk sync and create with system tags" default:""`
-	SkipServerByUserTagKeys string `help:"skip server,disk sync and create with user tags" default:""`
+	SkipServerBySysTagKeys    string   `help:"skip server,disk sync and create with system tags" default:""`
+	SkipServerByUserTagKeys   string   `help:"skip server,disk sync and create with user tags" default:""`
+	SkipServerByUserTagValues []string `help:"skip server,disk sync and create with user tag values"`
 	// 修改标签时不再同步至云上, 云账号同步资源时不会冲掉本地打的标签(key相同的会覆盖), 云账号开启只读同步和此参数效果相同,且仅影响开启只读同步的账号
 	KeepTagLocalization bool `help:"keep tag localization, not synchronized to the cloud" default:"false"`
+
+	// 调整虚拟机配置时，新增磁盘使用虚拟机标签
+	UseServerTagsForDisk bool `help:"use server tags for disk" default:"true"`
 
 	EnableMonitorAgent bool `help:"enable public cloud vm monitor agent" default:"false"`
 
@@ -223,6 +226,15 @@ type ComputeOptions struct {
 	esxi.EsxiOptions
 
 	NetworkAlwaysManualConfig bool `help:"always manually configure network settings" default:"false"`
+
+	ComputeEEOptions
+}
+
+type ComputeEEOptions struct {
+	// 快速同步资源状态时间周期
+	ServerStatusSyncIntervalMinutes int `default:"5" help:"Interval to sync server status, defualt is 5 minutes"`
+	// 跳过新增资源同步时间范围
+	SkipServerStatusSyncTimeRange string `help:"Skip server status sync time range example: 08:00-18:00"`
 }
 
 type SCapabilityOptions struct {
