@@ -196,10 +196,14 @@ type ComputeOptions struct {
 
 	KeepDeletedSnapshotDays int `help:"The day of cleanup snapshot" default:"30"`
 	// 弹性伸缩中的ecs一般会有特殊的系统标签，通过指定这些标签可以忽略这部分ecs的同步, 指定多个key需要以 ',' 分隔
-	SkipServerBySysTagKeys  string `help:"skip server,disk sync and create with system tags" default:""`
-	SkipServerByUserTagKeys string `help:"skip server,disk sync and create with user tags" default:""`
+	SkipServerBySysTagKeys    string   `help:"skip server,disk sync and create with system tags" default:""`
+	SkipServerByUserTagKeys   string   `help:"skip server,disk sync and create with user tags" default:""`
+	SkipServerByUserTagValues []string `help:"skip server,disk sync and create with user tag values"`
 	// 修改标签时不再同步至云上, 云账号同步资源时不会冲掉本地打的标签(key相同的会覆盖), 云账号开启只读同步和此参数效果相同,且仅影响开启只读同步的账号
 	KeepTagLocalization bool `help:"keep tag localization, not synchronized to the cloud" default:"false"`
+
+	// 调整虚拟机配置时，新增磁盘使用虚拟机标签
+	UseServerTagsForDisk bool `help:"use server tags for disk" default:"true"`
 
 	EnableMonitorAgent bool `help:"enable public cloud vm monitor agent" default:"false"`
 
@@ -230,6 +234,8 @@ type ComputeOptions struct {
 	esxi.EsxiOptions
 
 	NetworkAlwaysManualConfig bool `help:"always manually configure network settings" default:"false"`
+
+	SSLAccounts []string `help:"SSL account"`
 
 	ComputeEEOptions
 }

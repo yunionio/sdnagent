@@ -2028,7 +2028,7 @@ func (self *SGuest) PerformCreatedisk(ctx context.Context, userCred mcclient.Tok
 	lockman.LockObject(ctx, host)
 	defer lockman.ReleaseObject(ctx, host)
 
-	err = self.CreateDisksOnHost(ctx, userCred, host, disksConf, pendingUsage, false, false, nil, nil, false)
+	err = self.CreateDisksOnHost(ctx, userCred, host, disksConf, pendingUsage, false, options.Options.UseServerTagsForDisk, nil, nil, false)
 	if err != nil {
 		quotas.CancelPendingUsage(ctx, userCred, pendingUsage, pendingUsage, false)
 		logclient.AddActionLogWithContext(ctx, self, logclient.ACT_CREATE, err.Error(), userCred, false)
@@ -2435,8 +2435,7 @@ func (self *SGuest) attachIsolatedDevice(ctx context.Context, userCred mcclient.
 	if len(dev.GuestId) > 0 {
 		return fmt.Errorf("Isolated device already attached to another guest: %s", dev.GuestId)
 	}
-	if dev.HostId !=
-		self.HostId {
+	if dev.HostId != self.HostId {
 		return fmt.Errorf("Isolated device and guest are not located in the same host")
 	}
 	drv, _ := self.GetDriver()
@@ -3350,7 +3349,8 @@ func (self *SGuest) DoCancelPendingDelete(ctx context.Context, userCred mcclient
 	}
 
 	if self.BillingType == billing_api.BILLING_TYPE_POSTPAID && !self.ExpiredAt.IsZero() {
-		if err := self.CancelExpireTime(ctx, userCred); err != nil {
+		err := SaveReleaseAt(ctx, self, userCred, time.Time{})
+		if err != nil {
 			return err
 		}
 	}
@@ -4483,20 +4483,22 @@ func (self *SGuest) PerformCancelExpire(ctx context.Context, userCred mcclient.T
 	if self.BillingType != billing_api.BILLING_TYPE_POSTPAID {
 		return nil, httperrors.NewBadRequestError("guest billing type %s not support cancel expire", self.BillingType)
 	}
-	driver, err := self.GetDriver()
+
+	err := SaveReleaseAt(ctx, self, userCred, time.Time{})
 	if err != nil {
 		return nil, err
 	}
-	if err := driver.CancelExpireTime(ctx, userCred, self); err != nil {
-		return nil, err
-	}
+
 	disks, err := self.GetDisks()
 	if err != nil {
 		return nil, err
 	}
 	for i := 0; i < len(disks); i += 1 {
-		if err := disks[i].CancelExpireTime(ctx, userCred); err != nil {
-			return nil, err
+		if disks[i].BillingType == billing_api.BILLING_TYPE_POSTPAID {
+			err := SaveReleaseAt(ctx, &disks[i], userCred, time.Time{})
+			if err != nil {
+				return nil, err
+			}
 		}
 	}
 	return nil, nil
@@ -4517,16 +4519,15 @@ func (self *SGuest) PerformPostpaidExpire(ctx context.Context, userCred mcclient
 		return nil, httperrors.NewBadRequestError("guest %s unsupport postpaid expire", self.Hypervisor)
 	}
 
-	bc, err := ParseBillingCycleInput(&self.SBillingResourceBase, input)
+	releaseAt, err := input.GetReleaseAt()
 	if err != nil {
 		return nil, err
 	}
 
-	err = self.SaveRenewInfo(ctx, userCred, bc, nil, billing_api.BILLING_TYPE_POSTPAID)
+	err = SaveReleaseAt(ctx, self, userCred, releaseAt)
 	if err != nil {
 		return nil, err
 	}
-	logclient.AddActionLogWithContext(ctx, self, logclient.ACT_SET_EXPIRED_TIME, input, userCred, true)
 	return nil, nil
 }
 
@@ -4590,7 +4591,7 @@ func (self *SGuest) SaveRenewInfo(
 	ctx context.Context, userCred mcclient.TokenCredential,
 	bc *billing.SBillingCycle, expireAt *time.Time, billingType string,
 ) error {
-	err := self.doSaveRenewInfo(ctx, userCred, bc, expireAt, billingType)
+	err := SaveRenewInfo(ctx, userCred, self, bc, expireAt, billingType)
 	if err != nil {
 		return err
 	}
@@ -4600,56 +4601,12 @@ func (self *SGuest) SaveRenewInfo(
 	}
 	for i := 0; i < len(disks); i += 1 {
 		if disks[i].AutoDelete {
-			err = disks[i].SaveRenewInfo(ctx, userCred, bc, expireAt, billingType)
+			err = SaveRenewInfo(ctx, userCred, &disks[i], bc, expireAt, billingType)
 			if err != nil {
 				return err
 			}
 		}
 	}
-	return nil
-}
-
-func (self *SGuest) doSaveRenewInfo(
-	ctx context.Context, userCred mcclient.TokenCredential,
-	bc *billing.SBillingCycle, expireAt *time.Time, billingType string,
-) error {
-	_, err := db.Update(self, func() error {
-		if billingType == "" {
-			billingType = billing_api.BILLING_TYPE_PREPAID
-		}
-		if self.BillingType == "" {
-			self.BillingType = billingType
-		}
-		if expireAt != nil && !expireAt.IsZero() {
-			self.ExpiredAt = *expireAt
-		} else if bc != nil {
-			self.BillingCycle = bc.String()
-			self.ExpiredAt = bc.EndAt(self.ExpiredAt)
-		}
-		return nil
-	})
-	if err != nil {
-		log.Errorf("UpdateItem error %s", err)
-		return err
-	}
-	db.OpsLog.LogEvent(self, db.ACT_RENEW, self.GetShortDesc(ctx), userCred)
-	return nil
-}
-
-func (self *SGuest) CancelExpireTime(ctx context.Context, userCred mcclient.TokenCredential) error {
-	if self.BillingType != billing_api.BILLING_TYPE_POSTPAID {
-		return fmt.Errorf("billing type %s not support cancel expire", self.BillingType)
-	}
-	_, err := sqlchemy.GetDB().Exec(
-		fmt.Sprintf(
-			"update %s set expired_at = NULL and billing_cycle = NULL where id = ?",
-			GuestManager.TableSpec().Name(),
-		), self.Id,
-	)
-	if err != nil {
-		return errors.Wrap(err, "guest cancel expire time")
-	}
-	db.OpsLog.LogEvent(self, db.ACT_RENEW, "guest cancel expire time", userCred)
 	return nil
 }
 
@@ -6783,4 +6740,9 @@ func (self *SGuest) StartChangeBillingTypeTask(ctx context.Context, userCred mcc
 		return err
 	}
 	return task.ScheduleRun(nil)
+}
+
+func (self *SGuest) PerformDisableAutoMergeSnapshots(ctx context.Context, userCred mcclient.TokenCredential, query jsonutils.JSONObject, data jsonutils.JSONObject) (jsonutils.JSONObject, error) {
+	disableAutoMergeSnapshot := jsonutils.QueryBoolean(data, "disable_auto_merge_snapshot", false)
+	return nil, self.SetMetadata(ctx, api.VM_METADATA_DISABLE_AUTO_MERGE_SNAPSHOT, disableAutoMergeSnapshot, userCred)
 }
