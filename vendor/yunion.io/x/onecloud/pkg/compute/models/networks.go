@@ -18,6 +18,8 @@ import (
 	"context"
 	"database/sql"
 	"fmt"
+	"math"
+	"math/big"
 	"sort"
 	"strconv"
 	"strings"
@@ -94,11 +96,11 @@ type SNetwork struct {
 	IfnameHint string `width:"9" charset:"ascii" nullable:"true" list:"user" create:"optional"`
 
 	// 起始IP地址
-	GuestIpStart string `width:"16" charset:"ascii" nullable:"false" list:"user" update:"user" create:"required"`
+	GuestIpStart string `width:"16" charset:"ascii" nullable:"false" list:"user" update:"user" create:"optional"`
 	// 结束IP地址
-	GuestIpEnd string `width:"16" charset:"ascii" nullable:"false" list:"user" update:"user" create:"required"`
+	GuestIpEnd string `width:"16" charset:"ascii" nullable:"false" list:"user" update:"user" create:"optional"`
 	// 掩码
-	GuestIpMask int8 `nullable:"false" list:"user" update:"user" create:"required"`
+	GuestIpMask int8 `nullable:"false" list:"user" update:"user" create:"optional"`
 	// 网关地址
 	GuestGateway string `width:"16" charset:"ascii" nullable:"true" list:"user" update:"user" create:"optional"`
 	// DNS, allow multiple dns, seperated by ","
@@ -618,6 +620,9 @@ func (snet *SNetwork) GetGuestIpv4StartAddress() netutils.IPV4Addr {
 }
 
 func (snet *SNetwork) IsExitNetwork() bool {
+	if len(snet.GuestIpStart) == 0 {
+		return false
+	}
 	return len(snet.ExternalId) == 0 && netutils.IsExitAddress(snet.GetGuestIpv4StartAddress())
 }
 
@@ -861,7 +866,11 @@ func (manager *SNetworkManager) newFromCloudNetwork(ctx context.Context, userCre
 }
 
 func (net *SNetwork) IsAddressInRange(address netutils.IPV4Addr) bool {
-	return net.getIPRange().Contains(address)
+	ipRange := net.getIPRange()
+	if ipRange == nil {
+		return false
+	}
+	return ipRange.Contains(address)
 }
 
 func (net *SNetwork) IsAddress6InRange(address netutils.IPV6Addr) bool {
@@ -1012,7 +1021,7 @@ func (manager *SNetworkManager) TotalPortCount(
 			stat, _ = ret[net.ServerType]
 		}
 		allStat, _ = ret[""]
-		count := net.getIPRange().AddressCount()
+		count := net.GetTotalAddressCount()
 		if net.IsExitNetwork() {
 			if len(net.ServerType) > 0 {
 				stat.CountExt += count
@@ -1070,7 +1079,19 @@ func (snet *SNetwork) GetFreeAddressCount() (int, error) {
 }
 
 func (snet *SNetwork) GetTotalAddressCount() int {
-	return snet.getIPRange().AddressCount()
+	ipRange := snet.getIPRange()
+	if ipRange != nil {
+		return ipRange.AddressCount()
+	}
+	ip6Range := snet.getIPRange6()
+	if ip6Range == nil {
+		return 0
+	}
+	cnt := ip6Range.AddressCount()
+	if cnt.Cmp(big.NewInt(math.MaxInt32)) > 0 {
+		return math.MaxInt32
+	}
+	return int(cnt.Int64())
 }
 
 func (snet *SNetwork) getFreeAddressCount() (int, error) {
@@ -1082,19 +1103,7 @@ func (snet *SNetwork) getFreeAddressCount() (int, error) {
 	if nics, ok := vnics[snet.Id]; ok {
 		used = nics.Total
 	}
-	return snet.getIPRange().AddressCount() - used, nil
-}
-
-func (snet *SNetwork) getFreeAddress6Count() (int, error) {
-	vnics, err := NetworkManager.TotalNicCount([]string{snet.Id})
-	if err != nil {
-		return -1, errors.Wrapf(err, "TotalNicCount")
-	}
-	used := 0
-	if nics, ok := vnics[snet.Id]; ok {
-		used = nics.Total
-	}
-	return snet.getIPRange().AddressCount() - used, nil
+	return snet.GetTotalAddressCount() - used, nil
 }
 
 func isValidNetworkInfo(ctx context.Context, userCred mcclient.TokenCredential, netConfig *api.NetworkConfig, reuseAddr string) error {
@@ -1233,8 +1242,11 @@ func validatePortMapping(pm *api.GuestPortMapping) error {
 			return errors.Wrap(err, "validate host_port")
 		}
 	}
-	if err := validatePort(pm.Port, 1, 65535); err != nil {
-		return errors.Wrap(err, "validate port")
+	// -1 端口表示自动分配
+	if pm.Port != -1 {
+		if err := validatePort(pm.Port, 1, 65535); err != nil {
+			return errors.Wrap(err, "validate port")
+		}
 	}
 	if pm.Protocol == "" {
 		pm.Protocol = api.GuestPortMappingProtocolTCP
@@ -1247,6 +1259,18 @@ func validatePortMapping(pm *api.GuestPortMapping) error {
 			if !regutils.MatchIPAddr(ip) && !regutils.MatchCIDR(ip) {
 				return httperrors.NewInputParameterError("invalid ip or prefix %s", ip)
 			}
+		}
+	}
+	if pm.Rule != nil {
+		if pm.Rule.FirstPortOffset != nil {
+			if *pm.Rule.FirstPortOffset < 0 {
+				return httperrors.NewInputParameterError("first port offset %d is less than 0", *pm.Rule.FirstPortOffset)
+			}
+		}
+	}
+	for _, env := range pm.Envs {
+		if env.ValueFrom != api.GuestPortMappingEnvValueFromPort && env.ValueFrom != api.GuestPortMappingEnvValueFromHostPort {
+			return httperrors.NewInputParameterError("invalid value from %s", env.ValueFrom)
 		}
 	}
 	return nil
@@ -1263,10 +1287,6 @@ func IsExitNetworkInfo(ctx context.Context, userCred mcclient.TokenCredential, n
 		return true
 	}
 	return false
-}
-
-func (snet *SNetwork) GetPorts() int {
-	return snet.getIPRange().AddressCount()
 }
 
 func (manager *SNetworkManager) FetchCustomizeColumns(
@@ -1296,7 +1316,7 @@ func (manager *SNetworkManager) FetchCustomizeColumns(
 		if network.IsClassic() {
 			rows[i].IsClassic = true
 		}
-		rows[i].Ports = network.GetPorts()
+		rows[i].Ports = network.GetTotalAddressCount()
 		rows[i].Routes = network.GetRoutes()
 		rows[i].Schedtags = GetSchedtagsDetailsToResourceV2(network, ctx)
 		rows[i].Dns = network.GetDNS(rows[i].Zone)
@@ -1859,7 +1879,7 @@ func (manager *SNetworkManager) ValidateCreateData(ctx context.Context, userCred
 	}
 
 	var (
-		ipRange netutils.IPV4AddrRange
+		ipRange *netutils.IPV4AddrRange
 		masklen int8
 		netAddr netutils.IPV4Addr
 	)
@@ -1868,7 +1888,8 @@ func (manager *SNetworkManager) ValidateCreateData(ctx context.Context, userCred
 		if err != nil {
 			return input, httperrors.NewInputParameterError("ip_prefix error: %s", err)
 		}
-		ipRange = prefix.ToIPRange()
+		ipRangeTmp := prefix.ToIPRange()
+		ipRange = &ipRangeTmp
 		masklen = prefix.MaskLen
 		netAddr = prefix.Address.NetAddr(masklen)
 		input.GuestIpMask = prefix.MaskLen
@@ -1913,7 +1934,8 @@ func (manager *SNetworkManager) ValidateCreateData(ctx context.Context, userCred
 		if err != nil {
 			return input, httperrors.NewInputParameterError("invalid end ip: %s %s", input.GuestIpEnd, err)
 		}
-		ipRange = netutils.NewIPV4AddrRange(ipStart, ipEnd)
+		ipRangeTpm := netutils.NewIPV4AddrRange(ipStart, ipEnd)
+		ipRange = &ipRangeTpm
 		masklen = input.GuestIpMask
 		netAddr = ipStart.NetAddr(masklen)
 		if ipEnd.NetAddr(masklen) != netAddr {
@@ -1980,6 +2002,10 @@ func (manager *SNetworkManager) ValidateCreateData(ctx context.Context, userCred
 		}
 	}
 
+	if ipRange == nil && ipRange6 == nil {
+		return input, httperrors.NewBadRequestError("No valid ipv4/ipv6 address input")
+	}
+
 	// do not set default dns
 	// if len(input.GuestDns) == 0 {
 	// 	input.GuestDns = options.Options.DNSServer
@@ -2033,9 +2059,10 @@ func (manager *SNetworkManager) ValidateCreateData(ctx context.Context, userCred
 	}
 
 	{
-		if !vpc.containsIPV4Range(ipRange) {
+		if ipRange != nil && !vpc.containsIPV4Range(*ipRange) {
 			return input, httperrors.NewInputParameterError("Network not in range of VPC cidrblock %s", vpc.CidrBlock)
 		}
+
 		if ipRange6 != nil {
 			if !vpc.containsIPV6Range(*ipRange6) {
 				return input, httperrors.NewInputParameterError("Network not in range of VPC ipv6 cidrblock %s", vpc.CidrBlock6)
@@ -2049,7 +2076,7 @@ func (manager *SNetworkManager) ValidateCreateData(ctx context.Context, userCred
 		if err != nil {
 			return input, httperrors.NewInternalServerError("fail to GetNetworks of vpc: %v", err)
 		}
-		if isOverlapNetworks(nets, ipRange) {
+		if ipRange != nil && isOverlapNetworks(nets, *ipRange) {
 			return input, httperrors.NewInputParameterError("Conflict address space with existing networks in vpc %q", vpc.GetName())
 		}
 		if ipRange6 != nil && isOverlapNetworks6(nets, *ipRange6) {
@@ -2057,8 +2084,10 @@ func (manager *SNetworkManager) ValidateCreateData(ctx context.Context, userCred
 		}
 	}
 
-	input.GuestIpStart = ipRange.StartIp().String()
-	input.GuestIpEnd = ipRange.EndIp().String()
+	if ipRange != nil {
+		input.GuestIpStart = ipRange.StartIp().String()
+		input.GuestIpEnd = ipRange.EndIp().String()
+	}
 
 	if ipRange6 != nil {
 		// validate v6 ip addr
@@ -3895,6 +3924,10 @@ func (net *SNetwork) PerformSyncAdditionalWires(
 		return nil, errors.Wrap(err, "syncAdditionalWires")
 	}
 	return nil, nil
+}
+
+func (net *SNetwork) IsSupportIPv4() bool {
+	return len(net.GuestIpStart) > 0 && len(net.GuestIpEnd) > 0
 }
 
 func (net *SNetwork) IsSupportIPv6() bool {
