@@ -201,6 +201,10 @@ type SimpleGuest struct {
 	Driver string `json:"driver"`
 	// 缓存模式
 	CacheMode string `json:"cache_mode"`
+	// 磁盘并发数
+	Iops int `json:"iops"`
+	// 磁盘吞吐
+	Bps int `json:"bps"`
 }
 
 type SimpleSnapshotPolicy struct {
@@ -257,6 +261,8 @@ type DiskUpdateInput struct {
 
 	// 磁盘类型
 	DiskType string `json:"disk_type"`
+	// 关机自动重置
+	AutoReset *bool `json:"auto_reset"`
 }
 
 type DiskSaveInput struct {
@@ -334,3 +340,11 @@ type DiskSnapshotpolicyInput struct {
 }
 
 type DiskRebuildInput struct{}
+
+type DiskChangeBillingTypeInput struct {
+	// 仅在磁盘挂载在虚拟机上时调用
+	// 目前支持阿里云
+	// enmu: [postpaid, prepaid]
+	// required: true
+	BillingType string `json:"billing_type"`
+}

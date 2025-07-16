@@ -32,13 +32,13 @@ pkg/agent/proto/agent.pb.go: pkg/agent/proto/agent.proto
 pkg/agent/proto/agent_pb2.py: pkg/agent/proto/agent.proto
 	python -m grpc_tools.protoc -Ipkg/agent/proto --python_out=pkg/agent/proto --grpc_python_out=pkg/agent/proto pkg/agent/proto/agent.proto
 
-RELEASE_BRANCH:=release/3.11
+RELEASE_BRANCH:=release/3.11.11
 
 GOPROXY ?= direct
 
 mod:
 	GOPROXY=$(GOPROXY) GONOSUMDB=yunion.io/x go get -d yunion.io/x/onecloud@$(RELEASE_BRANCH) yunion.io/x/cloudmux@$(RELEASE_BRANCH)
-	# GOPROXY=$(GOPROXY) GONOSUMDB=yunion.io/x go get -d $(MAKE_MODE_ARGS) $(patsubst %,%@master,$(shell GO111MODULE=on go mod edit -print | sed -n -e 's|.*\(yunion.io/x/[a-z].*\) v.*|\1|p' | grep -v '/onecloud$$' | grep -v '/cloudmux$$' | grep -v 'openvswitch$$' ))
+	GOPROXY=$(GOPROXY) GONOSUMDB=yunion.io/x go get -d $(MAKE_MODE_ARGS) $(patsubst %,%@master,$(shell GO111MODULE=on go mod edit -print | sed -n -e 's|.*\(yunion.io/x/[a-z].*\) v.*|\1|p' | grep -v '/onecloud$$' | grep -v '/cloudmux$$' | grep -v 'openvswitch$$' ))
 	GOPROXY=$(GOPROXY) GONOSUMDB=yunion.io/x go mod tidy
 	GOPROXY=$(GOPROXY) GONOSUMDB=yunion.io/x go mod vendor -v
 

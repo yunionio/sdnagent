@@ -28,7 +28,6 @@ import (
 	"yunion.io/x/log"
 	"yunion.io/x/pkg/errors"
 	"yunion.io/x/pkg/tristate"
-	"yunion.io/x/pkg/util/billing"
 	"yunion.io/x/pkg/util/compare"
 	"yunion.io/x/pkg/util/pinyinutils"
 	"yunion.io/x/pkg/util/rbacscope"
@@ -130,6 +129,8 @@ type SDisk struct {
 	Preallocation string `width:"12" default:"off" charset:"ascii" nullable:"true" list:"user" update:"admin" json:"preallocation"`
 	// # is persistent
 	Nonpersistent bool `default:"false" list:"user" json:"nonpersistent"`
+	// auto reset disk after guest shutdown
+	AutoReset bool `default:"false" list:"user" update:"user" json:"auto_reset"`
 
 	// 是否标记为SSD磁盘
 	IsSsd bool `nullable:"false" default:"false" list:"user" update:"user" create:"optional"`
@@ -427,6 +428,12 @@ func (self *SDisk) ValidateUpdateData(ctx context.Context, userCred mcclient.Tok
 	if input.DiskType != "" {
 		if !utils.IsInStringArray(input.DiskType, []string{api.DISK_TYPE_DATA, api.DISK_TYPE_VOLUME, api.DISK_TYPE_SYS}) {
 			return input, httperrors.NewInputParameterError("not support update disk_type %s", input.DiskType)
+		}
+	}
+
+	if input.AutoReset != nil && *input.AutoReset != self.AutoReset {
+		if guest := self.GetGuest(); guest != nil && guest.Status != api.VM_READY {
+			return input, httperrors.NewBadRequestError("Can't set disk auto_reset on guest status %s", guest.Status)
 		}
 	}
 
@@ -1384,14 +1391,21 @@ func (self *SDisk) GetCloudprovider() *SCloudprovider {
 }
 
 func (self *SDisk) GetPathAtHost(host *SHost) string {
+	usedStorageId := self.StorageId
 	hostStorage := host.GetHoststorageOfId(self.StorageId)
-	if hostStorage != nil {
-		return path.Join(hostStorage.MountPoint, self.Id)
-	} else if len(self.BackupStorageId) > 0 {
+	if hostStorage == nil {
 		hostStorage = host.GetHoststorageOfId(self.BackupStorageId)
 		if hostStorage != nil {
-			return path.Join(hostStorage.MountPoint, self.Id)
+			usedStorageId = self.BackupStorageId
 		}
+	}
+	if hostStorage != nil {
+		storage := StorageManager.FetchStorageById(usedStorageId)
+		hostpath := path.Join(hostStorage.MountPoint, self.Id)
+		if storage != nil && utils.IsInStringArray(storage.StorageType, api.LVM_STORAGE) {
+			hostpath = path.Join("/dev", hostpath)
+		}
+		return hostpath
 	}
 	return ""
 }
@@ -1546,7 +1560,7 @@ func (manager *SDiskManager) SyncDisks(ctx context.Context, userCred mcclient.To
 	for i := 0; i < len(commondb); i += 1 {
 		skip, key := IsNeedSkipSync(commonext[i])
 		if skip {
-			log.Infof("delete disk %s(%s) with tag key: %s", commonext[i].GetName(), commonext[i].GetGlobalId(), key)
+			log.Infof("delete disk %s(%s) with tag key or value: %s", commonext[i].GetName(), commonext[i].GetGlobalId(), key)
 			err := commondb[i].RealDelete(ctx, userCred)
 			if err != nil {
 				syncResult.DeleteError(err)
@@ -1570,7 +1584,7 @@ func (manager *SDiskManager) SyncDisks(ctx context.Context, userCred mcclient.To
 	for i := 0; i < len(added); i += 1 {
 		skip, key := IsNeedSkipSync(added[i])
 		if skip {
-			log.Infof("skip disk %s(%s) sync with tag key: %s", added[i].GetName(), added[i].GetGlobalId(), key)
+			log.Infof("skip disk %s(%s) sync with tag key or value: %s", added[i].GetName(), added[i].GetGlobalId(), key)
 			continue
 		}
 		extId := added[i].GetGlobalId()
@@ -1742,12 +1756,12 @@ func (self *SDisk) syncWithCloudDisk(ctx context.Context, userCred mcclient.Toke
 		if provider.GetFactory().IsSupportPrepaidResources() && !recycle {
 			if billintType := extDisk.GetBillingType(); len(billintType) > 0 {
 				self.BillingType = extDisk.GetBillingType()
+				self.ExpiredAt = time.Time{}
+				self.AutoRenew = false
 				if self.BillingType == billing_api.BILLING_TYPE_PREPAID {
+					self.ExpiredAt = extDisk.GetExpiredAt()
 					self.AutoRenew = extDisk.IsAutoRenew()
 				}
-			}
-			if expiredAt := extDisk.GetExpiredAt(); !expiredAt.IsZero() {
-				self.ExpiredAt = extDisk.GetExpiredAt()
 			}
 		}
 
@@ -2279,6 +2293,25 @@ func (self *SDisk) GetLastAttachedHost(ctx context.Context, userCred mcclient.To
 	return self.GetMetadata(ctx, api.DISK_META_LAST_ATTACHED_HOST, userCred)
 }
 
+func (self *SDisk) RecordDiskSnapshotsLastHost(ctx context.Context, userCred mcclient.TokenCredential, hostId string) error {
+	storage, err := self.GetStorage()
+	if err != nil {
+		return err
+	}
+	if storage.StorageType != api.STORAGE_SLVM {
+		return nil
+	}
+	// record disk snapshots master host
+	snaps := SnapshotManager.GetDiskSnapshots(self.Id)
+	for i := range snaps {
+		err = snaps[i].SetMetadata(ctx, api.DISK_META_LAST_ATTACHED_HOST, hostId, userCred)
+		if err != nil {
+			log.Errorf("snapshot %s failed set last attached host: %s", snaps[i].Id, err)
+		}
+	}
+	return nil
+}
+
 // 同步磁盘状态
 func (self *SDisk) PerformSyncstatus(ctx context.Context, userCred mcclient.TokenCredential, query jsonutils.JSONObject, input api.DiskSyncstatusInput) (jsonutils.JSONObject, error) {
 	var openTask = true
@@ -2378,6 +2411,8 @@ func (manager *SDiskManager) FetchCustomizeColumns(
 		gds.Field("index"),
 		gds.Field("driver"),
 		gds.Field("cache_mode"),
+		gds.Field("iops"),
+		gds.Field("bps"),
 	).
 		Join(gds, sqlchemy.Equals(gds.Field("guest_id"), guestSQ.Field("id"))).
 		Filter(sqlchemy.In(gds.Field("disk_id"), diskIds))
@@ -2391,6 +2426,8 @@ func (manager *SDiskManager) FetchCustomizeColumns(
 		Index     int
 		Driver    string
 		CacheMode string
+		Iops      int
+		Bps       int
 	}{}
 	err := q.All(&guestInfo)
 	if err != nil {
@@ -2412,6 +2449,8 @@ func (manager *SDiskManager) FetchCustomizeColumns(
 			Index:     guest.Index,
 			Driver:    guest.Driver,
 			CacheMode: guest.CacheMode,
+			Iops:      guest.Iops,
+			Bps:       guest.Bps,
 		})
 	}
 
@@ -2458,9 +2497,12 @@ func (manager *SDiskManager) FetchCustomizeColumns(
 	for i := range rows {
 		rows[i].Guests, _ = guests[diskIds[i]]
 		names, status := []string{}, []string{}
+		var iops, bps int
 		for _, guest := range rows[i].Guests {
 			names = append(names, guest.Name)
 			status = append(status, guest.Status)
+			iops = guest.Iops
+			bps = guest.Bps
 		}
 		rows[i].GuestCount = len(rows[i].Guests)
 		rows[i].Guest = strings.Join(names, ",")
@@ -2473,8 +2515,12 @@ func (manager *SDiskManager) FetchCustomizeColumns(
 			rows[i].Brand = "Unknown"
 			rows[i].Provider = "Unknown"
 		}
+		// 仅kvm使用
+		if len(rows[i].ManagerId) == 0 {
+			disk.Iops = iops
+			disk.Throughput = bps
+		}
 	}
-
 	return rows
 }
 
@@ -2729,40 +2775,25 @@ func (manager *SDiskManager) AutoDiskSnapshot(ctx context.Context, userCred mccl
 		log.Errorf("Get auto snapshot disks id failed: %s", err)
 		return
 	}
-	log.Debugf("auto snapshot %d disks", len(disks))
-	now := time.Now()
+	log.Infof("auto snapshot %d disks", len(disks))
+
+	guestDps := map[string][]SSnapshotPolicyDisk{}
 	for i := 0; i < len(disks); i++ {
 		disk, err := disks[i].GetDisk()
 		if err != nil {
 			log.Errorf("get disk error: %v", err)
 			continue
 		}
-
-		err = func() error {
-			policy, err := disks[i].GetSnapshotPolicy()
-			if err != nil {
-				return errors.Wrapf(err, "GetSnapshotPolicy")
+		if guest := disk.GetGuest(); guest != nil {
+			if dps, ok := guestDps[guest.Id]; ok {
+				guestDps[guest.Id] = append(dps, disks[i])
+			} else {
+				guestDps[guest.Id] = []SSnapshotPolicyDisk{disks[i]}
 			}
+			continue
+		}
 
-			if len(disk.ExternalId) == 0 {
-				err = disk.validateDiskAutoCreateSnapshot()
-				if err != nil {
-					return errors.Wrapf(err, "validateDiskAutoCreateSnapshot")
-				}
-			}
-
-			snapshot, err := disk.CreateSnapshotAuto(ctx, userCred, policy)
-			if err != nil {
-				return errors.Wrapf(err, "CreateSnapshotAuto")
-			}
-
-			if err = disk.CleanOverduedSnapshots(ctx, userCred, policy, now); err != nil {
-				log.Errorf("failed clean overdued snapshots %s", err)
-			}
-			db.OpsLog.LogEvent(disk, db.ACT_DISK_AUTO_SNAPSHOT, snapshot.Name, userCred)
-			policy.ExecuteNotify(ctx, userCred, disk.GetName())
-			return nil
-		}()
+		err = manager.DoAutoSnapshot(ctx, userCred, &disks[i], disk, "")
 		if err != nil {
 			log.Errorf("auto snapshot %s error: %v", disk.Name, err)
 			db.OpsLog.LogEvent(disk, db.ACT_DISK_AUTO_SNAPSHOT_FAIL, err.Error(), userCred)
@@ -2770,11 +2801,56 @@ func (manager *SDiskManager) AutoDiskSnapshot(ctx context.Context, userCred mccl
 		}
 	}
 
+	for gid, diskSnapshotPolicies := range guestDps {
+		guest := GuestManager.FetchGuestById(gid)
+		err = manager.OrderCreateDisksSnapshotsBySnapshotPolicy(ctx, userCred, guest, diskSnapshotPolicies)
+		if err != nil {
+			log.Errorf("failed start OrderCreateDisksSnapshotsBySnapshotPolicy")
+		}
+	}
+}
+
+func (manager *SDiskManager) OrderCreateDisksSnapshotsBySnapshotPolicy(
+	ctx context.Context, userCred mcclient.TokenCredential, guest *SGuest, snapshotPolicyDisks []SSnapshotPolicyDisk,
+) error {
+	params := jsonutils.NewDict()
+	params.Set("snapshot_policy_disks", jsonutils.Marshal(snapshotPolicyDisks))
+
+	task, err := taskman.TaskManager.NewTask(ctx, "GuestDisksSnapshotPolicyExecuteTask", guest, userCred, params, "", "", nil)
+	if err != nil {
+		return errors.Wrapf(err, "NewTask")
+	}
+	return task.ScheduleRun(nil)
+}
+
+func (manager *SDiskManager) DoAutoSnapshot(
+	ctx context.Context, userCred mcclient.TokenCredential,
+	diskSnapshotPolicy *SSnapshotPolicyDisk, disk *SDisk, parentTaskId string,
+) error {
+	policy, err := diskSnapshotPolicy.GetSnapshotPolicy()
+	if err != nil {
+		return errors.Wrapf(err, "GetSnapshotPolicy")
+	}
+
+	if len(disk.ExternalId) == 0 {
+		err = disk.validateDiskAutoCreateSnapshot()
+		if err != nil {
+			return errors.Wrapf(err, "validateDiskAutoCreateSnapshot")
+		}
+	}
+
+	snapshot, err := disk.CreateSnapshotAuto(ctx, userCred, policy, parentTaskId)
+	if err != nil {
+		return errors.Wrapf(err, "CreateSnapshotAuto")
+	}
+
+	db.OpsLog.LogEvent(disk, db.ACT_DISK_AUTO_SNAPSHOT, snapshot.Name, userCred)
+	policy.ExecuteNotify(ctx, userCred, disk.GetName())
+	return nil
 }
 
 func (self *SDisk) CreateSnapshotAuto(
-	ctx context.Context, userCred mcclient.TokenCredential,
-	policy *SSnapshotPolicy,
+	ctx context.Context, userCred mcclient.TokenCredential, policy *SSnapshotPolicy, parentTaskId string,
 ) (*SSnapshot, error) {
 	storage, err := self.GetStorage()
 	if err != nil {
@@ -2817,28 +2893,11 @@ func (self *SDisk) CreateSnapshotAuto(
 	}
 
 	db.OpsLog.LogEvent(snapshot, db.ACT_CREATE, "disk create snapshot auto", userCred)
-	err = snapshot.StartSnapshotCreateTask(ctx, userCred, nil, "")
+	err = snapshot.StartSnapshotCreateTask(ctx, userCred, nil, parentTaskId)
 	if err != nil {
 		return nil, errors.Wrap(err, "disk auto snapshot start snapshot task")
 	}
 	return snapshot, nil
-}
-
-func (self *SDisk) CleanOverduedSnapshots(ctx context.Context, userCred mcclient.TokenCredential, sp *SSnapshotPolicy, now time.Time) error {
-	snapshot := new(SSnapshot)
-	err := SnapshotManager.Query().Equals("disk_id", self.Id).
-		Equals("created_by", api.SNAPSHOT_AUTO).Equals("fake_deleted", false).Asc("created_at").First(snapshot)
-	if err != nil {
-		return errors.Wrap(err, "get snapshot")
-	}
-	snapshot.SetModelManager(SnapshotManager, snapshot)
-	if snapshot.ExpiredAt.Before(now) {
-		err = snapshot.StartSnapshotDeleteTask(ctx, userCred, false, self.Id)
-		if err != nil {
-			return err
-		}
-	}
-	return nil
 }
 
 func (self *SDisk) StartCreateBackupTask(ctx context.Context, userCred mcclient.TokenCredential, parentTaskId string) error {
@@ -2858,49 +2917,6 @@ func (self *SDisk) DeleteSnapshots(ctx context.Context, userCred mcclient.TokenC
 	} else {
 		task.ScheduleRun(nil)
 	}
-	return nil
-}
-
-func (self *SDisk) SaveRenewInfo(
-	ctx context.Context, userCred mcclient.TokenCredential,
-	bc *billing.SBillingCycle, expireAt *time.Time, billingType string,
-) error {
-	_, err := db.Update(self, func() error {
-		if billingType == "" {
-			billingType = billing_api.BILLING_TYPE_PREPAID
-		}
-		if self.BillingType == "" {
-			self.BillingType = billingType
-		}
-		if expireAt != nil && !expireAt.IsZero() {
-			self.ExpiredAt = *expireAt
-		} else if bc != nil {
-			self.BillingCycle = bc.String()
-			self.ExpiredAt = bc.EndAt(self.ExpiredAt)
-		}
-		return nil
-	})
-	if err != nil {
-		return errors.Wrapf(err, "SaveRenewInfo.Update")
-	}
-	db.OpsLog.LogEvent(self, db.ACT_RENEW, self.GetShortDesc(ctx), userCred)
-	return nil
-}
-
-func (self *SDisk) CancelExpireTime(ctx context.Context, userCred mcclient.TokenCredential) error {
-	if self.BillingType != billing_api.BILLING_TYPE_POSTPAID {
-		return fmt.Errorf("billing type %s not support cancel expire", self.BillingType)
-	}
-	_, err := sqlchemy.GetDB().Exec(
-		fmt.Sprintf(
-			"update %s set expired_at = NULL and billing_cycle = NULL where id = ?",
-			DiskManager.TableSpec().Name(),
-		), self.Id,
-	)
-	if err != nil {
-		return errors.Wrap(err, "disk cancel expire time")
-	}
-	db.OpsLog.LogEvent(self, db.ACT_RENEW, "disk cancel expire time", userCred)
 	return nil
 }
 
@@ -3105,4 +3121,30 @@ func (disk *SDisk) PerformRebuild(
 	}
 	disk.SetStatus(ctx, userCred, api.DISK_REBUILD, "disk rebuild")
 	return nil, disk.StartDiskCreateTask(ctx, userCred, true, disk.SnapshotId, "")
+}
+
+func (disk *SDisk) PerformChangeBillingType(ctx context.Context, userCred mcclient.TokenCredential, _ jsonutils.JSONObject, input *api.DiskChangeBillingTypeInput) (jsonutils.JSONObject, error) {
+	if !utils.IsInStringArray(disk.Status, []string{api.DISK_READY}) {
+		return nil, httperrors.NewServerStatusError("Cannot change disk billing type in status %s", disk.Status)
+	}
+	if len(input.BillingType) == 0 {
+		return nil, httperrors.NewMissingParameterError("billing_type")
+	}
+	if !utils.IsInStringArray(input.BillingType, []string{billing_api.BILLING_TYPE_POSTPAID, billing_api.BILLING_TYPE_PREPAID}) {
+		return nil, httperrors.NewInputParameterError("invalid billing_type %s", input.BillingType)
+	}
+	if disk.BillingType == input.BillingType {
+		return nil, nil
+	}
+	return nil, disk.StartChangeBillingTypeTask(ctx, userCred, "")
+}
+
+func (disk *SDisk) StartChangeBillingTypeTask(ctx context.Context, userCred mcclient.TokenCredential, parentTaskId string) error {
+	disk.SetStatus(ctx, userCred, apis.STATUS_CHANGE_BILLING_TYPE, "")
+	kwargs := jsonutils.NewDict()
+	task, err := taskman.TaskManager.NewTask(ctx, "DiskChangeBillingTypeTask", disk, userCred, kwargs, parentTaskId, "", nil)
+	if err != nil {
+		return err
+	}
+	return task.ScheduleRun(nil)
 }
