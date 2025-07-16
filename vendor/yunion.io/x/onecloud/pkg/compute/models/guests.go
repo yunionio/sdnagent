@@ -1885,10 +1885,6 @@ func (manager *SGuestManager) validateCreateData(
 		}
 
 		if len(input.Duration) > 0 {
-			/*if !userCred.IsAllow(rbacutils.ScopeSystem, consts.GetServiceType(), manager.KeywordPlural(), policy.PolicyActionPerform, "renew") {
-				return nil, httperrors.NewForbiddenError("only admin can create prepaid resource")
-			}*/
-
 			if input.ResourceType == api.HostResourceTypePrepaidRecycle {
 				return nil, httperrors.NewConflictError("cannot create prepaid server on prepaid resource type")
 			}
@@ -1912,10 +1908,10 @@ func (manager *SGuestManager) validateCreateData(
 				input.BillingType = billing_api.BILLING_TYPE_PREPAID
 			}
 			input.BillingCycle = billingCycle.String()
-			// expired_at will be set later by callback
-			// data.Add(jsonutils.NewTimeString(billingCycle.EndAt(time.Time{})), "expired_at")
-
 			input.Duration = billingCycle.String()
+			if input.BillingType == billing_api.BILLING_TYPE_POSTPAID {
+				input.ReleaseAt = billingCycle.EndAt(time.Now())
+			}
 		}
 	}
 
@@ -3000,17 +2996,21 @@ func (self *SGuest) SyncRemoveCloudVM(ctx context.Context, userCred mcclient.Tok
 					}
 					return q
 				})
-				if err == nil {
-					_, err = db.Update(self, func() error {
-						self.HostId = host.GetId()
-						self.Status = iVM.GetStatus()
-						self.PowerStates = iVM.GetPowerStates()
-						self.InferPowerStates()
-						return nil
-					})
-					return err
+				if err != nil {
+					log.Errorf("fetch vm %s(%s) host by id %s error: %v", self.Name, self.ExternalId, hostId, err)
+					return nil
 				}
+				_, err = db.Update(self, func() error {
+					self.HostId = host.GetId()
+					self.Status = iVM.GetStatus()
+					self.PowerStates = iVM.GetPowerStates()
+					self.InferPowerStates()
+					return nil
+				})
+				return err
 			}
+			// 公有云实例, 因为翻页查询导致实例返回结果漏查,且GetIHostId一般返回为空
+			return nil
 		} else if errors.Cause(err) != cloudprovider.ErrNotFound {
 			return errors.Wrap(err, "GetIVMById")
 		}
@@ -3064,7 +3064,7 @@ func (guest *SGuest) SyncAllWithCloudVM(ctx context.Context, userCred mcclient.T
 		return errors.Wrap(err, "guest.syncWithCloudVM")
 	}
 
-	syncVMPeripherals(ctx, userCred, guest, extVM, host, provider, driver)
+	SyncVMPeripherals(ctx, userCred, guest, extVM, host, provider, driver)
 
 	return nil
 }
@@ -3150,15 +3150,15 @@ func (g *SGuest) syncWithCloudVM(ctx context.Context, userCred mcclient.TokenCre
 		if len(extVM.GetDescription()) > 0 {
 			g.Description = extVM.GetDescription()
 		}
-		g.IsEmulated = extVM.IsEmulated()
 
-		if provider.GetFactory().IsSupportPrepaidResources() && !recycle {
-			g.BillingType = extVM.GetBillingType()
+		g.BillingType = extVM.GetBillingType()
+		g.ExpiredAt = time.Time{}
+		g.AutoRenew = false
+		if g.BillingType == billing_api.BILLING_TYPE_PREPAID {
 			g.ExpiredAt = extVM.GetExpiredAt()
-			if g.GetDriver().IsSupportSetAutoRenew() {
-				g.AutoRenew = extVM.IsAutoRenew()
-			}
+			g.AutoRenew = extVM.IsAutoRenew()
 		}
+
 		return nil
 	})
 	if err != nil {
@@ -3225,14 +3225,12 @@ func (manager *SGuestManager) newCloudVM(ctx context.Context, userCred mcclient.
 
 	guest.IsEmulated = extVM.IsEmulated()
 
-	if provider.GetFactory().IsSupportPrepaidResources() {
-		guest.BillingType = extVM.GetBillingType()
-		if expired := extVM.GetExpiredAt(); !expired.IsZero() {
-			guest.ExpiredAt = expired
-		}
-		if guest.GetDriver().IsSupportSetAutoRenew() {
-			guest.AutoRenew = extVM.IsAutoRenew()
-		}
+	guest.BillingType = extVM.GetBillingType()
+	guest.ExpiredAt = time.Time{}
+	guest.AutoRenew = false
+	if guest.BillingType == billing_api.BILLING_TYPE_PREPAID {
+		guest.ExpiredAt = extVM.GetExpiredAt()
+		guest.AutoRenew = extVM.IsAutoRenew()
 	}
 
 	if createdAt := extVM.GetCreatedAt(); !createdAt.IsZero() {
@@ -3242,18 +3240,6 @@ func (manager *SGuestManager) newCloudVM(ctx context.Context, userCred mcclient.
 	guest.HostId = host.Id
 
 	instanceType := extVM.GetInstanceType()
-
-	/*zoneExtId, err := metaData.GetString("zone_ext_id")
-	if err != nil {
-		log.Errorf("get zone external id fail %s", err)
-	}
-
-	isku, err := ServerSkuManager.FetchByZoneExtId(zoneExtId, instanceType)
-	if err != nil {
-		log.Errorf("get sku zone %s instance type %s fail %s", zoneExtId, instanceType, err)
-	} else {
-		guest.SkuId = isku.GetId()
-	}*/
 
 	if len(instanceType) > 0 {
 		guest.InstanceType = instanceType
@@ -5065,6 +5051,8 @@ func (self *SGuest) GetJsonDescAtHypervisor(ctx context.Context, host *SHost) *a
 		IsDaemon: self.IsDaemon.Bool(),
 
 		LightMode: self.RescueMode,
+
+		EnableEsxiSwap: options.Options.EnableEsxiSwap,
 	}
 
 	if len(self.BackupHostId) > 0 {
@@ -5102,6 +5090,10 @@ func (self *SGuest) GetJsonDescAtHypervisor(ctx context.Context, host *SHost) *a
 	// nics, domain
 	desc.Domain = options.Options.DNSDomain
 	nics, _ := self.GetNetworks("")
+	changed, _ := self.fixDefaultGatewayByNics(ctx, auth.AdminCredential(), nics)
+	if changed {
+		nics, _ = self.GetNetworks("")
+	}
 	for _, nic := range nics {
 		nicDesc := nic.getJsonDescAtHost(ctx, host)
 		desc.Nics = append(desc.Nics, nicDesc)
@@ -5211,6 +5203,7 @@ func (self *SGuest) GetJsonDescAtBaremetal(ctx context.Context, host *SHost) *ap
 
 	desc.DiskConfig = host.getDiskConfig()
 
+	self.fixDefaultGateway(ctx, auth.AdminCredential())
 	netifs := host.GetAllNetInterfaces()
 	desc.Domain = options.Options.DNSDomain
 
