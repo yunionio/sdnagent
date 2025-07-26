@@ -132,8 +132,9 @@ func (s *ovnMdServer) Start(ctx context.Context) {
 		}
 		dbAccess := false
 		s.app = app.InitApp(&common_options.BaseOptions{
-			ApplicationID:      fmt.Sprintf("metadata-server-4-subnet-%s", s.netId),
-			RequestWorkerCount: 1,
+			ApplicationID:          fmt.Sprintf("metadata-server-4-subnet-%s", s.netId),
+			RequestWorkerCount:     4,
+			RequestWorkerQueueSize: 128,
 		}, dbAccess)
 		metadata.Start(s.app, svc)
 
