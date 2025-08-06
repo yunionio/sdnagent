@@ -256,7 +256,11 @@ func (g *Guest) Who() string {
 
 func (g *Guest) getMetadataInfo(nic *GuestNIC) (mdIP, mdIP6 string, mdMAC string, mdPortNo int, useLOCAL bool, err error) {
 	useLOCAL = true
-	route, err := RouteLookup(nic.IP)
+	ipStr := nic.IP
+	if len(ipStr) == 0 {
+		ipStr = nic.IP6
+	}
+	route, err := RouteLookup(ipStr)
 	if err != nil {
 		return
 	}
@@ -469,6 +473,7 @@ func (g *Guest) FlowsMapForNic(nic *GuestNIC) ([]*ovs.Flow, error) {
 				mIP6HexStr := ip6ToHex(mIP6Str.(string))
 				metaSrvIp6Str := ip6ToHex(metaSrvIp6)
 				vmIP6Str := ip6ToHex(m["IP6"].(string))
+				vmIP6McastStr := ip6ToHex(m["IP6McastIP"].(string))
 
 				flows = append(flows,
 					// ndp solication from VM to metadata server
@@ -478,11 +483,11 @@ func (g *Guest) FlowsMapForNic(nic *GuestNIC) ([]*ovs.Flow, error) {
 					// ndp solication from metadata server to VM
 					F(0, 40012+i,
 						T(fmt.Sprintf("in_port=LOCAL,ipv6,icmp6,icmp_type=135,nd_target=%s", fakeVmSrcIp6)),
-						T(fmt.Sprintf("mod_dl_dst:{{.IP6McastMac}},load:0x%s->NXM_NX_IPV6_SRC[0..127],load:0x%s->NXM_NX_IPV6_DST[0..127],load:0x%s->NXM_NX_ND_TARGET[0..127],output:{{.PortNo}}", metaSrvIp6Str, mIP6McastIPStr, vmIP6Str))),
+						T(fmt.Sprintf("mod_dl_dst:{{.IP6McastMac}},load:0x%s->NXM_NX_IPV6_SRC[0..127],load:0x%s->NXM_NX_IPV6_DST[0..127],load:0x%s->NXM_NX_ND_TARGET[0..127],output:{{.PortNo}}", metaSrvIp6Str, vmIP6McastStr, vmIP6Str))),
 					// ndp advertisement from VM to metadata server
 					F(0, 40013+i,
 						T(fmt.Sprintf("in_port={{.PortNo}},dl_src={{.MAC}},dl_dst={{.MetadataServerMAC}},ipv6_src={{.IP6}},ipv6_dst=%s,icmp6,icmp_type=136,nd_target={{.IP6}}", metaSrvIp6)),
-						T(fmt.Sprintf("mod_dl_src:%s,load:0x%s->NXM_NX_IPV6_SRC[0..127],load:0x%s->NXM_NX_IPV6_DST[0..127],load:0x%s->NXM_NX_ND_TARGET[0..127],load:0x%s->NXM_NX_ND_TLL[],local", fakeVmSrcMac6, fakeVmSrcIp6Str, mIP6HexStr, metaSrvIp6Str, macToHex(fakeVmSrcMac6)))),
+						T(fmt.Sprintf("mod_dl_src:%s,load:0x%s->NXM_NX_IPV6_SRC[0..127],load:0x%s->NXM_NX_IPV6_DST[0..127],load:0x%s->NXM_NX_ND_TARGET[0..127],load:0x%s->NXM_NX_ND_TLL[],local", fakeVmSrcMac6, fakeVmSrcIp6Str, mIP6HexStr, fakeVmSrcIp6Str, macToHex(fakeVmSrcMac6)))),
 					// from VM to host metadata
 					F(0, 29301+i,
 						T(fmt.Sprintf("in_port={{.PortNo}},ipv6,tcp6,ipv6_dst=%s,tp_dst=80", metaSrvIp6)),
