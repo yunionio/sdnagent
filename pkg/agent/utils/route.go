@@ -1,8 +1,8 @@
 package utils
 
 import (
-	"io/ioutil"
 	"net"
+	"os"
 	"strconv"
 	"strings"
 
@@ -84,7 +84,7 @@ func parseRoutes(s string) (Routes, error) {
 }
 
 func GetRoutes() (Routes, error) {
-	d, err := ioutil.ReadFile("/proc/net/route")
+	d, err := os.ReadFile("/proc/net/route")
 	if err != nil {
 		return nil, err
 	}
@@ -134,7 +134,11 @@ func (rs Routes) Lookup(ipstr string) (Route, error) {
 func RouteLookup(ipstr string) (Route, error) {
 	routes, err := GetRoutes()
 	if err != nil {
-		return Route{}, errors.WithMessage(err, "get routes")
+		return Route{}, errors.Wrap(err, "get routes")
 	}
-	return routes.Lookup(ipstr)
+	rt, err := routes.Lookup(ipstr)
+	if err != nil {
+		return Route{}, errors.Wrapf(err, "lookup route %s", ipstr)
+	}
+	return rt, nil
 }

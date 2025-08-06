@@ -1,4 +1,4 @@
-FROM registry.cn-beijing.aliyuncs.com/yunionio/sdnagent-base:v0.0.2
+FROM registry.cn-beijing.aliyuncs.com/yunionio/openvswitch:2.12.4-4
 
 ENV TZ=UTC
 RUN mkdir -p /opt/yunion/bin

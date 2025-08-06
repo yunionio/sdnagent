@@ -54,11 +54,6 @@ func (g *mdDescGetter) Get(ip string) *desc.SGuestDesc {
 	return guestDesc
 }
 
-const (
-	metadataServerIP     = "169.254.169.254"
-	metadataServerIPMask = "169.254.169.254/32"
-)
-
 func ovnMdVethPair(netId string) (local, peer string) {
 	local = "md-" + netId[:(15-3-2)]
 	peer = local + "-p"
@@ -84,9 +79,10 @@ type ovnMdServerReq struct {
 }
 
 type ovnMdServer struct {
-	netId   string
-	netCidr string
-	watcher *serversWatcher
+	netId    string
+	netCidr  string
+	netCidr6 string
+	watcher  *serversWatcher
 
 	ipNii map[string]netIdIP
 
@@ -98,11 +94,12 @@ type ovnMdServer struct {
 	forwardCancelFunc context.CancelFunc
 }
 
-func newOvnMdServer(netId, netCidr string, watcher *serversWatcher) *ovnMdServer {
+func newOvnMdServer(netId, netCidr, netCidr6 string, watcher *serversWatcher) *ovnMdServer {
 	s := &ovnMdServer{
-		netId:   netId,
-		netCidr: netCidr,
-		watcher: watcher,
+		netId:    netId,
+		netCidr:  netCidr,
+		netCidr6: netCidr6,
+		watcher:  watcher,
 
 		ns:    netns.None(),
 		ipNii: map[string]netIdIP{},
@@ -122,7 +119,7 @@ func (s *ovnMdServer) Start(ctx context.Context) {
 	}
 	if err := s.nsRun(ctx, func(ctx context.Context) error {
 		svc := &metadata.Service{
-			Address: metadataServerIP,
+			Address: "", // listen to all addresses, both IPv4 and IPv6
 			Port:    80,
 
 			DescGetter: &mdDescGetter{
@@ -210,7 +207,14 @@ func (s *ovnMdServer) ensureMdInfra(ctx context.Context) error {
 			if err := iproute2.NewLink(local).Address(localMacStr).Up().Err(); err != nil {
 				return errors.Wrapf(err, "set veth local link %q", local)
 			}
-			if err := iproute2.NewAddress(local, metadataServerIPMask).Exact().Err(); err != nil {
+			var metadataServerIPMasks []string
+			for _, addr := range s.watcher.hostConfig.MetadataServerIp4s {
+				metadataServerIPMasks = append(metadataServerIPMasks, fmt.Sprintf("%s/32", addr))
+			}
+			for _, addr := range s.watcher.hostConfig.MetadataServerIp6s {
+				metadataServerIPMasks = append(metadataServerIPMasks, fmt.Sprintf("%s/128", addr))
+			}
+			if err := iproute2.NewAddress(local, metadataServerIPMasks...).Exact().Err(); err != nil {
 				return errors.Wrapf(err, "set veth local address %q", local)
 			}
 			if err := iproute2.NewRoute(local).AddByCidr(s.netCidr, "").Err(); err != nil {
@@ -676,6 +680,9 @@ type netIdIP struct {
 	ip      string
 	masklen int
 
+	ip6      string
+	masklen6 int
+
 	guestId string
 }
 
@@ -692,6 +699,9 @@ func newNetIdIPm(nics []*utils.GuestNIC) netIdIPm {
 			netId:   nic.NetId,
 			ip:      nic.IP,
 			masklen: nic.Masklen,
+
+			ip6:      nic.IP6,
+			masklen6: nic.Masklen6,
 		}
 		niim[nii.key()] = nii
 	}
@@ -806,13 +816,24 @@ func (man *ovnMdMan) noteOn(ctx context.Context, nii netIdIP) {
 	netId := nii.netId
 	mdServer, ok := man.mdServers[netId]
 	if !ok {
-		ipmask := fmt.Sprintf("%s/%d", nii.ip, nii.masklen)
-		_, ipnet, err := net.ParseCIDR(ipmask)
-		if err != nil {
-			log.Errorf("guestId %s, ip %s, parse cidr: %s", nii.guestId, nii.ip, ipmask)
+		var netCidr, netCidr6 string
+		if len(nii.ip) > 0 {
+			ipmask := fmt.Sprintf("%s/%d", nii.ip, nii.masklen)
+			_, ipnet, err := net.ParseCIDR(ipmask)
+			if err != nil {
+				log.Errorf("guestId %s, ip %s, parse cidr: %s", nii.guestId, nii.ip, ipmask)
+			}
+			netCidr = ipnet.String()
 		}
-		netCidr := ipnet.String()
-		mdServer = newOvnMdServer(netId, netCidr, man.watcher)
+		if len(nii.ip6) > 0 {
+			ipmask := fmt.Sprintf("%s/%d", nii.ip6, nii.masklen6)
+			_, ipnet, err := net.ParseCIDR(ipmask)
+			if err != nil {
+				log.Errorf("guestId %s, ip6 %s, parse cidr: %s", nii.guestId, nii.ip6, ipmask)
+			}
+			netCidr6 = ipnet.String()
+		}
+		mdServer = newOvnMdServer(netId, netCidr, netCidr6, man.watcher)
 		go mdServer.Start(ctx)
 		man.mdServers[netId] = mdServer
 	}
