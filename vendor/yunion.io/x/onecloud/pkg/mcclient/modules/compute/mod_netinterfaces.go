@@ -20,18 +20,11 @@ import (
 )
 
 var (
-	Baremetalnetworks modulebase.JointResourceManager
+	Netinterfaces modulebase.ResourceManager
 )
 
 func init() {
-	Baremetalnetworks = modules.NewJointComputeManager(
-		"baremetalnetwork",
-		"baremetalnetworks",
-		[]string{"Baremetal_ID", "Host",
-			"Network_ID", "Network", "IP_addr", "IP6_addr", "Mac_addr",
-			"Nic_Type"},
-		[]string{},
-		&Hosts,
-		&Networks)
-	modules.RegisterCompute(&Baremetalnetworks)
+	Netinterfaces = modules.NewComputeManager("netinterface", "netinterfaces",
+		[]string{}, []string{})
+	modules.RegisterCompute(&Netinterfaces)
 }
