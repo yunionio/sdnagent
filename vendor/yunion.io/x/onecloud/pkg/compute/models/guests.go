@@ -1682,6 +1682,14 @@ func (manager *SGuestManager) validateCreateData(
 		return nil, errors.Wrap(err, "checkGuestImage")
 	}
 
+	if len(input.PreferManager) > 0 && len(input.Provider) == 0 {
+		providerObj, err := CloudproviderManager.FetchById(input.PreferManager)
+		if err != nil {
+			return nil, errors.Wrapf(err, "zone fetch by id %s", input.PreferZone)
+		}
+		provider := providerObj.(*SCloudprovider)
+		input.Provider = provider.Provider
+	}
 	if len(input.PreferZone) > 0 && len(input.Provider) == 0 {
 		zoneObj, err := ZoneManager.FetchById(input.PreferZone)
 		if err != nil {
@@ -1712,6 +1720,7 @@ func (manager *SGuestManager) validateCreateData(
 		}
 		var imgProperties map[string]string
 		var imgEncryptKeyId string
+		var imageDiskFormat string
 
 		if len(input.Disks) > 0 {
 			diskConfig := input.Disks[0]
@@ -1722,6 +1731,7 @@ func (manager *SGuestManager) validateCreateData(
 			input.Disks[0] = diskConfig
 			imgEncryptKeyId = diskConfig.ImageEncryptKeyId
 			imgProperties = diskConfig.ImageProperties
+			imageDiskFormat = imgProperties[imageapi.IMAGE_DISK_FORMAT]
 			if imgProperties[imageapi.IMAGE_DISK_FORMAT] == "iso" {
 				return nil, httperrors.NewInputParameterError("System disk does not support iso image, please consider using cdrom parameter")
 			}
@@ -1733,6 +1743,7 @@ func (manager *SGuestManager) validateCreateData(
 				return nil, httperrors.NewInputParameterError("parse cdrom device info error %s", err)
 			}
 			input.Cdrom = image.Id
+			imageDiskFormat = image.DiskFormat
 			if len(imgProperties) == 0 {
 				imgProperties = image.Properties
 			}
@@ -1756,28 +1767,29 @@ func (manager *SGuestManager) validateCreateData(
 			input.OsArch = apis.OS_ARCH_AARCH64
 		}
 
-		var imgSupportUEFI *bool
-		if desc, ok := imgProperties[imageapi.IMAGE_UEFI_SUPPORT]; ok {
-			support := desc == "true"
-			imgSupportUEFI = &support
-		}
-		if input.OsArch == apis.OS_ARCH_AARCH64 {
-			// arm image supports UEFI by default
-			support := true
-			imgSupportUEFI = &support
-		}
-
-		switch {
-		case imgSupportUEFI != nil && *imgSupportUEFI:
-			if len(input.Bios) == 0 {
-				input.Bios = "UEFI"
-			} else if input.Bios != "UEFI" {
-				return nil, httperrors.NewInputParameterError("UEFI image requires UEFI boot mode")
+		if imageDiskFormat != "iso" {
+			var imgSupportUEFI *bool
+			if desc, ok := imgProperties[imageapi.IMAGE_UEFI_SUPPORT]; ok {
+				support := desc == "true"
+				imgSupportUEFI = &support
 			}
-		default:
-			// not UEFI image
-			if input.Bios == "UEFI" && len(imgProperties) != 0 {
-				return nil, httperrors.NewInputParameterError("UEFI boot mode requires UEFI image")
+			if input.OsArch == apis.OS_ARCH_AARCH64 {
+				// arm image supports UEFI by default
+				support := true
+				imgSupportUEFI = &support
+			}
+			switch {
+			case imgSupportUEFI != nil && *imgSupportUEFI:
+				if len(input.Bios) == 0 {
+					input.Bios = "UEFI"
+				} else if input.Bios != "UEFI" {
+					return nil, httperrors.NewInputParameterError("UEFI image requires UEFI boot mode")
+				}
+			default:
+				// not UEFI image
+				if input.Bios == "UEFI" && len(imgProperties) != 0 {
+					return nil, httperrors.NewInputParameterError("UEFI boot mode requires UEFI image")
+				}
 			}
 		}
 
@@ -2025,7 +2037,7 @@ func (manager *SGuestManager) validateCreateData(
 		if err != nil {
 			return nil, httperrors.NewInputParameterError("parse network description error %s", err)
 		}
-		err = isValidNetworkInfo(ctx, userCred, netConfig, "")
+		err = isValidNetworkInfo(ctx, userCred, netConfig, "", "")
 		if err != nil {
 			return nil, err
 		}
@@ -2533,8 +2545,39 @@ func (guest *SGuest) PostCreate(ctx context.Context, userCred mcclient.TokenCred
 		guest.setUserData(ctx, userCred, userData)
 	}
 
-	provider, _ := data.GetString("provider")
-	drv, _ := GetDriver(guest.Hypervisor, provider)
+	input := struct {
+		PreferZone      string
+		PreferRegion    string
+		PreferManagerId string
+		Provider        string
+	}{}
+	data.Unmarshal(&input)
+
+	if len(input.PreferManagerId) > 0 && len(input.Provider) == 0 {
+		manObj, err := CloudproviderManager.FetchById(input.PreferManagerId)
+		if err == nil {
+			man := manObj.(*SCloudprovider)
+			input.Provider = man.Provider
+		}
+	}
+	if len(input.PreferZone) > 0 && len(input.Provider) == 0 {
+		zoneObj, err := ZoneManager.FetchById(input.PreferZone)
+		if err == nil {
+			zone := zoneObj.(*SZone)
+			input.PreferRegion = zone.CloudregionId
+		}
+	}
+	if len(input.PreferRegion) > 0 && len(input.Provider) == 0 {
+		regionObj, err := CloudregionManager.FetchById(input.PreferRegion)
+		if err == nil {
+			region := regionObj.(*SCloudregion)
+			input.Provider = region.Provider
+		}
+	}
+	if len(input.Provider) == 0 {
+		input.Provider = api.CLOUD_PROVIDER_ONECLOUD
+	}
+	drv, _ := GetDriver(guest.Hypervisor, input.Provider)
 	if drv != nil && drv.GetMaxSecurityGroupCount() > 0 {
 		secgroups, _ := jsonutils.GetStringArray(data, "secgroups")
 		for _, secgroupId := range secgroups {
@@ -3687,7 +3730,6 @@ func (self *SGuest) attach2NetworkOnce(
 		teamWithMac  = args.teamWithMac
 	)
 	network.updateDnsRecord(guestnic, true)
-	network.updateGuestNetmap(guestnic)
 	if pendingUsage != nil && len(teamWithMac) == 0 {
 		cancelUsage := SRegionQuota{}
 		if network.IsExitNetwork() {

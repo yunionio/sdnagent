@@ -68,6 +68,8 @@ type IBridgeDriver interface {
 	OnVolatileGuestResume(nic *desc.SGuestNetwork) error
 
 	Bridge() string
+
+	IsV4Only() bool
 }
 
 type SBaseBridgeDriver struct {
@@ -378,7 +380,7 @@ func (d *SBaseBridgeDriver) ConfirmToConfig() (bool, string, error) {
 				return false, "", fmt.Errorf("bridge %s (%s) shoud have no ipv6 address", d.bridge, d.bridge.Addr6)
 			}
 			if !d.bridge.IsSecretInterface6() {
-				return false, "", fmt.Errorf("bridge %s(%s,%s) should have link local address in fe80::/10", d.bridge, d.bridge.Addr6, d.bridge.Addr6LinkLocal)
+				log.Warningf("bridge %s have no link local address in fe80::/10", d.bridge)
 			}
 		}
 		infs, err := d.drv.Interfaces()
@@ -429,16 +431,14 @@ func (d *SBaseBridgeDriver) SetupAddresses() error {
 			addr    string
 			masklen int
 		)
-		if len(d.ip) == 0 && len(d.ip6) == 0 {
+		if len(d.ip) == 0 {
 			addr, masklen = netutils2.GetSecretInterfaceAddress()
 		} else {
 			addr = d.ip
 			masklen = d.maskLen
 		}
 		addrStr := []string{}
-		if len(d.ip) > 0 {
-			addrStr = append(addrStr, fmt.Sprintf("%s/%d", addr, masklen))
-		}
+		addrStr = append(addrStr, fmt.Sprintf("%s/%d", addr, masklen))
 		if len(d.ip6) > 0 {
 			addrStr = append(addrStr, fmt.Sprintf("%s/%d", d.ip6, d.mask6Len))
 		}
@@ -717,4 +717,8 @@ func CleanDeletedPorts(bridgeDriver string) {
 	} else if bridgeDriver == DRV_LINUX_BRIDGE {
 		cleanLinuxBridge()
 	}
+}
+
+func (d *SBaseBridgeDriver) IsV4Only() bool {
+	return d.ip6 == "" && !d.bridge.IsSecretInterface6()
 }

@@ -111,6 +111,8 @@ type GuestNICVpc struct {
 	Id           string
 	Provider     string `json:"provider"`
 	MappedIpAddr string `json:"mapped_ip_addr"`
+
+	MappedIp6Addr string `json:"mapped_ip6_addr"`
 }
 
 func (n *GuestNIC) TcData() *TcData {

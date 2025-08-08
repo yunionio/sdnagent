@@ -12,26 +12,22 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-package compute
+package multicloud
 
 import (
-	"yunion.io/x/onecloud/pkg/mcclient/modulebase"
-	"yunion.io/x/onecloud/pkg/mcclient/modules"
+	"context"
+
+	"yunion.io/x/cloudmux/pkg/cloudprovider"
 )
 
-var (
-	Baremetalnetworks modulebase.JointResourceManager
-)
+type SLoadbalancerBackendGroupBase struct {
+	SResourceBase
+}
 
-func init() {
-	Baremetalnetworks = modules.NewJointComputeManager(
-		"baremetalnetwork",
-		"baremetalnetworks",
-		[]string{"Baremetal_ID", "Host",
-			"Network_ID", "Network", "IP_addr", "IP6_addr", "Mac_addr",
-			"Nic_Type"},
-		[]string{},
-		&Hosts,
-		&Networks)
-	modules.RegisterCompute(&Baremetalnetworks)
+func (self *SLoadbalancerBackendGroupBase) Update(ctx context.Context, opts *cloudprovider.SLoadbalancerBackendGroup) error {
+	return cloudprovider.ErrNotImplemented
+}
+
+func (self *SLoadbalancerBackendGroupBase) GetHealthCheckId() string {
+	return ""
 }

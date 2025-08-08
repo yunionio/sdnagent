@@ -2630,7 +2630,7 @@ func (self *SGuest) PerformChangeIpaddr(
 	if err != nil {
 		return nil, httperrors.NewInputParameterError("parseNetworkInfo fail: %s", err)
 	}
-	if len(gn.IpAddr) == 0 && len(conf.Address) > 0 {
+	if conf.StrictIPv6 && len(conf.Address) > 0 {
 		// strict ipv6 network, can't add ipv4 address
 		return nil, httperrors.NewBadRequestError("guest network has no ipv4 address")
 	}
@@ -2639,7 +2639,16 @@ func (self *SGuest) PerformChangeIpaddr(
 		// 允许IPv4地址不变，只改IPv6地址
 		reuseV4 = conf.Address
 	}
-	err = isValidNetworkInfo(ctx, userCred, conf, reuseV4)
+	reuseV6 := ""
+	if gn.Ip6Addr != "" && conf.Address6 != "" {
+		inputIP := net.ParseIP(conf.Address6)
+		gnIP := net.ParseIP(gn.Ip6Addr)
+		if string(inputIP) == string(gnIP) {
+			conf.Address6 = gn.Ip6Addr
+			reuseV6 = gn.Ip6Addr
+		}
+	}
+	err = isValidNetworkInfo(ctx, userCred, conf, reuseV4, reuseV6)
 	if err != nil {
 		return nil, httperrors.NewInputParameterError("isValidNetworkInfo fail: %s", err)
 	}
@@ -2690,7 +2699,9 @@ func (self *SGuest) PerformChangeIpaddr(
 			// reserve = true
 		}
 
-		if len(conf.Address) == 0 || conf.Address != gn.IpAddr {
+		if conf.StrictIPv6 {
+			conf.Address = ""
+		} else if len(conf.Address) == 0 || conf.Address != gn.IpAddr {
 			// need to allocate new address
 			addr4, err := targetNetwork.GetFreeIP(ctx, userCred, nil, nil, conf.Address, api.IPAllocationDirection(targetNetwork.AllocPolicy), reserve, api.AddressTypeIPv4)
 			if err != nil {
@@ -2745,6 +2756,9 @@ func (self *SGuest) PerformChangeIpaddr(
 	newMaskLen := networkJsonDesc.Masklen
 	newGateway := networkJsonDesc.Gateway
 	ipMask := fmt.Sprintf("%s/%d", newIpAddr, newMaskLen)
+	if conf.StrictIPv6 {
+		ipMask = fmt.Sprintf("%s/%d", networkJsonDesc.Ip6, networkJsonDesc.Masklen6)
+	}
 
 	notes := gn.GetShortDesc(ctx)
 	if gn != nil {
@@ -2833,8 +2847,14 @@ func (self *SGuest) PerformDetachnetwork(
 		if err != nil {
 			return nil, httperrors.NewGeneralError(err)
 		}
-	} else if len(input.IpAddr) > 0 {
-		gn, err := self.GetGuestnetworkByIp(input.IpAddr)
+	} else if len(input.IpAddr) > 0 || len(input.Ip6Addr) > 0 {
+		var gn *SGuestnetwork
+		var err error
+		if len(input.IpAddr) > 0 {
+			gn, err = self.GetGuestnetworkByIp(input.IpAddr)
+		} else if len(input.Ip6Addr) > 0 {
+			gn, err = self.GetGuestnetworkByIp6(input.Ip6Addr)
+		}
 		if err != nil {
 			if err == sql.ErrNoRows {
 				return nil, httperrors.NewNotFoundError("ip %s not found", input.IpAddr)
@@ -2930,7 +2950,7 @@ func (guest *SGuest) fixDefaultGatewayByNics(ctx context.Context, userCred mccli
 		}
 		net, _ := nics[i].GetNetwork()
 		if net != nil {
-			nicList = nicList.Add(nics[i].IpAddr, nics[i].MacAddr, net.GuestGateway)
+			nicList = nicList.Add(nics[i].MacAddr, nics[i].IpAddr, net.GuestGateway, nics[i].Ip6Addr, net.GuestGateway6, nics[i].IsDefault)
 		}
 	}
 
@@ -2978,7 +2998,7 @@ func (self *SGuest) PerformAttachnetwork(
 	}
 	var inicCnt, enicCnt, isolatedDevCount, defaultGwCnt int
 	for i := range input.Nets {
-		err := isValidNetworkInfo(ctx, userCred, input.Nets[i], "")
+		err := isValidNetworkInfo(ctx, userCred, input.Nets[i], "", "")
 		if err != nil {
 			return nil, err
 		}
@@ -3477,7 +3497,7 @@ func (g *SGuest) SetStatusFromHost(ctx context.Context, userCred mcclient.TokenC
 		statusStr = api.VM_RUNNING
 	case cloudprovider.CloudVMStatusSuspend:
 		statusStr = api.VM_SUSPEND
-	case cloudprovider.CloudVMStatusStopped:
+	case cloudprovider.CloudVMStatusStopped, api.VM_READY:
 		statusStr = api.VM_READY
 	case api.VM_BLOCK_STREAM, api.VM_BLOCK_STREAM_FAIL:
 		break

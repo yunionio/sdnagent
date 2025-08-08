@@ -32,6 +32,7 @@ import (
 	"yunion.io/x/onecloud/pkg/hostman/options"
 	"yunion.io/x/onecloud/pkg/mcclient/auth"
 	"yunion.io/x/onecloud/pkg/util/fileutils2"
+	"yunion.io/x/onecloud/pkg/util/netutils2"
 )
 
 type HostConfigNetwork struct {
@@ -44,6 +45,20 @@ type HostConfigNetwork struct {
 	IP6Local net.IP
 
 	HostLocalNets []apis.NetworkDetails
+}
+
+func (hcn *HostConfigNetwork) IpAddr() string {
+	if hcn.IP != nil {
+		return hcn.IP.String()
+	}
+	return ""
+}
+
+func (hcn *HostConfigNetwork) Ip6Addr() string {
+	if hcn.IP6 != nil {
+		return hcn.IP6.String()
+	}
+	return ""
 }
 
 func NewHostConfigNetwork(network string) (*HostConfigNetwork, error) {
@@ -76,50 +91,23 @@ func NewHostConfigNetwork(network string) (*HostConfigNetwork, error) {
 
 func (hcn *HostConfigNetwork) MAC() (net.HardwareAddr, error) {
 	if hcn.mac == nil {
-		iface, err := net.InterfaceByName(hcn.Bridge)
-		if err != nil {
-			return nil, errors.Wrap(err, "net.InterfaceByName")
+		netif := netutils2.NewNetInterfaceWithExpectIp(hcn.Bridge, hcn.IpAddr(), hcn.Ip6Addr())
+		if !netif.Exist() {
+			return nil, errors.Wrapf(errors.ErrNotFound, "net interface %s not found", hcn.Bridge)
 		}
-		addrs, err := iface.Addrs()
-		if err != nil {
-			return nil, errors.Wrap(err, "iface.Addrs")
+
+		if len(netif.Addr6LinkLocal) > 0 {
+			hcn.IP6Local = net.ParseIP(netif.Addr6LinkLocal)
 		}
-		var v4ip, v6ip, v6llip net.IP
-		for _, addr := range addrs {
-			if ipnet, ok := addr.(*net.IPNet); ok {
-				ip4 := ipnet.IP.To4()
-				ip6 := ipnet.IP.To16()
-				if ip4 != nil && ip6 == nil {
-					// v4 address
-					if v4ip == nil || (hcn.IP != nil && ip4.String() == hcn.IP.String()) {
-						v4ip = ip4
-					}
-				} else if ip6 != nil {
-					// v6 address
-					if ip6.IsLinkLocalUnicast() {
-						v6llip = ip6
-					} else if v6ip == nil || (hcn.IP6 != nil && ip6.String() == hcn.IP6.String()) {
-						v6ip = ip6
-					}
-				}
-			}
+		if len(netif.Addr6) > 0 {
+			hcn.IP6 = net.ParseIP(netif.Addr6)
 		}
-		if v4ip == nil && v6ip == nil {
-			// no either v4ip or v6ip, interface is not ready yet, return error
-			return nil, errors.Wrap(errors.ErrInvalidStatus, "interface is not ready yet")
+		if len(netif.Addr) > 0 {
+			hcn.IP = net.ParseIP(netif.Addr)
 		}
-		hcn.mac = iface.HardwareAddr
-		if v4ip != nil {
-			hcn.IP = v4ip
-		}
-		if v6ip != nil {
-			hcn.IP6 = v6ip
-		}
-		if v6llip != nil {
-			hcn.IP6Local = v6llip
-		}
+		hcn.mac = netif.GetHardwareAddr()
 	}
-	if hcn.IP != nil && hcn.mac != nil {
+	if (hcn.IP != nil || hcn.IP6 != nil) && hcn.mac != nil {
 		return hcn.mac, nil
 	}
 	return nil, fmt.Errorf("cannot find proper ip/mac for %s", hcn.Bridge)
@@ -173,6 +161,7 @@ func NewHostConfig() (*HostConfig, error) {
 		hcn, err := NewHostConfigNetwork(network)
 		if err != nil {
 			// NOTE error ignored
+			log.Errorf("NewHostConfigNetwork: %v", err)
 			continue
 		}
 		hcn.loadHostLocalNetconfs(hc)

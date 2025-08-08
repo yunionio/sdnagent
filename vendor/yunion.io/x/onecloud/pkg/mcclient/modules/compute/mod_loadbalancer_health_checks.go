@@ -19,19 +19,29 @@ import (
 	"yunion.io/x/onecloud/pkg/mcclient/modules"
 )
 
+type LoadbalancerHealthCheckManager struct {
+	modulebase.ResourceManager
+}
+
 var (
-	Baremetalnetworks modulebase.JointResourceManager
+	LoadbalancerHealthChecks LoadbalancerHealthCheckManager
 )
 
 func init() {
-	Baremetalnetworks = modules.NewJointComputeManager(
-		"baremetalnetwork",
-		"baremetalnetworks",
-		[]string{"Baremetal_ID", "Host",
-			"Network_ID", "Network", "IP_addr", "IP6_addr", "Mac_addr",
-			"Nic_Type"},
-		[]string{},
-		&Hosts,
-		&Networks)
-	modules.RegisterCompute(&Baremetalnetworks)
+	LoadbalancerHealthChecks = LoadbalancerHealthCheckManager{
+		modules.NewComputeManager(
+			"loadbalancer_health_check",
+			"loadbalancer_health_checks",
+			[]string{
+				"id",
+				"name",
+				"status",
+				"cloudregion",
+				"manager",
+				"project",
+			},
+			[]string{"tenant"},
+		),
+	}
+	modules.RegisterCompute(&LoadbalancerHealthChecks)
 }
