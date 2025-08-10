@@ -52,6 +52,7 @@ type ovnReq struct {
 type ovnMan struct {
 	hostId string
 	ip     string // fetch from region
+	ip6    string // fetch from region
 	mac    string // hash
 
 	guestNics map[string][]*utils.GuestNIC
@@ -115,9 +116,14 @@ func (man *ovnMan) setIpMac(ctx context.Context) error {
 		if man.ip == "" {
 			return errors.Errorf("Host %s has no mapped addr", man.hostId)
 		}
+		man.ip6, _ = obj.GetString("ovn_mapped_ip6_addr")
+		if man.ip6 == "" {
+			log.Errorf("Host Ipv6 ovn mapped address is empty")
+		}
 	}
 
 	if err := man.ensureMappedBridge(ctx); err != nil {
+		log.Errorf("ovn: ensure mapped bridge %s failed: %v", man.mappedBridge(), err)
 		return err
 	}
 	man.ensureBasicFlows(ctx)
@@ -140,14 +146,22 @@ func (man *ovnMan) ensureMappedBridge(ctx context.Context) error {
 		return errors.Wrapf(err, "ovn: set link %s up", man.mappedBridge())
 	}
 
-	if err := iproute2.NewAddress(man.mappedBridge(), fmt.Sprintf("%s/%d", man.ip, apis.VpcMappedIPMask)).Exact().Err(); err != nil {
+	addrs := []string{
+		fmt.Sprintf("%s/%d", man.ip, apis.VpcMappedIPMask),
+	}
+	if man.ip6 != "" {
+		addrs = append(addrs, fmt.Sprintf("%s/%d", man.ip6, apis.VpcMappedIPMask6))
+	}
+
+	if err := iproute2.NewAddress(man.mappedBridge(), addrs...).Exact().Err(); err != nil {
 		return errors.Wrapf(err, "ovn: set %s address %s", man.mappedBridge(), man.ip)
 	}
 
 	{
+		// setup ipv4 masquerade rule for vpc local NAT traffic
 		ipt, err := iptables.NewWithProtocol(iptables.ProtocolIPv4)
 		if err != nil {
-			return errors.Wrap(err, "ipt client")
+			return errors.Wrap(err, "ipt v4 client")
 		}
 		var (
 			p    = apis.VpcMappedCidr()
@@ -160,15 +174,35 @@ func (man *ovnMan) ensureMappedBridge(ctx context.Context) error {
 			}
 		)
 		if err := ipt.AppendUnique(tbl, chn, spec...); err != nil {
-			return errors.Wrapf(err, "ovn: append POSTROUTING masq rule")
+			return errors.Wrapf(err, "ovn: append v4 POSTROUTING masq rule")
+		}
+	}
+	{
+		// setup ipv6 masquerade rule for vpc local NAT traffic
+		ipt6, err := iptables.NewWithProtocol(iptables.ProtocolIPv6)
+		if err != nil {
+			return errors.Wrap(err, "ipt v6 client")
+		}
+		var (
+			p    = apis.VpcMappedCidr6()
+			tbl  = "nat"
+			chn  = "POSTROUTING"
+			spec = []string{
+				"-s", p.String(),
+				"-m", "comment", "--comment", "sdnagent: ovn distgw v6",
+				"-j", "MASQUERADE",
+			}
+		)
+		if err := ipt6.AppendUnique(tbl, chn, spec...); err != nil {
+			return errors.Wrapf(err, "ovn: append v6 POSTROUTING masq rule")
 		}
 	}
 	return nil
 }
 
 func (man *ovnMan) ensureGeneveFastpath(ctx context.Context) {
-	dofunc := func(chain string) error {
-		ipt, err := iptables.NewWithProtocol(iptables.ProtocolIPv4)
+	dofunc := func(chain string, proto iptables.Protocol) error {
+		ipt, err := iptables.NewWithProtocol(proto)
 		if err != nil {
 			return errors.Wrap(err, "ipt client")
 		}
@@ -210,28 +244,23 @@ func (man *ovnMan) ensureGeneveFastpath(ctx context.Context) {
 		}
 		return nil
 	}
-	for _, c := range []string{"INPUT", "OUTPUT"} {
-		if err := dofunc(c); err != nil {
-			log.Errorf("ensureGeneveFastpath: %s: %v", c, err)
+	for _, proto := range []iptables.Protocol{iptables.ProtocolIPv4, iptables.ProtocolIPv6} {
+		for _, c := range []string{"INPUT", "OUTPUT"} {
+			if err := dofunc(c, proto); err != nil {
+				log.Errorf("ensureGeneveFastpath: %s: %v", c, err)
+			}
 		}
 	}
 }
 
 func (man *ovnMan) ensureBasicFlows(ctx context.Context) {
+	log.Infof("ovn: ensureBasicFlows")
 	var (
 		p = apis.VpcMappedCidr()
-		/*hexMac  = "0x" + strings.TrimLeft(strings.ReplaceAll(man.mac, ":", ""), "0")
-		actions = []string{
-			"move:NXM_OF_ETH_SRC[]->NXM_OF_ETH_DST[]",
-			fmt.Sprintf("load:%s->NXM_OF_ETH_SRC[]", hexMac),
-			"load:0x2->NXM_OF_ARP_OP[]",
-			fmt.Sprintf("load:%s->NXM_NX_ARP_SHA[]", hexMac),
-			"move:NXM_OF_ARP_TPA[]->NXM_OF_ARP_SPA[]",
-			"move:NXM_NX_ARP_SHA[]->NXM_NX_ARP_THA[]",
-			"move:NXM_OF_ARP_SPA[]->NXM_OF_ARP_TPA[]",
-			"in_port",
-		}*/
+
+		//p6 = apis.VpcMappedCidr6()
 	)
+	// ipv4
 	flows := []*ovs.Flow{
 		utils.F(0, 3050,
 			fmt.Sprintf("in_port=LOCAL,arp,arp_op=1,arp_tpa=%s", p.String()),
@@ -240,6 +269,15 @@ func (man *ovnMan) ensureBasicFlows(ctx context.Context) {
 			fmt.Sprintf("ip,nw_dst=%s", p.String()),
 			"drop"),
 	}
+	// ipv6
+	/*flows = append(flows,
+		utils.F(0, 3050,
+			fmt.Sprintf("in_port=LOCAL,ipv6,ipv6_dst=%s", p6.String()),
+			utils.FakeArpRespActions(man.mac) /*strings.Join(actions, ",")),
+		utils.F(0, 32000,
+			fmt.Sprintf("ipv6,ipv6_dst=%s", p6.String()),
+			"drop"),
+	)*/
 	flowman := man.watcher.agent.GetFlowMan(man.mappedBridge())
 	flowman.updateFlows(ctx, "o", flows)
 }
@@ -322,16 +360,30 @@ func (man *ovnMan) ensureGuestFlows(ctx context.Context, guestId string) {
 		} else {
 			pnoMine = psMine.PortID
 		}
-		flows = append(flows,
-			utils.F(0, 33000,
-				fmt.Sprintf("in_port=LOCAL,ip,nw_dst=%s", nic.Vpc.MappedIpAddr),
-				fmt.Sprintf("mod_dl_dst:%s,mod_nw_dst:%s,output:%d", apis.VpcMappedGatewayMac, nic.IP, pnoMine),
-			),
-			utils.F(0, 31000,
-				fmt.Sprintf("in_port=%d,dl_src=%s,ip,nw_src=%s", pnoMine, apis.VpcMappedGatewayMac, nic.IP),
-				fmt.Sprintf("mod_dl_dst:%s,mod_nw_src:%s,LOCAL", man.mac, nic.Vpc.MappedIpAddr),
-			),
-		)
+		if nic.Vpc.MappedIpAddr != "" && len(nic.IP) > 0 {
+			flows = append(flows,
+				utils.F(0, 33000,
+					fmt.Sprintf("in_port=LOCAL,ip,nw_dst=%s", nic.Vpc.MappedIpAddr),
+					fmt.Sprintf("mod_dl_dst:%s,mod_nw_dst:%s,output:%d", apis.VpcMappedGatewayMac, nic.IP, pnoMine),
+				),
+				utils.F(0, 31000,
+					fmt.Sprintf("in_port=%d,dl_src=%s,ip,nw_src=%s", pnoMine, apis.VpcMappedGatewayMac, nic.IP),
+					fmt.Sprintf("mod_dl_dst:%s,mod_nw_src:%s,LOCAL", man.mac, nic.Vpc.MappedIpAddr),
+				),
+			)
+		}
+		if nic.Vpc.MappedIp6Addr != "" && len(nic.IP6) > 0 {
+			flows = append(flows,
+				utils.F(0, 33000,
+					fmt.Sprintf("in_port=LOCAL,ipv6,ipv6_dst=%s", nic.Vpc.MappedIp6Addr),
+					fmt.Sprintf("mod_dl_dst:%s,mod_nw_dst:%s,output:%d", apis.VpcMappedGatewayMac, nic.IP6, pnoMine),
+				),
+				utils.F(0, 31000,
+					fmt.Sprintf("in_port=%d,dl_src=%s,ipv6,ipv6_src=%s", pnoMine, apis.VpcMappedGatewayMac, nic.IP6),
+					fmt.Sprintf("mod_dl_dst:%s,set_field:%s->ipv6_src,LOCAL", man.mac, nic.Vpc.MappedIp6Addr),
+				),
+			)
+		}
 	}
 	flowman := man.watcher.agent.GetFlowMan(man.mappedBridge())
 	flowman.updateFlows(ctx, guestId, flows)

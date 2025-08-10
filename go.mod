@@ -19,8 +19,8 @@ require (
 	google.golang.org/protobuf v1.35.1
 	yunion.io/x/jsonutils v1.0.1-0.20250507052344-1abcf4f443b1
 	yunion.io/x/log v1.0.1-0.20240305175729-7cf2d6cd5a91
-	yunion.io/x/onecloud v0.0.0-20250716081927-39a3918bb8d6
-	yunion.io/x/pkg v1.10.4-0.20250715170922-d5b8a92716b6
+	yunion.io/x/onecloud v0.0.0-20250810004659-4eb90fc44259
+	yunion.io/x/pkg v1.10.4-0.20250805171825-2431e10f90a9
 )
 
 require (
@@ -121,10 +121,10 @@ require (
 	moul.io/http2curl/v2 v2.3.0 // indirect
 	sigs.k8s.io/structured-merge-diff/v4 v4.0.1 // indirect
 	sigs.k8s.io/yaml v1.2.0 // indirect
-	yunion.io/x/cloudmux v0.3.10-0-alpha.1.0.20250716045721-a4fc53e56d34 // indirect
+	yunion.io/x/cloudmux v0.3.10-0-alpha.1.0.20250807082423-7edaa2517e8e // indirect
 	yunion.io/x/executor v0.0.0-20250518005516-5402e9e0bed0 // indirect
 	yunion.io/x/s3cli v0.0.0-20241221171442-1c11599d28e1 // indirect
-	yunion.io/x/sqlchemy v1.1.3-0.20250531010554-ce98f840b833 // indirect
+	yunion.io/x/sqlchemy v1.1.3-0.20250806073422-e37f5197cec0 // indirect
 	yunion.io/x/structarg v0.0.0-20231017124457-df4d5009457c // indirect
 )
 

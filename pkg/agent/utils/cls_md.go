@@ -17,6 +17,7 @@ package utils
 import (
 	"crypto/sha256"
 	"fmt"
+	"time"
 
 	"yunion.io/x/log"
 
@@ -101,8 +102,8 @@ func (h *HostLocal) StartMetadataServer(watcher IServerWatcher) {
 	}
 	dbAccess := false
 	h.metadataApp = app.InitApp(&common_options.BaseOptions{
-		ApplicationID:      "metadata-server-class-network",
-		RequestWorkerCount: 4,
+		ApplicationID:          "metadata-server-class-network",
+		RequestWorkerCount:     4,
 		RequestWorkerQueueSize: 128,
 	}, dbAccess)
 	log.Infof("Start metadata server at %s on port %s:%d", h.Bridge, addr, h.metadataPort)
@@ -119,6 +120,9 @@ type sClassicMetadataDescGetter struct {
 }
 
 func (g *sClassicMetadataDescGetter) Get(ip string) *desc.SGuestDesc {
+	start := time.Now()
+	log.Infof("Get guest desc by ip %s", ip)
 	guestDesc := g.watcher.FindGuestDescByHostLocalIp(g.hostLocal, ip)
+	log.Infof("Get guest desc by ip %s cost %f seconds", ip, time.Since(start).Seconds())
 	return guestDesc
 }
