@@ -128,6 +128,10 @@ type SIsolatedDevice struct {
 	CardPath string `width:"128" charset:"ascii" nullable:"true" list:"domain" update:"domain" create:"optional"`
 	// GPU render path, like /dev/dri/renderDX
 	RenderPath string `width:"128" charset:"ascii" nullable:"true" list:"domain" update:"domain" create:"optional"`
+	// Nvidia GPU index
+	Index int `nullable:"true" default:"-1" list:"user" update:"domain"`
+	// Nvidia GPU minor number, parsing from /proc/driver/nvidia/gpus/*/information
+	DeviceMinor int `nullable:"true" default:"-1" list:"user" update:"domain"`
 
 	// Is vgpu physical funcion, That means it cannot be attached to guest
 	// VGPUPhysicalFunction bool `nullable:"true" default:"false" list:"domain" create:"domain_optional"`
@@ -355,6 +359,12 @@ func (manager *SIsolatedDeviceManager) ListItemFilter(
 	}
 	if len(query.NumaNode) > 0 {
 		q = q.In("numa_node", query.NumaNode)
+	}
+	if query.Index != nil && *query.Index >= 0 {
+		q = q.Equals("index", query.Index)
+	}
+	if query.DeviceMinor != nil && *query.DeviceMinor >= 0 {
+		q = q.Equals("device_minor", query.DeviceMinor)
 	}
 
 	if !query.ShowBaremetalIsolatedDevices {

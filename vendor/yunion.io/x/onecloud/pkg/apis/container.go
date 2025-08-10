@@ -90,8 +90,10 @@ const (
 )
 
 type ContainerIsolatedDeviceOnlyEnv struct {
-	Key            string `json:"key"`
-	FromRenderPath bool   `json:"from_render_path"`
+	Key             string `json:"key"`
+	FromRenderPath  bool   `json:"from_render_path"`
+	FromIndex       bool   `json:"from_index"`
+	FromDeviceMinor bool   `json:"from_device_minor"`
 }
 
 type ContainerSpec struct {
@@ -322,9 +324,17 @@ const (
 	CONTAINER_VOLUME_MOUNT_HOST_PATH_TYPE_FILE      ContainerVolumeMountHostPathType = "file"
 )
 
+type ContainerVolumeMountHostPathAutoCreateConfig struct {
+	Uid         uint   `json:"uid"`
+	Gid         uint   `json:"gid"`
+	Permissions string `json:"permissions"`
+}
+
 type ContainerVolumeMountHostPath struct {
-	Type ContainerVolumeMountHostPathType `json:"type"`
-	Path string                           `json:"path"`
+	Type             ContainerVolumeMountHostPathType              `json:"type"`
+	Path             string                                        `json:"path"`
+	AutoCreate       bool                                          `json:"auto_create"`
+	AutoCreateConfig *ContainerVolumeMountHostPathAutoCreateConfig `json:"auto_create_config,omitempty"`
 }
 
 type ContainerVolumeMountText struct {
