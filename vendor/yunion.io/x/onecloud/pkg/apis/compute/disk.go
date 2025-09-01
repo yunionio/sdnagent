@@ -213,6 +213,8 @@ type SimpleGuest struct {
 	Iops int `json:"iops"`
 	// 磁盘吞吐
 	Bps int `json:"bps"`
+	// 计费类型
+	BillingType string `json:"billing_type"`
 }
 
 type SimpleSnapshotPolicy struct {
@@ -237,6 +239,8 @@ type DiskDetails struct {
 	GuestCount int `json:"guest_count"`
 	// 所挂载虚拟机状态
 	GuestStatus string `json:"guest_status"`
+	// 所挂载虚拟机计费类型
+	GuestBillingType string `json:"guest_billing_type"`
 
 	// 自动清理时间
 	AutoDeleteAt time.Time `json:"auto_delete_at"`
@@ -352,9 +356,11 @@ type DiskSnapshotpolicyInput struct {
 }
 
 type DiskRebuildInput struct {
-	BackupId   *string `json:"backup_id,allowempty"`
-	TemplateId *string `json:"template_id,allowempty"`
-	Size       *string `json:"size,allowempty"`
+	BackupId   *string         `json:"backup_id,allowempty"`
+	TemplateId *string         `json:"template_id,allowempty"`
+	Size       *string         `json:"size,allowempty"`
+	Fs         *string         `json:"fs,allowempty"`
+	FsFeatures *DiskFsFeatures `json:"fs_features,allowempty"`
 }
 
 type DiskFsExt4Features struct {
@@ -362,8 +368,14 @@ type DiskFsExt4Features struct {
 	ReservedBlocksPercentage int  `json:"reserved_blocks_percentage"`
 }
 
+type DiskFsF2fsFeatures struct {
+	CaseInsensitive              bool `json:"case_insensitive"`
+	OverprovisionRatioPercentage int  `json:"overprovision_ratio_percentage"`
+}
+
 type DiskFsFeatures struct {
 	Ext4 *DiskFsExt4Features `json:"ext4"`
+	F2fs *DiskFsF2fsFeatures `json:"f2fs"`
 }
 
 func (d *DiskFsFeatures) String() string {
