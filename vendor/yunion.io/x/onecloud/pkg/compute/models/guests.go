@@ -427,12 +427,20 @@ func (manager *SGuestManager) ListItemFilter(
 	}
 
 	if len(query.IpAddrs) > 0 {
+		// 如果只有一个ip地址，则使用正则匹配，否则使用等于匹配
+		cmpFunc := sqlchemy.Equals
+		if len(query.IpAddrs) == 1 {
+			cmpFunc = func(f sqlchemy.IQueryField, v interface{}) sqlchemy.ICondition {
+				return sqlchemy.Regexp(f, v.(string))
+			}
+		}
+
 		grpnets := GroupnetworkManager.Query().SubQuery()
 		vipq := GroupguestManager.Query("guest_id")
 		conditions := []sqlchemy.ICondition{}
 		for _, ipAddr := range query.IpAddrs {
-			conditions = append(conditions, sqlchemy.Regexp(grpnets.Field("ip_addr"), ipAddr))
-			conditions = append(conditions, sqlchemy.Regexp(grpnets.Field("ip6_addr"), ipAddr))
+			conditions = append(conditions, cmpFunc(grpnets.Field("ip_addr"), ipAddr))
+			conditions = append(conditions, cmpFunc(grpnets.Field("ip6_addr"), ipAddr))
 		}
 		vipq = vipq.Join(grpnets, sqlchemy.Equals(grpnets.Field("group_id"), vipq.Field("group_id"))).Filter(
 			sqlchemy.OR(conditions...),
@@ -441,7 +449,7 @@ func (manager *SGuestManager) ListItemFilter(
 		grpeips := ElasticipManager.Query().Equals("associate_type", api.EIP_ASSOCIATE_TYPE_INSTANCE_GROUP).SubQuery()
 		conditions = []sqlchemy.ICondition{}
 		for _, ipAddr := range query.IpAddrs {
-			conditions = append(conditions, sqlchemy.Regexp(grpeips.Field("ip_addr"), ipAddr))
+			conditions = append(conditions, cmpFunc(grpeips.Field("ip_addr"), ipAddr))
 		}
 		vipeipq := GroupguestManager.Query("guest_id")
 		vipeipq = vipeipq.Join(grpeips, sqlchemy.Equals(grpeips.Field("associate_id"), vipeipq.Field("group_id"))).Filter(
@@ -451,15 +459,15 @@ func (manager *SGuestManager) ListItemFilter(
 		gnQ := GuestnetworkManager.Query("guest_id")
 		conditions = []sqlchemy.ICondition{}
 		for _, ipAddr := range query.IpAddrs {
-			conditions = append(conditions, sqlchemy.Regexp(gnQ.Field("ip_addr"), ipAddr))
-			conditions = append(conditions, sqlchemy.Regexp(gnQ.Field("ip6_addr"), ipAddr))
+			conditions = append(conditions, cmpFunc(gnQ.Field("ip_addr"), ipAddr))
+			conditions = append(conditions, cmpFunc(gnQ.Field("ip6_addr"), ipAddr))
 		}
 		gn := gnQ.Filter(sqlchemy.OR(conditions...))
 
 		guestEipQ := ElasticipManager.Query("associate_id").Equals("associate_type", api.EIP_ASSOCIATE_TYPE_SERVER)
 		conditions = []sqlchemy.ICondition{}
 		for _, ipAddr := range query.IpAddrs {
-			conditions = append(conditions, sqlchemy.Regexp(guestEipQ.Field("ip_addr"), ipAddr))
+			conditions = append(conditions, cmpFunc(guestEipQ.Field("ip_addr"), ipAddr))
 		}
 		guestEip := guestEipQ.Filter(sqlchemy.OR(conditions...))
 
@@ -467,7 +475,7 @@ func (manager *SGuestManager) ListItemFilter(
 		conditions = []sqlchemy.ICondition{}
 		for _, ipAddr := range query.IpAddrs {
 			conditions = append(conditions, sqlchemy.AND(
-				sqlchemy.Regexp(metadataQ.Field("value"), ipAddr),
+				cmpFunc(metadataQ.Field("value"), ipAddr),
 				sqlchemy.Equals(metadataQ.Field("key"), "sync_ips"),
 				sqlchemy.Equals(metadataQ.Field("obj_type"), "server"),
 			))
@@ -1682,6 +1690,14 @@ func (manager *SGuestManager) validateCreateData(
 		return nil, errors.Wrap(err, "checkGuestImage")
 	}
 
+	if len(input.PreferManager) > 0 && len(input.Provider) == 0 {
+		providerObj, err := CloudproviderManager.FetchById(input.PreferManager)
+		if err != nil {
+			return nil, errors.Wrapf(err, "zone fetch by id %s", input.PreferZone)
+		}
+		provider := providerObj.(*SCloudprovider)
+		input.Provider = provider.Provider
+	}
 	if len(input.PreferZone) > 0 && len(input.Provider) == 0 {
 		zoneObj, err := ZoneManager.FetchById(input.PreferZone)
 		if err != nil {
@@ -1712,6 +1728,7 @@ func (manager *SGuestManager) validateCreateData(
 		}
 		var imgProperties map[string]string
 		var imgEncryptKeyId string
+		var imageDiskFormat string
 
 		if len(input.Disks) > 0 {
 			diskConfig := input.Disks[0]
@@ -1722,6 +1739,7 @@ func (manager *SGuestManager) validateCreateData(
 			input.Disks[0] = diskConfig
 			imgEncryptKeyId = diskConfig.ImageEncryptKeyId
 			imgProperties = diskConfig.ImageProperties
+			imageDiskFormat = imgProperties[imageapi.IMAGE_DISK_FORMAT]
 			if imgProperties[imageapi.IMAGE_DISK_FORMAT] == "iso" {
 				return nil, httperrors.NewInputParameterError("System disk does not support iso image, please consider using cdrom parameter")
 			}
@@ -1733,6 +1751,7 @@ func (manager *SGuestManager) validateCreateData(
 				return nil, httperrors.NewInputParameterError("parse cdrom device info error %s", err)
 			}
 			input.Cdrom = image.Id
+			imageDiskFormat = image.DiskFormat
 			if len(imgProperties) == 0 {
 				imgProperties = image.Properties
 			}
@@ -1756,28 +1775,29 @@ func (manager *SGuestManager) validateCreateData(
 			input.OsArch = apis.OS_ARCH_AARCH64
 		}
 
-		var imgSupportUEFI *bool
-		if desc, ok := imgProperties[imageapi.IMAGE_UEFI_SUPPORT]; ok {
-			support := desc == "true"
-			imgSupportUEFI = &support
-		}
-		if input.OsArch == apis.OS_ARCH_AARCH64 {
-			// arm image supports UEFI by default
-			support := true
-			imgSupportUEFI = &support
-		}
-
-		switch {
-		case imgSupportUEFI != nil && *imgSupportUEFI:
-			if len(input.Bios) == 0 {
-				input.Bios = "UEFI"
-			} else if input.Bios != "UEFI" {
-				return nil, httperrors.NewInputParameterError("UEFI image requires UEFI boot mode")
+		if imageDiskFormat != "iso" {
+			var imgSupportUEFI *bool
+			if desc, ok := imgProperties[imageapi.IMAGE_UEFI_SUPPORT]; ok {
+				support := desc == "true"
+				imgSupportUEFI = &support
 			}
-		default:
-			// not UEFI image
-			if input.Bios == "UEFI" && len(imgProperties) != 0 {
-				return nil, httperrors.NewInputParameterError("UEFI boot mode requires UEFI image")
+			if input.OsArch == apis.OS_ARCH_AARCH64 {
+				// arm image supports UEFI by default
+				support := true
+				imgSupportUEFI = &support
+			}
+			switch {
+			case imgSupportUEFI != nil && *imgSupportUEFI:
+				if len(input.Bios) == 0 {
+					input.Bios = "UEFI"
+				} else if input.Bios != "UEFI" {
+					return nil, httperrors.NewInputParameterError("UEFI image requires UEFI boot mode")
+				}
+			default:
+				// not UEFI image
+				if input.Bios == "UEFI" && len(imgProperties) != 0 {
+					return nil, httperrors.NewInputParameterError("UEFI boot mode requires UEFI image")
+				}
 			}
 		}
 
@@ -2533,8 +2553,39 @@ func (guest *SGuest) PostCreate(ctx context.Context, userCred mcclient.TokenCred
 		guest.setUserData(ctx, userCred, userData)
 	}
 
-	provider, _ := data.GetString("provider")
-	drv, _ := GetDriver(guest.Hypervisor, provider)
+	input := struct {
+		PreferZone      string
+		PreferRegion    string
+		PreferManagerId string
+		Provider        string
+	}{}
+	data.Unmarshal(&input)
+
+	if len(input.PreferManagerId) > 0 && len(input.Provider) == 0 {
+		manObj, err := CloudproviderManager.FetchById(input.PreferManagerId)
+		if err == nil {
+			man := manObj.(*SCloudprovider)
+			input.Provider = man.Provider
+		}
+	}
+	if len(input.PreferZone) > 0 && len(input.Provider) == 0 {
+		zoneObj, err := ZoneManager.FetchById(input.PreferZone)
+		if err == nil {
+			zone := zoneObj.(*SZone)
+			input.PreferRegion = zone.CloudregionId
+		}
+	}
+	if len(input.PreferRegion) > 0 && len(input.Provider) == 0 {
+		regionObj, err := CloudregionManager.FetchById(input.PreferRegion)
+		if err == nil {
+			region := regionObj.(*SCloudregion)
+			input.Provider = region.Provider
+		}
+	}
+	if len(input.Provider) == 0 {
+		input.Provider = api.CLOUD_PROVIDER_ONECLOUD
+	}
+	drv, _ := GetDriver(guest.Hypervisor, input.Provider)
 	if drv != nil && drv.GetMaxSecurityGroupCount() > 0 {
 		secgroups, _ := jsonutils.GetStringArray(data, "secgroups")
 		for _, secgroupId := range secgroups {
@@ -2881,9 +2932,11 @@ func (self *SGuest) GetRealIPs() []string {
 
 func (self *SGuest) IsExitOnly() bool {
 	for _, ip := range self.GetRealIPs() {
-		addr, _ := netutils.NewIPV4Addr(ip)
-		if !netutils.IsExitAddress(addr) {
-			return false
+		if regutils.MatchIP4Addr(ip) {
+			addr, _ := netutils.NewIPV4Addr(ip)
+			if !netutils.IsExitAddress(addr) {
+				return false
+			}
 		}
 	}
 	return true
@@ -2898,7 +2951,12 @@ func (self *SGuest) getVirtualIPs() []string {
 			continue
 		}
 		for _, groupnetwork := range groupnets {
-			ips = append(ips, groupnetwork.IpAddr)
+			if len(groupnetwork.IpAddr) > 0 {
+				ips = append(ips, groupnetwork.IpAddr)
+			}
+			if len(groupnetwork.Ip6Addr) > 0 {
+				ips = append(ips, groupnetwork.Ip6Addr)
+			}
 		}
 	}
 	return ips
@@ -2907,13 +2965,15 @@ func (self *SGuest) getVirtualIPs() []string {
 func (self *SGuest) GetPrivateIPs() []string {
 	ips := self.GetRealIPs()
 	for i := len(ips) - 1; i >= 0; i-- {
-		ipAddr, err := netutils.NewIPV4Addr(ips[i])
-		if err != nil {
-			log.Errorf("guest %s(%s) has bad ipv4 address (%s): %v", self.Name, self.Id, ips[i], err)
-			continue
-		}
-		if !netutils.IsPrivate(ipAddr) {
-			ips = append(ips[:i], ips[i+1:]...)
+		if regutils.MatchIP4Addr(ips[i]) {
+			ipAddr, err := netutils.NewIPV4Addr(ips[i])
+			if err != nil {
+				log.Errorf("guest %s(%s) has bad ipv4 address (%s): %v", self.Name, self.Id, ips[i], err)
+				continue
+			}
+			if !netutils.IsPrivate(ipAddr) {
+				ips = append(ips[:i], ips[i+1:]...)
+			}
 		}
 	}
 	return ips
