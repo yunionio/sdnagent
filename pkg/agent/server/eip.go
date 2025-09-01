@@ -79,9 +79,10 @@ func (man *eipMan) Start(ctx context.Context) {
 	{
 		modelSets := agentmodels.NewModelSets()
 		apiOpts := &apihelper.Options{
-			CommonOptions:       man.agent.hostConfig.CommonOptions,
-			SyncIntervalSeconds: 5,
-			ListBatchSize:       1024,
+			CommonOptions:           man.agent.hostConfig.CommonOptions,
+			SyncIntervalSeconds:     5,
+			ListBatchSize:           1024,
+			FetchFromComputeService: man.agent.hostConfig.SdnFetchDataFromComputeService,
 		}
 		var err error
 		apih, err = apihelper.NewAPIHelper(apiOpts, modelSets)

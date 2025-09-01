@@ -187,7 +187,8 @@ type SHostOptions struct {
 	SdnEnableTapMan bool   `help:"enable tap service" default:"$SDN_ENABLE_TAP_MAN|true"`
 	TapBridgeName   string `help:"bridge name for tap service" default:"brtap"`
 
-	SdnAllowConntrackInvalid bool `help:"allow packets marked by conntrack as INVALID to pass" default:"$SDN_ALLOW_CONNTRACK_INVALID|false"`
+	SdnAllowConntrackInvalid       bool `help:"allow packets marked by conntrack as INVALID to pass" default:"$SDN_ALLOW_CONNTRACK_INVALID|false"`
+	SdnFetchDataFromComputeService bool `help:"fetch network releated data from compute service" default:"$SDN_FETCH_DATA_FROM_COMPUTE_SERVICE|true"`
 
 	ovnutils.SOvnOptions
 
@@ -240,6 +241,8 @@ type SHostOptions struct {
 	ContainerDeviceConfigFile                string `help:"container device configuration file path"`
 	LxcfsPath                                string `help:"lxcfs directory path" default:"/var/lib/lxcfs"`
 	ContainerSystemCpufreqSimulateConfigFile string `help:"container system cpu simulate config file path" default:"/etc/yunion/container_cpufreq_simulate.conf"`
+	EnableRealtimeCpufreqSimulate            bool   `help:"realtime cpufreq simulate" default:"true"`
+	RealtimeCpufreqSimulateInterval          int    `help:"realtime cpufreq simulate interval(second)" default:"2"`
 
 	EnableCudaMPS        bool   `help:"enable cuda mps" default:"false"`
 	CudaMPSPipeDirectory string `help:"cuda mps pipe dir" default:"/tmp/nvidia-mps/pipe"`
