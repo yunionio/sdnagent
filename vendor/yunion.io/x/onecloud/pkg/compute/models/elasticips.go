@@ -903,8 +903,9 @@ func (self *SElasticip) AssociateLoadbalancer(ctx context.Context, userCred mccl
 	if len(self.AssociateType) > 0 && len(self.AssociateId) > 0 {
 		if self.AssociateType == api.EIP_ASSOCIATE_TYPE_LOADBALANCER && self.AssociateId == lb.Id {
 			return nil
-		} else {
-			return fmt.Errorf("EIP has been associated!!")
+		}
+		if self.GetAssociateResource() != nil {
+			return fmt.Errorf("eip has been associated!!")
 		}
 	}
 	_, err := db.Update(self, func() error {
@@ -935,7 +936,9 @@ func (self *SElasticip) AssociateInstance(ctx context.Context, userCred mcclient
 		if self.AssociateType == insType && self.AssociateId == ins.GetId() {
 			return nil
 		}
-		return fmt.Errorf("EIP has been associated!!")
+		if self.GetAssociateResource() != nil {
+			return fmt.Errorf("eip has been associated!!")
+		}
 	}
 	_, err := db.Update(self, func() error {
 		self.AssociateType = insType
@@ -965,7 +968,9 @@ func (self *SElasticip) AssociateInstanceGroup(ctx context.Context, userCred mcc
 		if self.AssociateType == insType && self.AssociateId == ins.GetId() {
 			return nil
 		}
-		return fmt.Errorf("EIP has been associated!!")
+		if self.GetAssociateResource() != nil {
+			return fmt.Errorf("eip has been associated!!")
+		}
 	}
 	_, err := db.Update(self, func() error {
 		self.AssociateType = insType

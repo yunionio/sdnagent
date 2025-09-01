@@ -206,6 +206,15 @@ func (manager *SDiskManager) ListItemFilter(
 		}
 	}
 
+	if query.BindingSnapshotpolicy != nil {
+		spjsq := SnapshotPolicyDiskManager.Query("disk_id").SubQuery()
+		if *query.BindingSnapshotpolicy {
+			q = q.In("id", spjsq)
+		} else {
+			q = q.NotIn("id", spjsq)
+		}
+	}
+
 	guestId := query.ServerId
 	if len(guestId) > 0 {
 		server, err := validators.ValidateModel(ctx, userCred, GuestManager, &guestId)
@@ -718,12 +727,28 @@ func getDiskResourceRequirements(ctx context.Context, userCred mcclient.TokenCre
 	return req
 }
 
-/*func (manager *SDiskManager) convertToBatchCreateData(data jsonutils.JSONObject) *jsonutils.JSONDict {
-	diskConfig, _ := data.Get("disk")
-	newData := data.(*jsonutils.JSONDict).CopyExcludes("disk")
-	newData.Add(diskConfig, "disk.0")
-	return newData
-}*/
+func (disk *SDisk) OnMetadataUpdated(ctx context.Context, userCred mcclient.TokenCredential) {
+	if len(disk.ExternalId) == 0 || options.Options.KeepTagLocalization {
+		return
+	}
+	err := disk.StartRemoteUpdateTask(ctx, userCred, true, "")
+	if err != nil {
+		log.Errorf("StartRemoteUpdateTask fail: %s", err)
+	}
+}
+
+func (disk *SDisk) StartRemoteUpdateTask(ctx context.Context, userCred mcclient.TokenCredential, replaceTags bool, parentTaskId string) error {
+	data := jsonutils.NewDict()
+	if replaceTags {
+		data.Add(jsonutils.JSONTrue, "replace_tags")
+	}
+	task, err := taskman.TaskManager.NewTask(ctx, "DiskRemoteUpdateTask", disk, userCred, data, parentTaskId, "", nil)
+	if err != nil {
+		return errors.Wrap(err, "Start DiskRemoteUpdateTask")
+	}
+	disk.SetStatus(ctx, userCred, apis.STATUS_UPDATE_TAGS, "StartRemoteUpdateTask")
+	return task.ScheduleRun(nil)
+}
 
 func (disk *SDisk) PostCreate(ctx context.Context, userCred mcclient.TokenCredential, ownerId mcclient.IIdentityProvider, query jsonutils.JSONObject, data jsonutils.JSONObject) {
 	disk.SVirtualResourceBase.PostCreate(ctx, userCred, ownerId, query, data)
@@ -2323,7 +2348,11 @@ func (self *SDisk) PerformSyncstatus(ctx context.Context, userCred mcclient.Toke
 		return nil, httperrors.NewBadRequestError("Disk has %d task active, can't sync status", count)
 	}
 
-	return nil, StartResourceSyncStatusTask(ctx, userCred, self, "DiskSyncstatusTask", "")
+	return nil, self.StartSyncstatus(ctx, userCred, "")
+}
+
+func (disk *SDisk) StartSyncstatus(ctx context.Context, userCred mcclient.TokenCredential, parentTaskId string) error {
+	return StartResourceSyncStatusTask(ctx, userCred, disk, "DiskSyncstatusTask", parentTaskId)
 }
 
 func (self *SDisk) PerformPurge(ctx context.Context, userCred mcclient.TokenCredential, query jsonutils.JSONObject, data jsonutils.JSONObject) (jsonutils.JSONObject, error) {
@@ -2407,6 +2436,7 @@ func (manager *SDiskManager) FetchCustomizeColumns(
 		guestSQ.Field("id"),
 		guestSQ.Field("name"),
 		guestSQ.Field("status"),
+		guestSQ.Field("billing_type"),
 		gds.Field("disk_id"),
 		gds.Field("index"),
 		gds.Field("driver"),
@@ -2423,11 +2453,12 @@ func (manager *SDiskManager) FetchCustomizeColumns(
 		Status string
 		DiskId string
 
-		Index     int
-		Driver    string
-		CacheMode string
-		Iops      int
-		Bps       int
+		Index       int
+		Driver      string
+		CacheMode   string
+		Iops        int
+		Bps         int
+		BillingType string
 	}{}
 	err := q.All(&guestInfo)
 	if err != nil {
@@ -2446,11 +2477,12 @@ func (manager *SDiskManager) FetchCustomizeColumns(
 			Name:   guest.Name,
 			Status: guest.Status,
 
-			Index:     guest.Index,
-			Driver:    guest.Driver,
-			CacheMode: guest.CacheMode,
-			Iops:      guest.Iops,
-			Bps:       guest.Bps,
+			Index:       guest.Index,
+			Driver:      guest.Driver,
+			CacheMode:   guest.CacheMode,
+			Iops:        guest.Iops,
+			Bps:         guest.Bps,
+			BillingType: guest.BillingType,
 		})
 	}
 
@@ -2496,17 +2528,19 @@ func (manager *SDiskManager) FetchCustomizeColumns(
 
 	for i := range rows {
 		rows[i].Guests, _ = guests[diskIds[i]]
-		names, status := []string{}, []string{}
+		names, status, billingTypes := []string{}, []string{}, []string{}
 		var iops, bps int
 		for _, guest := range rows[i].Guests {
 			names = append(names, guest.Name)
 			status = append(status, guest.Status)
 			iops = guest.Iops
 			bps = guest.Bps
+			billingTypes = append(billingTypes, guest.BillingType)
 		}
 		rows[i].GuestCount = len(rows[i].Guests)
 		rows[i].Guest = strings.Join(names, ",")
 		rows[i].GuestStatus = strings.Join(status, ",")
+		rows[i].GuestBillingType = strings.Join(billingTypes, ",")
 
 		rows[i].Snapshotpolicies, _ = policies[diskIds[i]]
 
@@ -2727,7 +2761,7 @@ func (manager *SDiskManager) GetNeedAutoSnapshotDisks() ([]SSnapshotPolicyDisk, 
 	}
 	timePoint := t.Hour()
 
-	policy := SnapshotPolicyManager.Query().Equals("cloudregion_id", api.DEFAULT_REGION_ID)
+	policy := SnapshotPolicyManager.Query().Equals("type", api.SNAPSHOT_POLICY_TYPE_DISK).Equals("cloudregion_id", api.DEFAULT_REGION_ID)
 	policy = policy.Filter(sqlchemy.Contains(policy.Field("repeat_weekdays"), fmt.Sprintf("%d", week)))
 	sq := policy.Filter(
 		sqlchemy.OR(
