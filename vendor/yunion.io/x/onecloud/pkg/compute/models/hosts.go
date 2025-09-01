@@ -280,18 +280,24 @@ func (manager *SHostManager) ListItemFilter(
 		}
 	}
 	if len(query.AnyIp) > 0 {
+		cmpFunc := sqlchemy.Equals
+		if len(query.AnyIp) == 1 {
+			cmpFunc = func(f sqlchemy.IQueryField, v interface{}) sqlchemy.ICondition {
+				return sqlchemy.Regexp(f, v.(string))
+			}
+		}
 		hnQ := HostnetworkManager.Query("baremetal_id") //.Contains("ip_addr", query.AnyIp).SubQuery()
 		conditions := []sqlchemy.ICondition{}
 		for _, ip := range query.AnyIp {
-			conditions = append(conditions, sqlchemy.Contains(hnQ.Field("ip_addr"), ip))
+			conditions = append(conditions, cmpFunc(hnQ.Field("ip_addr"), ip))
 		}
 		hn := hnQ.Filter(
 			sqlchemy.OR(conditions...),
 		)
 		conditions = []sqlchemy.ICondition{}
 		for _, ip := range query.AnyIp {
-			conditions = append(conditions, sqlchemy.Contains(q.Field("access_ip"), ip))
-			conditions = append(conditions, sqlchemy.Contains(q.Field("ipmi_ip"), ip))
+			conditions = append(conditions, cmpFunc(q.Field("access_ip"), ip))
+			conditions = append(conditions, cmpFunc(q.Field("ipmi_ip"), ip))
 		}
 		conditions = append(conditions, sqlchemy.In(q.Field("id"), hn))
 		q = q.Filter(sqlchemy.OR(
@@ -452,8 +458,10 @@ func (manager *SHostManager) ListItemFilter(
 
 	for f, vars := range fieldQueryMap {
 		vars = stringutils2.FilterEmpty(vars)
-		if len(vars) > 0 {
+		if len(vars) > 1 {
 			q = q.In(f, vars)
+		} else if len(vars) == 1 {
+			q = q.Regexp(f, vars[0])
 		}
 	}
 
@@ -803,7 +811,7 @@ func (manager *SHostManager) OrderByExtraFields(
 			guestSQ.Field("mem_commit"),
 			sqlchemy.NewFunction(
 				sqlchemy.NewCase().When(
-					sqlchemy.GE(host.Field("mem_cmtbound"), 0),
+					sqlchemy.GT(host.Field("mem_cmtbound"), 0),
 					host.Field("mem_cmtbound"),
 				).Else(sqlchemy.NewConstField(1)),
 				"mem_cmtbound",
@@ -843,7 +851,7 @@ func (manager *SHostManager) OrderByExtraFields(
 			guestSQ.Field("cpu_commit"),
 			sqlchemy.NewFunction(
 				sqlchemy.NewCase().When(
-					sqlchemy.GE(host.Field("cpu_cmtbound"), 0),
+					sqlchemy.GT(host.Field("cpu_cmtbound"), 0),
 					host.Field("cpu_cmtbound"),
 				).Else(sqlchemy.NewConstField(1)),
 				"cpu_cmtbound",
@@ -878,7 +886,7 @@ func (manager *SHostManager) OrderByExtraFields(
 			hoststorages.Field("host_id"),
 			sqlchemy.NewFunction(
 				sqlchemy.NewCase().When(
-					sqlchemy.GE(storageQ.Field("cmtbound"), 0),
+					sqlchemy.GT(storageQ.Field("cmtbound"), 0),
 					storageQ.Field("cmtbound"),
 				).Else(sqlchemy.NewConstField(1)),
 				"cmtbound",

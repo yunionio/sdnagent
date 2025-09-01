@@ -163,6 +163,9 @@ type DiskListInput struct {
 
 	// 根据虚拟机状态过滤
 	GuestStatus string `json:"guest_status"`
+
+	// 根据是否绑定快照策略过滤
+	BindingSnapshotpolicy *bool `json:"binding_snapshotpolicy"`
 }
 
 type DiskResourceInput struct {
@@ -205,6 +208,8 @@ type SimpleGuest struct {
 	Iops int `json:"iops"`
 	// 磁盘吞吐
 	Bps int `json:"bps"`
+	// 计费类型
+	BillingType string `json:"billing_type"`
 }
 
 type SimpleSnapshotPolicy struct {
@@ -229,6 +234,8 @@ type DiskDetails struct {
 	GuestCount int `json:"guest_count"`
 	// 所挂载虚拟机状态
 	GuestStatus string `json:"guest_status"`
+	// 所挂载虚拟机计费类型
+	GuestBillingType string `json:"guest_billing_type"`
 
 	// 自动清理时间
 	AutoDeleteAt time.Time `json:"auto_delete_at"`
