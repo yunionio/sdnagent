@@ -728,7 +728,7 @@ sigs.k8s.io/structured-merge-diff/v4/value
 # sigs.k8s.io/yaml v1.2.0
 ## explicit; go 1.12
 sigs.k8s.io/yaml
-# yunion.io/x/cloudmux v0.3.10-0-alpha.1.0.20250807082423-7edaa2517e8e
+# yunion.io/x/cloudmux v0.3.10-0-alpha.1.0.20250901075733-3faae6e1659e
 ## explicit; go 1.21
 yunion.io/x/cloudmux/pkg/apis
 yunion.io/x/cloudmux/pkg/apis/billing
@@ -751,7 +751,7 @@ yunion.io/x/jsonutils
 ## explicit; go 1.12
 yunion.io/x/log
 yunion.io/x/log/hooks
-# yunion.io/x/onecloud v0.0.0-20250810004659-4eb90fc44259
+# yunion.io/x/onecloud v0.0.0-20250901151540-3edd8dd65bce
 ## explicit; go 1.21
 yunion.io/x/onecloud/locales
 yunion.io/x/onecloud/pkg/apihelper
@@ -884,7 +884,7 @@ yunion.io/x/onecloud/pkg/util/tagutils
 yunion.io/x/onecloud/pkg/util/yunionmeta
 yunion.io/x/onecloud/pkg/vpcagent/models
 yunion.io/x/onecloud/pkg/vpcagent/ovn/mac
-# yunion.io/x/pkg v1.10.4-0.20250805171825-2431e10f90a9
+# yunion.io/x/pkg v1.10.4-0.20250820035218-6008459eb4f0
 ## explicit; go 1.18
 yunion.io/x/pkg/appctx
 yunion.io/x/pkg/errors
