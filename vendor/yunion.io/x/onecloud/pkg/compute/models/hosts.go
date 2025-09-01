@@ -18,6 +18,7 @@ import (
 	"context"
 	"database/sql"
 	"fmt"
+	"net"
 	"net/http"
 	"net/url"
 	"sort"
@@ -450,6 +451,7 @@ func (manager *SHostManager) ListItemFilter(
 		"sn":               query.SN,
 		"storage_type":     query.StorageType,
 		"ipmi_ip":          query.IpmiIp,
+		"public_ip":        query.PublicIp,
 		"host_status":      query.HostStatus,
 		"host_type":        query.HostType,
 		"version":          query.Version,
@@ -1364,7 +1366,8 @@ func (hh *SHost) GetFetchUrl(disableHttps bool) string {
 			port = 80
 		}
 	}
-	return fmt.Sprintf("%s://%s:%d", managerUrl.Scheme, strings.Split(managerUrl.Host, ":")[0], port+40000)
+
+	return fmt.Sprintf("%s://%s", managerUrl.Scheme, net.JoinHostPort(managerUrl.Hostname(), strconv.Itoa(port+40000)))
 }
 
 func (hh *SHost) GetAttachedEnabledHostStorages(storageType []string) []SStorage {
