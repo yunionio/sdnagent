@@ -37,8 +37,8 @@ RELEASE_BRANCH:=master
 GOPROXY ?= direct
 
 mod:
-	GOPROXY=$(GOPROXY) GONOSUMDB=yunion.io/x go get -d yunion.io/x/onecloud@$(RELEASE_BRANCH) yunion.io/x/cloudmux@$(RELEASE_BRANCH)
-	GOPROXY=$(GOPROXY) GONOSUMDB=yunion.io/x go get -d $(MAKE_MODE_ARGS) $(patsubst %,%@master,$(shell GO111MODULE=on go mod edit -print | sed -n -e 's|.*\(yunion.io/x/[a-z].*\) v.*|\1|p' | grep -v '/onecloud$$' | grep -v '/cloudmux$$' | grep -v 'openvswitch$$' ))
+	GOPROXY=$(GOPROXY) GONOSUMDB=yunion.io/x go get yunion.io/x/onecloud@$(RELEASE_BRANCH) yunion.io/x/cloudmux@$(RELEASE_BRANCH)
+	GOPROXY=$(GOPROXY) GONOSUMDB=yunion.io/x go get $(MAKE_MODE_ARGS) $(patsubst %,%@master,$(shell GO111MODULE=on go mod edit -print | sed -n -e 's|.*\(yunion.io/x/[a-z].*\) v.*|\1|p' | grep -v '/onecloud$$' | grep -v '/cloudmux$$' | grep -v 'openvswitch$$' ))
 	GOPROXY=$(GOPROXY) GONOSUMDB=yunion.io/x go mod tidy
 	GOPROXY=$(GOPROXY) GONOSUMDB=yunion.io/x go mod vendor -v
 
@@ -56,7 +56,7 @@ VERSION ?= $(shell git describe --exact-match 2> /dev/null || \
 	   git describe --match=$(git rev-parse --short=8 HEAD) --always --dirty --abbrev=8)
 IMAGE_NAME_TAG := $(REGISTRY)/sdnagent:$(VERSION)
 
-DOCKER_ALPINE_BUILD_IMAGE:=registry.cn-beijing.aliyuncs.com/yunionio/alpine-build:1.0-2
+DOCKER_ALPINE_BUILD_IMAGE:=registry.cn-beijing.aliyuncs.com/yunionio/alpine-build:3.22.0-go-1.24.6-0
 docker-alpine-build:
 	docker run --rm \
 		--name "docker-alpine-build-onecloud-sdnagent" \
