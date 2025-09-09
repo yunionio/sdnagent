@@ -594,7 +594,7 @@ func (sp *SSnapshotPolicy) PerformUnbindDisks(
 			return nil, err
 		}
 		disk := diskObj.(*SDisk)
-		if utils.IsInStringArray(disk.Id, diskIds) {
+		if !utils.IsInStringArray(disk.Id, diskIds) {
 			diskIds = append(diskIds, disk.Id)
 		}
 	}
@@ -699,6 +699,15 @@ func (manager *SSnapshotPolicyManager) QueryDistinctExtraField(q *sqlchemy.SQuer
 		return q, nil
 	}
 
+	return q, httperrors.ErrNotFound
+}
+
+func (manager *SSnapshotPolicyManager) QueryDistinctExtraFields(q *sqlchemy.SQuery, resource string, fields []string) (*sqlchemy.SQuery, error) {
+	var err error
+	q, err = manager.SManagedResourceBaseManager.QueryDistinctExtraFields(q, resource, fields)
+	if err == nil {
+		return q, nil
+	}
 	return q, httperrors.ErrNotFound
 }
 
