@@ -242,6 +242,8 @@ github.com/julienschmidt/httprouter v1.3.0/go.mod h1:JR6WtHb+2LUe8TCKY3cZOxFyyO8
 github.com/kisielk/errcheck v1.2.0/go.mod h1:/BMXB+zMLi60iA8Vv6Ksmxu/1UDYcXs4uQLJ+jE2L00=
 github.com/kisielk/errcheck v1.5.0/go.mod h1:pFxgyoBC7bSaBwPgfKdkLd5X25qrDl4LWUI2bnpBCr8=
 github.com/kisielk/gotool v1.0.0/go.mod h1:XhKaO+MFFWcvkIS/tQcRk01m1F5IRFswLeQ+oQHNcck=
+github.com/klauspost/cpuid/v2 v2.0.9 h1:lgaqFMSdTdQYdZ04uHyN2d/eKdOMyi2YLSvlQIBFYa4=
+github.com/klauspost/cpuid/v2 v2.0.9/go.mod h1:FInQzS24/EEf25PyTYn52gqo7WaD8xa0213Md/qVLRg=
 github.com/konsorten/go-windows-terminal-sequences v1.0.1/go.mod h1:T0+1ngSBFLxvqU3pZ+m/2kptfBszLMUkC4ZK/EgS/cQ=
 github.com/konsorten/go-windows-terminal-sequences v1.0.3/go.mod h1:T0+1ngSBFLxvqU3pZ+m/2kptfBszLMUkC4ZK/EgS/cQ=
 github.com/kr/logfmt v0.0.0-20140226030751-b84e30acd515/go.mod h1:+0opPa2QZZtGFBFZlji/RkVcI2GknAs/DXo4wKdlNEc=
@@ -435,6 +437,10 @@ github.com/yuin/goldmark v1.3.5/go.mod h1:mwnBkeHKe2W/ZEtQ+71ViKU8L12m81fl3OWwC1
 github.com/yuin/goldmark v1.4.13/go.mod h1:6yULJ656Px+3vBD8DxQVa3kxgyrAnzto9xy5taEt/CY=
 github.com/yusufpapurcu/wmi v1.2.2 h1:KBNDSne4vP5mbSWnJbO+51IMOXJB67QiYCSBrubbPRg=
 github.com/yusufpapurcu/wmi v1.2.2/go.mod h1:SBZ9tNy3G9/m5Oi98Zks0QjeHVDvuK0qfxQmPyzfmi0=
+github.com/zeebo/assert v1.3.0 h1:g7C04CbJuIDKNPFHmsk4hwZDO5O+kntRxzaUoNXj+IQ=
+github.com/zeebo/assert v1.3.0/go.mod h1:Pq9JiuJQpG8JLJdtkwrJESF0Foym2/D9XMU5ciN/wJ0=
+github.com/zeebo/xxh3 v1.0.2 h1:xZmwmqxHZA8AI603jOQ0tMqmBr9lPeFwGg6d+xy9DC0=
+github.com/zeebo/xxh3 v1.0.2/go.mod h1:5NWz9Sef7zIDm2JHfFlcQvNekmcEl9ekUZQQKCYaDcA=
 github.com/zexi/ghw v0.9.1 h1:3PaJ22kRnqTsTJWpNLminGQcYrIT3FA4nz6h1R4E2mg=
 github.com/zexi/ghw v0.9.1/go.mod h1:dXMo19735vXOjpIBDyDYSp31sB2u4hrtRCMxInqQ64k=
 go.etcd.io/etcd/api/v3 v3.5.0 h1:GsV3S+OfZEOCNXdtNkBSR7kgLobAa/SO6tCxRa0GAYw=
@@ -772,8 +778,8 @@ sigs.k8s.io/structured-merge-diff/v4 v4.0.1/go.mod h1:bJZC9H9iH24zzfZ/41RGcq60oK
 sigs.k8s.io/yaml v1.1.0/go.mod h1:UJmg0vDUVViEyp3mgSv9WPwZCDxu4rQW1olrI1uml+o=
 sigs.k8s.io/yaml v1.2.0 h1:kr/MCeFWJWTwyaHoR9c8EjH9OumOmoF9YGiZd7lFm/Q=
 sigs.k8s.io/yaml v1.2.0/go.mod h1:yfXDCHCao9+ENCvLSE62v9VSji2MKu5jeNfTrofGhJc=
-yunion.io/x/cloudmux v0.3.10-0-alpha.1.0.20250930065047-800b5353681b h1:b3YRRpPuDhcEwwpC4ufg1lCuBUZQ+zEzUcZn124Z8pU=
-yunion.io/x/cloudmux v0.3.10-0-alpha.1.0.20250930065047-800b5353681b/go.mod h1:S9o/TRZsnYWGaGe7o3PpeOv6CgMY8ZJwITYsEnGfOgQ=
+yunion.io/x/cloudmux v0.3.10-0-alpha.1.0.20250930105833-5458381eef54 h1:pu+/DXkTz5JlVpVArTOTcQe8wRrAsAbd3qSXPsJfFoM=
+yunion.io/x/cloudmux v0.3.10-0-alpha.1.0.20250930105833-5458381eef54/go.mod h1:S9o/TRZsnYWGaGe7o3PpeOv6CgMY8ZJwITYsEnGfOgQ=
 yunion.io/x/executor v0.0.0-20250518005516-5402e9e0bed0 h1:msG4SiDSVU7CrXH06WuHlNEZXIooTcmNbfrIGHuIHBU=
 yunion.io/x/executor v0.0.0-20250518005516-5402e9e0bed0/go.mod h1:Uxuou9WQIeJXNpy7t2fPLL0BYLvLiMvGQwY7Qc6aSws=
 yunion.io/x/go-openvswitch v0.0.20240920 h1:imjK9g2EZ3IzBdNZ3UEYobJJYw6bQCvUvgoTOIyis1o=
@@ -785,8 +791,8 @@ yunion.io/x/log v0.0.0-20190514041436-04ce53b17c6b/go.mod h1:+gauLs73omeJAPlsXce
 yunion.io/x/log v0.0.0-20190629062853-9f6483a7103d/go.mod h1:LC6f/4FozL0iaAbnFt2eDX9jlsyo3WiOUPm03d7+U4U=
 yunion.io/x/log v1.0.1-0.20240305175729-7cf2d6cd5a91 h1:inY5o3LDa/zgsIZuPN0HmpzKIsu/lLgsBmMttuDPGj4=
 yunion.io/x/log v1.0.1-0.20240305175729-7cf2d6cd5a91/go.mod h1:LC6f/4FozL0iaAbnFt2eDX9jlsyo3WiOUPm03d7+U4U=
-yunion.io/x/onecloud v0.0.0-20250930051911-ded669c7a2a1 h1:C1M1La3+AInpHe+aPgcHOq+R75lau1v7hHVNJwF1Vfc=
-yunion.io/x/onecloud v0.0.0-20250930051911-ded669c7a2a1/go.mod h1:OA81XIvnq1S/arPHB1ryAhLQ0itQGgCc2FjOb6ehuHg=
+yunion.io/x/onecloud v0.0.0-20251002223312-1e676fb2e843 h1:MKmNTCITe3l6LvezVPFQ70BTfcKQ1tWKM+k3bpytHuk=
+yunion.io/x/onecloud v0.0.0-20251002223312-1e676fb2e843/go.mod h1:KsF4nXw193rM35E9ak8nBelFnSUsyzyRT6eQsmBYLb4=
 yunion.io/x/pkg v0.0.0-20190620104149-945c25821dbf/go.mod h1:t6rEGG2sQ4J7DhFxSZVOTjNd0YO/KlfWQyK1W4tog+E=
 yunion.io/x/pkg v0.0.0-20190628082551-f4033ba2ea30/go.mod h1:t6rEGG2sQ4J7DhFxSZVOTjNd0YO/KlfWQyK1W4tog+E=
 yunion.io/x/pkg v1.10.4-0.20250820035218-6008459eb4f0 h1:/vHcYqzQInxqR1jjS+e7A0owRXj+/rvrIgES6uadUqs=
