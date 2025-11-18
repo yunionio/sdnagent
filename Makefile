@@ -56,7 +56,7 @@ VERSION ?= $(shell git describe --exact-match 2> /dev/null || \
 	   git describe --match=$(git rev-parse --short=8 HEAD) --always --dirty --abbrev=8)
 IMAGE_NAME_TAG := $(REGISTRY)/sdnagent:$(VERSION)
 
-DOCKER_ALPINE_BUILD_IMAGE:=registry.cn-beijing.aliyuncs.com/yunionio/alpine-build:3.22.0-go-1.24.6-0
+DOCKER_ALPINE_BUILD_IMAGE:=registry.cn-beijing.aliyuncs.com/yunionio/alpine-build:3.22.2-go-1.24.9-0
 docker-alpine-build:
 	docker run --rm \
 		--name "docker-alpine-build-onecloud-sdnagent" \

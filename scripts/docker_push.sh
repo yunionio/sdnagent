@@ -42,13 +42,15 @@ image_keyword=sdnagent
 build_bin() {
     local BUILD_ARCH="$1";
     local BUILD_CC="$2";
-    local BUILD_CGO="$3"
+    local BUILD_CGO="$3";
+    arch=$(echo "$BUILD_ARCH" | cut -d'=' -f2)
 
 	docker run --rm \
+        --platform linux/$arch \
 		-v $SRC_DIR:/root/go/src/yunion.io/x/$PROJ \
         -v $SRC_DIR/_output/alpine-build:/root/go/src/yunion.io/x/$PROJ/_output \
 		-v $SRC_DIR/_output/alpine-build/_cache:/root/.cache \
-		registry.cn-beijing.aliyuncs.com/yunionio/alpine-build:3.22.0-go-1.24.6-0 \
+		registry.cn-beijing.aliyuncs.com/yunionio/alpine-build:3.22.2-go-1.24.9-0 \
 		/bin/sh -c "set -ex;
             git config --global --add safe.directory /root/go/src/yunion.io/x/$PROJ;
             cd /root/go/src/yunion.io/x/$PROJ;
@@ -83,7 +85,7 @@ get_image_name() {
     local arch=$2
     local is_all_arch=$3
     local img_name="$REGISTRY/$component:$TAG"
-    if [[ "$is_all_arch" == "true" || "$arch" == arm64 ]]; then
+    if [[ "$is_all_arch" == "true" || "$arch" == arm64 || "$arch" == riscv64 ]]; then
         img_name="${img_name}-$arch"
     fi
     echo $img_name
@@ -108,9 +110,6 @@ build_process_with_buildx() {
     local img_name=$(get_image_name $image_keyword $arch $is_all_arch)
 
     build_env="GOARCH=$arch "
-    if [[ $arch == arm64 ]]; then
-        build_env="$build_env CC=aarch64-linux-musl-gcc"
-    fi
 	build_bin $build_env
     if [[ "$DRY_RUN" == "true" ]]; then
         echo "[$(readlink -f ${BASH_SOURCE}):${LINENO} ${FUNCNAME[0]}] return for DRY_RUN"
@@ -128,9 +127,8 @@ make_manifest_image() {
     fi
     docker buildx imagetools create -t $img_name \
         $img_name-amd64 \
-        $img_name-arm64
-	docker manifest inspect ${img_name} | grep -wq amd64
-    docker manifest inspect ${img_name} | grep -wq arm64
+        $img_name-arm64 \
+        $img_name-riscv64
 }
 
 show_update_cmd() {
@@ -145,12 +143,12 @@ echo "Start to build for arch[$ARCH]"
 
 case "$ARCH" in
     all)
-        for arch in "arm64" "amd64"; do
+        for arch in "arm64" "amd64" "riscv64"; do
             build_process_with_buildx $arch "true"
         done
         make_manifest_image $image_keyword
         ;;
-    arm64)
+    arm64|riscv64)
         build_process_with_buildx $ARCH "false"
         ;;
     amd64)
