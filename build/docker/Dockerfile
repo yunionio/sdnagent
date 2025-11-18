@@ -1,4 +1,4 @@
-FROM registry.cn-beijing.aliyuncs.com/yunionio/openvswitch:2.12.4-4
+FROM registry.cn-beijing.aliyuncs.com/yunionio/openvswitch:3.22.2-1
 
 ENV TZ=UTC
 RUN mkdir -p /opt/yunion/bin
