@@ -25,6 +25,22 @@ readlink_mac() {
   REAL_PATH=$PHYS_DIR/$TARGET_FILE
 }
 
+get_current_arch() {
+    local current_arch
+    case $(uname -m) in
+    x86_64)
+        current_arch=amd64
+        ;;
+    aarch64)
+        current_arch=arm64
+        ;;
+    riscv64)
+        current_arch=riscv64
+        ;;
+    esac
+    echo $current_arch
+}
+
 pushd $(cd "$(dirname "$0")"; pwd) > /dev/null
 readlink_mac $(basename "$0")
 cd "$(dirname "$REAL_PATH")"
@@ -138,6 +154,9 @@ show_update_cmd() {
 }
 
 cd $SRC_DIR
+
+CURRENT_ARCH=$(get_current_arch)
+ARCH=${ARCH:-$CURRENT_ARCH}
 
 echo "Start to build for arch[$ARCH]"
 
