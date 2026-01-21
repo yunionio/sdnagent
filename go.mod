@@ -19,8 +19,8 @@ require (
 	google.golang.org/protobuf v1.32.0
 	yunion.io/x/jsonutils v1.0.1-0.20250507052344-1abcf4f443b1
 	yunion.io/x/log v1.0.1-0.20240305175729-7cf2d6cd5a91
-	yunion.io/x/onecloud v0.0.0-20250901151522-8eb11e78658d
-	yunion.io/x/pkg v1.10.4-0.20250820035218-6008459eb4f0
+	yunion.io/x/onecloud v0.0.0-20260119173820-60082c353484
+	yunion.io/x/pkg v1.10.4-0.20251114095758-2a2f105d9712
 )
 
 require (
@@ -46,6 +46,7 @@ require (
 	github.com/golang-plus/errors v1.0.0 // indirect
 	github.com/golang-plus/uuid v1.0.0 // indirect
 	github.com/google/gofuzz v1.1.0 // indirect
+	github.com/google/uuid v1.6.0 // indirect
 	github.com/googleapis/gnostic v0.4.1 // indirect
 	github.com/gorilla/mux v1.7.0 // indirect
 	github.com/hako/durafmt v0.0.0-20180520121703-7b7ae1e72ead // indirect
@@ -53,6 +54,7 @@ require (
 	github.com/inconshreveable/mousetrap v1.0.0 // indirect
 	github.com/jaypipes/ghw v0.11.0 // indirect
 	github.com/json-iterator/go v1.1.12 // indirect
+	github.com/klauspost/cpuid/v2 v2.0.9 // indirect
 	github.com/leodido/go-urn v1.2.0 // indirect
 	github.com/lufia/plan9stats v0.0.0-20211012122336-39d0f177ccd0 // indirect
 	github.com/ma314smith/signedxml v0.0.0-20210628192057-abc5b481ae1c // indirect
@@ -71,7 +73,7 @@ require (
 	github.com/power-devops/perfstat v0.0.0-20210106213030-5aafc221ea8c // indirect
 	github.com/serialx/hashring v0.0.0-20180504054112-49a4782e9908 // indirect
 	github.com/shirou/gopsutil/v3 v3.22.10 // indirect
-	github.com/sirupsen/logrus v1.9.0 // indirect
+	github.com/sirupsen/logrus v1.9.3 // indirect
 	github.com/spf13/afero v1.2.2 // indirect
 	github.com/spf13/cast v1.3.0 // indirect
 	github.com/spf13/jwalterweatherman v1.0.0 // indirect
@@ -85,6 +87,7 @@ require (
 	github.com/ulikunitz/xz v0.5.12 // indirect
 	github.com/vmware/govmomi v0.37.1 // indirect
 	github.com/yusufpapurcu/wmi v1.2.2 // indirect
+	github.com/zeebo/xxh3 v1.0.2 // indirect
 	go.etcd.io/etcd/api/v3 v3.5.0 // indirect
 	go.etcd.io/etcd/client/pkg/v3 v3.5.0 // indirect
 	go.etcd.io/etcd/client/v3 v3.5.0 // indirect
@@ -114,10 +117,10 @@ require (
 	moul.io/http2curl/v2 v2.3.0 // indirect
 	sigs.k8s.io/structured-merge-diff/v4 v4.0.1 // indirect
 	sigs.k8s.io/yaml v1.2.0 // indirect
-	yunion.io/x/cloudmux v0.3.10-0-alpha.1.0.20250901075739-94adb38ba774 // indirect
+	yunion.io/x/cloudmux v0.3.10-0-alpha.1.0.20260114022913-2a24ba2aff38 // indirect
 	yunion.io/x/executor v0.0.0-20250518005516-5402e9e0bed0 // indirect
 	yunion.io/x/s3cli v0.0.0-20241221171442-1c11599d28e1 // indirect
-	yunion.io/x/sqlchemy v1.1.3-0.20250806073422-e37f5197cec0 // indirect
+	yunion.io/x/sqlchemy v1.1.3-0.20251231025938-b0a38f6e9fab // indirect
 	yunion.io/x/structarg v0.0.0-20231017124457-df4d5009457c // indirect
 )
 
