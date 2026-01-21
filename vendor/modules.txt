@@ -103,6 +103,9 @@ github.com/golang/protobuf/ptypes/timestamp
 # github.com/google/gofuzz v1.1.0
 ## explicit; go 1.12
 github.com/google/gofuzz
+# github.com/google/uuid v1.6.0
+## explicit
+github.com/google/uuid
 # github.com/googleapis/gnostic v0.4.1
 ## explicit; go 1.12
 github.com/googleapis/gnostic/compiler
@@ -145,6 +148,9 @@ github.com/jaypipes/ghw/pkg/util
 # github.com/json-iterator/go v1.1.12
 ## explicit; go 1.12
 github.com/json-iterator/go
+# github.com/klauspost/cpuid/v2 v2.0.9
+## explicit; go 1.13
+github.com/klauspost/cpuid/v2
 # github.com/leodido/go-urn v1.2.0
 ## explicit; go 1.13
 github.com/leodido/go-urn
@@ -213,7 +219,7 @@ github.com/shirou/gopsutil/v3/internal/common
 github.com/shirou/gopsutil/v3/mem
 github.com/shirou/gopsutil/v3/net
 github.com/shirou/gopsutil/v3/process
-# github.com/sirupsen/logrus v1.9.0
+# github.com/sirupsen/logrus v1.9.3
 ## explicit; go 1.13
 github.com/sirupsen/logrus
 # github.com/spf13/afero v1.2.2
@@ -300,6 +306,9 @@ github.com/vmware/govmomi/vim25/xml
 # github.com/yusufpapurcu/wmi v1.2.2
 ## explicit; go 1.16
 github.com/yusufpapurcu/wmi
+# github.com/zeebo/xxh3 v1.0.2
+## explicit; go 1.17
+github.com/zeebo/xxh3
 # go.etcd.io/etcd/api/v3 v3.5.0
 ## explicit; go 1.16
 go.etcd.io/etcd/api/v3/authpb
@@ -700,7 +709,7 @@ sigs.k8s.io/structured-merge-diff/v4/value
 # sigs.k8s.io/yaml v1.2.0
 ## explicit; go 1.12
 sigs.k8s.io/yaml
-# yunion.io/x/cloudmux v0.3.10-0-alpha.1.0.20250901075739-94adb38ba774
+# yunion.io/x/cloudmux v0.3.10-0-alpha.1.0.20260114022913-2a24ba2aff38
 ## explicit; go 1.21
 yunion.io/x/cloudmux/pkg/apis
 yunion.io/x/cloudmux/pkg/apis/billing
@@ -710,6 +719,7 @@ yunion.io/x/cloudmux/pkg/cloudprovider
 yunion.io/x/cloudmux/pkg/multicloud
 yunion.io/x/cloudmux/pkg/multicloud/esxi
 yunion.io/x/cloudmux/pkg/multicloud/esxi/vcenter
+yunion.io/x/cloudmux/pkg/multicloud/objectstore
 # yunion.io/x/executor v0.0.0-20250518005516-5402e9e0bed0
 ## explicit; go 1.12
 yunion.io/x/executor/apis
@@ -721,7 +731,7 @@ yunion.io/x/jsonutils
 ## explicit; go 1.12
 yunion.io/x/log
 yunion.io/x/log/hooks
-# yunion.io/x/onecloud v0.0.0-20250901151522-8eb11e78658d
+# yunion.io/x/onecloud v0.0.0-20260119173820-60082c353484
 ## explicit; go 1.21
 yunion.io/x/onecloud/locales
 yunion.io/x/onecloud/pkg/apihelper
@@ -767,7 +777,6 @@ yunion.io/x/onecloud/pkg/cloudcommon/validators
 yunion.io/x/onecloud/pkg/cloudcommon/workmanager
 yunion.io/x/onecloud/pkg/cloudmon/misc
 yunion.io/x/onecloud/pkg/cloudmon/options
-yunion.io/x/onecloud/pkg/cloutpost/options
 yunion.io/x/onecloud/pkg/compute/baremetal
 yunion.io/x/onecloud/pkg/compute/guestdrivers/types
 yunion.io/x/onecloud/pkg/compute/models
@@ -844,7 +853,7 @@ yunion.io/x/onecloud/pkg/util/tagutils
 yunion.io/x/onecloud/pkg/util/yunionmeta
 yunion.io/x/onecloud/pkg/vpcagent/models
 yunion.io/x/onecloud/pkg/vpcagent/ovn/mac
-# yunion.io/x/pkg v1.10.4-0.20250820035218-6008459eb4f0
+# yunion.io/x/pkg v1.10.4-0.20251114095758-2a2f105d9712
 ## explicit; go 1.18
 yunion.io/x/pkg/appctx
 yunion.io/x/pkg/errors
@@ -879,6 +888,7 @@ yunion.io/x/pkg/util/samlutils
 yunion.io/x/pkg/util/seclib
 yunion.io/x/pkg/util/secrules
 yunion.io/x/pkg/util/sets
+yunion.io/x/pkg/util/shellutils
 yunion.io/x/pkg/util/signalutils
 yunion.io/x/pkg/util/sortutils
 yunion.io/x/pkg/util/streamutils
@@ -891,7 +901,7 @@ yunion.io/x/pkg/utils
 # yunion.io/x/s3cli v0.0.0-20241221171442-1c11599d28e1
 ## explicit; go 1.12
 yunion.io/x/s3cli
-# yunion.io/x/sqlchemy v1.1.3-0.20250806073422-e37f5197cec0
+# yunion.io/x/sqlchemy v1.1.3-0.20251231025938-b0a38f6e9fab
 ## explicit; go 1.17
 yunion.io/x/sqlchemy
 yunion.io/x/sqlchemy/backends/clickhouse
