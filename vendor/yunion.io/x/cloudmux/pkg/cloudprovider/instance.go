@@ -161,6 +161,10 @@ type SManagedVMCreateConfig struct {
 	ProjectId           string
 	EnableMonitorAgent  bool
 
+	// 金山云按量付费类型
+	// Daily（按量付费（按日月结）)、 HourlyInstantSettlement（按量付费（按小时月结））
+	KsyunPostpaidChargeType string
+
 	SPublicIpInfo
 
 	Tags map[string]string
@@ -188,13 +192,14 @@ type SManagedVMChangeConfig struct {
 }
 
 type SManagedVMRebuildRootConfig struct {
-	Account   string
-	Password  string
-	ImageId   string
-	PublicKey string
-	SysSizeGB int
-	OsType    string
-	UserData  string
+	Account     string
+	Password    string
+	ImageId     string
+	KeypairName string
+	PublicKey   string
+	SysSizeGB   int
+	OsType      string
+	UserData    string
 }
 
 func (vmConfig *SManagedVMCreateConfig) GetConfig(config *jsonutils.JSONDict) error {

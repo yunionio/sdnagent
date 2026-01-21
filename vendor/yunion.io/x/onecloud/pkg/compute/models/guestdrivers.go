@@ -84,6 +84,7 @@ type IGuestDriver interface {
 
 	RequestGuestCreateInsertIso(ctx context.Context, imageId string, bootIndex *int8, task taskman.ITask, guest *SGuest) error
 
+	CanStop(guest *SGuest) error
 	StartGuestStopTask(guest *SGuest, ctx context.Context, userCred mcclient.TokenCredential, params *jsonutils.JSONDict, parentTaskId string) error
 	StartGuestResetTask(guest *SGuest, ctx context.Context, userCred mcclient.TokenCredential, isHard bool, parentTaskId string) error
 	StartGuestRestartTask(guest *SGuest, ctx context.Context, userCred mcclient.TokenCredential, isForce bool, parentTaskId string) error
@@ -255,6 +256,10 @@ type IGuestDriver interface {
 
 	BeforeDetachIsolatedDevice(ctx context.Context, cred mcclient.TokenCredential, guest *SGuest, dev *SIsolatedDevice) error
 	BeforeAttachIsolatedDevice(ctx context.Context, cred mcclient.TokenCredential, guest *SGuest, dev *SIsolatedDevice) error
+
+	RequestGuestScreenDump(ctx context.Context, userCred mcclient.TokenCredential, body jsonutils.JSONObject, host *SHost, guest *SGuest) (jsonutils.JSONObject, error)
+
+	RequestUploadGuestStatus(ctx context.Context, guest *SGuest, task taskman.ITask) error
 }
 
 var guestDrivers map[string]IGuestDriver

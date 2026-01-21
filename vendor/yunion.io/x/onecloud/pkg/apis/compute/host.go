@@ -467,6 +467,8 @@ type HostSizeAttributes struct {
 	CpuMicrocode string `json:"cpu_microcode"`
 	// CPU架构
 	CpuArchitecture string `json:"cpu_architecture"`
+	// KVM 允许单台虚机最大 vcpu 个数
+	KvmCapMaxVcpu *int `json:"kvm_cap_max_vcpu"`
 
 	// 内存大小(单位MB)
 	MemSize string `json:"mem_size"`
@@ -627,6 +629,17 @@ type SHostPingInput struct {
 	QgaRunningGuestIds []string `json:"qga_running_guests"`
 }
 
+type SKmsgEntry struct {
+	Level   int       `json:"level"`
+	Seq     int       `json:"sql"`
+	Message string    `json:"message"`
+	Time    time.Time `json:"time"`
+}
+
+type SHostReportDmesgInput struct {
+	Entries []SKmsgEntry `json:"entries"`
+}
+
 type HostReserveCpusInput struct {
 	Cpus                    string
 	Mems                    string
@@ -758,6 +771,10 @@ type HostUploadGuestStatusInput struct {
 
 type HostUploadGuestsStatusInput struct {
 	Guests map[string]*HostUploadGuestStatusInput `json:"guests"`
+}
+
+type HostIsolatedDeviceNumaStatsInput struct {
+	DevType string
 }
 
 type GuestUploadContainerStatusResponse struct {
