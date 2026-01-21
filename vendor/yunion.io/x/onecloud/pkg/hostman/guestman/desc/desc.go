@@ -101,6 +101,7 @@ type SGuestHardwareDesc struct {
 	VcpuPin []SCpuPin  `json:",omitempty"`
 	// Clock   *SGuestClock `json:",omitempty"`
 
+	// memory size in MB
 	Mem        int64
 	MemDesc    *SGuestMem     `json:",omitempty"`
 	CpuNumaPin []*SCpuNumaPin `json:",omitempty"`
@@ -114,6 +115,8 @@ type SGuestHardwareDesc struct {
 	NoHpet      *bool          `json:",omitempty"` // i386 target only
 
 	VirtioSerial *SGuestVirtioSerial
+
+	Tpm *SGuestTpm
 
 	// std virtio cirrus vmware qlx none
 	Vga       string
@@ -170,6 +173,13 @@ type VirtSerialPort struct {
 type SGuestPvpanic struct {
 	Ioport uint // default ioport 1285(0x505)
 	Id     string
+}
+
+type SGuestTpm struct {
+	TpmSock *CharDev
+
+	// default emulator tpm
+	Id string
 }
 
 // -device pcie-pci-bridge,id=pci.1,bus=pcie.0 \

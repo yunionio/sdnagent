@@ -12,4 +12,14 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-package options // import "yunion.io/x/onecloud/pkg/cloutpost/options"
+package compute
+
+import (
+	"yunion.io/x/onecloud/pkg/apis"
+)
+
+type BillingResourceCheckListInput struct {
+	apis.VirtualResourceListInput
+
+	ResourceType []string `json:"resource_type"`
+}

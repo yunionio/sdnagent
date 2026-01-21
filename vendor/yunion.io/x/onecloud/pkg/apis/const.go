@@ -45,6 +45,8 @@ const (
 
 	SERVICE_TYPE_APIMAP = "apimap"
 
+	SERVICE_TYPE_LLM = "llm"
+
 	STATUS_UPDATE_TAGS        = "update_tags"
 	STATUS_UPDATE_TAGS_FAILED = "update_tags_fail"
 
@@ -147,6 +149,8 @@ const (
 )
 
 const (
+	OS_ARCH_ALL = "all"
+
 	OS_ARCH_X86 = "x86"
 	OS_ARCH_ARM = "arm"
 
@@ -155,6 +159,7 @@ const (
 	OS_ARCH_X86_64  = "x86_64"
 	OS_ARCH_AARCH32 = "aarch32"
 	OS_ARCH_AARCH64 = "aarch64"
+	OS_ARCH_RISCV64 = "riscv64"
 )
 
 var (
@@ -175,9 +180,26 @@ func IsARM(osArch string) bool {
 	return utils.IsInStringArray(osArch, ARCH_ARM)
 }
 
+func IsX86(osArch string) bool {
+	return utils.IsInStringArray(osArch, ARCH_X86)
+}
+
 func IsIllegalSearchDomain(domain string) bool {
 	switch domain {
 	case "cloud.onecloud.io":
+		return true
+	}
+	return false
+}
+
+func IsSameArch(arch1, arch2 string) bool {
+	if arch1 == arch2 {
+		return true
+	}
+	if IsARM(arch1) && IsARM(arch2) {
+		return true
+	}
+	if IsX86(arch1) && IsX86(arch2) {
 		return true
 	}
 	return false

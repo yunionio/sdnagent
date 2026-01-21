@@ -319,11 +319,12 @@ type ICloudHost interface {
 	CreateVM(desc *SManagedVMCreateConfig) (ICloudVM, error)
 	GetIHostNics() ([]ICloudHostNetInterface, error)
 
-	GetSchedtags() ([]string, error)
+	GetSchedtags() ([]Schedtag, error)
 
 	GetOvnVersion() string // just for cloudpods host
 
 	GetIsolateDevices() ([]IsolateDevice, error)
+	GetIpmiInfo() jsonutils.JSONObject
 }
 
 type IsolateDevice interface {
@@ -356,8 +357,6 @@ type ICloudVM interface {
 
 	GetInternetMaxBandwidthOut() int
 	GetThroughput() int
-	// GetStatus() string
-	// GetRemoteStatus() string
 
 	GetSerialOutput(port int) (string, error) // 目前仅谷歌云windows机器会使用到此接口
 
@@ -417,6 +416,7 @@ type ICloudVM interface {
 
 	AllocatePublicIpAddress() (string, error)
 	GetPowerStates() string
+	GetHealthStatus() string
 	GetIsolateDeviceIds() ([]string, error)
 }
 
@@ -547,6 +547,7 @@ type ICloudDisk interface {
 	// GetStatus() string
 	GetDiskFormat() string
 	GetDiskSizeMB() int // MB
+	GetDeviceName() string
 	GetIsAutoDelete() bool
 	GetTemplateId() string
 	GetDiskType() string
@@ -571,6 +572,7 @@ type ICloudDisk interface {
 	Rebuild(ctx context.Context) error
 
 	GetPreallocation() string
+	ChangeStorage(ctx context.Context, opts *ChangeStorageOptions) error
 }
 
 type ICloudSnapshot interface {

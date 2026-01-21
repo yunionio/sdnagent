@@ -190,11 +190,16 @@ type SGuest struct {
 	QgaStatus string `width:"36" charset:"ascii" nullable:"false" default:"unknown" list:"user" create:"optional"`
 	// power_states limit in [on, off, unknown]
 	PowerStates string `width:"36" charset:"ascii" nullable:"false" default:"unknown" list:"user" create:"optional"`
+	// 健康状态, 仅开机中火运行中有效， 目前只支持阿里云
+	HealthStatus string `width:"36" charset:"ascii" nullable:"true" default:"ok" list:"user"`
 	// Used for guest rescue
 	RescueMode bool `nullable:"false" default:"false" list:"user" create:"optional"`
 
 	// 上次开机时间
 	LastStartAt time.Time `json:"last_start_at" list:"user"`
+
+	// 资源池,仅vmware指定调度标签时内部使用
+	ResourcePool string `width:"64" charset:"utf8" nullable:"true" create:"optional"`
 }
 
 func (manager *SGuestManager) GetPropertyStatistics(ctx context.Context, userCred mcclient.TokenCredential, query jsonutils.JSONObject) (*apis.StatusStatistic, error) {
@@ -1386,9 +1391,13 @@ func (guest *SGuest) SetCpuNumaPin(
 		}
 	}
 
+	var cpuNumaPinType string
 	var schedCpuNumaPinJ jsonutils.JSONObject
 	if schedCpuNumaPin != nil {
 		schedCpuNumaPinJ = jsonutils.Marshal(schedCpuNumaPin)
+		cpuNumaPinType = api.VM_CPU_NUMA_PIN_SCHEDULER
+	} else if cpuNumaPin != nil {
+		schedCpuNumaPinJ = jsonutils.Marshal(cpuNumaPin)
 	}
 	diff, err := db.Update(guest, func() error {
 		guest.CpuNumaPin = schedCpuNumaPinJ
@@ -1402,7 +1411,11 @@ func (guest *SGuest) SetCpuNumaPin(
 	if cpuNumaPin != nil {
 		jcpuNumaPin = jsonutils.Marshal(cpuNumaPin)
 	}
-	err = guest.SetMetadata(ctx, api.VM_METADATA_CPU_NUMA_PIN, jcpuNumaPin, userCred)
+	metadataMap := map[string]interface{}{
+		api.VM_METADATA_CPU_NUMA_PIN:      jcpuNumaPin,
+		api.VM_METADATA_CPU_NUMA_PIN_TYPE: cpuNumaPinType,
+	}
+	err = guest.SetAllMetadata(ctx, metadataMap, userCred)
 	if err != nil {
 		return err
 	}
@@ -1796,28 +1809,53 @@ func (manager *SGuestManager) validateCreateData(
 			input.OsArch = apis.OS_ARCH_AARCH64
 		}
 
+		// enable tpm on windows 11 image
+		if osDist := imgProperties["os_distribution"]; strings.Contains(osDist, "Windows 11") {
+			input.EnableTpm = true
+		}
+
+		// use uefi boot and q35 machine type on enable tpm
+		if input.EnableTpm {
+			input.Bios = "UEFI"
+			input.Machine = api.VM_MACHINE_TYPE_Q35
+		}
+
 		if imageDiskFormat != "iso" {
 			var imgSupportUEFI *bool
+			var imgSupportBIOS *bool
 			if desc, ok := imgProperties[imageapi.IMAGE_UEFI_SUPPORT]; ok {
 				support := desc == "true"
 				imgSupportUEFI = &support
 			}
+			if biosDesc, ok := imgProperties[imageapi.IMAGE_BIOS_SUPPORT]; ok {
+				supportBIOS := biosDesc == "true"
+				imgSupportBIOS = &supportBIOS
+			}
+			// uefi is not support set default support bios
+			if imgSupportUEFI == nil || !*imgSupportUEFI {
+				supportBIOS := true
+				imgSupportBIOS = &supportBIOS
+			}
+
 			if input.OsArch == apis.OS_ARCH_AARCH64 {
 				// arm image supports UEFI by default
 				support := true
 				imgSupportUEFI = &support
 			}
-			switch {
-			case imgSupportUEFI != nil && *imgSupportUEFI:
-				if len(input.Bios) == 0 {
-					input.Bios = "UEFI"
-				} else if input.Bios != "UEFI" {
-					return nil, httperrors.NewInputParameterError("UEFI image requires UEFI boot mode")
+			switch input.Bios {
+			case "UEFI":
+				if imgSupportUEFI == nil || !*imgSupportUEFI {
+					return nil, httperrors.NewInputParameterError("UEFI boot mode requires UEFI image")
+				}
+			case "BIOS":
+				if imgSupportBIOS == nil || !*imgSupportBIOS {
+					return nil, httperrors.NewInputParameterError("BIOS boot mode requires BIOS image")
 				}
 			default:
-				// not UEFI image
-				if input.Bios == "UEFI" && len(imgProperties) != 0 {
-					return nil, httperrors.NewInputParameterError("UEFI boot mode requires UEFI image")
+				if imgSupportUEFI != nil && *imgSupportUEFI {
+					input.Bios = "UEFI"
+				} else {
+					input.Bios = "BIOS"
 				}
 			}
 		}
@@ -2561,6 +2599,9 @@ func (guest *SGuest) PostCreate(ctx context.Context, userCred mcclient.TokenCred
 	if jsonutils.QueryBoolean(data, api.VM_METADATA_ENABLE_MEMCLEAN, false) {
 		guest.SetMetadata(ctx, api.VM_METADATA_ENABLE_MEMCLEAN, "true", userCred)
 	}
+	if jsonutils.QueryBoolean(data, api.VM_METADATA_ENABLE_TPM, false) {
+		guest.SetMetadata(ctx, api.VM_METADATA_ENABLE_TPM, "true", userCred)
+	}
 	if jsonutils.QueryBoolean(data, imageapi.IMAGE_DISABLE_USB_KBD, false) {
 		guest.SetMetadata(ctx, imageapi.IMAGE_DISABLE_USB_KBD, "true", userCred)
 	}
@@ -2572,6 +2613,28 @@ func (guest *SGuest) PostCreate(ctx context.Context, userCred mcclient.TokenCred
 	userData, _ := data.GetString("user_data")
 	if len(userData) > 0 {
 		guest.setUserData(ctx, userCred, userData)
+	}
+
+	if guest.Hypervisor == api.HYPERVISOR_ESXI {
+		schedtags := []api.SchedtagConfig{}
+		data.Unmarshal(&schedtags, "schedtags")
+
+		for _, tag := range schedtags {
+			if tag.ResourceType != HostManager.KeywordPlural() {
+				continue
+			}
+			meta := db.SMetadata{}
+			db.Metadata.Query().
+				Equals("obj_type", SchedtagManager.Keyword()).
+				Equals("obj_id", tag.Id).
+				Equals("key", cloudprovider.METADATA_POOL_ID).First(&meta)
+			if len(meta.Value) > 0 {
+				db.Update(guest, func() error {
+					guest.ResourcePool = meta.Value
+					return nil
+				})
+			}
+		}
 	}
 
 	input := struct {
@@ -3292,6 +3355,9 @@ func (g *SGuest) syncWithCloudVM(ctx context.Context, userCred mcclient.TokenCre
 
 		if !g.IsFailureStatus() && syncStatus {
 			g.Status = extVM.GetStatus()
+			if g.Status == api.VM_RUNNING || g.Status == api.VM_STARTING {
+				g.HealthStatus = extVM.GetHealthStatus()
+			}
 			g.PowerStates = extVM.GetPowerStates()
 			g.InferPowerStates()
 		}
@@ -3506,8 +3572,8 @@ func (manager *SGuestManager) TotalCount(
 	hostTypes []string, resourceTypes []string, providers []string, brands []string, cloudEnv string,
 	since *time.Time,
 	policyResult rbacutils.SPolicyResult,
-) SGuestCountStat {
-	return usageTotalGuestResouceCount(ctx, scope, ownerId, rangeObjs, status, hypervisors, includeSystem, pendingDelete, hostTypes, resourceTypes, providers, brands, cloudEnv, since, policyResult)
+) map[string]SGuestCountStat {
+	return usageTotalGuestResourceCount(ctx, scope, ownerId, rangeObjs, status, hypervisors, includeSystem, pendingDelete, hostTypes, resourceTypes, providers, brands, cloudEnv, since, policyResult)
 }
 
 func (self *SGuest) detachNetworks(ctx context.Context, userCred mcclient.TokenCredential, gns []SGuestnetwork, reserve bool) error {
@@ -3601,6 +3667,8 @@ type Attach2NetworkArgs struct {
 	IsDefault    bool
 	PortMappings api.GuestPortMappings
 
+	ChargeType string
+
 	PendingUsage quotas.IQuota
 }
 
@@ -3633,6 +3701,8 @@ func (args *Attach2NetworkArgs) onceArgs(i int) attach2NetworkOnceArgs {
 
 		pendingUsage: args.PendingUsage,
 		portMappings: args.PortMappings,
+
+		chargeType: args.ChargeType,
 	}
 	if i > 0 {
 		r.ipAddr = ""
@@ -3677,6 +3747,8 @@ type attach2NetworkOnceArgs struct {
 
 	pendingUsage quotas.IQuota
 	portMappings api.GuestPortMappings
+
+	chargeType string
 }
 
 func (self *SGuest) Attach2Network(
@@ -3755,6 +3827,8 @@ func (self *SGuest) attach2NetworkOnce(
 
 		isDefault:    args.isDefault,
 		portMappings: args.portMappings,
+
+		chargeType: args.chargeType,
 	}
 	lockman.LockClass(ctx, QuotaManager, self.ProjectId)
 	defer lockman.ReleaseClass(ctx, QuotaManager, self.ProjectId)
@@ -3787,18 +3861,6 @@ func (self *SGuest) attach2NetworkOnce(
 	}
 	db.OpsLog.LogAttachEvent(ctx, self, network, userCred, guestnic.GetShortDesc(ctx))
 	return guestnic, nil
-}
-
-type sRemoveGuestnic struct {
-	nic     *SGuestnetwork
-	reserve bool
-}
-
-type sAddGuestnic struct {
-	index   int
-	nic     cloudprovider.ICloudNic
-	net     *SNetwork
-	reserve bool
 }
 
 func getCloudNicNetwork(ctx context.Context, vnic cloudprovider.ICloudNic, host *SHost, ipList []string, index int) (*SNetwork, error) {
@@ -4136,6 +4198,22 @@ func (self *SGuest) SyncVMDisks(
 	return result
 }
 
+func (self *SGuest) setSystemDisk() error {
+	sq := GuestdiskManager.Query("disk_id").Equals("guest_id", self.Id).Equals("index", 0).SubQuery()
+	disks := DiskManager.Query().In("id", sq)
+	disk := &SDisk{}
+	disk.SetModelManager(DiskManager, disk)
+	err := disks.First(disk)
+	if err != nil {
+		return err
+	}
+	_, err = db.Update(disk, func() error {
+		disk.DiskType = api.DISK_TYPE_SYS
+		return nil
+	})
+	return err
+}
+
 func (self *SGuest) fixSysDiskIndex() error {
 	disks := DiskManager.Query().SubQuery()
 	sysQ := GuestdiskManager.Query().Equals("guest_id", self.Id)
@@ -4145,7 +4223,7 @@ func (self *SGuest) fixSysDiskIndex() error {
 	err := sysQ.First(sysDisk)
 	if err != nil {
 		if errors.Cause(err) == sql.ErrNoRows {
-			return nil
+			return self.setSystemDisk()
 		}
 		return err
 	}
@@ -4196,7 +4274,7 @@ type SGuestCountStat struct {
 	TotalBackupDiskSize   int
 }
 
-func usageTotalGuestResouceCount(
+func usageTotalGuestResourceCount(
 	ctx context.Context,
 	scope rbacscope.TRbacScope,
 	ownerId mcclient.IIdentityProvider,
@@ -4210,12 +4288,41 @@ func usageTotalGuestResouceCount(
 	providers []string, brands []string, cloudEnv string,
 	since *time.Time,
 	policyResult rbacutils.SPolicyResult,
+) map[string]SGuestCountStat {
+	countStat := make(map[string]SGuestCountStat)
+	for _, arch := range []string{apis.OS_ARCH_ALL, apis.OS_ARCH_X86_64, apis.OS_ARCH_AARCH64} {
+		allStat := usageTotalGuestResourceCountByArch(
+			ctx, scope, ownerId, rangeObjs, status,
+			hypervisors, includeSystem, pendingDelete,
+			hostTypes, resourceTypes, providers, brands,
+			cloudEnv, since, policyResult, arch,
+		)
+		countStat[arch] = allStat
+	}
+	return countStat
+}
+
+func usageTotalGuestResourceCountByArch(
+	ctx context.Context,
+	scope rbacscope.TRbacScope,
+	ownerId mcclient.IIdentityProvider,
+	rangeObjs []db.IStandaloneModel,
+	status []string,
+	hypervisors []string,
+	includeSystem bool,
+	pendingDelete bool,
+	hostTypes []string,
+	resourceTypes []string,
+	providers []string, brands []string, cloudEnv string,
+	since *time.Time,
+	policyResult rbacutils.SPolicyResult,
+	osArch string,
 ) SGuestCountStat {
 	q, guests := _guestResourceCountQuery(
 		ctx,
 		scope, ownerId, rangeObjs, status, hypervisors,
 		pendingDelete, hostTypes, resourceTypes, providers, brands, cloudEnv, since,
-		policyResult,
+		policyResult, osArch,
 	)
 	if !includeSystem {
 		q = q.Filter(sqlchemy.OR(
@@ -4247,9 +4354,11 @@ func _guestResourceCountQuery(
 	providers []string, brands []string, cloudEnv string,
 	since *time.Time,
 	policyResult rbacutils.SPolicyResult,
+	osArch string,
 ) (*sqlchemy.SQuery, *sqlchemy.SSubQuery) {
 
 	guestdisks := GuestdiskManager.Query().SubQuery()
+
 	disks := DiskManager.Query().SubQuery()
 
 	diskQuery := guestdisks.Query(guestdisks.Field("guest_id"), sqlchemy.SUM("guest_disk_size", disks.Field("disk_size")))
@@ -4279,6 +4388,10 @@ func _guestResourceCountQuery(
 	} else {
 		gq = GuestManager.Query()
 	}
+	if osArch != "" && osArch != apis.OS_ARCH_ALL {
+		gq = gq.Equals("os_arch", osArch)
+	}
+
 	if len(rangeObjs) > 0 || len(hostTypes) > 0 || len(resourceTypes) > 0 || len(providers) > 0 || len(brands) > 0 || len(cloudEnv) > 0 {
 		gq = filterGuestByRange(gq, rangeObjs, hostTypes, resourceTypes, providers, brands, cloudEnv)
 	}
@@ -4528,6 +4641,8 @@ func (self *SGuest) attach2NamedNetworkDesc(ctx context.Context, userCred mcclie
 
 			IsDefault:    netConfig.IsDefault,
 			PortMappings: netConfig.PortMappings,
+
+			ChargeType: netConfig.ChargeType,
 		})
 		if err != nil {
 			return nil, errors.Wrap(err, "Attach2Network fail")
@@ -4752,7 +4867,7 @@ func (self *SGuest) createDiskOnHost(
 
 func (self *SGuest) CreateIsolatedDeviceOnHost(ctx context.Context, userCred mcclient.TokenCredential, host *SHost, devs []*api.IsolatedDeviceConfig, pendingUsage quotas.IQuota) error {
 	var numaNodes []int
-	if self.CpuNumaPin != nil {
+	if self.IsSchedulerNumaAllocate() {
 		numaNodes = make([]int, 0)
 		cpuNumaPin := make([]schedapi.SCpuNumaPin, 0)
 		self.CpuNumaPin.Unmarshal(&cpuNumaPin)
@@ -4762,6 +4877,8 @@ func (self *SGuest) CreateIsolatedDeviceOnHost(ctx context.Context, userCred mcc
 		}
 	}
 
+	lockman.LockObject(ctx, host)
+	defer lockman.ReleaseObject(ctx, host)
 	usedDeviceMap := map[string]*SIsolatedDevice{}
 	for _, devConfig := range devs {
 		if devConfig.DevType == api.NIC_TYPE || devConfig.DevType == api.NVME_PT_TYPE {
@@ -5045,6 +5162,11 @@ func (self *SGuest) isNeedDoResetPasswd() bool {
 	return true
 }
 
+func (self *SGuest) IsSchedulerNumaAllocate() bool {
+	cpuNumaPinType := self.GetMetadata(context.Background(), api.VM_METADATA_CPU_NUMA_PIN_TYPE, nil)
+	return cpuNumaPinType == api.VM_CPU_NUMA_PIN_SCHEDULER && self.CpuNumaPin != nil
+}
+
 func (self *SGuest) GetDeployConfigOnHost(ctx context.Context, userCred mcclient.TokenCredential, host *SHost, params *jsonutils.JSONDict) (*jsonutils.JSONDict, error) {
 	config := jsonutils.NewDict()
 
@@ -5093,6 +5215,7 @@ func (self *SGuest) GetDeployConfigOnHost(ctx context.Context, userCred mcclient
 		keypair := self.getKeypair()
 		if keypair != nil {
 			config.Add(jsonutils.NewString(keypair.PublicKey), "public_key")
+			config.Add(jsonutils.NewString(keypair.Name), "keypair_name")
 		}
 		deletePubKey, _ := params.GetString("delete_public_key")
 		if len(deletePubKey) > 0 {
@@ -5311,7 +5434,7 @@ func (self *SGuest) GetJsonDescAtHypervisor(ctx context.Context, host *SHost) *a
 		desc.IsolatedDevices = append(desc.IsolatedDevices, dev.getDesc())
 	}
 
-	if self.CpuNumaPin != nil {
+	if self.IsSchedulerNumaAllocate() {
 		cpuNumaPin := make([]api.SCpuNumaPin, 0)
 		cpuNumaPinStr := self.GetMetadata(ctx, api.VM_METADATA_CPU_NUMA_PIN, nil)
 		cpuNumaPinJson, err := jsonutils.ParseString(cpuNumaPinStr)
@@ -5830,6 +5953,10 @@ func (self *SGuest) GetKeypairPublicKey() string {
 		return keypair.PublicKey
 	}
 	return ""
+}
+
+func (self *SGuest) GetKeypair() *SKeypair {
+	return self.getKeypair()
 }
 
 func (manager *SGuestManager) GetIpsInProjectWithName(projectId, name string, isExitOnly bool, addrType api.TAddressType) []string {
@@ -7152,4 +7279,43 @@ func (guest *SGuest) SaveLastStartAt() error {
 		return nil
 	})
 	return errors.Wrap(err, "SaveLastStartAt")
+}
+
+func (guest *SGuest) finalizeFakeDeleteTask(ctx context.Context, userCred mcclient.TokenCredential, task taskman.ITask) {
+	db.OpsLog.LogEvent(guest, db.ACT_PENDING_DELETE, guest.GetShortDesc(ctx), userCred)
+	logclient.AddActionLogWithStartable(task, guest, logclient.ACT_PENDING_DELETE, guest.GetShortDesc(ctx), userCred, true)
+	if !guest.IsSystem {
+		guest.EventNotify(ctx, userCred, notifyclient.ActionPendingDelete)
+	}
+}
+
+func (guest *SGuest) finalizeRealDeleteTask(ctx context.Context, userCred mcclient.TokenCredential, task taskman.ITask) {
+	guest.RealDelete(ctx, userCred)
+	guest.RemoveAllMetadata(ctx, userCred)
+	db.OpsLog.LogEvent(guest, db.ACT_DELOCATE, guest.GetShortDesc(ctx), userCred)
+	logclient.AddActionLogWithStartable(task, guest, logclient.ACT_DELOCATE, nil, userCred, true)
+	if !guest.IsSystem {
+		guest.EventNotify(ctx, userCred, notifyclient.ActionDelete)
+	}
+	HostManager.ClearSchedDescCache(guest.HostId)
+}
+
+func (guest *SGuest) FinalizeDeleteTask(ctx context.Context, userCred mcclient.TokenCredential, task taskman.ITask, data jsonutils.JSONObject) {
+	if jsonutils.QueryBoolean(data, "real_delete", false) {
+		guest.finalizeRealDeleteTask(ctx, userCred, task)
+	} else {
+		guest.finalizeFakeDeleteTask(ctx, userCred, task)
+	}
+}
+
+func (guest *SGuest) StartBaseDeleteTask(ctx context.Context, t taskman.ITask) error {
+	task, err := taskman.TaskManager.NewTask(ctx, "BaseGuestDeleteTask", guest, t.GetUserCred(), t.GetParams(), t.GetTaskId(), "", nil)
+	if err != nil {
+		return errors.Wrap(err, "StartBaseDeleteTask")
+	}
+	err = task.ScheduleRun(nil)
+	if err != nil {
+		return errors.Wrap(err, "ScheduleRun")
+	}
+	return nil
 }

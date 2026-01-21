@@ -50,6 +50,7 @@ import (
 	"yunion.io/x/onecloud/pkg/mcclient"
 	"yunion.io/x/onecloud/pkg/mcclient/auth"
 	"yunion.io/x/onecloud/pkg/mcclient/modules/yunionconf"
+	"yunion.io/x/onecloud/pkg/util/ctx"
 	"yunion.io/x/onecloud/pkg/util/logclient"
 	"yunion.io/x/onecloud/pkg/util/stringutils2"
 )
@@ -785,9 +786,9 @@ func (task *STask) SetStageFailed(ctx context.Context, reason jsonutils.JSONObje
 	reason = reasonDict
 	prevFailed, _ := task.Params.Get("__failed_reason")
 	if prevFailed != nil {
-		switch prevFailed.(type) {
+		switch prevFailed2 := prevFailed.(type) {
 		case *jsonutils.JSONArray:
-			prevFailed.(*jsonutils.JSONArray).Add(reason)
+			prevFailed2.Add(reason)
 			reason = prevFailed
 		default:
 			reason = jsonutils.NewArray(prevFailed, reason)
@@ -815,36 +816,43 @@ func (task *STask) NotifyParentTaskComplete(ctx context.Context, body *jsonutils
 
 			pTask := TaskManager.fetchTask(parentTaskId)
 			if pTask == nil {
+				saveTaskUpCallStatus(task.GetId(), parentTaskId, false, errors.Wrap(errors.ErrNotFound, "Parent task not found").Error())
 				log.Errorf("Parent task %s not found", parentTaskId)
 				return
 			}
 			if pTask.IsCurrentStageComplete() {
-				pTask.ScheduleRun(body)
+				err := pTask.ScheduleRun(body)
+				if err != nil {
+					saveTaskUpCallStatus(task.GetId(), parentTaskId, false, err.Error())
+				} else {
+					saveTaskUpCallStatus(task.GetId(), parentTaskId, true, "")
+				}
 			}
 		}()
 	}
 	if len(parentTaskNotify) > 0 {
-		notifyRemoteTask(ctx, parentTaskNotify, parentTaskId, body, 0)
+		header := task.getTaskHeader()
+		go notifyRemoteTask(ctx, parentTaskNotify, task.GetId(), header, body, 0)
 	}
 }
 
-func notifyRemoteTask(ctx context.Context, notifyUrl string, taskid string, body jsonutils.JSONObject, tried int) {
+func notifyRemoteTask(ctx context.Context, notifyUrl string, taskId string, header http.Header, body jsonutils.JSONObject, tried uint) {
 	client := httputils.GetDefaultClient()
-	header := http.Header{}
-	if len(taskid) > 0 {
-		header.Set("X-Task-Id", taskid)
-	}
-	_, body, err := httputils.JSONRequest(client, ctx, "POST", notifyUrl, header, body, true)
+	_, body, err := httputils.JSONRequest(client, ctx, "POST", notifyUrl, header, body, false)
 	if err != nil {
 		log.Errorf("notifyRemoteTask fail %s", err)
 		if tried > MAX_REMOTE_NOTIFY_TRIES {
 			log.Errorf("notifyRemoteTask max tried reached, give up...")
+			saveTaskUpCallStatus(taskId, notifyUrl, false, fmt.Sprintf("notifyRemoteTask max tried reached, give up... %s", err.Error()))
 		} else {
-			notifyRemoteTask(ctx, notifyUrl, taskid, body, tried+1)
+			time.Sleep(time.Second * time.Duration(1<<tried))
+			notifyRemoteTask(ctx, notifyUrl, taskId, header, body, tried+1)
 		}
 		return
+	} else {
+		log.Infof("Notify remote URL %s get acked: %s, taskId: %s", notifyUrl, body.String(), taskId)
+		saveTaskUpCallStatus(taskId, notifyUrl, true, body.String())
 	}
-	log.Infof("Notify remote URL %s(%s) get acked: %s!", notifyUrl, taskid, body.String())
 }
 
 func (task *STask) NotifyParentTaskFailure(ctx context.Context, reason jsonutils.JSONObject) {
@@ -937,13 +945,18 @@ func (task *STask) GetObjects() []db.IStandaloneModel {
 	return task.taskObjects
 }
 
-func (task *STask) GetTaskRequestHeader() http.Header {
+func (task *STask) getTaskHeader() http.Header {
 	userCred := task.GetUserCred()
 	if !userCred.IsValid() {
 		userCred = auth.AdminCredential()
 	}
 	header := mcclient.GetTokenHeaders(userCred)
 	header.Set(mcclient.TASK_ID, task.GetTaskId())
+	return header
+}
+
+func (task *STask) GetTaskRequestHeader() http.Header {
+	header := task.getTaskHeader()
 	if len(serviceUrl) > 0 {
 		notifyUrl := fmt.Sprintf("%s/tasks/%s", serviceUrl, task.GetTaskId())
 		header.Set(mcclient.TASK_NOTIFY_URL, notifyUrl)
@@ -1428,7 +1441,7 @@ func (manager *STaskManager) migrateObjectInfo() error {
 		taskObj.ProjectId = task.ProjectId
 		taskObj.SetModelManager(TaskObjectManager, &taskObj)
 
-		err = TaskObjectManager.TableSpec().Insert(context.Background(), &taskObj)
+		err = TaskObjectManager.TableSpec().Insert(ctx.CtxWithTime(), &taskObj)
 		if err != nil {
 			return errors.Wrap(err, "Insert taskObject")
 		}
