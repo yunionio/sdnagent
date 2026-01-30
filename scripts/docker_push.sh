@@ -52,6 +52,8 @@ DOCKER_DIR="$SRC_DIR/build/docker/"
 
 REGISTRY=${REGISTRY:-docker.io/yunion}
 TAG=${TAG:-latest}
+CURRENT_ARCH=$(get_current_arch)
+ARCH=${ARCH:-$CURRENT_ARCH}
 PROJ=sdnagent
 image_keyword=sdnagent
 
@@ -59,10 +61,8 @@ build_bin() {
     local BUILD_ARCH="$1";
     local BUILD_CC="$2";
     local BUILD_CGO="$3";
-    arch=$(echo "$BUILD_ARCH" | cut -d'=' -f2)
 
 	docker run --rm \
-        --platform linux/$arch \
 		-v $SRC_DIR:/root/go/src/yunion.io/x/$PROJ \
         -v $SRC_DIR/_output/alpine-build:/root/go/src/yunion.io/x/$PROJ/_output \
 		-v $SRC_DIR/_output/alpine-build/_cache:/root/.cache \
@@ -75,13 +75,6 @@ build_bin() {
 			find _output/bin -type f |xargs ls -lah"
 }
 
-build_image() {
-    local tag=$1
-    local file=$2
-    local path=$3
-    docker build -t "$tag" -f "$2" "$3"
-}
-
 buildx_and_push() {
     local tag=$1
     local file=$2
@@ -91,33 +84,17 @@ buildx_and_push() {
     docker pull --platform "linux/$arch" "$tag"
 }
 
-push_image() {
-    local tag=$1
-    docker push "$tag"
-}
-
 get_image_name() {
     local component=$1
     local arch=$2
     local is_all_arch=$3
     local img_name="$REGISTRY/$component:$TAG"
-    if [[ "$is_all_arch" == "true" || "$arch" == arm64 || "$arch" == riscv64 ]]; then
-        img_name="${img_name}-$arch"
+    if [[ -n "$arch" ]]; then
+        if [[ "$is_all_arch" == "true" || "$arch" != "CURRENT_ARCH" ]]; then
+            img_name="${img_name}-$arch"
+        fi
     fi
     echo $img_name
-}
-
-build_process() {
-    build_bin
-    if [[ "$DRY_RUN" == "true" ]]; then
-        echo "[$(readlink -f ${BASH_SOURCE}):${LINENO} ${FUNCNAME[0]}] return for DRY_RUN"
-        return
-    fi
-    img_name="$REGISTRY/$image_keyword:$TAG"
-    build_image $img_name $DOCKER_DIR/Dockerfile $SRC_DIR
-    if [[ "$PUSH" == "true" ]]; then
-        push_image "$img_name"
-    fi
 }
 
 build_process_with_buildx() {
@@ -155,9 +132,6 @@ show_update_cmd() {
 
 cd $SRC_DIR
 
-CURRENT_ARCH=$(get_current_arch)
-ARCH=${ARCH:-$CURRENT_ARCH}
-
 echo "Start to build for arch[$ARCH]"
 
 case "$ARCH" in
@@ -167,14 +141,8 @@ case "$ARCH" in
         done
         make_manifest_image $image_keyword
         ;;
-    arm64|riscv64)
-        build_process_with_buildx $ARCH "false"
-        ;;
-    amd64)
-        build_process_with_buildx $ARCH "false"
-        ;;
     *)
-        build_process
+        build_process_with_buildx $ARCH "false"
         ;;
 esac
 
