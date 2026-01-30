@@ -25,6 +25,19 @@ readlink_mac() {
   REAL_PATH=$PHYS_DIR/$TARGET_FILE
 }
 
+get_current_arch() {
+    local current_arch
+    case $(uname -m) in
+    x86_64)
+        current_arch=amd64
+        ;;
+    aarch64)
+        current_arch=arm64
+        ;;
+    esac
+    echo $current_arch
+}
+
 pushd $(cd "$(dirname "$0")"; pwd) > /dev/null
 readlink_mac $(basename "$0")
 cd "$(dirname "$REAL_PATH")"
@@ -36,19 +49,21 @@ DOCKER_DIR="$SRC_DIR/build/docker/"
 
 REGISTRY=${REGISTRY:-docker.io/yunion}
 TAG=${TAG:-latest}
+CURRENT_ARCH=$(get_current_arch)
+ARCH=${ARCH:-$CURRENT_ARCH}
 PROJ=sdnagent
 image_keyword=sdnagent
 
 build_bin() {
     local BUILD_ARCH="$1";
     local BUILD_CC="$2";
-    local BUILD_CGO="$3"
+    local BUILD_CGO="$3";
 
 	docker run --rm \
 		-v $SRC_DIR:/root/go/src/yunion.io/x/$PROJ \
         -v $SRC_DIR/_output/alpine-build:/root/go/src/yunion.io/x/$PROJ/_output \
 		-v $SRC_DIR/_output/alpine-build/_cache:/root/.cache \
-		registry.cn-beijing.aliyuncs.com/yunionio/alpine-build:3.19.0-go-1.21.10-0 \
+        registry.cn-beijing.aliyuncs.com/yunionio/alpine-build:3.19.0-go-1.21.10-0 \
 		/bin/sh -c "set -ex;
             git config --global --add safe.directory /root/go/src/yunion.io/x/$PROJ;
             cd /root/go/src/yunion.io/x/$PROJ;
@@ -57,25 +72,13 @@ build_bin() {
 			find _output/bin -type f |xargs ls -lah"
 }
 
-build_image() {
-    local tag=$1
-    local file=$2
-    local path=$3
-    docker build -t "$tag" -f "$2" "$3"
-}
-
 buildx_and_push() {
     local tag=$1
     local file=$2
     local path=$3
     local arch=$4
-    docker buildx build -t "$tag" --platform "linux/$arch" -f "$2" "$3" --push
-    docker pull "$tag" --platform "linux/$arch"
-}
-
-push_image() {
-    local tag=$1
-    docker push "$tag"
+    docker buildx build -t "$tag" --platform "linux/$arch" -f "$file" "$path" --push
+    docker pull --platform "linux/$arch" "$tag"
 }
 
 get_image_name() {
@@ -83,23 +86,12 @@ get_image_name() {
     local arch=$2
     local is_all_arch=$3
     local img_name="$REGISTRY/$component:$TAG"
-    if [[ "$is_all_arch" == "true" || "$arch" == arm64 ]]; then
-        img_name="${img_name}-$arch"
+    if [[ -n "$arch" ]]; then
+        if [[ "$is_all_arch" == "true" || "$arch" != "$CURRENT_ARCH" ]]; then
+            img_name="${img_name}-$arch"
+        fi
     fi
     echo $img_name
-}
-
-build_process() {
-    build_bin
-    if [[ "$DRY_RUN" == "true" ]]; then
-        echo "[$(readlink -f ${BASH_SOURCE}):${LINENO} ${FUNCNAME[0]}] return for DRY_RUN"
-        return
-    fi
-    img_name="$REGISTRY/$image_keyword:$TAG"
-    build_image $img_name $DOCKER_DIR/Dockerfile $SRC_DIR
-    if [[ "$PUSH" == "true" ]]; then
-        push_image "$img_name"
-    fi
 }
 
 build_process_with_buildx() {
@@ -108,9 +100,6 @@ build_process_with_buildx() {
     local img_name=$(get_image_name $image_keyword $arch $is_all_arch)
 
     build_env="GOARCH=$arch "
-    if [[ $arch == arm64 ]]; then
-        build_env="$build_env CC=aarch64-linux-musl-gcc"
-    fi
 	build_bin $build_env
     if [[ "$DRY_RUN" == "true" ]]; then
         echo "[$(readlink -f ${BASH_SOURCE}):${LINENO} ${FUNCNAME[0]}] return for DRY_RUN"
@@ -126,11 +115,15 @@ make_manifest_image() {
         echo "[$(readlink -f ${BASH_SOURCE}):${LINENO} ${FUNCNAME[0]}] return for DRY_RUN"
         return
     fi
-    docker manifest create --amend $img_name \
+    docker buildx imagetools create -t $img_name \
         $img_name-amd64 \
         $img_name-arm64
-    docker manifest annotate $img_name $img_name-arm64 --arch arm64
-    docker manifest push $img_name
+}
+
+show_update_cmd() {
+	local name="sdnagent"
+	local spec="hostagent/SdnAgent"
+    echo "kubectl patch oc -n onecloud default --type='json' -p='[{op: replace, path: /spec/${spec}/imageName, value: ${name}},{"op": "replace", "path": "/spec/${spec}/repository", "value": "${REGISTRY}"},{"op": "add", "path": "/spec/${spec}/tag", "value": "${TAG}"}]'"
 }
 
 cd $SRC_DIR
@@ -144,15 +137,9 @@ case "$ARCH" in
         done
         make_manifest_image $image_keyword
         ;;
-    arm64)
-        build_process_with_buildx $ARCH "false"
-        ;;
-    amd64)
-        build_process_with_buildx $ARCH "false"
-        ;;
     *)
-        build_process
+        build_process_with_buildx $ARCH "false"
         ;;
 esac
 
-echo "kubectl patch oc -n onecloud default --type='json' -p='[{op: replace, path: /spec/hostagent/SdnAgent/imageName, value: sdnagent},{"op": "replace", "path": "/spec/hostagent/SdnAgent/repository", "value": "${REGISTRY}"},{"op": "add", "path": "/spec/hostagent/SdnAgent/tag", "value": "${TAG}"}]'"
+show_update_cmd
