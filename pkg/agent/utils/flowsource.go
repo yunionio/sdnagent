@@ -669,7 +669,9 @@ func (g *Guest) FlowsMapForNic(nic *GuestNIC) ([]*ovs.Flow, error) {
 		)
 	}
 	if !g.HostConfig.DisableSecurityGroup {
-		flows = append(flows, g.SecurityRules.Flows(g, nic, m)...)
+		secRules := g.GetNicSecurityRules(nic)
+
+		flows = append(flows, secRules.Flows(g, nic, m)...)
 	}
 	return flows, nil
 }
