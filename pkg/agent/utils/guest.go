@@ -33,9 +33,10 @@ import (
 )
 
 type guestDesc struct {
-	NICs               []*GuestNIC `json:"nics"`
-	SecurityRules      string      `json:"security_rules"`
-	AdminSecurityRules string      `json:"admin_security_rules"`
+	NICs               []*GuestNIC          `json:"nics"`
+	SecurityRules      string               `json:"security_rules"`
+	AdminSecurityRules string               `json:"admin_security_rules"`
+	NicSecgroups       []*GuestNICSecgroups `json:"nic_secgroups"`
 	Name               string
 
 	IsMaster       bool   `json:"is_master"`
@@ -55,6 +56,12 @@ func newGuestDesc() *guestDesc {
 		SrcMacCheck: true,
 	}
 	return desc
+}
+
+type GuestNICSecgroups struct {
+	SecurityRules string `json:"security_rules"`
+	Mac           string `json:"mac"`
+	Index         int    `json:"index"`
 }
 
 type GuestNIC struct {
@@ -86,6 +93,8 @@ type GuestNIC struct {
 	CtZoneId    uint16 `json:"-"`
 	CtZoneIdSet bool   `json:"-"`
 	PortNo      int    `json:"-"`
+
+	SecurityRules *SecurityRules `json:"-"`
 
 	NetworkAddresses []GuestNICNetworkAddress `json:"networkaddresses"`
 
@@ -267,8 +276,26 @@ func (g *Guest) LoadDesc() error {
 	g.NICs = desc.NICs
 
 	g.VpcNICs = nil
+
+	{
+		rstr := desc.AdminSecurityRules + "; " + desc.SecurityRules
+		rs, err := NewSecurityRules(rstr)
+		if err != nil {
+			return err
+		}
+		g.SecurityRules = rs
+	}
+
 	for i := len(g.NICs) - 1; i >= 0; i-- {
 		nic := g.NICs[i]
+		if rstr, ok := g.nicHasDedicatedSecgroups(nic.MAC, desc.NicSecgroups); ok {
+			rs, err := NewSecurityRules(rstr)
+			if err != nil {
+				return errors.Wrapf(err, "nic %s NewSecurityRules %s failed", nic.MAC, rstr)
+			}
+			nic.SecurityRules = rs
+		}
+
 		if nic.Vpc.Provider != "" {
 			g.VpcNICs = append(g.VpcNICs, nic)
 			g.NICs = append(g.NICs[:i], g.NICs[i+1:]...)
@@ -286,16 +313,23 @@ func (g *Guest) LoadDesc() error {
 	if !g.srcMacCheck && g.srcIpCheck {
 		g.srcIpCheck = false
 	}
-
-	{
-		rstr := desc.AdminSecurityRules + "; " + desc.SecurityRules
-		rs, err := NewSecurityRules(rstr)
-		if err != nil {
-			return err
-		}
-		g.SecurityRules = rs
-	}
 	return nil
+}
+
+func (g *Guest) nicHasDedicatedSecgroups(mac string, guestNicSecgroups []*GuestNICSecgroups) (string, bool) {
+	for i := range guestNicSecgroups {
+		if guestNicSecgroups[i].Mac == mac {
+			return guestNicSecgroups[i].SecurityRules, true
+		}
+	}
+	return "", false
+}
+
+func (g *Guest) GetNicSecurityRules(nic *GuestNIC) *SecurityRules {
+	if nic.SecurityRules != nil {
+		return nic.SecurityRules
+	}
+	return g.SecurityRules
 }
 
 func (g *Guest) NeedsSync() bool {
