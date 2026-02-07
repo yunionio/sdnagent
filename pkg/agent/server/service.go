@@ -24,6 +24,7 @@ import (
 	"yunion.io/x/log"
 	"yunion.io/x/pkg/appctx"
 	"yunion.io/x/pkg/errors"
+	"yunion.io/x/pkg/util/signalutils"
 
 	"yunion.io/x/sdnagent/pkg/agent/utils"
 )
@@ -62,6 +63,8 @@ func StartService() {
 	} else if err = hc.Auth(ctx); err != nil {
 		log.Errorln(errors.Wrap(err, "keystone auth"))
 	}
+	signalutils.SetDumpStackSignal()
+	signalutils.StartTrap()
 
 	{
 		f, err := lockPidFile(hc.SdnPidFile)
