@@ -51,7 +51,7 @@ func (zm *ZoneMan) AllocateZoneId(mac string) (uint16, error) {
 			zm.zm[mac] = i
 			return zm.base + i, nil
 		}
-		i += 1
+		i = (i + 1) % uint16(total)
 		if i == j {
 			break
 		}
