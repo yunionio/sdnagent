@@ -15,6 +15,8 @@
 package identity
 
 import (
+	"time"
+
 	"yunion.io/x/jsonutils"
 	"yunion.io/x/pkg/errors"
 	"yunion.io/x/pkg/util/rbacscope"
@@ -197,11 +199,11 @@ type UserListInput struct {
 	RoleAssignmentProjectId string `json:"role_assignment_project_id"`
 
 	// email
-	Email string `json:"email"`
+	Email []string `json:"email"`
 	// mobile
-	Mobile string `json:"mobile"`
+	Mobile []string `json:"mobile"`
 	// displayname
-	Displayname string `json:"displayname"`
+	Displayname []string `json:"displayname"`
 
 	// 是否允许web控制台登录
 	AllowWebConsole *bool `json:"allow_web_console"`
@@ -501,6 +503,12 @@ type UserUpdateInput struct {
 	SkipPasswordComplexityCheck *bool `json:"skip_password_complexity_check"`
 
 	Lang string `json:"lang"`
+
+	// 过期时间
+	ExpiredAt *time.Time `json:"expired_at"`
+
+	// 清除过期时间
+	ClearExpire *bool `json:"clear_expire"`
 }
 
 type UserCreateInput struct {
@@ -527,6 +535,8 @@ type UserCreateInput struct {
 	IdpEntityId string `json:"idp_entity_id"`
 
 	Lang string `json:"lang"`
+
+	ExpiredAt *time.Time `json:"expired_at"`
 }
 
 type ProjectCreateInput struct {

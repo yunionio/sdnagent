@@ -27,6 +27,7 @@ import (
 	"yunion.io/x/jsonutils"
 	"yunion.io/x/log"
 	"yunion.io/x/pkg/errors"
+	"yunion.io/x/pkg/gotypes"
 	"yunion.io/x/pkg/tristate"
 	"yunion.io/x/pkg/util/compare"
 	"yunion.io/x/pkg/util/fileutils"
@@ -99,6 +100,7 @@ type SDisk struct {
 	DiskSize int `nullable:"false" list:"user" json:"disk_size"`
 	// 磁盘路径
 	AccessPath string `width:"256" charset:"utf8" nullable:"true" get:"user" json:"access_path"`
+	PCIPath    string `width:"256" charset:"utf8" nullable:"true" get:"user" json:"pci_path"`
 
 	// 存储Id
 	// StorageId       string `width:"128" charset:"ascii" nullable:"true" list:"admin" create:"optional"`
@@ -112,6 +114,9 @@ type SDisk struct {
 	SnapshotId string `width:"256" charset:"ascii" nullable:"true" list:"user" json:"snapshot_id"`
 	// 备份Id
 	BackupId string `width:"256" charset:"ascii" nullable:"true" list:"user" json:"backup_id"`
+
+	// 设备名称
+	Device string `width:"32" charset:"ascii" nullable:"true" get:"user" list:"user"`
 
 	// 文件系统
 	FsFormat string `width:"32" charset:"ascii" nullable:"true" list:"user" json:"fs_format"`
@@ -211,25 +216,37 @@ func (manager *SDiskManager) ListItemFilter(
 	}
 
 	if query.BindingSnapshotpolicy != nil {
-		spjsq := SnapshotPolicyDiskManager.Query("disk_id").SubQuery()
+		spjsq := SnapshotPolicyResourceManager.Query("resource_id").Equals("resource_type", api.SNAPSHOT_POLICY_TYPE_DISK).SubQuery()
 		if *query.BindingSnapshotpolicy {
 			q = q.In("id", spjsq)
 		} else {
 			q = q.NotIn("id", spjsq)
 		}
 	}
+	if query.BindingServerSnapshotpolicy != nil {
+		guestDisks := GuestdiskManager.Query("disk_id")
+		sq := SnapshotPolicyResourceManager.Query("resource_id").Equals("resource_type", api.SNAPSHOT_POLICY_TYPE_SERVER).SubQuery()
+		gdsq := guestDisks.Join(sq, sqlchemy.Equals(guestDisks.Field("guest_id"), sq.Field("resource_id"))).SubQuery()
+		if *query.BindingServerSnapshotpolicy {
+			q = q.In("id", gdsq)
+		} else {
+			q = q.NotIn("id", gdsq)
+		}
+	}
 
 	guestId := query.ServerId
 	if len(guestId) > 0 {
-		server, err := validators.ValidateModel(ctx, userCred, GuestManager, &guestId)
-		if err != nil {
-			return nil, err
-		}
-		guest := server.(*SGuest)
+		guests := GuestManager.Query("id")
+		sq := guests.Filter(
+			sqlchemy.OR(
+				sqlchemy.In(guests.Field("id"), guestId),
+				sqlchemy.In(guests.Field("name"), guestId),
+			),
+		).SubQuery()
 		guestDisks := GuestdiskManager.Query().SubQuery()
 		q = q.Join(guestDisks, sqlchemy.AND(
 			sqlchemy.Equals(guestDisks.Field("disk_id"), q.Field("id")),
-			sqlchemy.Equals(guestDisks.Field("guest_id"), guest.Id),
+			sqlchemy.In(guestDisks.Field("guest_id"), sq),
 		)).Asc(guestDisks.Field("index"))
 	}
 
@@ -242,7 +259,7 @@ func (manager *SDiskManager) ListItemFilter(
 		if err != nil {
 			return nil, err
 		}
-		sq := SnapshotPolicyDiskManager.Query("disk_id").Equals("snapshotpolicy_id", query.SnapshotpolicyId)
+		sq := SnapshotPolicyResourceManager.Query("resource_id").Equals("resource_type", api.SNAPSHOT_POLICY_TYPE_DISK).Equals("snapshotpolicy_id", query.SnapshotpolicyId).SubQuery()
 		q = q.In("id", sq)
 	}
 
@@ -348,6 +365,14 @@ func (manager *SDiskManager) QueryDistinctExtraField(q *sqlchemy.SQuery, field s
 		q.Join(guestQuery, sqlchemy.Equals(guestQuery.Field("id"), guestDiskQuery.Field("guest_id")))
 		return q, nil
 	}
+	if field == "server" {
+		guestDiskQuery := GuestdiskManager.Query("disk_id", "guest_id").SubQuery()
+		q = q.LeftJoin(guestDiskQuery, sqlchemy.Equals(q.Field("id"), guestDiskQuery.Field("disk_id")))
+		guestQuery := GuestManager.Query().SubQuery()
+		q.AppendField(guestQuery.Field("name", field)).Distinct()
+		q.Join(guestQuery, sqlchemy.Equals(guestQuery.Field("id"), guestDiskQuery.Field("guest_id")))
+		return q, nil
+	}
 	q, err = manager.SStorageResourceBaseManager.QueryDistinctExtraField(q, field)
 	if err == nil {
 		return q, nil
@@ -356,11 +381,41 @@ func (manager *SDiskManager) QueryDistinctExtraField(q *sqlchemy.SQuery, field s
 	return q, httperrors.ErrNotFound
 }
 
-func (self *SDisk) GetGuestDiskCount() (int, error) {
+func (manager *SDiskManager) QueryDistinctExtraFields(q *sqlchemy.SQuery, resource string, fields []string) (*sqlchemy.SQuery, error) {
+	switch resource {
+	case GuestManager.Keyword():
+
+		guestdisks := GuestdiskManager.Query("disk_id", "guest_id").SubQuery()
+		q = q.LeftJoin(guestdisks, sqlchemy.Equals(q.Field("id"), guestdisks.Field("disk_id")))
+
+		guestQuery := GuestManager.Query().SubQuery()
+		for _, field := range fields {
+			q = q.AppendField(guestQuery.Field(field))
+		}
+		q = q.Join(guestQuery, sqlchemy.Equals(q.Field("guest_id"), guestQuery.Field("id")))
+		return q, nil
+	}
+	return q, httperrors.ErrNotFound
+}
+
+func (disk *SDisk) GetGuestDiskQuery() *sqlchemy.SQuery {
 	guestdisks := GuestdiskManager.Query()
 	guests := GuestManager.Query().SubQuery()
 	guestdisks = guestdisks.Join(guests, sqlchemy.Equals(guestdisks.Field("guest_id"), guests.Field("id")))
-	return guestdisks.Equals("disk_id", self.Id).CountWithError()
+	return guestdisks.Equals("disk_id", disk.Id)
+}
+
+func (self *SDisk) GetGuestDiskCount() (int, error) {
+	return self.GetGuestDiskQuery().CountWithError()
+}
+
+func (disk *SDisk) GetGuestDisk() (*SGuestdisk, error) {
+	guestdisk := &SGuestdisk{}
+	err := disk.GetGuestDiskQuery().First(guestdisk)
+	if err != nil {
+		return nil, errors.Wrap(err, "First")
+	}
+	return guestdisk, nil
 }
 
 func (self *SDisk) isAttached() (bool, error) {
@@ -1077,6 +1132,40 @@ func (self *SDisk) PerformMigrate(ctx context.Context, userCred mcclient.TokenCr
 	return nil, task.ScheduleRun(nil)
 }
 
+func (self *SDisk) PerformChangeStorageType(ctx context.Context, userCred mcclient.TokenCredential, query jsonutils.JSONObject, input *api.DiskChagneStorageTypeInput) (jsonutils.JSONObject, error) {
+	if len(input.StorageType) == 0 {
+		return nil, httperrors.NewMissingParameterError("storage_type")
+	}
+	storage, err := self.GetStorage()
+	if err != nil {
+		return nil, errors.Wrapf(err, "GetStorage")
+	}
+	if storage.StorageType == input.StorageType {
+		return nil, httperrors.NewInputParameterError("Storage type is already %s", input.StorageType)
+	}
+	storages := []SStorage{}
+	q := StorageManager.Query().Equals("zone_id", storage.ZoneId).Equals("storage_type", input.StorageType).IsTrue("enabled").Equals("status", api.STORAGE_ONLINE).Equals("manager_id", storage.ManagerId)
+	err = q.All(&storages)
+	if err != nil {
+		return nil, errors.Wrapf(err, "CountWithError")
+	}
+	if len(storages) == 0 {
+		return nil, httperrors.NewInputParameterError("no available storage type %s to change", input.StorageType)
+	}
+	if len(storages) > 1 {
+		return nil, httperrors.NewInputParameterError("duplicate storage type %s found", input.StorageType)
+	}
+
+	self.SetStatus(ctx, userCred, api.DISK_MIGRATING, "")
+	params := jsonutils.NewDict()
+	params.Set("storage_id", jsonutils.NewString(storages[0].Id))
+	task, err := taskman.TaskManager.NewTask(ctx, "DiskChangeStorageTypeTask", self, userCred, params, "", "", nil)
+	if err != nil {
+		return nil, errors.Wrapf(err, "NewTask")
+	}
+	return nil, task.ScheduleRun(nil)
+}
+
 func (self *SDisk) GetSchedMigrateParams(targetStorageId string) (*schedapi.ScheduleInput, error) {
 	diskConfig := self.ToDiskConfig()
 	diskConfig.Medium = ""
@@ -1562,6 +1651,8 @@ func (self *SDisk) GetMasterHost(storage *SStorage) (*SHost, error) {
 			q = q.In("cpu_architecture", apis.ARCH_X86)
 		case apis.OS_ARCH_ARM:
 			q = q.In("cpu_architecture", apis.ARCH_ARM)
+		case apis.OS_ARCH_RISCV:
+			q = q.In("cpu_architecture", apis.ARCH_RISCV)
 		}
 	}
 	host := SHost{}
@@ -1686,16 +1777,20 @@ func (manager *SDiskManager) SyncDisks(ctx context.Context, userCred mcclient.To
 	}
 
 	for i := 0; i < len(commondb); i += 1 {
-		skip, key := IsNeedSkipSync(commonext[i])
-		if skip {
-			log.Infof("delete disk %s(%s) with tag key or value: %s", commonext[i].GetName(), commonext[i].GetGlobalId(), key)
-			err := commondb[i].RealDelete(ctx, userCred)
-			if err != nil {
-				syncResult.DeleteError(err)
+		guest := commondb[i].GetGuest()
+		// 仅独立磁盘判断是否需要通过标签跳过同步，避免虚拟机有标签，磁盘没标签导致磁盘不断同步删除后再同步
+		if gotypes.IsNil(guest) {
+			skip, key := IsNeedSkipSync(commonext[i])
+			if skip {
+				log.Infof("delete disk %s(%s) with tag key or value: %s", commonext[i].GetName(), commonext[i].GetGlobalId(), key)
+				err := commondb[i].RealDelete(ctx, userCred)
+				if err != nil {
+					syncResult.DeleteError(err)
+					continue
+				}
+				syncResult.Delete()
 				continue
 			}
-			syncResult.Delete()
-			continue
 		}
 		if !xor {
 			err = commondb[i].syncWithCloudDisk(ctx, userCred, provider, commonext[i], -1, syncOwnerId, storage.ManagerId)
@@ -1865,6 +1960,9 @@ func (self *SDisk) syncWithCloudDisk(ctx context.Context, userCred mcclient.Toke
 		if extDisk.GetIsAutoDelete() {
 			self.AutoDelete = true
 		}
+		if device := extDisk.GetDeviceName(); len(device) > 0 {
+			self.Device = device
+		}
 		// self.TemplateId = extDisk.GetTemplateId() no sync template ID
 		if templateId := extDisk.GetTemplateId(); len(templateId) > 0 {
 			cachedImage, err := db.FetchByExternalId(CachedimageManager, templateId)
@@ -1883,7 +1981,7 @@ func (self *SDisk) syncWithCloudDisk(ctx context.Context, userCred mcclient.Toke
 
 		if provider.GetFactory().IsSupportPrepaidResources() && !recycle {
 			if billintType := extDisk.GetBillingType(); len(billintType) > 0 {
-				self.BillingType = extDisk.GetBillingType()
+				self.BillingType = billing_api.TBillingType(extDisk.GetBillingType())
 				self.ExpiredAt = time.Time{}
 				self.AutoRenew = false
 				if self.BillingType == billing_api.BILLING_TYPE_PREPAID {
@@ -1949,6 +2047,7 @@ func (manager *SDiskManager) newFromCloudDisk(ctx context.Context, userCred mccl
 		disk.DiskType = api.DISK_TYPE_SYS
 	}
 	disk.Nonpersistent = extDisk.GetIsNonPersistent()
+	disk.Device = extDisk.GetDeviceName()
 
 	disk.IsEmulated = extDisk.IsEmulated()
 
@@ -1960,7 +2059,7 @@ func (manager *SDiskManager) newFromCloudDisk(ctx context.Context, userCred mccl
 	}
 
 	if provider.GetFactory().IsSupportPrepaidResources() {
-		disk.BillingType = extDisk.GetBillingType()
+		disk.BillingType = billing_api.TBillingType(extDisk.GetBillingType())
 		if expired := extDisk.GetExpiredAt(); !expired.IsZero() {
 			disk.ExpiredAt = expired
 		}
@@ -2146,7 +2245,7 @@ func fillDiskConfigBySnapshot(ctx context.Context, userCred mcclient.TokenCreden
 		}
 		diskConfig.SnapshotId = snapshot.Id
 		diskConfig.DiskType = snapshot.DiskType
-		diskConfig.SizeMb = snapshot.Size
+		diskConfig.SizeMb = snapshot.VirtualSize
 		diskConfig.Backend = storage.StorageType
 		diskConfig.Fs = ""
 		diskConfig.Mountpoint = ""
@@ -2396,11 +2495,13 @@ func (self *SDisk) Delete(ctx context.Context, userCred mcclient.TokenCredential
 func (self *SDisk) RealDelete(ctx context.Context, userCred mcclient.TokenCredential) error {
 	// diskbackups := DiskBackupManager.Query("id").Equals("disk_id", self.Id)
 	guestdisks := GuestdiskManager.Query("row_id").Equals("disk_id", self.Id)
-	diskpolicies := SnapshotPolicyDiskManager.Query("row_id").Equals("disk_id", self.Id)
+	err := SnapshotPolicyResourceManager.RemoveByResource(self.Id, api.SNAPSHOT_POLICY_TYPE_DISK)
+	if err != nil {
+		return errors.Wrapf(err, "RemoveByResource")
+	}
 	pairs := []purgePair{
 		// {manager: DiskBackupManager, key: "id", q: diskbackups},
 		{manager: GuestdiskManager, key: "row_id", q: guestdisks},
-		{manager: SnapshotPolicyDiskManager, key: "row_id", q: diskpolicies},
 	}
 	for i := range pairs {
 		err := pairs[i].purgeAll(ctx)
@@ -2408,7 +2509,13 @@ func (self *SDisk) RealDelete(ctx context.Context, userCred mcclient.TokenCreden
 			return err
 		}
 	}
+	SnapshotPolicyResourceManager.RemoveByResource(self.Id, api.SNAPSHOT_POLICY_TYPE_DISK)
 	return self.SVirtualResourceBase.Delete(ctx, userCred)
+}
+
+func (self *SDisk) DoPendingDelete(ctx context.Context, userCred mcclient.TokenCredential) error {
+	SnapshotPolicyResourceManager.RemoveByResource(self.Id, api.SNAPSHOT_POLICY_TYPE_DISK)
+	return self.SVirtualResourceBase.DoPendingDelete(ctx, userCred)
 }
 
 func (self *SDisk) RecordLastAttachedHost(ctx context.Context, userCred mcclient.TokenCredential, hostId string) error {
@@ -2574,11 +2681,12 @@ func (manager *SDiskManager) FetchCustomizeColumns(
 		return rows
 	}
 
-	guests := map[string][]api.SimpleGuest{}
+	guests, guestIds := map[string][]api.SimpleGuest{}, []string{}
 	for _, guest := range guestInfo {
 		_, ok := guests[guest.DiskId]
 		if !ok {
 			guests[guest.DiskId] = []api.SimpleGuest{}
+			guestIds = append(guestIds, guest.Id)
 		}
 		guests[guest.DiskId] = append(guests[guest.DiskId], api.SimpleGuest{
 			Id:     guest.Id,
@@ -2595,16 +2703,17 @@ func (manager *SDiskManager) FetchCustomizeColumns(
 	}
 
 	policySQ := SnapshotPolicyManager.Query().SubQuery()
-	dps := SnapshotPolicyDiskManager.Query().SubQuery()
+	dps := SnapshotPolicyResourceManager.Query().SubQuery()
 
 	q = policySQ.Query(
 		policySQ.Field("id"),
 		policySQ.Field("name"),
 		policySQ.Field("time_points"),
 		policySQ.Field("repeat_weekdays"),
-		dps.Field("disk_id"),
+		dps.Field("resource_id"),
+		dps.Field("resource_type"),
 	).Join(dps, sqlchemy.Equals(dps.Field("snapshotpolicy_id"), policySQ.Field("id"))).
-		Filter(sqlchemy.In(dps.Field("disk_id"), diskIds))
+		Filter(sqlchemy.OR(sqlchemy.In(dps.Field("resource_id"), diskIds), sqlchemy.In(dps.Field("resource_id"), guestIds)))
 
 	policyInfo := []struct {
 		Id             string
@@ -2612,7 +2721,8 @@ func (manager *SDiskManager) FetchCustomizeColumns(
 		Status         string
 		TimePoints     []int
 		RepeatWeekdays []int
-		DiskId         string
+		ResourceId     string
+		ResourceType   string
 	}{}
 	err = q.All(&policyInfo)
 	if err != nil {
@@ -2622,15 +2732,16 @@ func (manager *SDiskManager) FetchCustomizeColumns(
 
 	policies := map[string][]api.SimpleSnapshotPolicy{}
 	for _, policy := range policyInfo {
-		_, ok := policies[policy.DiskId]
+		_, ok := policies[policy.ResourceId]
 		if !ok {
-			policies[policy.DiskId] = []api.SimpleSnapshotPolicy{}
+			policies[policy.ResourceId] = []api.SimpleSnapshotPolicy{}
 		}
-		policies[policy.DiskId] = append(policies[policy.DiskId], api.SimpleSnapshotPolicy{
+		policies[policy.ResourceId] = append(policies[policy.ResourceId], api.SimpleSnapshotPolicy{
 			Id:             policy.Id,
 			Name:           policy.Name,
 			RepeatWeekdays: policy.RepeatWeekdays,
 			TimePoints:     policy.TimePoints,
+			ResourceType:   policy.ResourceType,
 		})
 	}
 
@@ -2638,12 +2749,15 @@ func (manager *SDiskManager) FetchCustomizeColumns(
 		rows[i].Guests, _ = guests[diskIds[i]]
 		names, status, billingTypes := []string{}, []string{}, []string{}
 		var iops, bps int
-		for _, guest := range rows[i].Guests {
+		for j := range rows[i].Guests {
+			guest := rows[i].Guests[j]
 			names = append(names, guest.Name)
 			status = append(status, guest.Status)
 			iops = guest.Iops
 			bps = guest.Bps
 			billingTypes = append(billingTypes, guest.BillingType)
+			rows[i].Guests[j].Snapshotpolicy, _ = policies[guest.Id]
+			rows[i].GuestSnapshotpolicyCount += len(rows[i].Guests[j].Snapshotpolicy)
 		}
 		rows[i].GuestCount = len(rows[i].Guests)
 		rows[i].Guest = strings.Join(names, ",")
@@ -2860,7 +2974,7 @@ func (manager *SDiskManager) CleanPendingDeleteDisks(ctx context.Context, userCr
 	}
 }
 
-func (manager *SDiskManager) GetNeedAutoSnapshotDisks() ([]SSnapshotPolicyDisk, error) {
+func (manager *SDiskManager) GetNeedAutoSnapshotDisks() ([]SSnapshotPolicyResource, error) {
 	tz, _ := time.LoadLocation(options.Options.TimeZone)
 	t := time.Now().In(tz)
 	week := t.Weekday()
@@ -2880,11 +2994,11 @@ func (manager *SDiskManager) GetNeedAutoSnapshotDisks() ([]SSnapshotPolicyDisk, 
 		),
 	).SubQuery()
 	disks := DiskManager.Query().SubQuery()
-	q := SnapshotPolicyDiskManager.Query()
+	q := SnapshotPolicyResourceManager.Query().Equals("resource_type", api.SNAPSHOT_POLICY_TYPE_DISK)
 	q = q.Join(sq, sqlchemy.Equals(q.Field("snapshotpolicy_id"), sq.Field("id")))
-	q = q.Join(disks, sqlchemy.Equals(q.Field("disk_id"), disks.Field("id")))
-	ret := []SSnapshotPolicyDisk{}
-	err := db.FetchModelObjects(SnapshotPolicyDiskManager, q, &ret)
+	q = q.Join(disks, sqlchemy.Equals(q.Field("resource_id"), disks.Field("id")))
+	ret := []SSnapshotPolicyResource{}
+	err := db.FetchModelObjects(SnapshotPolicyResourceManager, q, &ret)
 	if err != nil {
 		return nil, err
 	}
@@ -2919,7 +3033,7 @@ func (manager *SDiskManager) AutoDiskSnapshot(ctx context.Context, userCred mccl
 	}
 	log.Infof("auto snapshot %d disks", len(disks))
 
-	guestDps := map[string][]SSnapshotPolicyDisk{}
+	guestDps := map[string][]SSnapshotPolicyResource{}
 	for i := 0; i < len(disks); i++ {
 		disk, err := disks[i].GetDisk()
 		if err != nil {
@@ -2930,7 +3044,7 @@ func (manager *SDiskManager) AutoDiskSnapshot(ctx context.Context, userCred mccl
 			if dps, ok := guestDps[guest.Id]; ok {
 				guestDps[guest.Id] = append(dps, disks[i])
 			} else {
-				guestDps[guest.Id] = []SSnapshotPolicyDisk{disks[i]}
+				guestDps[guest.Id] = []SSnapshotPolicyResource{disks[i]}
 			}
 			continue
 		}
@@ -2953,7 +3067,7 @@ func (manager *SDiskManager) AutoDiskSnapshot(ctx context.Context, userCred mccl
 }
 
 func (manager *SDiskManager) OrderCreateDisksSnapshotsBySnapshotPolicy(
-	ctx context.Context, userCred mcclient.TokenCredential, guest *SGuest, snapshotPolicyDisks []SSnapshotPolicyDisk,
+	ctx context.Context, userCred mcclient.TokenCredential, guest *SGuest, snapshotPolicyDisks []SSnapshotPolicyResource,
 ) error {
 	params := jsonutils.NewDict()
 	params.Set("snapshot_policy_disks", jsonutils.Marshal(snapshotPolicyDisks))
@@ -2967,7 +3081,7 @@ func (manager *SDiskManager) OrderCreateDisksSnapshotsBySnapshotPolicy(
 
 func (manager *SDiskManager) DoAutoSnapshot(
 	ctx context.Context, userCred mcclient.TokenCredential,
-	diskSnapshotPolicy *SSnapshotPolicyDisk, disk *SDisk, parentTaskId string,
+	diskSnapshotPolicy *SSnapshotPolicyResource, disk *SDisk, parentTaskId string,
 ) error {
 	policy, err := diskSnapshotPolicy.GetSnapshotPolicy()
 	if err != nil {
@@ -3015,7 +3129,7 @@ func (self *SDisk) CreateSnapshotAuto(
 		return nil, errors.Wrapf(err, "GetRegionDriver")
 	}
 	snapshot.OutOfChain = driver.SnapshotIsOutOfChain(self)
-	snapshot.Size = self.DiskSize
+	snapshot.VirtualSize = self.DiskSize
 	snapshot.DiskType = self.DiskType
 	snapshot.Location = ""
 	snapshot.CreatedBy = api.SNAPSHOT_AUTO
@@ -3184,12 +3298,33 @@ func (disk *SDisk) GetUsages() []db.IUsage {
 	}
 }
 
+// 绑定磁盘快照策略
+// 磁盘只能绑定一个快照策略，已绑定时报错
+// 若磁盘所属主机已绑定主机快照策略，则磁盘不能再绑定快照策略
 func (disk *SDisk) PerformBindSnapshotpolicy(
 	ctx context.Context,
 	userCred mcclient.TokenCredential,
 	query jsonutils.JSONObject,
 	input *api.DiskSnapshotpolicyInput,
 ) (jsonutils.JSONObject, error) {
+	// 磁盘只能绑定一个快照策略，已绑定时报错
+	cnt, err := SnapshotPolicyResourceManager.GetBindingCount(disk.Id, api.SNAPSHOT_POLICY_TYPE_DISK)
+	if err != nil {
+		return nil, errors.Wrap(err, "GetBindingCount")
+	}
+	if cnt > 0 {
+		return nil, httperrors.NewConflictError("disk already bound to a snapshot policy")
+	}
+	// 若磁盘所属主机已绑定主机快照策略，则磁盘不能再绑定快照策略
+	if guest := disk.GetGuest(); guest != nil {
+		guestCnt, err := SnapshotPolicyResourceManager.GetBindingCount(guest.Id, api.SNAPSHOT_POLICY_TYPE_SERVER)
+		if err != nil {
+			return nil, errors.Wrap(err, "GetBindingCount for guest")
+		}
+		if guestCnt > 0 {
+			return nil, httperrors.NewConflictError("guest already has server snapshot policy, disk cannot bind snapshot policy")
+		}
+	}
 	spObj, err := validators.ValidateModel(ctx, userCred, SnapshotPolicyManager, &input.SnapshotpolicyId)
 	if err != nil {
 		return nil, err
@@ -3214,6 +3349,52 @@ func (disk *SDisk) PerformBindSnapshotpolicy(
 	return nil, sp.StartBindDisksTask(ctx, userCred, []string{disk.Id})
 }
 
+// 设置磁盘快照策略
+// 可覆盖当前磁盘绑定的快照策略，若磁盘所属主机已绑定主机快照策略，则自动解除主机快照策略
+func (disk *SDisk) PerformSetSnapshotpolicy(
+	ctx context.Context,
+	userCred mcclient.TokenCredential,
+	query jsonutils.JSONObject,
+	input *api.DiskSnapshotpolicyInput,
+) (jsonutils.JSONObject, error) {
+	spObj, err := validators.ValidateModel(ctx, userCred, SnapshotPolicyManager, &input.SnapshotpolicyId)
+	if err != nil {
+		return nil, err
+	}
+	sp := spObj.(*SSnapshotPolicy)
+	if sp.Type != api.SNAPSHOT_POLICY_TYPE_DISK {
+		return nil, httperrors.NewBadRequestError("The snapshot policy %s is not a disk snapshot policy", sp.Name)
+	}
+	if len(sp.ManagerId) > 0 {
+		storage, err := disk.GetStorage()
+		if err != nil {
+			return nil, errors.Wrapf(err, "GetStorage")
+		}
+		if storage.ManagerId != sp.ManagerId {
+			return nil, httperrors.NewConflictError("The snapshot policy %s and disk account are different", sp.Name)
+		}
+		zone, err := storage.GetZone()
+		if err != nil {
+			return nil, errors.Wrapf(err, "GetZone")
+		}
+		if sp.CloudregionId != zone.CloudregionId {
+			return nil, httperrors.NewConflictError("The snapshot policy %s and the disk are in different region", sp.Name)
+		}
+	}
+	// 先解除当前绑定再绑定新策略
+	if err := SnapshotPolicyResourceManager.RemoveByResource(disk.Id, api.SNAPSHOT_POLICY_TYPE_DISK); err != nil {
+		return nil, errors.Wrap(err, "RemoveByResource")
+	}
+	// 若磁盘所属主机已绑定主机快照策略，则磁盘不能再绑定快照策略
+	if guest := disk.GetGuest(); guest != nil {
+		if err := SnapshotPolicyResourceManager.RemoveByResource(guest.Id, api.SNAPSHOT_POLICY_TYPE_SERVER); err != nil {
+			return nil, errors.Wrap(err, "RemoveByResource")
+		}
+	}
+	return nil, sp.StartBindDisksTask(ctx, userCred, []string{disk.Id})
+}
+
+// 解绑自动快照策略
 func (disk *SDisk) PerformUnbindSnapshotpolicy(
 	ctx context.Context,
 	userCred mcclient.TokenCredential,
@@ -3357,7 +3538,7 @@ func (disk *SDisk) PerformChangeBillingType(ctx context.Context, userCred mcclie
 	if len(input.BillingType) == 0 {
 		return nil, httperrors.NewMissingParameterError("billing_type")
 	}
-	if !utils.IsInStringArray(input.BillingType, []string{billing_api.BILLING_TYPE_POSTPAID, billing_api.BILLING_TYPE_PREPAID}) {
+	if !utils.IsInStringArray(string(input.BillingType), []string{string(billing_api.BILLING_TYPE_POSTPAID), string(billing_api.BILLING_TYPE_PREPAID)}) {
 		return nil, httperrors.NewInputParameterError("invalid billing_type %s", input.BillingType)
 	}
 	if disk.BillingType == input.BillingType {

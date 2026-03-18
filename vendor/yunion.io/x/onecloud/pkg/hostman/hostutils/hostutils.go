@@ -73,13 +73,14 @@ type IHost interface {
 	GetKernelVersion() string
 	IsAarch64() bool
 	IsX8664() bool
+	IsRiscv64() bool
 	GetHostTopology() *hostapi.HostTopology
 	GetReservedCpusInfo() (*cpuset.CPUSet, *cpuset.CPUSet)
 	GetReservedMemMb() int
 
 	IsHugepagesEnabled() bool
 	HugepageSizeKb() int
-	IsNumaAllocateEnabled() bool
+	IsSchedulerNumaAllocateEnabled() bool
 	CpuCmtBound() float32
 	MemCmtBound() float32
 
@@ -109,6 +110,8 @@ type IHost interface {
 
 	SetIGuestManager(guestman IGuestManager)
 	GetIGuestManager() IGuestManager
+
+	OnGuestLoadingComplete()
 }
 
 func GetComputeSession(ctx context.Context) *mcclient.ClientSession {
@@ -215,6 +218,10 @@ func UpdateServerProgress(ctx context.Context, sid string, progress, progressMbp
 	return modules.Servers.Update(GetComputeSession(ctx), sid, jsonutils.Marshal(params))
 }
 
+func UploadGuestStatus(ctx context.Context, sid string, resp *computeapi.HostUploadGuestStatusInput) (jsonutils.JSONObject, error) {
+	return modules.Servers.PerformAction(GetComputeSession(ctx), sid, "upload-status", jsonutils.Marshal(resp))
+}
+
 func UploadGuestsStatus(ctx context.Context, resp *computeapi.HostUploadGuestsStatusInput) (jsonutils.JSONObject, error) {
 	return modules.Servers.PerformClassAction(GetComputeSession(ctx), "upload-status", jsonutils.Marshal(resp))
 }
@@ -310,7 +317,7 @@ func initImageCacheWorkerManager() {
 }
 
 func initBackupWorkerManager() {
-	backupW = workmanager.NewWorkManger("BackupDelayTaskWorkers", TaskFailed, TaskComplete, options.HostOptions.DefaultRequestWorkerCount)
+	backupW = workmanager.NewWorkManger("BackupDelayTaskWorkers", TaskFailed, TaskComplete, options.HostOptions.BackupTaskWorkerCount)
 }
 
 func InitWorkerManagerWithCount(count int) {

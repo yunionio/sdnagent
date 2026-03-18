@@ -66,6 +66,22 @@ func (self *SSnapshotPolicyResource) GetServer() (*SGuest, error) {
 	return guest.(*SGuest), nil
 }
 
+func (self *SSnapshotPolicyResource) GetDisk() (*SDisk, error) {
+	disk, err := DiskManager.FetchById(self.ResourceId)
+	if err != nil {
+		return nil, err
+	}
+	return disk.(*SDisk), nil
+}
+
+func (self *SSnapshotPolicyResource) GetSnapshotPolicy() (*SSnapshotPolicy, error) {
+	policy, err := SnapshotPolicyManager.FetchById(self.SnapshotpolicyId)
+	if err != nil {
+		return nil, err
+	}
+	return policy.(*SSnapshotPolicy), nil
+}
+
 func (man *SSnapshotPolicyResourceManager) RemoveBySnapshotpolicy(id string) error {
 	_, err := sqlchemy.GetDB().Exec(
 		fmt.Sprintf(
@@ -74,4 +90,9 @@ func (man *SSnapshotPolicyResourceManager) RemoveBySnapshotpolicy(id string) err
 		), id,
 	)
 	return err
+}
+
+// GetBindingCount returns the number of snapshot policies bound to the given resource.
+func (man *SSnapshotPolicyResourceManager) GetBindingCount(resourceId, resourceType string) (int, error) {
+	return man.Query().Equals("resource_id", resourceId).Equals("resource_type", resourceType).CountWithError()
 }
