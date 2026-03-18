@@ -22,6 +22,7 @@ import (
 	"yunion.io/x/log"
 	"yunion.io/x/structarg"
 
+	computeapi "yunion.io/x/onecloud/pkg/apis/compute"
 	common_options "yunion.io/x/onecloud/pkg/cloudcommon/options"
 	"yunion.io/x/onecloud/pkg/util/fileutils2"
 	"yunion.io/x/onecloud/pkg/util/ovnutils"
@@ -34,10 +35,12 @@ type SHostBaseOptions struct {
 
 	DisableSecurityGroup bool `help:"disable security group" default:"false"`
 
-	HostCpuPassthrough        bool  `default:"true" help:"if it is true, set qemu cpu type as -cpu host, otherwise, qemu64. default is true"`
-	LiveMigrateCpuThrottleMax int64 `default:"99" help:"live migrate auto converge cpu throttle max"`
+	HostCpuPassthrough              bool  `default:"true" help:"if it is true, set qemu cpu type as -cpu host, otherwise, qemu64. default is true"`
+	LiveMigrateCpuThrottleMax       int64 `default:"99" help:"live migrate auto converge cpu throttle max"`
+	LiveMigrateCpuThrottleInitial   int64 `default:"60" help:"live migrate auto convert cpu throttle initial"`
+	LiveMigrateCpuThrottleIncrement int64 `default:"20" help:"live migrate auto convert cpu throttle increment"`
 
-	DefaultQemuVersion string `help:"Default qemu version" default:"4.2.0"`
+	DefaultQemuVersion string `help:"Default qemu version" default:"10.0.7"`
 	NoHpet             bool   `help:"Disable qemu hpet timer" default:"true"`
 
 	CdromCount  int `help:"cdrom count" default:"1"`
@@ -194,6 +197,8 @@ type SHostOptions struct {
 	SdnEnableTapMan bool   `help:"enable tap service" default:"$SDN_ENABLE_TAP_MAN|true"`
 	TapBridgeName   string `help:"bridge name for tap service" default:"brtap"`
 
+	HostLocalBridgeName string `help:"bridge name for host local network" default:"brlocal"`
+
 	SdnAllowConntrackInvalid       bool `help:"allow packets marked by conntrack as INVALID to pass" default:"$SDN_ALLOW_CONNTRACK_INVALID|false"`
 	SdnFetchDataFromComputeService bool `help:"fetch network releated data from compute service" default:"$SDN_FETCH_DATA_FROM_COMPUTE_SERVICE|true"`
 
@@ -243,6 +248,8 @@ type SHostOptions struct {
 	EnableQemuDebugLog  bool   `help:"enable qemu debug logs" default:"false"`
 	ResetDiskTmpDir     string `help:"auto reset disk after guest shutdown will write disk to tmpdir"`
 
+	GuestMaxMemSizeMb int `help:"guest maximal mem size, default 0 is not set" default:"0"`
+
 	// container related endpoint
 	// EnableContainerRuntime   bool   `help:"enable container runtime" default:"false"`
 	ContainerRuntimeEndpoint                 string `help:"endpoint of container runtime service" default:"unix:///var/run/onecloud/containerd/containerd.sock"`
@@ -257,15 +264,34 @@ type SHostOptions struct {
 	CudaMPSLogDirectory  string `help:"cuda mps log dir" default:"/tmp/nvidia-mps/log"`
 	CudaMPSReplicas      int    `help:"cuda mps replicas" default:"10"`
 
+	SkipCheckKernelMods []string `help:"skip check kernel modules"`
+
 	EnableContainerAscendNPU bool `help:"enable container npu" default:"false"`
 
 	EnableDirtyRecoverySeconds int  `help:"Seconds to delay enable dirty guests recovery feature, default 15 minutes" default:"900"`
 	EnableContainerCniPortmap  bool `help:"Use container cni portmap plugin" default:"false"`
 	DisableReconcileContainer  bool `help:"disable reconcile container" default:"false"`
+
+	// Container log rotation (Docker-style max-size and max-file)
+	ContainerLogMaxSize  string `help:"Max size of container log file before rotation (e.g. 10m, 100k). Disabled if empty or <= 0" default:"256m"`
+	ContainerLogMaxFiles int    `help:"Max number of container log files to keep (current + rotated). Disabled if <= 0" default:"1"`
 }
 
 func (o SHostOptions) HostLocalNetconfPath(br string) string {
 	return filepath.Join(o.ServersPath, fmt.Sprintf("host_local_netconf_%s.json", br))
+}
+
+func (o SHostOptions) NicBridgeDevName(bridge string) string {
+	switch bridge {
+	case computeapi.HostVpcBridge:
+		return o.OvnIntegrationBridge
+	case computeapi.HostTapBridge:
+		return o.TapBridgeName
+	case computeapi.HostLocalBridge:
+		return o.HostLocalBridgeName
+	default:
+		return bridge
+	}
 }
 
 var (

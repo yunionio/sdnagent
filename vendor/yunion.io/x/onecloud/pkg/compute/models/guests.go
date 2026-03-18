@@ -19,7 +19,10 @@ import (
 	"context"
 	"database/sql"
 	"fmt"
+	"net/http"
+	"net/url"
 	"regexp"
+	"strconv"
 	"strings"
 	"time"
 
@@ -743,6 +746,16 @@ func (manager *SGuestManager) ListItemFilter(
 			q = q.NotIn("id", spjsq)
 		}
 	}
+	if query.BindingDisksSnapshotpolicy != nil {
+		guestDisks := GuestdiskManager.Query("guest_id")
+		sq := SnapshotPolicyResourceManager.Query("resource_id").Equals("resource_type", api.SNAPSHOT_POLICY_TYPE_DISK).SubQuery()
+		gdsq := guestDisks.Join(sq, sqlchemy.Equals(guestDisks.Field("disk_id"), sq.Field("resource_id"))).SubQuery()
+		if *query.BindingDisksSnapshotpolicy {
+			q = q.In("id", gdsq)
+		} else {
+			q = q.NotIn("id", gdsq)
+		}
+	}
 
 	return q, nil
 }
@@ -1210,6 +1223,18 @@ func (guest *SGuest) ConvertEsxiNetworks(targetGuest *SGuest) error {
 		}
 	}
 	return err
+}
+
+func (guest *SGuest) getGuestnetworkByIndex(networkIndex int) (*SGuestnetwork, error) {
+	q := guest.GetNetworksQuery("").Equals("index", networkIndex)
+
+	guestnic := SGuestnetwork{}
+	err := q.First(&guestnic)
+	if err != nil {
+		return nil, err
+	}
+	guestnic.SetModelManager(GuestnetworkManager, &guestnic)
+	return &guestnic, nil
 }
 
 func (guest *SGuest) getGuestnetworkByIpOrMac(ipAddr string, ip6Addr string, macAddr string) (*SGuestnetwork, error) {
@@ -1705,7 +1730,7 @@ func (manager *SGuestManager) validateCreateData(
 	}
 
 	// check group
-	if input.InstanceGroupIds != nil && len(input.InstanceGroupIds) != 0 {
+	if len(input.InstanceGroupIds) > 0 {
 		newGroupIds := make([]string, len(input.InstanceGroupIds))
 		for index, id := range input.InstanceGroupIds {
 			model, err := GroupManager.FetchByIdOrName(ctx, userCred, id)
@@ -1805,12 +1830,17 @@ func (manager *SGuestManager) validateCreateData(
 			}
 		}
 
-		if arch := imgProperties["os_arch"]; strings.Contains(arch, "aarch") || strings.Contains(arch, "arm") {
+		arch := imgProperties["os_arch"]
+		if strings.Contains(arch, "aarch") || strings.Contains(arch, "arm") {
 			input.OsArch = apis.OS_ARCH_AARCH64
+		} else if strings.Contains(arch, "riscv") {
+			input.OsArch = apis.OS_ARCH_RISCV64
 		}
 
 		// enable tpm on windows 11 image
-		if osDist := imgProperties["os_distribution"]; strings.Contains(osDist, "Windows 11") {
+		osDist := imgProperties["os_distribution"]
+		osVer := imgProperties["os_version"]
+		if strings.Contains(osDist, "Windows 11") || strings.Contains(osVer, "Windows 11") {
 			input.EnableTpm = true
 		}
 
@@ -1820,7 +1850,7 @@ func (manager *SGuestManager) validateCreateData(
 			input.Machine = api.VM_MACHINE_TYPE_Q35
 		}
 
-		if imageDiskFormat != "iso" {
+		if imageDiskFormat != imageapi.IMAGE_DISK_FORMAT_ISO {
 			var imgSupportUEFI *bool
 			var imgSupportBIOS *bool
 			if desc, ok := imgProperties[imageapi.IMAGE_UEFI_SUPPORT]; ok {
@@ -1837,7 +1867,7 @@ func (manager *SGuestManager) validateCreateData(
 				imgSupportBIOS = &supportBIOS
 			}
 
-			if input.OsArch == apis.OS_ARCH_AARCH64 {
+			if apis.IsARM(input.OsArch) || apis.IsRISCV(input.OsArch) {
 				// arm image supports UEFI by default
 				support := true
 				imgSupportUEFI = &support
@@ -1858,6 +1888,15 @@ func (manager *SGuestManager) validateCreateData(
 					input.Bios = "BIOS"
 				}
 			}
+		} else {
+			if input.Bios == "" {
+				// if ISO support uefi and not specified boot mode
+				// set default boot mode uefi
+				if desc, ok := imgProperties[imageapi.IMAGE_UEFI_SUPPORT]; ok && desc == "true" {
+					input.Bios = "UEFI"
+				}
+			}
+
 		}
 
 		if len(imgProperties) == 0 {
@@ -2126,6 +2165,11 @@ func (manager *SGuestManager) validateCreateData(
 			netConfig.SriovDevice = devConfig
 			netConfig.Driver = api.NETWORK_DRIVER_VFIO
 		}
+		secgroupIds, err := isValidSecgroups(ctx, userCred, netConfig.Secgroups)
+		if err != nil {
+			return nil, err
+		}
+		netConfig.Secgroups = secgroupIds
 
 		netConfig.Project = ownerId.GetProjectId()
 		netConfig.Domain = ownerId.GetProjectDomainId()
@@ -2192,15 +2236,9 @@ func (manager *SGuestManager) validateCreateData(
 		input.KeypairId = keypairObj.GetId()
 	}
 
-	secGrpIds := []string{}
-	for _, secgroup := range input.Secgroups {
-		secGrpObj, err := SecurityGroupManager.FetchByIdOrName(ctx, userCred, secgroup)
-		if err != nil {
-			return nil, httperrors.NewResourceNotFoundError("Secgroup %s not found", secgroup)
-		}
-		if !utils.IsInStringArray(secGrpObj.GetId(), secGrpIds) {
-			secGrpIds = append(secGrpIds, secGrpObj.GetId())
-		}
+	secGrpIds, err := isValidSecgroups(ctx, userCred, input.Secgroups)
+	if err != nil {
+		return nil, err
 	}
 	if len(secGrpIds) > 0 {
 		input.SecgroupId = secGrpIds[0]
@@ -2259,6 +2297,13 @@ func (manager *SGuestManager) validateCreateData(
 	// validate UserData
 	if err := userdata.ValidateUserdata(input.UserData, input.OsType); err != nil {
 		return nil, httperrors.NewInputParameterError("Invalid userdata: %v", err)
+	}
+
+	// validate KickstartConfig
+	if input.KickstartConfig != nil {
+		if err := validateKickstartConfig(input.KickstartConfig); err != nil {
+			return nil, httperrors.NewInputParameterError("Invalid kickstart config: %v", err)
+		}
 	}
 
 	err = manager.ValidatePolicyDefinitions(ctx, userCred, ownerId, query, input)
@@ -2361,6 +2406,125 @@ func (manager *SGuestManager) ValidateCreateData(ctx context.Context, userCred m
 	return input.JSON(input), nil
 }
 
+func validateKickstartConfig(config *api.KickstartConfig) error {
+	if config.OSType == "" {
+		return fmt.Errorf("os_type is required")
+	}
+
+	if !utils.IsInStringArray(config.OSType, api.KICKSTART_VALID_OS_TYPES) {
+		return fmt.Errorf("unsupported os_type: %s, supported types: %v", config.OSType, api.KICKSTART_VALID_OS_TYPES)
+	}
+
+	// 验证配置内容和URL二选一
+	if config.Config == "" && config.ConfigURL == "" {
+		return fmt.Errorf("either config or config_url must be provided")
+	}
+
+	if config.Config != "" && config.ConfigURL != "" {
+		return fmt.Errorf("config and config_url cannot be both provided, choose one")
+	}
+
+	if config.Config != "" {
+		const maxConfigSize = 64 * 1024
+		if len(config.Config) > maxConfigSize {
+			return fmt.Errorf("config content too large: %d bytes, maximum allowed: %d bytes", len(config.Config), maxConfigSize)
+		}
+		if len(strings.TrimSpace(config.Config)) == 0 {
+			return fmt.Errorf("config content cannot be empty")
+		}
+	}
+
+	if config.ConfigURL != "" {
+		if len(config.ConfigURL) > 2048 {
+			return fmt.Errorf("config URL too long: %d characters, maximum allowed: 2048", len(config.ConfigURL))
+		}
+		if strings.TrimSpace(config.ConfigURL) == "" {
+			return fmt.Errorf("config URL cannot be empty")
+		}
+
+		parsedURL, err := url.Parse(config.ConfigURL)
+		if err != nil {
+			return fmt.Errorf("invalid URL format: %v", err)
+		}
+		if parsedURL.Scheme != "http" && parsedURL.Scheme != "https" {
+			return fmt.Errorf("invalid URL scheme: %s, only http and https are allowed", parsedURL.Scheme)
+		}
+		if parsedURL.Host == "" {
+			return fmt.Errorf("URL must specify a host")
+		}
+
+		if err := checkKickstartURLContentSize(config.ConfigURL); err != nil {
+			return fmt.Errorf("URL content validation failed: %v", err)
+		}
+	}
+
+	// 设置默认值
+	if config.Enabled == nil {
+		enabled := true
+		config.Enabled = &enabled
+	}
+
+	if config.MaxRetries <= 0 {
+		config.MaxRetries = 3
+	}
+
+	if config.TimeoutMinutes <= 0 {
+		config.TimeoutMinutes = 60
+	}
+
+	return nil
+}
+
+// determineKickstartType determines kickstart type based on config content
+func determineKickstartType(config *api.KickstartConfig) string {
+	if config.Config != "" {
+		return api.KICKSTART_TYPE_CONTENT
+	}
+	return api.KICKSTART_TYPE_URL
+}
+
+func checkKickstartURLContentSize(configURL string) error {
+	const maxURLContentSize = 64 * 1024
+	const requestTimeout = 10 * time.Second
+
+	client := &http.Client{Timeout: requestTimeout}
+
+	req, err := http.NewRequest("HEAD", configURL, nil)
+	if err != nil {
+		return fmt.Errorf("failed to create request: %v", err)
+	}
+
+	resp, err := client.Do(req)
+	if err != nil {
+		log.Warningf("Failed to check URL content size for %s: %v", configURL, err)
+		return nil
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		return fmt.Errorf("URL returned status code: %d", resp.StatusCode)
+	}
+
+	contentLengthStr := resp.Header.Get("Content-Length")
+	if contentLengthStr != "" {
+		contentLength, err := strconv.ParseInt(contentLengthStr, 10, 64)
+		if err != nil {
+			log.Warningf("Failed to parse Content-Length header: %v", err)
+			return nil
+		}
+
+		if contentLength > maxURLContentSize {
+			return fmt.Errorf("URL content too large: %d bytes, maximum allowed: %d bytes", contentLength, maxURLContentSize)
+		}
+
+		log.Infof("URL content size validated: %d bytes", contentLength)
+	} else {
+		log.Warningf("URL %s does not provide Content-Length header, size validation skipped", configURL)
+	}
+
+	return nil
+}
+
 func (manager *SGuestManager) validateEip(ctx context.Context, userCred mcclient.TokenCredential, input *api.ServerCreateInput,
 	preferRegionId string, preferManagerId string) error {
 	driver, err := GetDriver(input.Hypervisor, input.Provider)
@@ -2373,9 +2537,9 @@ func (manager *SGuestManager) validateEip(ctx context.Context, userCred mcclient
 			return httperrors.NewNotImplementedError("public ip not supported for %s", input.Hypervisor)
 		}
 		if len(input.PublicIpChargeType) == 0 {
-			input.PublicIpChargeType = string(cloudprovider.ElasticipChargeTypeByTraffic)
+			input.PublicIpChargeType = billing_api.TNetChargeType(cloudprovider.ElasticipChargeTypeByTraffic)
 		}
-		if !utils.IsInStringArray(input.PublicIpChargeType, []string{
+		if !utils.IsInStringArray(string(input.PublicIpChargeType), []string{
 			string(cloudprovider.ElasticipChargeTypeByTraffic),
 			string(cloudprovider.ElasticipChargeTypeByBandwidth),
 		}) {
@@ -2636,6 +2800,34 @@ func (guest *SGuest) PostCreate(ctx context.Context, userCred mcclient.TokenCred
 			}
 		}
 	}
+	// set kickstart metadata
+	kickstartConfigJson, _ := data.Get("kickstart_config")
+	if kickstartConfigJson != nil {
+		kickstartConfig := &api.KickstartConfig{}
+		if err := kickstartConfigJson.Unmarshal(kickstartConfig); err != nil {
+			log.Errorf("unmarshal kickstart config fail: %s", err)
+		} else {
+			if err := guest.SetKickstartConfig(ctx, kickstartConfig, userCred); err != nil {
+				log.Errorf("Failed to set kickstart config for guest %s: %v", guest.Name, err)
+			} else {
+				if err := guest.SetKickstartStatus(ctx, api.VM_KICKSTART_PENDING, userCred); err != nil {
+					log.Errorf("Failed to set kickstart status for guest %s: %v", guest.Name, err)
+				}
+				if err := guest.SetMetadata(ctx, api.VM_METADATA_KICKSTART_COMPLETED_FLAG, "false", userCred); err != nil {
+					log.Errorf("Failed to set kickstart completed flag for guest %s: %v", guest.Name, err)
+				}
+
+				// Determine and set kickstart type based on config
+				kickstartType := determineKickstartType(kickstartConfig)
+
+				if err := guest.SetKickstartType(ctx, kickstartType, userCred); err != nil {
+					log.Errorf("Failed to set kickstart type for guest %s: %v", guest.Name, err)
+				}
+
+				log.Debugf("Successfully set kickstart config for guest %s with OS type %s", guest.Name, kickstartConfig.OSType)
+			}
+		}
+	}
 
 	input := struct {
 		PreferZone      string
@@ -2771,8 +2963,9 @@ func (self *SGuest) getBandwidth(isExit bool) int {
 	}
 	if networks != nil && len(networks) > 0 {
 		for i := 0; i < len(networks); i += 1 {
-			if networks[i].IsExit() == isExit {
-				bw += networks[i].getBandwidth()
+			net, _ := networks[i].GetNetwork()
+			if networks[i].IsExit(net) == isExit {
+				bw += networks[i].getBandwidth(net, nil)
 			}
 		}
 	}
@@ -3177,6 +3370,26 @@ func (self *SGuest) getSecurityGroupsRules() string {
 	return strings.Join(rules, SECURITY_GROUP_SEPARATOR)
 }
 
+func (self *SGuest) getNetworkSecurityGroupsRules(networkIndex int) string {
+	gnss, _ := self.GetGuestNetworkSecgroups(networkIndex)
+	secgroupids := []string{}
+	for _, gns := range gnss {
+		secgroupids = append(secgroupids, gns.SecgroupId)
+	}
+	q := SecurityGroupRuleManager.Query()
+	q.Filter(sqlchemy.In(q.Field("secgroup_id"), secgroupids)).Desc(q.Field("priority"), q.Field("action"))
+	secrules := []SSecurityGroupRule{}
+	if err := db.FetchModelObjects(SecurityGroupRuleManager, q, &secrules); err != nil {
+		log.Errorf("Get security group rules error: %v", err)
+		return ""
+	}
+	rules := []string{}
+	for _, rule := range secrules {
+		rules = append(rules, rule.String())
+	}
+	return strings.Join(rules, SECURITY_GROUP_SEPARATOR)
+}
+
 func (self *SGuest) getAdminSecurityRules() string {
 	secgrp := self.getAdminSecgroup()
 	if secgrp != nil {
@@ -3407,7 +3620,7 @@ func (g *SGuest) syncWithCloudVM(ctx context.Context, userCred mcclient.TokenCre
 			g.Description = extVM.GetDescription()
 		}
 
-		g.BillingType = extVM.GetBillingType()
+		g.BillingType = billing_api.TBillingType(extVM.GetBillingType())
 		g.ExpiredAt = time.Time{}
 		g.AutoRenew = false
 		if g.BillingType == billing_api.BILLING_TYPE_PREPAID {
@@ -3481,7 +3694,7 @@ func (manager *SGuestManager) newCloudVM(ctx context.Context, userCred mcclient.
 
 	guest.IsEmulated = extVM.IsEmulated()
 
-	guest.BillingType = extVM.GetBillingType()
+	guest.BillingType = billing_api.TBillingType(extVM.GetBillingType())
 	guest.ExpiredAt = time.Time{}
 	guest.AutoRenew = false
 	if guest.BillingType == billing_api.BILLING_TYPE_PREPAID {
@@ -3667,7 +3880,8 @@ type Attach2NetworkArgs struct {
 	IsDefault    bool
 	PortMappings api.GuestPortMappings
 
-	ChargeType string
+	BillingType billing_api.TBillingType
+	ChargeType  billing_api.TNetChargeType
 
 	PendingUsage quotas.IQuota
 }
@@ -3702,7 +3916,8 @@ func (args *Attach2NetworkArgs) onceArgs(i int) attach2NetworkOnceArgs {
 		pendingUsage: args.PendingUsage,
 		portMappings: args.PortMappings,
 
-		chargeType: args.ChargeType,
+		billingType: args.BillingType,
+		chargeType:  args.ChargeType,
 	}
 	if i > 0 {
 		r.ipAddr = ""
@@ -3748,7 +3963,8 @@ type attach2NetworkOnceArgs struct {
 	pendingUsage quotas.IQuota
 	portMappings api.GuestPortMappings
 
-	chargeType string
+	billingType billing_api.TBillingType
+	chargeType  billing_api.TNetChargeType
 }
 
 func (self *SGuest) Attach2Network(
@@ -3828,7 +4044,8 @@ func (self *SGuest) attach2NetworkOnce(
 		isDefault:    args.isDefault,
 		portMappings: args.portMappings,
 
-		chargeType: args.chargeType,
+		billingType: args.billingType,
+		chargeType:  args.chargeType,
 	}
 	lockman.LockClass(ctx, QuotaManager, self.ProjectId)
 	defer lockman.ReleaseClass(ctx, QuotaManager, self.ProjectId)
@@ -4503,7 +4720,12 @@ func (self *SGuest) CreateNetworksOnHost(
 				return errors.Wrap(err, "self.allocSriovNicDevice")
 			}
 		}
-
+		if len(netConfig.Secgroups) > 0 {
+			err = self.SaveNetworkSecgroups(ctx, userCred, netConfig.Secgroups, gns[0].Index)
+			if err != nil {
+				return errors.Wrap(err, "SaveNetworkSecgroups")
+			}
+		}
 	}
 	return nil
 }
@@ -4642,7 +4864,8 @@ func (self *SGuest) attach2NamedNetworkDesc(ctx context.Context, userCred mcclie
 			IsDefault:    netConfig.IsDefault,
 			PortMappings: netConfig.PortMappings,
 
-			ChargeType: netConfig.ChargeType,
+			BillingType: netConfig.BillingType,
+			ChargeType:  netConfig.ChargeType,
 		})
 		if err != nil {
 			return nil, errors.Wrap(err, "Attach2Network fail")
@@ -4752,6 +4975,9 @@ func (self *SGuest) CreateDiskOnStorage(ctx context.Context, userCred mcclient.T
 	autoDelete := false
 	if storage.IsLocal() || billingType == billing_api.BILLING_TYPE_PREPAID || isWithServerCreate {
 		autoDelete = true
+	}
+	if diskConfig.AutoDelete != nil {
+		autoDelete = *diskConfig.AutoDelete
 	}
 	disk, err := storage.createDisk(ctx, diskName, diskConfig, userCred, self.GetOwnerId(), autoDelete, self.IsSystem,
 		billingType, billingCycle, self.EncryptKeyId)
@@ -4964,7 +5190,7 @@ func (self *SGuest) CategorizeNics() SGuestNicCategory {
 	}
 
 	for _, gn := range guestnics {
-		if gn.IsExit() {
+		if gn.IsExit(nil) {
 			netCat.ExternalNics = append(netCat.ExternalNics, gn)
 		} else {
 			netCat.InternalNics = append(netCat.InternalNics, gn)
@@ -5085,6 +5311,7 @@ func (self *SGuest) GetLoadbalancerBackends() ([]SLoadbalancerBackend, error) {
 }
 
 func (self *SGuest) RealDelete(ctx context.Context, userCred mcclient.TokenCredential) error {
+	SnapshotPolicyResourceManager.RemoveByResource(self.Id, api.SNAPSHOT_POLICY_TYPE_SERVER)
 	return self.purge(ctx, userCred)
 }
 
@@ -5103,9 +5330,6 @@ func (self *SGuest) AllowDeleteItem(ctx context.Context, userCred mcclient.Token
 
 // 删除虚拟机
 func (self *SGuest) CustomizeDelete(ctx context.Context, userCred mcclient.TokenCredential, query api.ServerDeleteInput, data jsonutils.JSONObject) error {
-	if len(self.HostId) == 0 {
-		return self.RealDelete(ctx, userCred)
-	}
 	return self.StartDeleteGuestTask(ctx, userCred, "", query)
 }
 
@@ -5459,6 +5683,13 @@ func (self *SGuest) GetJsonDescAtHypervisor(ctx context.Context, host *SHost) *a
 		if len(nicDesc.Domain) > 0 {
 			desc.Domain = nicDesc.Domain
 		}
+		secgroupDesc := nic.getSecgroupDesc()
+		if secgroupDesc != nil {
+			if desc.NicSecgroups == nil {
+				desc.NicSecgroups = make([]*api.GuestnetworkSecgroupDesc, 0)
+			}
+			desc.NicSecgroups = append(desc.NicSecgroups, secgroupDesc)
+		}
 	}
 
 	{
@@ -5670,9 +5901,10 @@ func (self *SGuest) GetSpec(checkStatus bool) *jsonutils.JSONDict {
 	nicSpecs := jsonutils.NewArray()
 	for _, guestnic := range guestnics {
 		nicSpec := jsonutils.NewDict()
-		nicSpec.Set("bandwidth", jsonutils.NewInt(int64(guestnic.getBandwidth())))
+		net, _ := guestnic.GetNetwork()
+		nicSpec.Set("bandwidth", jsonutils.NewInt(int64(guestnic.getBandwidth(net, nil))))
 		t := "int"
-		if guestnic.IsExit() {
+		if guestnic.IsExit(net) {
 			t = "ext"
 		}
 		nicSpec.Set("type", jsonutils.NewString(t))
@@ -5888,6 +6120,7 @@ type sDeployInfo struct {
 	Arch             string
 	Language         string
 	TelegrafDeployed bool
+	CurrentVersion   string
 }
 
 func (self *SGuest) SaveDeployInfo(ctx context.Context, userCred mcclient.TokenCredential, data jsonutils.JSONObject) {
@@ -5926,6 +6159,9 @@ func (self *SGuest) SaveDeployInfo(ctx context.Context, userCred mcclient.TokenC
 	}
 	if deployInfo.TelegrafDeployed {
 		info["telegraf_deployed"] = true
+	}
+	if len(deployInfo.CurrentVersion) > 0 {
+		info["current_version"] = deployInfo.CurrentVersion
 	}
 	self.SetAllMetadata(ctx, info, userCred)
 	self.saveOldPassword(ctx, userCred)
@@ -6785,7 +7021,7 @@ func (self *SGuest) ToNetworksConfig() []*api.NetworkConfig {
 		// XXX: same wire
 		netConf.Wire = network.WireId
 		netConf.Network = network.Id
-		netConf.Exit = guestNetwork.IsExit()
+		netConf.Exit = guestNetwork.IsExit(nil)
 		if len(guestNetwork.Ip6Addr) > 0 {
 			netConf.RequireIPv6 = true
 			if len(guestNetwork.IpAddr) == 0 {
@@ -7087,7 +7323,7 @@ func (self *SGuest) GetAddress() (string, error) {
 		return "", errors.Wrapf(err, "GetNetworks")
 	}
 	for _, gn := range gns {
-		if !gn.IsExit() {
+		if !gn.IsExit(nil) {
 			return gn.IpAddr, nil
 		}
 	}
@@ -7159,6 +7395,79 @@ func (guest *SGuest) HasBackupGuest() bool {
 
 func (guest *SGuest) SetGuestBackupMirrorJobInProgress(ctx context.Context, userCred mcclient.TokenCredential) error {
 	return guest.SetMetadata(ctx, api.MIRROR_JOB, api.MIRROR_JOB_INPROGRESS, userCred)
+}
+
+func (guest *SGuest) SetKickstartConfig(ctx context.Context, config *api.KickstartConfig, userCred mcclient.TokenCredential) error {
+	if config == nil {
+		return guest.RemoveMetadata(ctx, api.VM_METADATA_KICKSTART_CONFIG, userCred)
+	}
+
+	if err := validateKickstartConfig(config); err != nil {
+		return errors.Wrap(err, "validate kickstart config")
+	}
+
+	configJson := jsonutils.Marshal(config)
+	return guest.SetMetadata(ctx, api.VM_METADATA_KICKSTART_CONFIG, configJson, userCred)
+}
+
+func (guest *SGuest) GetKickstartConfig(ctx context.Context, userCred mcclient.TokenCredential) (*api.KickstartConfig, error) {
+	configJson := guest.GetMetadataJson(ctx, api.VM_METADATA_KICKSTART_CONFIG, userCred)
+	if configJson == nil {
+		return nil, nil
+	}
+
+	config := &api.KickstartConfig{}
+	if err := configJson.Unmarshal(config); err != nil {
+		return nil, errors.Wrap(err, "unmarshal kickstart config")
+	}
+
+	return config, nil
+}
+
+func (guest *SGuest) SetKickstartStatus(ctx context.Context, status string, userCred mcclient.TokenCredential) error {
+	if !utils.IsInStringArray(status, api.VM_KICKSTART_STATUS) {
+		return errors.Errorf("invalid kickstart status: %s", status)
+	}
+	return guest.SetStatus(ctx, userCred, status, "")
+}
+
+func (guest *SGuest) GetKickstartStatus(ctx context.Context, userCred mcclient.TokenCredential) string {
+	if utils.IsInStringArray(guest.Status, api.VM_KICKSTART_STATUS) {
+		return guest.Status
+	}
+	return ""
+}
+
+func (guest *SGuest) IsInKickstartStatus() bool {
+	return utils.IsInStringArray(guest.Status, api.VM_KICKSTART_STATUS)
+}
+
+func (guest *SGuest) SetKickstartType(ctx context.Context, kickstartType string, userCred mcclient.TokenCredential) error {
+	if !utils.IsInStringArray(kickstartType, api.KICKSTART_VALID_TYPES) {
+		return errors.Errorf("invalid kickstart type: %s", kickstartType)
+	}
+	return guest.SetMetadata(ctx, api.VM_METADATA_KICKSTART_TYPE, kickstartType, userCred)
+}
+
+func (guest *SGuest) GetKickstartType(ctx context.Context, userCred mcclient.TokenCredential) string {
+	kickstartType := guest.GetMetadata(ctx, api.VM_METADATA_KICKSTART_TYPE, userCred)
+	if kickstartType == "" {
+		return api.KICKSTART_TYPE_URL
+	}
+	return kickstartType
+}
+
+func (guest *SGuest) IsKickstartEnabled(ctx context.Context, userCred mcclient.TokenCredential) bool {
+	config, err := guest.GetKickstartConfig(ctx, userCred)
+	if err != nil || config == nil {
+		return false
+	}
+
+	if config.Enabled == nil {
+		return true
+	}
+
+	return *config.Enabled
 }
 
 func (guest *SGuest) SetGuestBackupMirrorJobNotReady(ctx context.Context, userCred mcclient.TokenCredential) error {

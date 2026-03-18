@@ -90,7 +90,7 @@ get_image_name() {
     local is_all_arch=$3
     local img_name="$REGISTRY/$component:$TAG"
     if [[ -n "$arch" ]]; then
-        if [[ "$is_all_arch" == "true" || "$arch" != "CURRENT_ARCH" ]]; then
+        if [[ "$is_all_arch" == "true" || "$arch" != "$CURRENT_ARCH" ]]; then
             img_name="${img_name}-$arch"
         fi
     fi
