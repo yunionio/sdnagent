@@ -45,6 +45,7 @@ var (
 	ActionCreate         = api.ActionCreate
 	ActionDelete         = api.ActionDelete
 	ActionUpdate         = api.ActionUpdate
+	ActionReset          = api.ActionReset
 	ActionRebuildRoot    = api.ActionRebuildRoot
 	ActionResetPassword  = api.ActionResetPassword
 	ActionChangeConfig   = api.ActionChangeConfig
@@ -60,6 +61,9 @@ var (
 	ActionMysqlOutOfSync     = api.ActionMysqlOutOfSync
 	ActionServiceAbnormal    = api.ActionServiceAbnormal
 	ActionServerPanicked     = api.ActionServerPanicked
+
+	ActionHostDown            = api.ActionHostDown
+	ActionHostDownAutoMigrate = api.ActionHostDownAutoMigrate
 
 	ActionPendingDelete = api.ActionPendingDelete
 

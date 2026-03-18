@@ -38,6 +38,8 @@ type MonitorResourceJointListInput struct {
 	Level             string  `json:"level"`
 	// 查询所有状态
 	AllState bool `json:"all_state"`
+	// Top 查询参数（用于统计各监控指标报警资源最多的资源）
+	TopQueryInput
 }
 
 type MonitorResourceJointCreateInput struct {
@@ -53,13 +55,15 @@ type MonitorResourceJointCreateInput struct {
 }
 
 type MonitorResourceJointDetails struct {
-	ResName     string               `json:"res_name"`
-	ResId       string               `json:"res_id"`
-	ResType     string               `json:"res_type"`
-	AlertName   string               `json:"alert_name"`
-	AlertRule   jsonutils.JSONObject `json:"alert_rule"`
-	Level       string               `json:"level"`
-	SendState   string               `json:"send_state"`
-	State       string               `json:"state"`
-	IsSetShield bool                 `json:"is_set_shield"`
+	MonitorResourceObjectId string               `json:"monitor_resource_object_id"`
+	ResName                 string               `json:"res_name"`
+	ResId                   string               `json:"res_id"`
+	ResType                 string               `json:"res_type"`
+	AlertName               string               `json:"alert_name"`
+	AlertRule               jsonutils.JSONObject `json:"alert_rule"`
+	Level                   string               `json:"level"`
+	SendState               string               `json:"send_state"`
+	State                   string               `json:"state"`
+	IsSetShield             bool                 `json:"is_set_shield"`
+	AlertCount              int                  `json:"alert_count"`
 }

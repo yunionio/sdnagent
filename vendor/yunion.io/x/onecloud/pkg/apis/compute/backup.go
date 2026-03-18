@@ -43,6 +43,9 @@ const (
 	BACKUP_STATUS_RECOVERY                = "recovery"
 	BACKUP_STATUS_RECOVERY_FAILED         = "recovery_failed"
 	BACKUP_STATUS_UNKNOWN                 = "unknown"
+	BACKUP_STATUS_START_IMPORT            = "start_import"
+	BACKUP_STATUS_IMPORTING               = "importing"
+	BACKUP_STATUS_IMPORT_FAILED           = "import_failed"
 
 	BACKUP_EXIST     = "exist"
 	BACKUP_NOT_EXIST = "not_exist"
@@ -123,6 +126,7 @@ type DiskBackupDetails struct {
 
 type DiskBackupAsTarInput struct {
 	IncludeFiles       []string `json:"include_files"`
+	IncludePatterns    []string `json:"include_patterns"`
 	ExcludeFiles       []string `json:"exclude_files"`
 	ContainerId        string   `json:"container_id"`
 	IgnoreNotExistFile bool     `json:"ignore_not_exist_file"`
@@ -147,35 +151,45 @@ type DiskBackupCreateInput struct {
 
 type DiskBackupRecoveryInput struct {
 	// description: name of disk
-	Name string
+	Name string `json:"name"`
 }
 
 type DiskBackupSyncstatusInput struct {
 }
 
 type DiskBackupPackMetadata struct {
-	OsArch     string
-	SizeMb     int
-	DiskSizeMb int
-	DiskType   string
+	OsArch     string `json:"os_arch"`
+	SizeMb     int    `json:"size_mb"`
+	DiskSizeMb int    `json:"disk_size_mb"`
+	DiskType   string `json:"disk_type"`
 	// 操作系统类型
-	OsType     string
-	DiskConfig *SBackupDiskConfig
+	OsType     string             `json:"os_type"`
+	DiskConfig *SBackupDiskConfig `json:"disk_config"`
+}
+
+type DiskBackupExportInfo struct {
+	DiskBackupPackMetadata
+
+	DiskBackupImportTaskInput
+}
+
+type DiskBackupImportTaskInput struct {
+	AccessUrl string `json:"access_url"`
 }
 
 type InstanceBackupPackMetadata struct {
-	OsArch         string
-	ServerConfig   jsonutils.JSONObject
-	ServerMetadata jsonutils.JSONObject
-	SecGroups      jsonutils.JSONObject
-	KeypairId      string
-	OsType         string
-	InstanceType   string
-	SizeMb         int
-	DiskMetadatas  []DiskBackupPackMetadata
+	OsArch         string                   `json:"os_arch"`
+	ServerConfig   jsonutils.JSONObject     `json:"server_config"`
+	ServerMetadata jsonutils.JSONObject     `json:"server_metadata"`
+	SecGroups      jsonutils.JSONObject     `json:"sec_groups"`
+	KeypairId      string                   `json:"keypair_id"`
+	OsType         string                   `json:"os_type"`
+	InstanceType   string                   `json:"instance_type"`
+	SizeMb         int                      `json:"size_mb"`
+	DiskMetadatas  []DiskBackupPackMetadata `json:"disk_metadatas"`
 
 	// 加密密钥ID
-	EncryptKeyId string
+	EncryptKeyId string `json:"encrypt_key_id"`
 	// Instance Backup metadata
 	Metadata map[string]string `json:"metadata"`
 }
@@ -201,6 +215,8 @@ type SBackupStorageAccessInfo struct {
 	ObjectSecret string `json:"object_secret"`
 	// description: signing version, can be v2/v4, default is v4
 	ObjectSignVer string `json:"object_sign_ver"`
+	// description: external access url of object storage bucket
+	ObjectBucketUrlExt string `json:"object_bucket_url_ext"`
 }
 
 func (ba *SBackupStorageAccessInfo) String() string {
@@ -217,5 +233,17 @@ type ServerCreateInstanceBackupInput struct {
 	// 主机备份的生成名称
 	GenerateName string `json:"generate_name"`
 	// 备份存储ID
+	BackupStorageId string `json:"backup_storage_id"`
+}
+
+type DiskBackupImportInput struct {
+	Name string `json:"name"`
+
+	GenerateName string `json:"generate_name"`
+
+	apis.ProjectizedResourceCreateInput
+
+	DiskBackupExportInfo
+
 	BackupStorageId string `json:"backup_storage_id"`
 }

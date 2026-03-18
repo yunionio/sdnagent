@@ -62,6 +62,7 @@ var (
 		"last":         "Latest value",
 		"median":       "median",
 		"diff":         "The difference between the latest value and the oldest value. The judgment basis value must be legal",
+		"delta":        "The signed difference between the latest value and the oldest value (can be positive or negative)",
 		"percent_diff": "The difference between the new value and the old value,based on the percentage of the old value",
 	}
 )
@@ -134,10 +135,10 @@ type SimpleQueryOutput struct {
 }
 
 type MetricsQueryResult struct {
-	SeriesTotal   int64
-	Series        TimeSeriesSlice
-	Metas         []QueryResultMeta
-	ReducedResult *ReducedResult
+	SeriesTotal   int64             `json:"series_total"`
+	Series        TimeSeriesSlice   `json:"series"`
+	Metas         []QueryResultMeta `json:"metas"`
+	ReducedResult *ReducedResult    `json:"reduced_result"`
 }
 
 type TimeSeriesPoints []TimePoint
@@ -185,11 +186,35 @@ func (p TimePoint) IsValids() bool {
 }
 
 func (p TimePoint) Value() float64 {
-	return *(p[0].(*float64))
+	v := p[0]
+	if fval, ok := v.(*float64); ok {
+		return *fval
+	}
+	if ival, ok := v.(*int64); ok {
+		return float64(*ival)
+	}
+	if t, ok := v.(float64); ok {
+		return t
+	}
+	if t, ok := v.(int64); ok {
+		return float64(t)
+	}
+	return 0
 }
 
 func (p TimePoint) Timestamp() float64 {
-	return p[len(p)-1].(float64)
+	v := p[len(p)-1]
+	if t, ok := v.(float64); ok {
+		return t
+	}
+	if t, ok := v.(int64); ok {
+		return float64(t)
+	}
+	return 0
+}
+
+func (p TimePoint) Time() time.Time {
+	return time.UnixMilli(int64(p.Timestamp()))
 }
 
 func (p TimePoint) Values() []float64 {
@@ -237,12 +262,12 @@ type QueryResultMeta struct {
 const ConditionTypeMetricQuery = "metricquery"
 
 type CdfQueryData struct {
-	Vmrange   string
-	Metric    float64
-	Value     int
-	ValueAsc  int
-	ValueDesc int
-	Total     int
+	Vmrange   string  `json:"vmrange"`
+	Metric    float64 `json:"metric"`
+	Value     int     `json:"value"`
+	ValueAsc  int     `json:"value_asc"`
+	ValueDesc int     `json:"value_desc"`
+	Total     int     `json:"total"`
 }
 
 func (c CdfQueryData) Copy() CdfQueryData {
@@ -286,5 +311,5 @@ func (c CdfQueryDataSet) Less(i, j int) bool {
 }
 
 type CdfQueryOutput struct {
-	Data CdfQueryDataSet
+	Data CdfQueryDataSet `json:"data"`
 }

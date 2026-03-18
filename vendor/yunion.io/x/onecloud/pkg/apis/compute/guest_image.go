@@ -15,15 +15,38 @@
 package compute
 
 type SSubImage struct {
-	Id         string
-	Name       string
-	MinDiskMB  int32
-	DiskFormat string
+	Id         string `json:"id"`
+	Name       string `json:"name"`
+	MinDiskMB  int32  `json:"min_disk_mb"`
+	DiskFormat string `json:"disk_format"`
 }
 
 type SImagesInGuest struct {
-	Id         string
-	Name       string
-	RootImage  SSubImage
-	DataImages []SSubImage
+	Id         string      `json:"id"`
+	Name       string      `json:"name"`
+	RootImage  SSubImage   `json:"root_image"`
+	DataImages []SSubImage `json:"data_images"`
+}
+
+type SGuestScreenDumpInfo struct {
+	S3AccessKey  string `json:"s3_access_key"`
+	S3SecretKey  string `json:"s3_secret_key"`
+	S3Endpoint   string `json:"s3_endpoint"`
+	S3BucketName string `json:"s3_bucket_name"`
+	S3ObjectName string `json:"s3_object_name"`
+	S3UseSSL     bool   `json:"s3_use_ssl"`
+}
+
+type GuestScreenDumpListInput struct {
+	Server string `json:"server"`
+}
+
+type GetDetailsGuestScreenDumpInput struct {
+	ObjectName string `json:"object_name"`
+}
+
+type GetDetailsGuestScreenDumpOutput struct {
+	GuestId    string `json:"guest_id"`
+	Name       string `json:"name"`
+	ScreenDump string `json:"screen_dump"`
 }

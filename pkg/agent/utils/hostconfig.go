@@ -61,6 +61,19 @@ func (hcn *HostConfigNetwork) Ip6Addr() string {
 	return ""
 }
 
+func (hcn *HostConfigNetwork) HostLocalGatewayIps() []string {
+	gwIps := make([]string, 0)
+	for _, net := range hcn.HostLocalNets {
+		if net.GuestGateway != "" {
+			gwIps = append(gwIps, net.GuestGateway)
+		}
+		if net.GuestGateway6 != "" {
+			gwIps = append(gwIps, net.GuestGateway6)
+		}
+	}
+	return gwIps
+}
+
 func NewHostConfigNetwork(network string) (*HostConfigNetwork, error) {
 	chunks := strings.Split(network, "/")
 	if len(chunks) >= 3 {
@@ -91,7 +104,7 @@ func NewHostConfigNetwork(network string) (*HostConfigNetwork, error) {
 
 func (hcn *HostConfigNetwork) MAC() (net.HardwareAddr, error) {
 	if hcn.mac == nil {
-		netif := netutils2.NewNetInterfaceWithExpectIp(hcn.Bridge, hcn.IpAddr(), hcn.Ip6Addr())
+		netif := netutils2.NewNetInterfaceWithExpectIp(hcn.Bridge, hcn.IpAddr(), hcn.Ip6Addr(), hcn.HostLocalGatewayIps())
 		if !netif.Exist() {
 			return nil, errors.Wrapf(errors.ErrNotFound, "net interface %s not found", hcn.Bridge)
 		}
@@ -107,10 +120,31 @@ func (hcn *HostConfigNetwork) MAC() (net.HardwareAddr, error) {
 		}
 		hcn.mac = netif.GetHardwareAddr()
 	}
-	if (hcn.IP != nil || hcn.IP6 != nil) && hcn.mac != nil {
+	if hcn.mac != nil {
 		return hcn.mac, nil
 	}
 	return nil, fmt.Errorf("cannot find proper ip/mac for %s", hcn.Bridge)
+}
+
+func loadHostLocalNetconfs(hc *HostConfig, bridge string) ([]apis.NetworkDetails, error) {
+	fn := hc.HostLocalNetconfPath(bridge)
+	confStr, err := fileutils2.FileGetContents(fn)
+	if err != nil {
+		log.Warningf("fail to load host local netconfs %s: %s", fn, err)
+		return nil, errors.Wrapf(errors.ErrNotFound, "fail to load host local netconfs %s: %s", fn, err)
+	}
+	confJson, err := jsonutils.ParseString(confStr)
+	if err != nil {
+		log.Warningf("fail to parse host local netconfs %s: %s", fn, err)
+		return nil, errors.Wrapf(errors.ErrNotFound, "fail to parse host local netconfs %s: %s", fn, err)
+	}
+	hostLocalNets := make([]apis.NetworkDetails, 0)
+	err = confJson.Unmarshal(&hostLocalNets)
+	if err != nil {
+		log.Warningf("fail to unmarshal host local netconfs %s: %s", fn, err)
+		return nil, errors.Wrapf(errors.ErrNotFound, "fail to unmarshal host local netconfs %s: %s", fn, err)
+	}
+	return hostLocalNets, nil
 }
 
 func (hcn *HostConfigNetwork) loadHostLocalNetconfs(hc *HostConfig) {
@@ -118,23 +152,19 @@ func (hcn *HostConfigNetwork) loadHostLocalNetconfs(hc *HostConfig) {
 	if hcn.IP == nil {
 		return
 	}
-	fn := hc.HostLocalNetconfPath(hcn.Bridge)
-	confStr, err := fileutils2.FileGetContents(fn)
+	nativeHostLocalNets, err := loadHostLocalNetconfs(hc, hcn.Bridge)
 	if err != nil {
-		log.Warningf("fail to load host local netconfs %s: %s", fn, err)
+		log.Warningf("fail to load native host local netconfs %s: %s", hcn.Bridge, err)
 		return
 	}
-	confJson, err := jsonutils.ParseString(confStr)
-	if err != nil {
-		log.Warningf("fail to parse host local netconfs %s: %s", fn, err)
-		return
-	}
-	hcn.HostLocalNets = make([]apis.NetworkDetails, 0)
-	err = confJson.Unmarshal(&hcn.HostLocalNets)
-	if err != nil {
-		log.Warningf("fail to unmarshal host local netconfs %s: %s", fn, err)
-		return
-	}
+	hcn.HostLocalNets = append(hcn.HostLocalNets, nativeHostLocalNets...)
+	// load host local netconfs from host local bridge
+	// hostLocalNets, err := loadHostLocalNetconfs(hc, hc.HostLocalBridgeName)
+	// if err != nil {
+	// 	log.Warningf("fail to load host local netconfs %s: %s", hc.HostLocalBridgeName, err)
+	// 	return
+	// }
+	// hcn.HostLocalNets = append(hcn.HostLocalNets, hostLocalNets...)
 }
 
 type HostConfig struct {
@@ -161,11 +191,23 @@ func NewHostConfig() (*HostConfig, error) {
 		hcn, err := NewHostConfigNetwork(network)
 		if err != nil {
 			// NOTE error ignored
-			log.Errorf("NewHostConfigNetwork: %v", err)
+			log.Errorf("NewHostConfigNetwork %s: %v", network, err)
 			continue
 		}
 		hcn.loadHostLocalNetconfs(hc)
 		hc.networks = append(hc.networks, hcn)
+	}
+	// load host local network
+	{
+		netDesc := fmt.Sprintf("/%s/%s", hc.HostLocalBridgeName, apis.DEFAULT_HOST_LOCAL_WIRE_NAME)
+		hcn, err := NewHostConfigNetwork(netDesc)
+		if err != nil {
+			// NOTE error ignored
+			log.Errorf("NewHostConfigNetwork %s: %v", netDesc, err)
+		} else {
+			hcn.loadHostLocalNetconfs(hc)
+			hc.networks = append(hc.networks, hcn)
+		}
 	}
 
 	return hc, nil

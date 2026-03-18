@@ -20,6 +20,7 @@ import (
 	"yunion.io/x/jsonutils"
 
 	"yunion.io/x/onecloud/pkg/apis"
+	billing_api "yunion.io/x/onecloud/pkg/apis/billing"
 )
 
 type SchedtagConfig struct {
@@ -121,6 +122,11 @@ type NetworkConfig struct {
 
 	PortMappings GuestPortMappings `json:"port_mappings"`
 
+	// 计费模式
+	BillingType billing_api.TBillingType `json:"billing_type"`
+	// 计量模式
+	ChargeType billing_api.TNetChargeType `json:"charge_type"`
+
 	// swagger:ignore
 	Project string `json:"project_id"`
 
@@ -128,6 +134,9 @@ type NetworkConfig struct {
 	Domain    string            `json:"domain_id"`
 	Ifname    string            `json:"ifname"`
 	Schedtags []*SchedtagConfig `json:"schedtags"`
+
+	// network secgroups
+	Secgroups []string `json:"secgroups"`
 }
 
 type AttachNetworkInput struct {
@@ -187,6 +196,11 @@ type DiskConfig struct {
 	// 关机后自动重置磁盘
 	// required: false
 	AutoReset bool `json:"auto_reset"`
+
+	// 是否跟随主机删除而自动删除
+	// 默认跟随主机创建的磁盘为 true
+	// required: false
+	AutoDelete *bool `json:"auto_delete,omitempty"`
 
 	// 磁盘存储格式
 	// enum: ["qcow2", "raw", "docker", "iso", "vmdk", "vmdkflatver1", "vmdkflatver2", "vmdkflat", "vmdksparse", "vmdksparsever1", "vmdksparsever2", "vmdksepsparse", "vhd"]
@@ -323,6 +337,7 @@ type BaremetalDiskConfig struct {
 	RA           *bool   `json:"ra,omitempty"`
 	WT           *bool   `json:"wt,omitempty"`
 	Direct       *bool   `json:"direct,omitempty"`
+	SoftRaidIdx  *int    `json:"soft_raid_idx"`
 }
 
 type RootDiskMatcherSizeMBRange struct {
@@ -338,6 +353,7 @@ type BaremetalRootDiskMatcher struct {
 	Device      string                      `json:"device"`
 	SizeMB      int64                       `json:"size_mb"`
 	SizeMBRange *RootDiskMatcherSizeMBRange `json:"size_mb_range"`
+	PCIPath     string                      `json:"pci_path"`
 }
 
 type ServerConfigs struct {
@@ -462,6 +478,37 @@ type DeployConfig struct {
 	Content string `json:"content"`
 }
 
+// KickstartConfig Kickstart/Autoinstall自动化安装配置
+type KickstartConfig struct {
+	// 配置文件内容 (当用户直接提供配置时使用)
+	// required: false
+	Config string `json:"config,omitempty"`
+
+	// 配置文件 URL (当配置文件位于外部服务器时使用)
+	// required: false
+	ConfigURL string `json:"config_url,omitempty"`
+
+	// 操作系统类型 (用于确定内核参数和文件路径)
+	// enum: ["centos", "rhel", "fedora", "openeuler", "ubuntu"]
+	// required: true
+	OSType string `json:"os_type" validate:"required,oneof=centos rhel fedora openeuler ubuntu"`
+
+	// 是否启用 (用于临时禁用而不删除配置)
+	// default: true
+	// required: false
+	Enabled *bool `json:"enabled,omitempty"`
+
+	// 最大重试次数
+	// default: 3
+	// required: false
+	MaxRetries int `json:"max_retries,omitempty"`
+
+	// 安装超时时间 (分钟)
+	// default: 60
+	// required: false
+	TimeoutMinutes int `json:"timeout_minutes,omitempty"`
+}
+
 type ServerCreateInput struct {
 	apis.VirtualResourceCreateInput
 	DeletePreventableCreateInput
@@ -531,7 +578,8 @@ type ServerCreateInput struct {
 
 	// BIOS类型, 若镜像是Windows，并且支持UEFI,则自动会设置为UEFI
 	// emulate: BIOS, UEFI
-	Bios string `json:"bios"`
+	Bios      string `json:"bios"`
+	EnableTpm bool   `json:"enable_tpm"`
 
 	// Machine类型
 	// emulate: pc, q35
@@ -599,7 +647,7 @@ type ServerCreateInput struct {
 	// 弹性公网IP线路类型
 	EipBgpType string `json:"eip_bgp_type,omitzero"`
 	// 弹性公网IP计费类型
-	EipChargeType string `json:"eip_charge_type,omitempty"`
+	EipChargeType billing_api.TNetChargeType `json:"eip_charge_type,omitempty"`
 	// 是否跟随主机删除而自动释放
 	EipAutoDellocate bool `json:"eip_auto_dellocate,omitempty"`
 
@@ -625,7 +673,7 @@ type ServerCreateInput struct {
 	// |----                    |-------    |
 	// |traffic                    |按流量计费|
 	// |bandwidth                |按带宽计费|
-	PublicIpChargeType string `json:"public_ip_charge_type,omitempty"`
+	PublicIpChargeType billing_api.TNetChargeType `json:"public_ip_charge_type,omitempty"`
 
 	// 使用主机快照创建虚拟机, 主机快照不会重置密码及秘钥信息
 	// 使用主机快照创建的虚拟机将沿用之前的密码秘钥及安全组信息
@@ -651,7 +699,7 @@ type ServerCreateInput struct {
 	// swagger:ignore
 	OsProfile jsonutils.JSONObject `json:"__os_profile__"`
 	// swagger:ignore
-	BillingType string `json:"billing_type"`
+	BillingType billing_api.TBillingType `json:"billing_type"`
 	// swagger:ignore
 	BillingCycle string `json:"billing_cycle"`
 	// 到期释放时间
@@ -672,7 +720,23 @@ type ServerCreateInput struct {
 	// 指定用于新建主机的主机镜像ID
 	GuestImageID string `json:"guest_image_id"`
 
+	// Kickstart/Autoinstall自动化安装配置
+	// required: false
+	KickstartConfig *KickstartConfig `json:"kickstart_config,omitempty"`
+
 	Pod *PodCreateInput `json:"pod"`
+}
+
+// ServerUpdateKickstartStatusInput 更新虚拟机 kickstart 状态的输入
+type ServerUpdateKickstartStatusInput struct {
+	// kickstart 状态
+	// enum: ["kickstart_pending", "kickstart_installing", "kickstart_completed", "kickstart_failed"]
+	// required: true
+	Status string `json:"status" validate:"required,oneof=kickstart_pending kickstart_installing kickstart_completed kickstart_failed"`
+
+	// 错误信息（可选）
+	// required: false
+	ErrorMessage string `json:"error_message,omitempty"`
 }
 
 func (input *ServerCreateInput) AfterUnmarshal() {
@@ -711,15 +775,15 @@ type GuestBatchMigrateRequest struct {
 }
 
 type GuestBatchMigrateParams struct {
-	Id              string
-	LiveMigrate     bool
-	SkipCpuCheck    bool
-	SkipKernelCheck bool
-	EnableTLS       *bool
-	RescueMode      bool
-	OldStatus       string
-	MaxBandwidthMb  *int64
-	QuciklyFinish   *bool
+	Id              string `json:"id"`
+	LiveMigrate     bool   `json:"live_migrate"`
+	SkipCpuCheck    bool   `json:"skip_cpu_check"`
+	SkipKernelCheck bool   `json:"skip_kernel_check"`
+	EnableTLS       *bool  `json:"enable_tls"`
+	RescueMode      bool   `json:"rescue_mode"`
+	OldStatus       string `json:"old_status"`
+	MaxBandwidthMb  *int64 `json:"max_bandwidth_mb"`
+	QuciklyFinish   *bool  `json:"quickly_finish"`
 }
 
 type HostLoginInfo struct {

@@ -74,7 +74,9 @@ type SSnapshot struct {
 	CreatedBy string `width:"36" charset:"ascii" nullable:"false" default:"manual" list:"user" create:"optional"`
 	Location  string `charset:"ascii" nullable:"true" list:"admin" create:"optional"`
 	// 快照大小,单位Mb
-	Size        int    `nullable:"false" list:"user" create:"required"`
+	Size int `nullable:"false" list:"user" create:"optional"`
+	// Virtual size, for kvm is origin disk size
+	VirtualSize int    `nullable:"false" list:"user" create:"optional"`
 	OutOfChain  bool   `nullable:"false" default:"false" list:"admin" create:"optional"`
 	FakeDeleted bool   `nullable:"false" default:"false"`
 	DiskType    string `width:"32" charset:"ascii" nullable:"true" list:"user" create:"optional"`
@@ -434,6 +436,7 @@ func (manager *SSnapshotManager) FetchCustomizeColumns(
 
 func (self *SSnapshot) GetShortDesc(ctx context.Context) *jsonutils.JSONDict {
 	res := self.SVirtualResourceBase.GetShortDesc(ctx)
+	res.Add(jsonutils.NewInt(int64(self.VirtualSize)), "virtual_size")
 	res.Add(jsonutils.NewInt(int64(self.Size)), "size")
 	res.Add(jsonutils.NewString(self.DiskId), "disk_id")
 	disk, _ := self.GetDisk()
@@ -472,6 +475,12 @@ func (manager *SSnapshotManager) ValidateCreateData(
 		return input, httperrors.NewInvalidStatusError("disk %s status is not %s", disk.Name, api.DISK_READY)
 	}
 
+	if len(disk.SnapshotId) > 0 {
+		if disk.GetMetadata(ctx, "merge_snapshot", userCred) == "true" {
+			return input, httperrors.NewBadRequestError("disk %s backing snapshot not merged", disk.Id)
+		}
+	}
+
 	if len(disk.EncryptKeyId) > 0 {
 		input.EncryptKeyId = &disk.EncryptKeyId
 		input.EncryptedResourceCreateInput, err = manager.SEncryptedResourceManager.ValidateCreateData(ctx, userCred, ownerId, query, input.EncryptedResourceCreateInput)
@@ -482,6 +491,7 @@ func (manager *SSnapshotManager) ValidateCreateData(
 
 	input.DiskType = disk.DiskType
 	input.Size = disk.DiskSize
+	input.VirtualSize = disk.DiskSize
 	input.OsArch = disk.OsArch
 
 	storage, _ := disk.GetStorage()
@@ -712,7 +722,7 @@ func (self *SSnapshotManager) CreateSnapshot(ctx context.Context, owner mcclient
 		return nil, err
 	}
 	snapshot.OutOfChain = driver.SnapshotIsOutOfChain(disk)
-	snapshot.Size = disk.DiskSize
+	snapshot.VirtualSize = disk.DiskSize
 	snapshot.DiskType = disk.DiskType
 	snapshot.Location = location
 	snapshot.CreatedBy = createdBy
@@ -995,7 +1005,20 @@ func (self *SSnapshot) SyncWithCloudSnapshot(ctx context.Context, userCred mccli
 		}
 		self.Status = ext.GetStatus()
 		self.DiskType = ext.GetDiskType()
+		self.VirtualSize = int(ext.GetSizeMb())
 		self.Size = int(ext.GetSizeMb())
+		disk, _ := self.GetDisk()
+		if gotypes.IsNil(disk) && len(ext.GetDiskId()) > 0 {
+			disk, err := db.FetchByExternalIdAndManagerId(DiskManager, ext.GetDiskId(), func(q *sqlchemy.SQuery) *sqlchemy.SQuery {
+				sq := StorageManager.Query().SubQuery()
+				return q.Join(sq, sqlchemy.Equals(q.Field("storage_id"), sq.Field("id"))).Filter(sqlchemy.Equals(sq.Field("manager_id"), self.ManagerId))
+			})
+			if err != nil {
+				log.Errorf("snapshot %s missing disk?", self.Name)
+			} else {
+				self.DiskId = disk.GetId()
+			}
+		}
 
 		self.CloudregionId = region.Id
 		return nil
@@ -1042,6 +1065,7 @@ func (manager *SSnapshotManager) newFromCloudSnapshot(ctx context.Context, userC
 	}
 
 	snapshot.DiskType = extSnapshot.GetDiskType()
+	snapshot.VirtualSize = int(extSnapshot.GetSizeMb())
 	snapshot.Size = int(extSnapshot.GetSizeMb())
 	snapshot.ManagerId = provider.Id
 	snapshot.CloudregionId = region.Id
@@ -1241,10 +1265,10 @@ func (manager *SSnapshotManager) CleanupSnapshots(ctx context.Context, userCred 
 
 	{
 		sq = SnapshotPolicyManager.Query().Equals("type", api.SNAPSHOT_POLICY_TYPE_DISK).GT("retention_count", 0).SubQuery()
-		spd := SnapshotPolicyDiskManager.Query().SubQuery()
+		spd := SnapshotPolicyResourceManager.Query().Equals("resource_type", api.SNAPSHOT_POLICY_TYPE_DISK).SubQuery()
 		q = sq.Query(
 			sq.Field("retention_count"),
-			spd.Field("disk_id"),
+			spd.Field("resource_id").Label("disk_id"),
 		)
 		q = q.Join(spd, sqlchemy.Equals(q.Field("id"), spd.Field("snapshotpolicy_id")))
 

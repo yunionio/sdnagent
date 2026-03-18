@@ -22,8 +22,18 @@ import (
 )
 
 type ContainerKeyValue struct {
-	Key   string `json:"key"`
-	Value string `json:"value"`
+	Key       string                `json:"key"`
+	Value     string                `json:"value"`
+	ValueFrom *ContainerValueSource `json:"value_from"`
+}
+
+type ContainerValueSource struct {
+	Credential *ContainerValueSourceCredential `json:"credential"`
+}
+
+type ContainerValueSourceCredential struct {
+	Id  string `json:"id"`
+	Key string `json:"key"`
 }
 
 type ContainerLifecyleHandlerType string
@@ -81,6 +91,8 @@ type ContainerResources struct {
 	// flag is enabled in a cgroup, a new cpuset cgroup will copy its
 	// configuration fromthe parent during initialization.
 	CpusetCloneChildren bool `json:"cpuset_clone_children"`
+	// cgroup memory.high
+	MemoryHighRatio *float64 `json:"memory_high_ratio"`
 }
 
 type ContainerEnvRefValueType string
@@ -94,6 +106,16 @@ type ContainerIsolatedDeviceOnlyEnv struct {
 	FromRenderPath  bool   `json:"from_render_path"`
 	FromIndex       bool   `json:"from_index"`
 	FromDeviceMinor bool   `json:"from_device_minor"`
+}
+
+type ContainerCDIKind string
+
+var (
+	CONTAINER_CDI_KIND_NVIDIA_GPU ContainerCDIKind = "nvidia.com/gpu"
+)
+
+type ContainerIsolatedDeviceCDI struct {
+	Kind ContainerCDIKind
 }
 
 type ContainerSpec struct {
@@ -132,6 +154,10 @@ type ContainerSpec struct {
 	StartupProbe  *ContainerProbe `json:"startup_probe,omitempty"`
 	AlwaysRestart bool            `json:"always_restart"`
 	Primary       bool            `json:"primary"`
+
+	// DependsOn is a list of container name which this container depends on when pod start
+	// Only works for containers created & started by pod-create & server-start
+	DependsOn []string `json:"depends_on,omitempty"`
 }
 
 func (c *ContainerSpec) NeedProbe() bool {
@@ -246,9 +272,32 @@ func (o ContainerVolumeMountDiskOverlay) IsValid() error {
 	return nil
 }
 
+type HostLowerPath struct {
+	PrePath  string `json:"pre_path"`
+	PostPath string `json:"post_path"`
+}
+
 type ContainerVolumeMountDiskPostImageOverlay struct {
 	Id      string            `json:"id"`
 	PathMap map[string]string `json:"path_map"`
+	// 宿主机底层目录映射, key 为 PathMap 的 key，value 为 overlay lower 格式，多目录以 ":" 分隔
+	HostLowerMap map[string]*HostLowerPath `json:"host_lower_map"`
+	UpperConfig  *PostOverlayUpperConfig   `json:"upper_config"`
+}
+
+type PostOverlayUpperConfigType string
+
+const (
+	PostOverlayUpperConfigTypeDisk PostOverlayUpperConfigType = "disk"
+)
+
+type PostOverlayUpperConfigDisk struct {
+	SubPath string `json:"sub_path"`
+}
+
+type PostOverlayUpperConfig struct {
+	Type PostOverlayUpperConfigType  `json:"type"`
+	Disk *PostOverlayUpperConfigDisk `json:"disk"`
 }
 
 type ContainerVolumeMountDiskPostImageOverlayUnpacker ContainerVolumeMountDiskPostImageOverlay
@@ -261,6 +310,8 @@ func (ov *ContainerVolumeMountDiskPostImageOverlay) UnmarshalJSON(data []byte) e
 	ov.Id = nov.Id
 	// 防止 PathMap 被合并，总是用 Unarmshal data 里面的 path_map
 	ov.PathMap = nov.PathMap
+	ov.HostLowerMap = nov.HostLowerMap
+	ov.UpperConfig = nov.UpperConfig
 	return nil
 }
 
@@ -274,11 +325,14 @@ const (
 type ContainerVolumeMountDiskPostOverlay struct {
 	// 宿主机底层目录
 	HostLowerDir []string `json:"host_lower_dir"`
+	// 宿主机上层目录
+	HostUpperDir string `json:"host_upper_dir"`
 	// 合并后要挂载到容器的目录
 	ContainerTargetDir string                                    `json:"container_target_dir"`
 	Image              *ContainerVolumeMountDiskPostImageOverlay `json:"image"`
 	FsUser             *int64                                    `json:"fs_user,omitempty"`
 	FsGroup            *int64                                    `json:"fs_group,omitempty"`
+	FlattenLayers      bool                                      `json:"flatten_layers"`
 }
 
 func (o ContainerVolumeMountDiskPostOverlay) IsEqual(input ContainerVolumeMountDiskPostOverlay) bool {
@@ -361,4 +415,7 @@ type ContainerRootfs struct {
 	Type ContainerVolumeMountType  `json:"type"`
 	Disk *ContainerVolumeMountDisk `json:"disk"`
 	//CephFS *ContainerVolumeMountCephFS `json:"ceph_fs"`
+
+	// 是否持久化
+	Persistent bool `json:"persistent"`
 }

@@ -38,7 +38,7 @@ func (host *SHostBase) GetReservedMemoryMb() int {
 	return 0
 }
 
-func (host *SHostBase) GetSchedtags() ([]string, error) {
+func (host *SHostBase) GetSchedtags() ([]cloudprovider.Schedtag, error) {
 	return nil, nil
 }
 
@@ -60,4 +60,8 @@ func (host *SHostBase) GetStorageInfo() jsonutils.JSONObject {
 
 func (host *SHostBase) GetIsolateDevices() ([]cloudprovider.IsolateDevice, error) {
 	return nil, errors.Wrapf(cloudprovider.ErrNotImplemented, "GetIsolateDevices")
+}
+
+func (host *SHostBase) GetIpmiInfo() jsonutils.JSONObject {
+	return nil
 }
