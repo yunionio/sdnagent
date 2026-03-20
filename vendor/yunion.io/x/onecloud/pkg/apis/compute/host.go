@@ -21,6 +21,7 @@ import (
 	"yunion.io/x/jsonutils"
 
 	"yunion.io/x/onecloud/pkg/apis"
+	billing_api "yunion.io/x/onecloud/pkg/apis/billing"
 	"yunion.io/x/onecloud/pkg/cloudcommon/types"
 )
 
@@ -370,7 +371,7 @@ type HostResourceInfo struct {
 	HostResourceType string `json:"host_resource_type"`
 
 	// 宿主机计费类型
-	HostBillingType string `json:"host_billing_type"`
+	HostBillingType billing_api.TBillingType `json:"host_billing_type"`
 
 	// 宿主机服务状态`
 	HostServiceStatus string `json:"host_service_status"`
@@ -467,6 +468,8 @@ type HostSizeAttributes struct {
 	CpuMicrocode string `json:"cpu_microcode"`
 	// CPU架构
 	CpuArchitecture string `json:"cpu_architecture"`
+	// KVM 允许单台虚机最大 vcpu 个数
+	KvmCapMaxVcpu *int `json:"kvm_cap_max_vcpu"`
 
 	// 内存大小(单位MB)
 	MemSize string `json:"mem_size"`
@@ -627,6 +630,17 @@ type SHostPingInput struct {
 	QgaRunningGuestIds []string `json:"qga_running_guests"`
 }
 
+type SKmsgEntry struct {
+	Level   int       `json:"level"`
+	Seq     int       `json:"sql"`
+	Message string    `json:"message"`
+	Time    time.Time `json:"time"`
+}
+
+type SHostReportDmesgInput struct {
+	Entries []SKmsgEntry `json:"entries"`
+}
+
 type HostReserveCpusInput struct {
 	Cpus                    string
 	Mems                    string
@@ -758,6 +772,10 @@ type HostUploadGuestStatusInput struct {
 
 type HostUploadGuestsStatusInput struct {
 	Guests map[string]*HostUploadGuestStatusInput `json:"guests"`
+}
+
+type HostIsolatedDeviceNumaStatsInput struct {
+	DevType string
 }
 
 type GuestUploadContainerStatusResponse struct {

@@ -25,6 +25,7 @@ import (
 
 	"yunion.io/x/onecloud/pkg/apis"
 	"yunion.io/x/onecloud/pkg/apis/billing"
+	billing_api "yunion.io/x/onecloud/pkg/apis/billing"
 	"yunion.io/x/onecloud/pkg/httperrors"
 )
 
@@ -125,7 +126,10 @@ type DiskListInput struct {
 	StorageFilterListInput
 
 	SnapshotPolicyFilterListInput
-	ServerFilterListInput
+	// 虚拟机（ID或Name）列表
+	ServerId []string `json:"server_id"`
+	// swagger:ignore
+	Server []string `json:"server" yunion-deprecated-by:"server_id"`
 
 	// filter disk by whether it is being used
 	Unused *bool `json:"unused"`
@@ -174,6 +178,8 @@ type DiskListInput struct {
 
 	// 根据是否绑定快照策略过滤
 	BindingSnapshotpolicy *bool `json:"binding_snapshotpolicy"`
+	// 根据是否磁盘所在虚拟机是否绑定主机快照策略
+	BindingServerSnapshotpolicy *bool `json:"binding_server_snapshotpolicy"`
 }
 
 type DiskResourceInput struct {
@@ -218,13 +224,22 @@ type SimpleGuest struct {
 	Bps int `json:"bps"`
 	// 计费类型
 	BillingType string `json:"billing_type"`
+
+	// 磁盘绑定的快照策略列表
+	Snapshotpolicy []SimpleSnapshotPolicy `json:"snapshotpolicy"`
 }
 
 type SimpleSnapshotPolicy struct {
-	Id             string `json:"id"`
-	Name           string `json:"name"`
-	RepeatWeekdays []int  `json:"repeat_weekdays"`
-	TimePoints     []int  `json:"time_points"`
+	// 快照策略ID
+	Id string `json:"id"`
+	// 快照策略名称
+	Name string `json:"name"`
+	// 快照策略类型
+	ResourceType string `json:"resource_type"`
+	// 快照策略重复周期
+	RepeatWeekdays []int `json:"repeat_weekdays"`
+	// 快照策略时间点
+	TimePoints []int `json:"time_points"`
 }
 
 type DiskDetails struct {
@@ -244,11 +259,11 @@ type DiskDetails struct {
 	GuestStatus string `json:"guest_status"`
 	// 所挂载虚拟机计费类型
 	GuestBillingType string `json:"guest_billing_type"`
+	// 磁盘所在虚拟机绑定的主机快照策略数量
+	GuestSnapshotpolicyCount int `json:"guest_snapshotpolicy_count"`
 
 	// 自动清理时间
 	AutoDeleteAt time.Time `json:"auto_delete_at"`
-	// 自动快照策略状态
-	SnapshotpolicyStatus string `json:"snapshotpolicy_status,allowempty"`
 
 	// 自动快照策略
 	Snapshotpolicies []SimpleSnapshotPolicy `json:"snapshotpolicies"`
@@ -278,6 +293,11 @@ type DiskUpdateInput struct {
 	DiskType string `json:"disk_type"`
 	// 关机自动重置
 	AutoReset *bool `json:"auto_reset"`
+
+	// 是否跟随主机删除而自动删除
+	// 默认跟随主机创建的磁盘为 true
+	// required: false
+	AutoDelete *bool `json:"auto_delete,omitempty"`
 }
 
 type DiskSaveInput struct {
@@ -354,7 +374,13 @@ type DiskMigrateInput struct {
 	TargetStorageId string `json:"target_storage_id"`
 }
 
+type DiskChagneStorageTypeInput struct {
+	// 目标存储类型
+	StorageType string `json:"storage_type"`
+}
+
 type DiskSnapshotpolicyInput struct {
+	// 快照策略ID
 	SnapshotpolicyId string `json:"snapshotpolicy_id"`
 }
 
@@ -397,5 +423,5 @@ type DiskChangeBillingTypeInput struct {
 	// 目前支持阿里云
 	// enmu: [postpaid, prepaid]
 	// required: true
-	BillingType string `json:"billing_type"`
+	BillingType billing_api.TBillingType `json:"billing_type"`
 }

@@ -101,6 +101,7 @@ type SGuestHardwareDesc struct {
 	VcpuPin []SCpuPin  `json:",omitempty"`
 	// Clock   *SGuestClock `json:",omitempty"`
 
+	// memory size in MB
 	Mem        int64
 	MemDesc    *SGuestMem     `json:",omitempty"`
 	CpuNumaPin []*SCpuNumaPin `json:",omitempty"`
@@ -114,6 +115,8 @@ type SGuestHardwareDesc struct {
 	NoHpet      *bool          `json:",omitempty"` // i386 target only
 
 	VirtioSerial *SGuestVirtioSerial
+
+	Tpm *SGuestTpm
 
 	// std virtio cirrus vmware qlx none
 	Vga       string
@@ -170,6 +173,13 @@ type VirtSerialPort struct {
 type SGuestPvpanic struct {
 	Ioport uint // default ioport 1285(0x505)
 	Id     string
+}
+
+type SGuestTpm struct {
+	TpmSock *CharDev
+
+	// default emulator tpm
+	Id string
 }
 
 // -device pcie-pci-bridge,id=pci.1,bus=pcie.0 \
@@ -369,11 +379,13 @@ type SGuestControlDesc struct {
 	// is volatile host meaning guest not running on this host right now
 	IsVolatileHost bool
 
-	ScalingGroupId     string
+	ScalingGroupId string
+	SrcIpCheck     bool
+	SrcMacCheck    bool
+
 	SecurityRules      string
 	AdminSecurityRules string
-	SrcIpCheck         bool
-	SrcMacCheck        bool
+	NicSecgroups       []*api.GuestnetworkSecgroupDesc `json:"nic_secgroups,omitempty"`
 
 	EncryptKeyId string
 

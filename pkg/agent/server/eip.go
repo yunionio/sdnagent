@@ -247,7 +247,9 @@ func (man *eipMan) run(ctx context.Context, mss *agentmodels.ModelSets) {
 		log.Errorf("eip: route error: %v", err)
 	}
 	flowman := man.agent.GetFlowMan(man.eipBridge())
-	flowman.updateFlows(ctx, "eipman", flows)
+	if flowman != nil {
+		flowman.updateFlows(ctx, "eipman", flows)
+	}
 }
 
 func (man *eipMan) addEipFlows(
