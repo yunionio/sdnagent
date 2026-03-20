@@ -100,6 +100,9 @@ func (o *SOVSBridgeDriver) SetupBridgeDev() error {
 }
 
 func (d *SOVSBridgeDriver) PersistentConfig() error {
+	if d.inter == nil {
+		return nil
+	}
 	args := []string{
 		"ovs-vsctl", "set", "Bridge", d.bridge.String(),
 		"other-config:hwaddr=" + d.inter.GetMac(),
@@ -284,9 +287,11 @@ func OVSPrepare() error {
 	ovs := system_service.GetService("openvswitch")
 	if !ovs.IsInstalled() || !ovs.IsActive() {
 		// no openvswitch service found, first try load openvswitch kernel modules, then try ovs-vsctl command, if success, return nil
-		err := procutils.NewRemoteCommandAsFarAsPossible("modprobe", "openvswitch").Run()
-		if err != nil {
-			return errors.Wrap(err, "Failed to load openvswitch kernel modules")
+		if !utils.IsInStringArray("openvswitch", options.HostOptions.SkipCheckKernelMods) {
+			err := procutils.NewRemoteCommandAsFarAsPossible("modprobe", "openvswitch").Run()
+			if err != nil {
+				return errors.Wrap(err, "Failed to load openvswitch kernel modules")
+			}
 		}
 		// wait for the ovs-vswitchd to start
 		startProbe := time.Now()

@@ -81,7 +81,6 @@ type SServerSku struct {
 	SCloudregionResourceBase
 	SZoneResourceBase
 
-	// SkuId       string `width:"64" charset:"ascii" nullable:"false" list:"user" create:"admin_required"`                 // x2.large
 	InstanceTypeFamily   string `width:"32" charset:"ascii" nullable:"true" list:"user" create:"admin_optional" update:"admin"`           // x2
 	InstanceTypeCategory string `width:"32" charset:"utf8" nullable:"true" list:"user" create:"admin_optional" update:"admin"`            // 通用型
 	LocalCategory        string `width:"32" charset:"utf8" nullable:"true" list:"user" create:"admin_optional" update:"admin" default:""` // 记录本地分类
@@ -322,22 +321,6 @@ func (self *SServerSkuManager) ValidateCreateData(ctx context.Context, userCred 
 		region, _ = zone.GetRegion()
 	}
 
-	if input.CpuCoreCount < 1 || input.CpuCoreCount > options.Options.SkuMaxCpuCount {
-		return input, httperrors.NewOutOfRangeError("cpu_core_count should be range of 1~%d", options.Options.SkuMaxCpuCount)
-	}
-
-	if input.MemorySizeMB < 512 || input.MemorySizeMB > 1024*options.Options.SkuMaxMemSize {
-		return input, httperrors.NewOutOfRangeError("memory_size_mb, shoud be range of 512~%d", 1024*options.Options.SkuMaxMemSize)
-	}
-
-	if len(input.InstanceTypeCategory) == 0 {
-		input.InstanceTypeCategory = api.SkuCategoryGeneralPurpose
-	}
-
-	if !utils.IsInStringArray(input.InstanceTypeCategory, api.SKU_FAMILIES) {
-		return input, httperrors.NewInputParameterError("instance_type_category shoud be one of %s", api.SKU_FAMILIES)
-	}
-
 	if input.Enabled == nil {
 		enabled := true
 		input.Enabled = &enabled
@@ -348,14 +331,41 @@ func (self *SServerSkuManager) ValidateCreateData(ctx context.Context, userCred 
 	if region != nil {
 		input.Provider = region.Provider
 	}
+
 	if input.Provider == api.CLOUD_PROVIDER_ONECLOUD {
 		input.CloudregionId = api.DEFAULT_REGION_ID
 	} else if utils.IsInStringArray(input.Provider, api.PRIVATE_CLOUD_PROVIDERS) {
 		input.Status = api.SkuStatusCreating
 	}
 
-	input.LocalCategory = input.InstanceTypeCategory
-	input.InstanceTypeFamily = api.InstanceFamilies[input.InstanceTypeCategory]
+	if !utils.IsInStringArray(input.Provider, api.PUBLIC_CLOUD_PROVIDERS) {
+		if input.CpuCoreCount < 1 || input.CpuCoreCount > options.Options.SkuMaxCpuCount {
+			return input, httperrors.NewOutOfRangeError("cpu_core_count should be range of 1~%d", options.Options.SkuMaxCpuCount)
+		}
+
+		if input.MemorySizeMB < 512 || input.MemorySizeMB > 1024*options.Options.SkuMaxMemSize {
+			return input, httperrors.NewOutOfRangeError("memory_size_mb, shoud be range of 512~%d", 1024*options.Options.SkuMaxMemSize)
+		}
+
+		if len(input.InstanceTypeCategory) == 0 {
+			input.InstanceTypeCategory = api.SkuCategoryGeneralPurpose
+		}
+
+		if !utils.IsInStringArray(input.InstanceTypeCategory, api.SKU_FAMILIES) {
+			return input, httperrors.NewInputParameterError("instance_type_category shoud be one of %s", api.SKU_FAMILIES)
+		}
+
+		input.LocalCategory = input.InstanceTypeCategory
+		input.InstanceTypeFamily = api.InstanceFamilies[input.InstanceTypeCategory]
+	}
+
+	if len(input.LocalCategory) == 0 {
+		input.LocalCategory = input.InstanceTypeCategory
+	}
+
+	if len(input.InstanceTypeFamily) == 0 {
+		input.InstanceTypeFamily = api.InstanceFamilies[input.InstanceTypeCategory]
+	}
 
 	var err error
 	if len(input.Name) == 0 {
@@ -616,6 +626,9 @@ func (self *SServerSku) ValidateUpdateData(ctx context.Context, userCred mcclien
 
 func (self *SServerSku) PostUpdate(ctx context.Context, userCred mcclient.TokenCredential, query jsonutils.JSONObject, data jsonutils.JSONObject) {
 	ServerSkuManager.ClearSchedDescCache(true)
+	if utils.IsInStringArray(self.Provider, api.PUBLIC_CLOUD_PROVIDERS) && (data.Contains("prepaid_status") || data.Contains("postpaid_status")) {
+		self.SetMetadata(ctx, api.SERVER_SKU_PROJECT_SRC_KEY, api.SERVER_SKU_PROJECT_SRC_VALUE_LOCAL, userCred)
+	}
 	self.SEnabledStatusStandaloneResourceBase.PostUpdate(ctx, userCred, query, data)
 }
 
@@ -779,6 +792,13 @@ func (manager *SServerSkuManager) ListItemFilter(
 				sqlchemy.Startswith(q.Field("cpu_arch"), arch),
 				sqlchemy.Equals(q.Field("cpu_arch"), apis.OS_ARCH_AARCH32),
 				sqlchemy.Equals(q.Field("cpu_arch"), apis.OS_ARCH_AARCH64),
+				sqlchemy.IsNullOrEmpty(q.Field("cpu_arch")),
+			))
+		} else if arch == apis.OS_ARCH_RISCV {
+			conditions = append(conditions, sqlchemy.OR(
+				sqlchemy.Startswith(q.Field("cpu_arch"), arch),
+				sqlchemy.Equals(q.Field("cpu_arch"), apis.OS_ARCH_RISCV32),
+				sqlchemy.Equals(q.Field("cpu_arch"), apis.OS_ARCH_RISCV64),
 				sqlchemy.IsNullOrEmpty(q.Field("cpu_arch")),
 			))
 		} else {
@@ -1225,7 +1245,7 @@ func (manager *SServerSkuManager) newPrivateCloudSku(ctx context.Context, userCr
 	return manager.TableSpec().Insert(ctx, sku)
 }
 
-func (self *SServerSku) syncWithCloudSku(ctx context.Context, userCred mcclient.TokenCredential, region *SCloudregion, extSku SServerSku) error {
+func (self *SServerSku) syncWithCloudSku(ctx context.Context, region *SCloudregion, isLocalChangedStatus bool, extSku SServerSku) error {
 	if self.Md5 == extSku.Md5 {
 		return nil
 	}
@@ -1243,8 +1263,10 @@ func (self *SServerSku) syncWithCloudSku(ctx context.Context, userCred mcclient.
 	}
 
 	_, err = db.Update(self, func() error {
-		self.PrepaidStatus = sku.PrepaidStatus
-		self.PostpaidStatus = sku.PostpaidStatus
+		if !isLocalChangedStatus {
+			self.PrepaidStatus = sku.PrepaidStatus
+			self.PostpaidStatus = sku.PostpaidStatus
+		}
 		self.SysDiskType = sku.SysDiskType
 		self.DataDiskTypes = sku.DataDiskTypes
 		self.CpuArch = sku.CpuArch
@@ -1305,6 +1327,23 @@ func (region *SCloudregion) GetUsedSkus() (map[string]bool, error) {
 	return usedSkus, nil
 }
 
+// 获取本地已变更过套餐状态的公有云套餐
+func (manager *SServerSkuManager) GetLocalSkus() (map[string]bool, error) {
+	q := db.Metadata.Query("obj_id").Equals("obj_type", manager.Keyword()).Equals("key", api.SERVER_SKU_PROJECT_SRC_KEY).Equals("value", api.SERVER_SKU_PROJECT_SRC_VALUE_LOCAL)
+	ret := []struct {
+		ObjId string `json:"obj_id"`
+	}{}
+	err := q.All(&ret)
+	if err != nil {
+		return nil, errors.Wrapf(err, "GetLocalSkus")
+	}
+	localSkus := make(map[string]bool, 0)
+	for _, item := range ret {
+		localSkus[item.ObjId] = true
+	}
+	return localSkus, nil
+}
+
 func (region *SCloudregion) SyncServerSkus(ctx context.Context, userCred mcclient.TokenCredential, xor bool) compare.SyncResult {
 	lockman.LockRawObject(ctx, ServerSkuManager.Keyword(), region.Id)
 	defer lockman.ReleaseRawObject(ctx, ServerSkuManager.Keyword(), region.Id)
@@ -1346,15 +1385,15 @@ func (region *SCloudregion) SyncServerSkus(ctx context.Context, userCred mcclien
 		result.Error(errors.Wrapf(err, "GetUsedSkus %s", region.ExternalId))
 		return result
 	}
+	localSkus, err := ServerSkuManager.GetLocalSkus()
+	if err != nil {
+		result.Error(errors.Wrapf(err, "GetLocalSkus"))
+		return result
+	}
 
 	purgeIds := []string{}
 	for i := 0; i < len(removed); i += 1 {
-		var err error
 		if usedSkus[removed[i].Name] {
-			err = removed[i].MarkAsSoldout(ctx)
-			if err != nil {
-				result.DeleteError(err)
-			}
 			continue
 		}
 		purgeIds = append(purgeIds, removed[i].Id)
@@ -1371,7 +1410,8 @@ func (region *SCloudregion) SyncServerSkus(ctx context.Context, userCred mcclien
 
 	if !xor {
 		for i := 0; i < len(commondb); i += 1 {
-			err = commondb[i].syncWithCloudSku(ctx, userCred, region, commonext[i])
+			_, isLocalChangedStatus := localSkus[commondb[i].Id]
+			err = commondb[i].syncWithCloudSku(ctx, region, isLocalChangedStatus, commonext[i])
 			if err != nil {
 				result.UpdateError(err)
 			} else {

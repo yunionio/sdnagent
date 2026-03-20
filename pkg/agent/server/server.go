@@ -18,11 +18,13 @@ import (
 	"context"
 	"net"
 	"sync"
+	"time"
 
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/reflection"
 
 	fwdpb "yunion.io/x/onecloud/pkg/hostman/guestman/forwarder/api"
+	"yunion.io/x/pkg/util/cache"
 
 	"yunion.io/x/log"
 	pb "yunion.io/x/sdnagent/pkg/agent/proto"
@@ -42,6 +44,8 @@ type AgentServer struct {
 	hostId     string
 
 	rpcServer *grpc.Server
+
+	errorBridgeCache cache.Store
 }
 
 func (s *AgentServer) GetFlowMan(bridge string) *FlowMan {
@@ -50,7 +54,15 @@ func (s *AgentServer) GetFlowMan(bridge string) *FlowMan {
 	if flowman, ok := theAgentServer.flowMans[bridge]; ok {
 		return flowman
 	}
-	flowman := NewFlowMan(bridge)
+	if _, ok, _ := s.errorBridgeCache.GetByKey(bridge); ok {
+		return nil
+	}
+	flowman, err := NewFlowMan(bridge)
+	if err != nil {
+		log.Errorf("failed to create flowman for bridge %s: %v", bridge, err)
+		s.errorBridgeCache.Add(bridge)
+		return nil
+	}
 	theAgentServer.flowMans[bridge] = flowman
 	s.wg.Add(1)
 	go flowman.Start(s.ctx)
@@ -142,6 +154,10 @@ func init() {
 
 		flowMans:     map[string]*FlowMan{},
 		flowMansLock: &sync.RWMutex{},
+
+		errorBridgeCache: cache.NewTTLStore(func(key interface{}) (string, error) {
+			return key.(string), nil
+		}, time.Minute*5),
 	}
 }
 
