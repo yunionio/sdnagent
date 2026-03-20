@@ -20,6 +20,7 @@ import (
 	"yunion.io/x/cloudmux/pkg/apis/compute"
 
 	"yunion.io/x/onecloud/pkg/apis"
+	billing_api "yunion.io/x/onecloud/pkg/apis/billing"
 )
 
 const (
@@ -92,7 +93,7 @@ type FileSystemCreateInput struct {
 
 	// 计费方式
 	// enum: ["postpaid", "prepaid"]
-	BillingType string `json:"billing_type"`
+	BillingType billing_api.TBillingType `json:"billing_type"`
 	// swagger:ignore
 	BillingCycle string `json:"billing_cycle"`
 }
@@ -105,9 +106,9 @@ type FileSystemDetails struct {
 	ManagedResourceInfo
 	CloudregionResourceInfo
 
-	Vpc     string
-	Network string
-	Zone    string
+	Vpc     string `json:"vpc"`
+	Network string `json:"network"`
+	Zone    string `json:"zone"`
 }
 
 type FileSystemRemoteUpdateInput struct {

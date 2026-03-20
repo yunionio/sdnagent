@@ -27,6 +27,7 @@ const (
 	OIDC_CREDENTIAL_TYPE  = "oidc"
 	ENCRYPT_KEY_TYPE      = "enc_key"
 	CONTAINER_IMAGE_TYPE  = "container_image"
+	CONTAINER_SECRET_TYPE = "container_secret"
 )
 
 type SAccessKeySecretBlob struct {
@@ -42,6 +43,6 @@ func (info SAccessKeySecretBlob) IsValid() bool {
 }
 
 type SAccessKeySecretInfo struct {
-	AccessKey string
+	AccessKey string `json:"access_key"`
 	SAccessKeySecretBlob
 }

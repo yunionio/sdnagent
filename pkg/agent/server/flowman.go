@@ -326,7 +326,15 @@ func (fm *FlowMan) waitDecr(n int32) {
 	atomic.AddInt32(&fm.waitCount, -n)
 }
 
-func NewFlowMan(bridge string) *FlowMan {
+func NewFlowMan(bridge string) (*FlowMan, error) {
+	// validate bridge name
+	if len(bridge) == 0 {
+		return nil, errors.Errorf("bridge name is empty")
+	}
+	ovsCli := ovs.New().VSwitch
+	if _, err := ovsCli.Get.Bridge(bridge); err != nil {
+		return nil, errors.Wrapf(err, "ListBridges")
+	}
 	flowSets := map[string]*utils.FlowSet{
 		THEMAN:   utils.NewFlowSet(),
 		FAILSAFE: utils.NewFlowSet(),
@@ -335,7 +343,7 @@ func NewFlowMan(bridge string) *FlowMan {
 		bridge:   bridge,
 		cmdChan:  make(chan *flowManCmd),
 		flowSets: flowSets,
-	}
+	}, nil
 }
 
 type FlowManWaitData struct {

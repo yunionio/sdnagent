@@ -41,6 +41,7 @@ import (
 	"yunion.io/x/sqlchemy"
 
 	"yunion.io/x/onecloud/pkg/apis"
+	billing_api "yunion.io/x/onecloud/pkg/apis/billing"
 	api "yunion.io/x/onecloud/pkg/apis/compute"
 	"yunion.io/x/onecloud/pkg/cloudcommon/consts"
 	"yunion.io/x/onecloud/pkg/cloudcommon/db"
@@ -95,11 +96,11 @@ type SNetwork struct {
 	IfnameHint string `width:"9" charset:"ascii" nullable:"true" list:"user" create:"optional"`
 
 	// 起始IP地址
-	GuestIpStart string `width:"16" charset:"ascii" nullable:"false" list:"user" update:"user" create:"optional"`
+	GuestIpStart string `width:"16" charset:"ascii" nullable:"true" list:"user" update:"user" create:"optional"`
 	// 结束IP地址
-	GuestIpEnd string `width:"16" charset:"ascii" nullable:"false" list:"user" update:"user" create:"optional"`
+	GuestIpEnd string `width:"16" charset:"ascii" nullable:"true" list:"user" update:"user" create:"optional"`
 	// 掩码
-	GuestIpMask int8 `nullable:"false" list:"user" update:"user" create:"optional"`
+	GuestIpMask int8 `nullable:"true" list:"user" update:"user" create:"optional"`
 	// 网关地址
 	GuestGateway string `width:"16" charset:"ascii" nullable:"true" list:"user" update:"user" create:"optional"`
 	// DNS, allow multiple dns, seperated by ","
@@ -150,10 +151,12 @@ func (manager *SNetworkManager) GetContextManagers() [][]db.IModelManager {
 	}
 }
 
-func (snet *SNetwork) getMtu() int16 {
+func (snet *SNetwork) getMtu(wire *SWire) int16 {
 	baseMtu := options.Options.DefaultMtu
 
-	wire, _ := snet.GetWire()
+	if wire == nil {
+		wire, _ = snet.GetWire()
+	}
 	if wire != nil {
 		if IsOneCloudVpcResource(wire) {
 			return int16(options.Options.OvnUnderlayMtu - api.VPC_OVN_ENCAP_COST)
@@ -921,17 +924,39 @@ func (manager *SNetworkManager) fetchAllOnpremiseNetworks(serverType string, isP
 }
 
 func (manager *SNetworkManager) GetOnPremiseNetworkOfIP(ipAddr string, serverType string, isPublic tristate.TriState) (*SNetwork, error) {
-	address, err := netutils.NewIPV4Addr(ipAddr)
-	if err != nil {
-		return nil, errors.Wrap(err, "NewIPV4Addr")
+	var addr4 netutils.IPV4Addr
+	var addr6 netutils.IPV6Addr
+	var isIpv6Addr = false
+	var err error
+	if strings.Contains(ipAddr, ":") {
+		isIpv6Addr = true
 	}
+
+	if isIpv6Addr {
+		addr6, err = netutils.NewIPV6Addr(ipAddr)
+		if err != nil {
+			return nil, errors.Wrap(err, "NewIPV6Addr")
+		}
+	} else {
+		addr4, err = netutils.NewIPV4Addr(ipAddr)
+		if err != nil {
+			return nil, errors.Wrap(err, "NewIPV4Addr")
+		}
+	}
+
 	nets, err := manager.fetchAllOnpremiseNetworks(serverType, isPublic)
 	if err != nil {
 		return nil, errors.Wrap(err, "fetchAllOnpremiseNetworks")
 	}
 	for _, n := range nets {
-		if n.IsAddressInRange(address) {
-			return &n, nil
+		if isIpv6Addr {
+			if n.IsAddress6InRange(addr6) {
+				return &n, nil
+			}
+		} else {
+			if n.IsAddressInRange(addr4) {
+				return &n, nil
+			}
 		}
 	}
 	return nil, sql.ErrNoRows
@@ -1204,6 +1229,23 @@ func isValidNetworkInfo(ctx context.Context, userCred mcclient.TokenCredential, 
 		ct, ctExit := NetworkManager.to
 	}
 	*/
+	// billing update
+	if netConfig.TxTrafficLimit > 0 || netConfig.RxTrafficLimit > 0 {
+		if len(netConfig.BillingType) == 0 {
+			netConfig.BillingType = billing_api.BILLING_TYPE_PREPAID
+		} else if netConfig.BillingType != billing_api.BILLING_TYPE_PREPAID {
+			return httperrors.NewInputParameterError("nic is limited by traffic, only support prepaid billing type")
+		}
+		if len(netConfig.ChargeType) == 0 {
+			netConfig.ChargeType = billing_api.NET_CHARGE_TYPE_BY_TRAFFIC
+		} else if netConfig.ChargeType != billing_api.NET_CHARGE_TYPE_BY_TRAFFIC {
+			return httperrors.NewInputParameterError("nic is limited by traffic, only support charge traffic")
+		}
+	} else {
+		if netConfig.BillingType == billing_api.BILLING_TYPE_PREPAID && netConfig.ChargeType == billing_api.NET_CHARGE_TYPE_BY_TRAFFIC {
+			return httperrors.NewInputParameterError("nic traffic limited should be set for prepaid traffic billing type")
+		}
+	}
 	if len(netConfig.PortMappings) != 0 {
 		for i := range netConfig.PortMappings {
 			if err := validatePortMapping(netConfig.PortMappings[i]); err != nil {
@@ -1814,6 +1856,11 @@ func (manager *SNetworkManager) ValidateCreateData(ctx context.Context, userCred
 	} else {
 		return input, httperrors.NewInputParameterError("zone and vpc info required when wire is absent")
 	}
+	{
+		if wire.Id == api.DEFAULT_HOST_LOCAL_WIRE_ID {
+			input.ServerType = api.NETWORK_TYPE_HOSTLOCAL
+		}
+	}
 
 	input.WireId = wire.Id
 	if vpc.Status != api.VPC_STATUS_AVAILABLE {
@@ -1822,11 +1869,11 @@ func (manager *SNetworkManager) ValidateCreateData(ctx context.Context, userCred
 	if input.ServerType == api.NETWORK_TYPE_EIP && vpc.Id != api.DEFAULT_VPC_ID {
 		return input, httperrors.NewInputParameterError("eip network can only exist in default vpc, got %s(%s)", vpc.Name, vpc.Id)
 	}
-	if input.ServerType != api.NETWORK_TYPE_EIP {
-		input.BgpType = ""
-	}
+	// if input.ServerType != api.NETWORK_TYPE_EIP {
+	//	input.BgpType = ""
+	// }
 	// check class metadata
-	if wire != nil {
+	{ // wire != nil
 		var projectId string
 		if len(input.ProjectId) > 0 {
 			projectId = input.ProjectId
@@ -1944,6 +1991,9 @@ func (manager *SNetworkManager) ValidateCreateData(ctx context.Context, userCred
 		if ipEnd.NetAddr(masklen) != netAddr {
 			return input, httperrors.NewInputParameterError("start and end ip not in the same subnet")
 		}
+		if wire.Id == api.DEFAULT_HOST_LOCAL_WIRE_ID && len(input.GuestGateway) == 0 {
+			return input, httperrors.NewInputParameterError("host local wire only support gateway ip")
+		}
 	}
 
 	var (
@@ -2002,6 +2052,9 @@ func (manager *SNetworkManager) ValidateCreateData(ctx context.Context, userCred
 		netAddr6 = ip6Start.NetAddr(masklen6)
 		if !ip6End.NetAddr(masklen6).Equals(netAddr6) {
 			return input, httperrors.NewInputParameterError("v6 start and end ip not in the same subnet")
+		}
+		if wire.Id == api.DEFAULT_HOST_LOCAL_WIRE_ID && len(input.GuestGateway6) == 0 {
+			return input, httperrors.NewInputParameterError("host local wire only support gateway v6 ip")
 		}
 	}
 
@@ -2183,6 +2236,10 @@ func (snet *SNetwork) validateUpdateData(ctx context.Context, userCred mcclient.
 		if endIp.NetAddr(masklen) != netAddr {
 			return input, httperrors.NewInputParameterError("start, end ip must be in the same subnet")
 		}
+
+		if snet.WireId == api.DEFAULT_HOST_LOCAL_WIRE_ID && input.GuestGateway != nil && len(*input.GuestGateway) == 0 {
+			return input, httperrors.NewInputParameterError("host local wire only support gateway ip")
+		}
 	} else {
 		startIp, _ := netutils.NewIPV4Addr(snet.GuestIpStart)
 		netAddr = startIp.NetAddr(masklen)
@@ -2245,6 +2302,9 @@ func (snet *SNetwork) validateUpdateData(ctx context.Context, userCred mcclient.
 		if !netRange.EndIp().NetAddr(masklen6).Equals(netAddr6) {
 			return input, httperrors.NewInputParameterError("start, end v6 ip must be in the same subnet")
 		}
+		if snet.WireId == api.DEFAULT_HOST_LOCAL_WIRE_ID && input.GuestGateway6 != nil && len(*input.GuestGateway6) == 0 {
+			return input, httperrors.NewInputParameterError("host local wire only support gateway ip")
+		}
 	} else if len(snet.GuestIp6Start) > 0 {
 		startIp, _ := netutils.NewIPV6Addr(snet.GuestIp6Start)
 		netAddr6 = startIp.NetAddr(masklen6)
@@ -2304,8 +2364,13 @@ func (snet *SNetwork) validateUpdateData(ctx context.Context, userCred mcclient.
 		}
 	}
 
-	if len(input.ServerType) > 0 && !api.IsInNetworkTypes(input.ServerType, api.ALL_NETWORK_TYPES) {
-		return input, errors.Wrapf(httperrors.ErrInputParameter, "invalid server_type %q", input.ServerType)
+	if len(input.ServerType) > 0 {
+		if !api.IsInNetworkTypes(input.ServerType, api.ALL_NETWORK_TYPES) {
+			return input, errors.Wrapf(httperrors.ErrInputParameter, "invalid server_type %q", input.ServerType)
+		}
+		if snet.WireId == api.DEFAULT_HOST_LOCAL_WIRE_ID && input.ServerType != api.NETWORK_TYPE_HOSTLOCAL {
+			return input, httperrors.NewInputParameterError("host local wire only support hostlocal server_type")
+		}
 	}
 
 	return input, nil
@@ -2664,28 +2729,42 @@ func (manager *SNetworkManager) ListItemFilter(
 		hostsQ := hosts.SubQuery()
 		classicWiresIdQ = classicWiresIdQ.Join(hostsQ, sqlchemy.Equals(netifs.Field("baremetal_id"), hostsQ.Field("id")))
 
-		wireIdQ := classicWiresIdQ.SubQuery()
+		wireIdQueries := []sqlchemy.IQuery{
+			classicWiresIdQ,
+		}
 
-		if input.HostType == api.HOST_TYPE_HYPERVISOR {
-			// should consider VPC network
-			vpcHostQ := HostManager.Query().IsNotEmpty("ovn_version")
-			if len(input.HostType) > 0 {
-				vpcHostQ = vpcHostQ.Equals("host_type", input.HostType)
-			}
+		if input.HostType == api.HOST_TYPE_HYPERVISOR || input.HostType == api.HOST_TYPE_CONTAINER {
+			vpcHostQ := HostManager.Query().Equals("host_type", input.HostType)
 			if len(input.HostId) > 0 {
 				vpcHostQ = vpcHostQ.In("id", input.HostId)
 			}
+			hostCnt, err := vpcHostQ.CountWithError()
+			if err != nil {
+				return nil, errors.Wrap(err, "vpcHostQ.CountWithError")
+			}
+			if hostCnt > 0 {
+				// should consider host local wire
+				hostLocalWireQ := WireManager.Query("id").Equals("id", api.DEFAULT_HOST_LOCAL_WIRE_ID)
+				wireIdQueries = append(wireIdQueries, hostLocalWireQ)
+			}
+			vpcHostQ = vpcHostQ.IsNotEmpty("ovn_version")
 			vpcHostCnt, err := vpcHostQ.CountWithError()
 			if err != nil {
 				return nil, errors.Wrap(err, "vpcHostQ.CountWithError")
 			}
 			if vpcHostCnt > 0 {
+				// should consider VPC network wire
 				vpcWiresIdQ := WireManager.Query("id").NotEquals("vpc_id", api.DEFAULT_VPC_ID)
-
-				wireIdUnion := sqlchemy.Union(classicWiresIdQ, vpcWiresIdQ)
-				wireIdQ = wireIdUnion.Query().SubQuery()
+				wireIdQueries = append(wireIdQueries, vpcWiresIdQ)
 			}
 		}
+		var wireIdQ *sqlchemy.SSubQuery
+		if len(wireIdQueries) > 1 {
+			wireIdQ = sqlchemy.Union(wireIdQueries...).Query().SubQuery()
+		} else {
+			wireIdQ = classicWiresIdQ.SubQuery()
+		}
+
 		additionalQ := NetworkAdditionalWireManager.Query("network_id")
 		additionalQ = additionalQ.Join(wireIdQ, sqlchemy.Equals(wireIdQ.Field("id"), additionalQ.Field("wire_id")))
 		q = q.Filter(sqlchemy.OR(
@@ -2741,6 +2820,10 @@ func (manager *SNetworkManager) ListItemFilter(
 				ipConst := sqlchemy.INET_ATON(q.StringField(ip4Addr.String()))
 
 				ipCondtion = sqlchemy.AND(
+					sqlchemy.IsNotNull(q.Field("guest_ip_start")),
+					sqlchemy.IsNotNull(q.Field("guest_ip_end")),
+					sqlchemy.IsNotEmpty(q.Field("guest_ip_start")),
+					sqlchemy.IsNotEmpty(q.Field("guest_ip_end")),
 					sqlchemy.GE(ipEnd, ipConst),
 					sqlchemy.LE(ipStart, ipConst),
 				)
@@ -2759,6 +2842,10 @@ func (manager *SNetworkManager) ListItemFilter(
 				ipConst := sqlchemy.INET6_ATON(q.StringField(ip6Addr.String()))
 
 				ipCondtion = sqlchemy.AND(
+					sqlchemy.IsNotNull(q.Field("guest_ip6_start")),
+					sqlchemy.IsNotNull(q.Field("guest_ip6_end")),
+					sqlchemy.IsNotEmpty(q.Field("guest_ip6_start")),
+					sqlchemy.IsNotEmpty(q.Field("guest_ip6_end")),
 					sqlchemy.GE(ipEnd, ipConst),
 					sqlchemy.LE(ipStart, ipConst),
 				)
@@ -2887,8 +2974,6 @@ func (manager *SNetworkManager) ListItemFilter(
 		subq = subq.Join(hostschedtags, sqlchemy.Equals(hostschedtags.Field("host_id"), subq.Field("baremetal_id")))
 		q = q.In("wire_id", subq.SubQuery())
 	}
-
-	q.DebugQuery()
 
 	return q, nil
 }

@@ -109,6 +109,10 @@ func (nic *GuestNIC) EnableIPv6() bool {
 	return len(nic.IP6) > 0
 }
 
+func (nic *GuestNIC) IsOnHostLocalBridge() bool {
+	return nic.WireId == computeapi.DEFAULT_HOST_LOCAL_WIRE_ID
+}
+
 type GuestNICNetworkAddress struct {
 	Type    string `json:"type"`
 	IpAddr  string `json:"ip_addr"`

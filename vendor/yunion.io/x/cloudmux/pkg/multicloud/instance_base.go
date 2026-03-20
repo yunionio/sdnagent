@@ -91,10 +91,18 @@ func (ins *SInstanceBase) GetPowerStates() string {
 	return ""
 }
 
+func (ins *SInstanceBase) GetHealthStatus() string {
+	return ""
+}
+
 func (instance *SInstanceBase) GetError() error {
 	return nil
 }
 
 func (instance *SInstanceBase) GetIsolateDeviceIds() ([]string, error) {
 	return nil, errors.Wrapf(cloudprovider.ErrNotImplemented, "GetIsolateDeviceIds")
+}
+
+func (instance *SInstanceBase) GetContainers() ([]cloudprovider.ICloudContainer, error) {
+	return nil, errors.Wrapf(cloudprovider.ErrNotImplemented, "GetContainers")
 }

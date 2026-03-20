@@ -45,6 +45,8 @@ type ContainerRootfs struct {
 	Type apis.ContainerVolumeMountType `json:"type"`
 	Disk *ContainerVolumeMountDisk     `json:"disk"`
 	// CephFS *ContainerVolumeMountCephFS   `json:"ceph_fs"`
+	// 是否持久化
+	Persistent bool `default:"false" list:"user" create:"admin_optional" update:"admin"`
 }
 
 type ContainerVolumeMount struct {
@@ -71,6 +73,7 @@ type ContainerVolumeMount struct {
 type ContainerSpec struct {
 	apis.ContainerSpec
 	ImageCredentialToken string                  `json:"image_credential_token"`
+	SecretCredentials    map[string]string       `json:"secret_credentials"`
 	Rootfs               *ContainerRootfs        `json:"rootfs"`
 	VolumeMounts         []*ContainerVolumeMount `json:"volume_mounts"`
 	Devices              []*ContainerDevice      `json:"devices"`
@@ -95,6 +98,11 @@ type ContainerIsolatedDevice struct {
 	Index       int                                    `json:"index"`
 	DeviceMinor int                                    `json:"device_minor"`
 	OnlyEnv     []*apis.ContainerIsolatedDeviceOnlyEnv `json:"only_env"`
+	CDI         *apis.ContainerIsolatedDeviceCDI       `json:"cdi"`
+}
+
+func (d *ContainerIsolatedDevice) IsCDIUsed() bool {
+	return d.CDI != nil
 }
 
 type ContainerHostDevice struct {
@@ -140,7 +148,8 @@ type ContainerSaveVolumeMountToImageInput struct {
 	VolumeMount      *ContainerVolumeMount `json:"volume_mount"`
 	VolumeMountDirs  []string              `json:"volume_mount_dirs"`
 
-	VolumeMountPrefix string `json:"volume_mount_prefix"`
+	VolumeMountPrefix string   `json:"volume_mount_prefix"`
+	ExcludePaths      []string `json:"exclude_paths"`
 }
 
 type ContainerCommitInput struct {

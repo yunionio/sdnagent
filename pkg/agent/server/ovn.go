@@ -279,7 +279,9 @@ func (man *ovnMan) ensureBasicFlows(ctx context.Context) {
 			"drop"),
 	)*/
 	flowman := man.watcher.agent.GetFlowMan(man.mappedBridge())
-	flowman.updateFlows(ctx, "o", flows)
+	if flowman != nil {
+		flowman.updateFlows(ctx, "o", flows)
+	}
 }
 
 func (man *ovnMan) ensureMappedBridgeVpcPort(ctx context.Context, vpcId string) error {
@@ -309,9 +311,11 @@ func (man *ovnMan) ensureMappedBridgeVpcPortFlows(ctx context.Context, vpcId str
 	}
 	pnoMine := psMine.PortID
 	flowman := man.watcher.agent.GetFlowMan(man.mappedBridge())
-	flowman.updateFlows(ctx, mine, []*ovs.Flow{
-		utils.F(0, 30000, fmt.Sprintf("in_port=%d", pnoMine), "drop"),
-	})
+	if flowman != nil {
+		flowman.updateFlows(ctx, mine, []*ovs.Flow{
+			utils.F(0, 30000, fmt.Sprintf("in_port=%d", pnoMine), "drop"),
+		})
+	}
 	return nil
 }
 
@@ -386,7 +390,9 @@ func (man *ovnMan) ensureGuestFlows(ctx context.Context, guestId string) {
 		}
 	}
 	flowman := man.watcher.agent.GetFlowMan(man.mappedBridge())
-	flowman.updateFlows(ctx, guestId, flows)
+	if flowman != nil {
+		flowman.updateFlows(ctx, guestId, flows)
+	}
 }
 
 func (man *ovnMan) SetHostId(ctx context.Context, hostId string) {

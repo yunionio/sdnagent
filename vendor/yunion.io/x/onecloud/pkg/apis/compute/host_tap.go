@@ -15,8 +15,9 @@
 package compute
 
 const (
-	HostVpcBridge = "__vpc_bridge__"
-	HostTapBridge = "__tap_bridge__"
+	HostVpcBridge   = "__vpc_bridge__"
+	HostTapBridge   = "__tap_bridge__"
+	HostLocalBridge = "brlocal"
 )
 
 type SMirrorConfig struct {
@@ -60,7 +61,7 @@ type STapServiceConfig struct {
 
 	Ifname string `json:"ifname"`
 
-	Mirrors []SMirrorConfig
+	Mirrors []SMirrorConfig `json:"mirrors"`
 }
 
 type SHostTapConfig struct {

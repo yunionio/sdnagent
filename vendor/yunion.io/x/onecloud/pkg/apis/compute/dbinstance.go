@@ -19,6 +19,7 @@ import (
 	"time"
 
 	"yunion.io/x/onecloud/pkg/apis"
+	billing_api "yunion.io/x/onecloud/pkg/apis/billing"
 )
 
 type DBInstanceCreateInput struct {
@@ -40,7 +41,7 @@ type DBInstanceCreateInput struct {
 	// 创建只读实例时此参数必传
 	MasterInstance string `json:"master_instance"`
 	// swagger:ignore
-	MasterInstanceId string
+	MasterInstanceId string `json:"master_instance_id"`
 
 	// 安全组Id列表
 	//
@@ -64,16 +65,16 @@ type DBInstanceCreateInput struct {
 	Zone3 string `json:"zone3"`
 
 	// swagger:ignore
-	ZoneId string
+	ZoneId string `json:"zone_id"`
 
 	// swagger:ignore
-	CloudregionId string
+	CloudregionId string `json:"cloudregion_id"`
 
 	// swagger:ignore
-	VpcId string
+	VpcId string `json:"vpc_id"`
 
 	// swagger:ignore
-	ManagerId string
+	ManagerId string `json:"manager_id"`
 
 	// 包年包月时间周期
 	Duration string `json:"duration"`
@@ -87,9 +88,9 @@ type DBInstanceCreateInput struct {
 
 	// 计费方式
 	// enum: ["postpaid", "prepaid"]
-	BillingType string
+	BillingType billing_api.TBillingType `json:"billing_type"`
 	// swagger:ignore
-	BillingCycle string
+	BillingCycle string `json:"billing_cycle"`
 
 	// 套餐名称, 若此参数不填, 则必须有vmem_size_mb及vcpu_count参数
 	// 套餐列表可以通过 dbinstancesku 获取
@@ -169,8 +170,8 @@ type DBInstanceCreateInput struct {
 type SDBInstanceChangeConfigInput struct {
 	apis.Meta
 
-	InstanceType string
-	DiskSizeGB   int
+	InstanceType string `json:"instance_type"`
+	DiskSizeGB   int    `json:"disk_size_gb"`
 }
 
 type SDBInstanceRecoveryConfigInput struct {

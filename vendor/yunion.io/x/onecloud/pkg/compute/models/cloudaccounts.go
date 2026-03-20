@@ -785,7 +785,7 @@ func (acnt *SCloudaccount) PerformUpdateCredential(
 	}
 
 	changed := false
-	if len(account.Secret) > 0 || len(account.Account) > 0 {
+	if acnt.Account != account.Account && (len(account.Secret) > 0 || len(account.Account) > 0) {
 		// check duplication
 		q := acnt.GetModelManager().Query()
 		q = q.Equals("account", account.Account)
@@ -965,9 +965,11 @@ func (acnt *SCloudaccount) markStartSync(userCred mcclient.TokenCredential, sync
 
 func (acnt *SCloudaccount) MarkSyncing(userCred mcclient.TokenCredential) error {
 	_, err := db.Update(acnt, func() error {
-		acnt.SyncStatus = api.CLOUD_PROVIDER_SYNC_STATUS_SYNCING
-		acnt.LastSync = timeutils.UtcNow()
-		acnt.LastSyncEndAt = time.Time{}
+		if acnt.SyncStatus != api.CLOUD_PROVIDER_SYNC_STATUS_SYNCING {
+			acnt.SyncStatus = api.CLOUD_PROVIDER_SYNC_STATUS_SYNCING
+			acnt.LastSync = timeutils.UtcNow()
+			acnt.LastSyncEndAt = time.Time{}
+		}
 		return nil
 	})
 	if err != nil {
@@ -976,7 +978,7 @@ func (acnt *SCloudaccount) MarkSyncing(userCred mcclient.TokenCredential) error 
 	return nil
 }
 
-func (acnt *SCloudaccount) MarkEndSyncWithLock(ctx context.Context, userCred mcclient.TokenCredential) error {
+func (acnt *SCloudaccount) MarkEndSyncWithLock(ctx context.Context, userCred mcclient.TokenCredential, deepSync bool) error {
 	lockman.LockObject(ctx, acnt)
 	defer lockman.ReleaseObject(ctx, acnt)
 
@@ -992,13 +994,15 @@ func (acnt *SCloudaccount) MarkEndSyncWithLock(ctx context.Context, userCred mcc
 		return errors.Error("some cloud providers not idle")
 	}
 
-	return acnt.MarkEndSync(userCred)
+	return acnt.MarkEndSync(userCred, deepSync)
 }
 
-func (acnt *SCloudaccount) MarkEndSync(userCred mcclient.TokenCredential) error {
+func (acnt *SCloudaccount) MarkEndSync(userCred mcclient.TokenCredential, deepSync bool) error {
 	_, err := db.Update(acnt, func() error {
 		acnt.SyncStatus = api.CLOUD_PROVIDER_SYNC_STATUS_IDLE
-		acnt.LastSyncEndAt = timeutils.UtcNow()
+		if deepSync {
+			acnt.LastSyncEndAt = timeutils.UtcNow()
+		}
 		return nil
 	})
 	if err != nil {
@@ -1127,11 +1131,9 @@ func (acnt *SCloudaccount) removeSubAccounts(ctx context.Context, userCred mccli
 		return errors.Wrapf(err, "db.FetchModelObjects")
 	}
 	for i := range providers {
-		log.Debugf("remove cloudprovider %s(%s)", providers[i].Name, providers[i].Id)
-		err = providers[i].RealDelete(ctx, userCred)
-		if err != nil {
-			return errors.Wrapf(err, "RealDelete")
-		}
+		// 禁用云订阅，并设置为未连接状态，避免权限异常删除云订阅
+		providers[i].PerformDisable(ctx, userCred, jsonutils.NewDict(), apis.PerformDisableInput{})
+		providers[i].SetStatus(ctx, userCred, api.CLOUD_PROVIDER_DISCONNECTED, "sync lost")
 	}
 	return nil
 }
@@ -1207,7 +1209,7 @@ func (acnt *SCloudaccount) importSubAccount(ctx context.Context, userCred mcclie
 		}
 		provider.markProviderConnected(ctx, userCred, subAccount.HealthStatus)
 		provider.updateName(ctx, userCred, subAccount.Name, subAccount.Desc)
-		if provider.ExternalId != subAccount.Id {
+		if len(provider.ExternalId) == 0 || provider.ExternalId != subAccount.Id {
 			_, err := db.Update(provider, func() error {
 				provider.ExternalId = subAccount.Id
 				return nil

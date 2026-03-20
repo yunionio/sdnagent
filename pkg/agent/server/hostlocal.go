@@ -37,6 +37,7 @@ func NewHostLocal(watcher *serversWatcher) *HostLocal {
 
 func (hl *HostLocal) updateFlows(ctx context.Context) {
 	for _, hcn := range hl.watcher.hostConfig.HostNetworkConfigs() {
+		log.Debugf("update flows for %s", hcn.Bridge)
 		mac, err := hcn.MAC()
 		if err != nil {
 			log.Errorf("get ip/mac for %s failed: %s", hcn.Bridge, err)
@@ -61,7 +62,9 @@ func (hl *HostLocal) updateFlows(ctx context.Context) {
 			continue
 		}
 		flowman := hl.watcher.agent.GetFlowMan(hcn.Bridge)
-		flowman.updateFlows(ctx, hostLocal.Who(), flows[hcn.Bridge])
+		if flowman != nil {
+			flowman.updateFlows(ctx, hostLocal.Who(), flows[hcn.Bridge])
+		}
 
 		if hostLocal.IP != nil {
 			err = hostLocal.EnsureFakeLocalMetadataRoute()
