@@ -19,7 +19,7 @@ require (
 	google.golang.org/protobuf v1.35.1
 	yunion.io/x/jsonutils v1.0.1-0.20250507052344-1abcf4f443b1
 	yunion.io/x/log v1.0.1-0.20240305175729-7cf2d6cd5a91
-	yunion.io/x/onecloud v0.0.0-20260320054145-ece4993df6f2
+	yunion.io/x/onecloud v0.0.0-20260326134506-8838aaf84b22
 	yunion.io/x/pkg v1.10.4-0.20260224071200-5c269fa62429
 )
 
