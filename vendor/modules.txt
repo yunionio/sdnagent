@@ -896,7 +896,7 @@ yunion.io/x/jsonutils
 ## explicit; go 1.12
 yunion.io/x/log
 yunion.io/x/log/hooks
-# yunion.io/x/onecloud v0.0.0-20260319173629-70fbfe89465a
+# yunion.io/x/onecloud v0.0.0-20260326134600-7756be9d3800
 ## explicit; go 1.24
 yunion.io/x/onecloud/locales
 yunion.io/x/onecloud/pkg/apihelper
