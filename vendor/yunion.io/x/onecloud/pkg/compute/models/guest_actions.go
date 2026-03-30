@@ -98,6 +98,29 @@ func (self *SGuest) GetDetailsVnc(ctx context.Context, userCred mcclient.TokenCr
 	return ret, nil
 }
 
+// 获取公有云可变更配置
+// 目前支持: 阿里云，腾讯云，华为云
+func (guest *SGuest) GetDetailsModificationTypes(ctx context.Context, userCred mcclient.TokenCredential, input jsonutils.JSONObject) (*api.ServerModificationTypesOutput, error) {
+	if len(guest.ExternalId) == 0 {
+		return nil, httperrors.NewNotFoundError("guest external id is empty")
+	}
+	vm, err := guest.GetIVM(ctx)
+	if err != nil {
+		return nil, errors.Wrapf(err, "GetIVM")
+	}
+
+	ret := &api.ServerModificationTypesOutput{}
+	ret.ModificationTypes = make([]api.ServerModificationType, 0)
+	modificationTypes, err := vm.GetModificationTypes()
+	if err != nil {
+		return nil, errors.Wrapf(err, "GetModificationTypes")
+	}
+	for _, modificationType := range modificationTypes {
+		ret.ModificationTypes = append(ret.ModificationTypes, api.ServerModificationType{Name: modificationType.InstanceType})
+	}
+	return ret, nil
+}
+
 func (self *SGuest) PreCheckPerformAction(
 	ctx context.Context, userCred mcclient.TokenCredential,
 	action string, query jsonutils.JSONObject, data jsonutils.JSONObject,
@@ -758,6 +781,8 @@ func (self *SGuest) PerformClone(ctx context.Context, userCred mcclient.TokenCre
 	createInput.AutoStart = cloneInput.AutoStart
 
 	createInput.EipBw = cloneInput.EipBw
+	createInput.EipTxBw = cloneInput.EipTxBw
+	createInput.EipRxBw = cloneInput.EipRxBw
 	createInput.Eip = cloneInput.Eip
 	createInput.EipChargeType = cloneInput.EipChargeType
 	if err := GuestManager.validateEip(ctx, userCred, createInput, createInput.PreferRegion, createInput.PreferManager); err != nil {
@@ -2808,6 +2833,12 @@ func (self *SGuest) PerformChangeIpaddr(
 	if conf.BwLimit == 0 {
 		conf.BwLimit = gn.BwLimit
 	}
+	if conf.TxBwLimit == 0 {
+		conf.TxBwLimit = gn.TxBwLimit
+	}
+	if conf.RxBwLimit == 0 {
+		conf.RxBwLimit = gn.RxBwLimit
+	}
 	if conf.Index == 0 {
 		conf.Index = int(gn.Index)
 	}
@@ -2986,6 +3017,9 @@ func (self *SGuest) PerformChangeIpaddr(
 			taskData.Set("in_block_stream", jsonutils.JSONTrue)
 		}
 		self.SetStatus(ctx, userCred, api.VM_RESTART_NETWORK, "restart network")
+	}
+	if input.NoSync != nil && *input.NoSync {
+		return nil, nil
 	}
 	return nil, self.startSyncTask(ctx, userCred, false, "", taskData)
 }
@@ -3342,9 +3376,8 @@ func (guest *SGuest) PerformChangeBandwidth(
 		return nil, httperrors.NewBadRequestError("Cannot change bandwidth in status %s", guest.Status)
 	}
 
-	bandwidth := input.Bandwidth
-	if bandwidth < 0 {
-		return nil, httperrors.NewBadRequestError("Bandwidth must be non-negative")
+	if input.Bandwidth < 0 && input.TxBwLimit < 0 && input.RxBwLimit < 0 {
+		return nil, httperrors.NewBadRequestError("Bandwidth, tx_bw_limit and rx_bw_limit must be non-negative")
 	}
 
 	guestnic, err := guest.findGuestnetworkByInfo(input.ServerNetworkInfo)
@@ -3352,10 +3385,14 @@ func (guest *SGuest) PerformChangeBandwidth(
 		return nil, errors.Wrap(err, "findGuestnetworkByInfo")
 	}
 
-	if guestnic.BwLimit != int(bandwidth) {
+	if guestnic.BwLimit != int(input.Bandwidth) || guestnic.TxBwLimit != int(input.TxBwLimit) || guestnic.RxBwLimit != int(input.RxBwLimit) {
 		oldBw := guestnic.BwLimit
+		oldTxBw := guestnic.TxBwLimit
+		oldRxBw := guestnic.RxBwLimit
 		_, err := db.Update(guestnic, func() error {
-			guestnic.BwLimit = int(bandwidth)
+			guestnic.BwLimit = int(input.Bandwidth)
+			guestnic.TxBwLimit = int(input.TxBwLimit)
+			guestnic.RxBwLimit = int(input.RxBwLimit)
 			return nil
 		})
 		if err != nil {
@@ -3363,6 +3400,8 @@ func (guest *SGuest) PerformChangeBandwidth(
 		}
 		eventDesc := guestnic.GetShortDesc(ctx)
 		eventDesc.Add(jsonutils.NewInt(int64(oldBw)), "old_bw_limit_mbps")
+		eventDesc.Add(jsonutils.NewInt(int64(oldTxBw)), "old_tx_bw_limit_mbps")
+		eventDesc.Add(jsonutils.NewInt(int64(oldRxBw)), "old_rx_bw_limit_mbps")
 		db.OpsLog.LogEvent(guest, db.ACT_CHANGE_BANDWIDTH, eventDesc, userCred)
 		logclient.AddActionLogWithContext(ctx, guest, logclient.ACT_VM_CHANGE_BANDWIDTH, eventDesc, userCred, true)
 		if guest.Status == api.VM_READY || (input.NoSync != nil && *input.NoSync) {

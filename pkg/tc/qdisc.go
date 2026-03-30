@@ -16,204 +16,192 @@ package tc
 
 import (
 	"fmt"
-	"strconv"
 	"strings"
+
+	"yunion.io/x/log"
+	"yunion.io/x/pkg/errors"
 )
 
+/*
+ * // add
+ * tc qdisc add dev br0 root handle 1: htb default 2
+ * tc qdisc add dev eth0 root tbf rate 512kbit burst 10kb latency 70ms
+ * // show
+ * qdisc htb 1: root refcnt 2 r2q 10 default 0x2 direct_packets_stat 6 direct_qlen 1000
+ * qdisc clsact ffff: parent ffff:fff1
+ * qdisc tbf 1: root refcnt 2 rate 100Mbit burst 12500b lat 100ms
+ * qdisc fq_codel 10: parent 1: limit 10240p flows 1024 quantum 1514 target 5ms interval 100ms memory_limit 32Mb ecn drop_batch 64
+ */
 type IQdisc interface {
+	ITcObj
+	ITcObjAlter
+
+	Base() *SBaseTcQdisc
+
 	IsRoot() bool
-	Initialized() error
-	BaseQdisc() *Qdisc
-	Equals(IQdisc) bool
-	DeleteLine(ifname string) string
-	ReplaceLine(ifname string) string
 }
 
-type Qdisc struct {
+type SBaseTcQdisc struct {
 	Kind   string
-	Handle uint32
-	Parent uint32
+	Handle string
+	Parent string
 }
 
-func (q *Qdisc) Equals(qi IQdisc) bool {
-	q2, ok := qi.(*Qdisc)
+func (q *SBaseTcQdisc) Id() string {
+	return q.Handle
+}
+
+func (q *SBaseTcQdisc) Compare(qi IComparable) int {
+	q2, ok := qi.(*SBaseTcQdisc)
 	if !ok {
-		return false
-	}
-	if q.Kind != q2.Kind {
-		return false
+		return -1
 	}
 	if q.Handle != q2.Handle {
-		return false
+		return compareClassId(q.Handle, q2.Handle)
+	}
+	if q.Kind != q2.Kind {
+		return strings.Compare(q.Kind, q2.Kind)
 	}
 	if q.Parent != q2.Parent {
-		return false
+		return strings.Compare(q.Parent, q2.Parent)
 	}
-	return true
+	return 0
 }
 
-func (q *Qdisc) BaseQdisc() *Qdisc {
+func (q *SBaseTcQdisc) CompareBase(qi IComparable) int {
+	return q.Compare(qi)
+}
+
+func (q *SBaseTcQdisc) Equals(q2 IComparable) bool {
+	return q.Compare(q2) == 0
+}
+
+func (q *SBaseTcQdisc) BaseQdisc() *SBaseTcQdisc {
 	return q
 }
 
-func (q *Qdisc) IsRoot() bool {
-	return q.Parent == TC_H_ROOT
+func (q *SBaseTcQdisc) IsRoot() bool {
+	return len(q.Parent) == 0
 }
 
-func (q *Qdisc) Initialized() error {
+func (q *SBaseTcQdisc) Base() *SBaseTcQdisc {
+	return q
+}
+
+func (q *SBaseTcQdisc) Initialized() error {
 	if len(q.Kind) == 0 {
 		return fmt.Errorf("kind is missing")
 	}
 	return nil
 }
 
-func (q *Qdisc) basicLineElements(action string, ifname string) []string {
+func (q *SBaseTcQdisc) basicLineElements(action string, ifname string) []string {
 	elms := []string{"qdisc", action, "dev", ifname}
-	if q.Parent == TC_H_ROOT {
+	if len(q.Parent) == 0 {
 		elms = append(elms, "root")
 	} else {
-		elms = append(elms, "parent", sprintHandle(q.Parent))
+		elms = append(elms, "parent", q.Parent)
 	}
-	elms = append(elms, "handle", sprintHandle(q.Handle))
+	elms = append(elms, "handle", q.Handle)
 	return elms
 }
 
-func (q *Qdisc) replaceLineElements(ifname string) []string {
-	elms := q.basicLineElements("replace", ifname)
-	elms = append(elms, q.Kind)
-	return elms
-}
-
-func (q *Qdisc) DeleteLine(ifname string) string {
+func (q *SBaseTcQdisc) DeleteLine(ifname string) string {
 	elms := q.basicLineElements("delete", ifname)
-	line := strings.Join(elms, " ")
-	return line
-}
-func (q *Qdisc) ReplaceLine(ifname string) string {
-	elms := q.replaceLineElements(ifname)
 	line := strings.Join(elms, " ")
 	return line
 }
 
 type QdiscTbf struct {
-	*Qdisc
+	*SBaseTcQdisc
 	Rate    uint64
 	Burst   uint64
-	Cell    uint64
 	Latency uint64
-	Mpu     uint64
 }
 
-func (q *QdiscTbf) Equals(qi IQdisc) bool {
-	q2, ok := qi.(*QdiscTbf)
+func (q *QdiscTbf) Base() *SBaseTcQdisc {
+	return q.SBaseTcQdisc
+}
+
+func (q *QdiscTbf) Compare(itc IComparable) int {
+	baseQdisc, ok := itc.(IQdisc)
 	if !ok {
-		return false
+		return -1
 	}
-	if !q.Qdisc.Equals(q2.Qdisc) {
-		return false
+	baseCmp := q.Base().Compare(baseQdisc.Base())
+	if baseCmp != 0 {
+		return baseCmp
 	}
-	if q.Rate != q2.Rate {
-		return false
+	q2 := baseQdisc.(*QdiscTbf)
+	if q.Rate < q2.Rate {
+		return -1
+	} else if q.Rate > q2.Rate {
+		return 1
 	}
-	if q.Burst != q2.Burst {
-		return false
+	if q.Burst < q2.Burst {
+		return -1
+	} else if q.Burst > q2.Burst {
+		return 1
 	}
-	if q.Cell != q2.Cell {
-		return false
+	if q.Latency < q2.Latency {
+		return -1
+	} else if q.Latency > q2.Latency {
+		return 1
 	}
-	if q.Latency != q2.Latency {
-		return false
-	}
-	if q.Mpu != q2.Mpu {
-		return false
-	}
-	return true
+	return 0
 }
 
-func (q *QdiscTbf) ReplaceLine(ifname string) string {
-	elms := q.Qdisc.replaceLineElements(ifname)
+func (q *QdiscTbf) CompareBase(qi IComparable) int {
+	return q.Base().CompareBase(qi.(IQdisc).Base())
+}
+
+func (q *QdiscTbf) Equals(qi IComparable) bool {
+	return q.Compare(qi) == 0
+}
+
+func (q *QdiscTbf) basicLine(action string, ifname string) string {
+	elms := q.SBaseTcQdisc.basicLineElements(action, ifname)
+	elms = append(elms, q.Kind)
 	elms = append(elms, "rate", PrintRate(q.Rate))
 	burstCell := PrintSize(q.Burst)
-	if q.Cell > 1 {
-		burstCell += fmt.Sprintf("/%d", q.Cell)
-	}
 	elms = append(elms, "burst", burstCell)
 	if q.Latency != 0 {
 		elms = append(elms, "latency", PrintTime(q.Latency))
 	}
-	if q.Mpu != 0 {
-		elms = append(elms, "mpu", PrintSize(q.Mpu))
-	}
 	return strings.Join(elms, " ")
 }
 
-func (q *QdiscTbf) TcNormalizeBurst() error {
-	if q.Rate == 0 {
-		return fmt.Errorf("rate equals zero")
-	}
-	burst := TcTbfBurstNormalize(q.Rate, q.Burst)
-	q.Burst = burst
-	return nil
+func (q *QdiscTbf) AddLine(ifname string) string {
+	return q.basicLine("add", ifname)
 }
 
-type QdiscFqCodel struct {
-	*Qdisc
+func (q *QdiscTbf) ReplaceLine(ifname string) string {
+	return q.basicLine("replace", ifname)
 }
 
-func (q *QdiscFqCodel) Equals(qi IQdisc) bool {
-	q2, ok := qi.(*QdiscFqCodel)
-	if !ok {
-		return false
-	}
-	if !q.Qdisc.Equals(q2.Qdisc) {
-		return false
-	}
-	return true
-}
-func NewBaseQdisc(chunks []string) (*Qdisc, error) {
-	q := &Qdisc{
-		Parent: TC_H_UNSPEC,
-		Handle: TC_H_UNSPEC,
-	}
-	for i, c := range chunks {
+func parseBaseQdisc(chunks []string) (*SBaseTcQdisc, error) {
+	q := &SBaseTcQdisc{}
+	for i := 0; i < len(chunks); {
+		c := chunks[i]
 		switch c {
 		case "qdisc":
-			i++
-			if i >= len(chunks) {
+			if i+2 >= len(chunks) {
 				return nil, fmt.Errorf("eol before getting qdisc type")
 			}
-			q.Kind = chunks[i]
+			q.Kind = chunks[i+1]
+			q.Handle = chunks[i+2]
+			i += 3
 		case "root":
-			q.Parent = TC_H_ROOT
-		case "handle":
+			q.Parent = ""
 			i++
-			if i >= len(chunks) {
-				return nil, fmt.Errorf("eol getting handle")
-			}
-			h, err := parseHandle(chunks[i])
-			if err != nil {
-				return nil, fmt.Errorf("error paring handle: %s", err)
-			}
-			q.Handle = h
 		case "parent":
-			i++
-			if i >= len(chunks) {
+			if i+1 >= len(chunks) {
 				return nil, fmt.Errorf("eol getting parent handle")
 			}
-			h, err := parseHandle(chunks[i])
-			if err != nil {
-				return nil, fmt.Errorf("bad parent handle %s: %s", chunks[i], err)
-			}
-			q.Parent = h
+			q.Parent = chunks[i+1]
+			i += 2
 		default:
-			if q.Handle == TC_H_UNSPEC && i+1 < len(chunks) && strings.Index(chunks[i+1], ":") > 0 {
-				i++
-				h, err := parseHandle(chunks[i])
-				if err != nil {
-					return nil, fmt.Errorf("bad handle %s: %s", chunks[i], err)
-				}
-				q.Handle = h
-			}
+			i++
 		}
 	}
 	if err := q.Initialized(); err != nil {
@@ -222,105 +210,90 @@ func NewBaseQdisc(chunks []string) (*Qdisc, error) {
 	return q, nil
 }
 
-func NewQdiscTbf(chunks []string) (*QdiscTbf, error) {
-	bq, err := NewBaseQdisc(chunks)
-	if err != nil {
-		return nil, err
-	}
-	q := &QdiscTbf{Qdisc: bq}
+func parseQdiscTbf(chunks []string) (*QdiscTbf, error) {
+	q := &QdiscTbf{}
 	for i, c := range chunks {
 		switch c {
 		case "rate":
-			i++
-			if i >= len(chunks) {
-				return nil, fmt.Errorf("eol getting rate")
+			if i+1 >= len(chunks) {
+				return nil, errors.Wrap(errors.ErrInvalidFormat, "eol getting rate")
 			}
-			bytesPerSec, err := ParseRate(chunks[i])
+			bytesPerSec, err := ParseRate(chunks[i+1])
 			if err != nil {
-				return nil, err
+				return nil, errors.Wrap(err, "ParseRate")
 			}
 			q.Rate = bytesPerSec
+			i += 2
 		case "burst":
-			i++
-			if i >= len(chunks) {
-				return nil, fmt.Errorf("eol getting burst")
+			if i+1 >= len(chunks) {
+				return nil, errors.Wrap(errors.ErrInvalidFormat, "eol getting burst")
 			}
-			v := chunks[i]
-			burstCell := strings.Split(v, "/")
-			bursts := burstCell[0]
-			cells := "1"
-			if len(burstCell) == 2 {
-				cells = burstCell[1]
-			} else if len(burstCell) > 2 {
-				return nil, fmt.Errorf("bad burst value %s", v)
+			bursts := chunks[i+1]
+			if strings.Contains(bursts, "/") {
+				burstCell := strings.Split(bursts, "/")
+				bursts = burstCell[0]
 			}
 			burst, err := ParseSize(bursts)
 			if err != nil {
-				return nil, fmt.Errorf("invalid burst size %s: %s", v, err)
-			}
-			cell, err := strconv.ParseUint(cells, 10, 8)
-			if err != nil {
-				return nil, fmt.Errorf("invalid burst cell %s: %s", v, err)
+				return nil, errors.Wrap(err, "ParseSize")
 			}
 			q.Burst = burst
-			q.Cell = cell
+			i += 2
 		case "latency", "lat":
-			i++
-			if i >= len(chunks) {
-				return nil, fmt.Errorf("eol getting latency")
+			if i+1 >= len(chunks) {
+				return nil, errors.Wrap(errors.ErrInvalidFormat, "eol getting latency")
 			}
-			latency, err := ParseTime(chunks[i])
+			latency, err := ParseTime(chunks[i+1])
 			if err != nil {
-				return nil, err
+				return nil, errors.Wrap(err, "ParseTime")
 			}
 			q.Latency = latency
-		case "mpu":
+			i += 2
+		default:
 			i++
-			if i >= len(chunks) {
-				return nil, fmt.Errorf("eol getting mpu")
-			}
-			bytes, err := ParseSize(chunks[i])
-			if err != nil {
-				return nil, err
-			}
-			q.Mpu = bytes
 		}
 	}
-	err = q.TcNormalizeBurst()
-	if err != nil {
-		return nil, err
-	}
+	// err := q.TcNormalizeBurst()
+	// if err != nil {
+	// 	return nil, errors.Wrap(err, "TcNormalizeBurst")
+	// }
 	return q, nil
 }
 
-func NewQdiscFqCodel(chunks []string) (*QdiscFqCodel, error) {
-	bq, err := NewBaseQdisc(chunks)
+func parseQdisc(chunks []string) (IQdisc, error) {
+	bq, err := parseBaseQdisc(chunks)
 	if err != nil {
 		return nil, err
 	}
-	q := &QdiscFqCodel{Qdisc: bq}
-	return q, nil
-}
-
-func NewQdisc(chunks []string) (IQdisc, error) {
-	bq, err := NewBaseQdisc(chunks)
-	if err != nil {
-		return nil, err
-	}
-	var q IQdisc
 	switch bq.Kind {
-	case "fq_codel":
-		q, err = NewQdiscFqCodel(chunks)
+	case "htb":
+		q, err := parseQdiscHtb(chunks)
+		if err != nil {
+			return nil, errors.Wrap(err, "parseQdiscHtb")
+		}
+		q.SBaseTcQdisc = bq
+		return q, nil
 	case "tbf":
-		q, err = NewQdiscTbf(chunks)
-	default:
-		q = bq
+		q, err := parseQdiscTbf(chunks)
+		if err != nil {
+			return nil, errors.Wrap(err, "parseQdiscTbf")
+		}
+		q.SBaseTcQdisc = bq
+		return q, nil
 	}
-	return q, err
+	return nil, errors.Wrap(errors.ErrInvalidFormat, "unknown qdisc type")
 }
 
-func NewQdiscFromString(s string) (IQdisc, error) {
-	chunks := strings.Split(s, " ")
-	q, err := NewQdisc(chunks)
-	return q, err
+func parseQdiscLines(lines []string) ([]IQdisc, error) {
+	qs := []IQdisc{}
+	for _, line := range lines {
+		chunks := strings.Split(strings.TrimSpace(line), " ")
+		q, err := parseQdisc(chunks)
+		if err != nil {
+			log.Errorf("parseQdisc %s failed: %s", line, err)
+		} else {
+			qs = append(qs, q)
+		}
+	}
+	return qs, nil
 }

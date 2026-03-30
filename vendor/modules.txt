@@ -24,8 +24,8 @@ github.com/beevik/etree
 # github.com/cloudflare/golz4 v0.0.0-20150217214814-ef862a3cdc58
 ## explicit
 github.com/cloudflare/golz4
-# github.com/coredns/coredns v1.3.0
-## explicit
+# github.com/coredns/coredns v1.10.1
+## explicit; go 1.18
 github.com/coredns/coredns/plugin/pkg/log
 # github.com/coreos/go-iptables v0.6.0
 ## explicit; go 1.16
@@ -39,7 +39,7 @@ github.com/coreos/go-systemd/v22/journal
 # github.com/davecgh/go-spew v1.1.1
 ## explicit
 github.com/davecgh/go-spew/spew
-# github.com/digitalocean/go-openvswitch v0.0.20260319 => yunion.io/x/go-openvswitch v0.0.20260319
+# github.com/digitalocean/go-openvswitch v0.0.20260416 => yunion.io/x/go-openvswitch v0.0.20260416
 ## explicit; go 1.16
 github.com/digitalocean/go-openvswitch/ovs
 # github.com/docker/spdystream v0.0.0-20160310174837-449fdfce4d96
@@ -53,10 +53,9 @@ github.com/emicklei/go-restful/v3/log
 # github.com/fatih/color v1.13.0
 ## explicit; go 1.13
 github.com/fatih/color
-# github.com/fsnotify/fsnotify v1.8.0
-## explicit; go 1.17
+# github.com/fsnotify/fsnotify v1.6.0
+## explicit; go 1.16
 github.com/fsnotify/fsnotify
-github.com/fsnotify/fsnotify/internal
 # github.com/ghodss/yaml v1.0.0
 ## explicit
 github.com/ghodss/yaml
@@ -204,7 +203,7 @@ github.com/magiconair/properties
 github.com/mailru/easyjson/buffer
 github.com/mailru/easyjson/jlexer
 github.com/mailru/easyjson/jwriter
-# github.com/mattn/go-colorable v0.1.9
+# github.com/mattn/go-colorable v0.1.11
 ## explicit; go 1.13
 github.com/mattn/go-colorable
 # github.com/mattn/go-isatty v0.0.16
@@ -363,21 +362,21 @@ github.com/yusufpapurcu/wmi
 # github.com/zeebo/xxh3 v1.0.2
 ## explicit; go 1.17
 github.com/zeebo/xxh3
-# go.etcd.io/etcd/api/v3 v3.5.0
-## explicit; go 1.16
+# go.etcd.io/etcd/api/v3 v3.5.7
+## explicit; go 1.17
 go.etcd.io/etcd/api/v3/authpb
 go.etcd.io/etcd/api/v3/etcdserverpb
 go.etcd.io/etcd/api/v3/membershippb
 go.etcd.io/etcd/api/v3/mvccpb
 go.etcd.io/etcd/api/v3/v3rpc/rpctypes
 go.etcd.io/etcd/api/v3/version
-# go.etcd.io/etcd/client/pkg/v3 v3.5.0
-## explicit; go 1.16
+# go.etcd.io/etcd/client/pkg/v3 v3.5.7
+## explicit; go 1.17
 go.etcd.io/etcd/client/pkg/v3/logutil
 go.etcd.io/etcd/client/pkg/v3/systemd
 go.etcd.io/etcd/client/pkg/v3/types
-# go.etcd.io/etcd/client/v3 v3.5.0
-## explicit; go 1.16
+# go.etcd.io/etcd/client/v3 v3.5.7
+## explicit; go 1.17
 go.etcd.io/etcd/client/v3
 go.etcd.io/etcd/client/v3/concurrency
 go.etcd.io/etcd/client/v3/credentials
@@ -873,7 +872,7 @@ sigs.k8s.io/structured-merge-diff/v4/value
 # sigs.k8s.io/yaml v1.3.0
 ## explicit; go 1.12
 sigs.k8s.io/yaml
-# yunion.io/x/cloudmux v0.3.10-0-alpha.1.0.20260319063834-1cdb32c4558a
+# yunion.io/x/cloudmux v0.3.10-0-alpha.1.0.20260422030631-9c29a593263c
 ## explicit; go 1.24
 yunion.io/x/cloudmux/pkg/apis
 yunion.io/x/cloudmux/pkg/apis/billing
@@ -896,7 +895,7 @@ yunion.io/x/jsonutils
 ## explicit; go 1.12
 yunion.io/x/log
 yunion.io/x/log/hooks
-# yunion.io/x/onecloud v0.0.0-20260326134600-7756be9d3800
+# yunion.io/x/onecloud v0.0.0-20260424034553-0c6a3770b597
 ## explicit; go 1.24
 yunion.io/x/onecloud/locales
 yunion.io/x/onecloud/pkg/apihelper
@@ -1088,5 +1087,5 @@ yunion.io/x/sqlchemy/backends/clickhouse
 # yunion.io/x/structarg v0.0.0-20231017124457-df4d5009457c
 ## explicit; go 1.12
 yunion.io/x/structarg
-# github.com/digitalocean/go-openvswitch => yunion.io/x/go-openvswitch v0.0.20260319
+# github.com/digitalocean/go-openvswitch => yunion.io/x/go-openvswitch v0.0.20260416
 # github.com/jaypipes/ghw => github.com/zexi/ghw v0.9.1
