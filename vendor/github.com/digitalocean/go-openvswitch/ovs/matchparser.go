@@ -35,7 +35,7 @@ func parseMatch(key string, value string) (Match, error) {
 		return parseIntMatch(key, value, math.MaxUint8)
 	case ctZone:
 		return parseIntMatch(key, value, math.MaxUint16)
-	case tpSRC, tpDST, udpSRC, udpDST, tcpSRC, tcpDST:
+	case tpSRC, tpDST, udpSRC, udpDST, tcpSRC, tcpDST, nxmOfTcpSrc, nxmOfTcpDst, nxmOfUdpSrc, nxmOfUdpDst:
 		return parsePort(key, value, math.MaxUint16)
 	case conjID:
 		return parseIntMatch(key, value, math.MaxUint32)
@@ -82,9 +82,9 @@ func parseMatch(key string, value string) (Match, error) {
 		return parseIntMatch(key, value, math.MaxInt32)
 	case inPort:
 		return parseIntMatch(key, value, math.MaxInt32)
-	case ipv6SRC:
+	case ipv6SRC, nxmOfIpv6Src:
 		return IPv6Source(value), nil
-	case ipv6DST:
+	case ipv6DST, nxmOfIpv6Dst:
 		return IPv6Destination(value), nil
 	case metadata:
 		return parseMetadata(value)
@@ -94,13 +94,13 @@ func parseMatch(key string, value string) (Match, error) {
 		return IPv6Destination(value), nil
 	case ipv6Label:
 		return parseIPv6Label(value)
-	case nwSRC, ipSRC:
+	case nwSRC, ipSRC, nxmOfIpSrc:
 		return NetworkSource(value), nil
 	case tunSRC:
 		return NetworkSource(value), nil
 	case tunDST:
 		return NetworkDestination(value), nil
-	case nwDST, ipDST:
+	case nwDST, ipDST, nxmOfIpDst:
 		return NetworkDestination(value), nil
 	case vlanTCI1:
 		return parseVLANTCI1(value)
@@ -217,7 +217,13 @@ func parseIntMatch(key string, value string, max int) (Match, error) {
 // parsePort parses a port or port/mask Match value from the input key and value,
 // with a maximum possible value of max.
 func parsePort(key string, value string, max int) (Match, error) {
-
+	switch key {
+	case tpSRC, tpDST, udpSRC, udpDST, tcpSRC, tcpDST, nxmOfTcpSrc, nxmOfTcpDst, nxmOfUdpSrc, nxmOfUdpDst:
+		switch value {
+		case tpSRC, tpDST, udpSRC, udpDST, tcpSRC, tcpDST, nxmOfTcpSrc, nxmOfTcpDst, nxmOfUdpSrc, nxmOfUdpDst:
+			return TransportPortMatch(key, value)
+		}
+	}
 	var values []uint64
 	//Split the string
 	ss := strings.Split(value, "/")

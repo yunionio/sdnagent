@@ -58,6 +58,8 @@ func newGuestDesc() *guestDesc {
 type GuestNIC struct {
 	Bridge     string
 	Bw         int
+	TxBwLimit  int `json:"tx_bw_limit"`
+	RxBwLimit  int `json:"rx_bw_limit"`
 	Dns        string
 	Domain     string
 	Driver     string
@@ -108,10 +110,21 @@ type GuestNICVpc struct {
 }
 
 func (n *GuestNIC) TcData() *TcData {
+	ingressMbps := uint64(n.RxBwLimit)
+	egressMbps := uint64(n.TxBwLimit)
+	if ingressMbps == 0 {
+		ingressMbps = uint64(n.Bw)
+	}
+	if egressMbps == 0 {
+		egressMbps = uint64(n.Bw)
+	}
 	return &TcData{
-		Type:        TC_DATA_TYPE_GUEST,
 		Ifname:      n.IfnameHost,
-		IngressMbps: uint64(n.Bw),
+		IngressMbps: ingressMbps,
+		EgressMbps:  egressMbps,
+
+		Bridge: n.Bridge,
+		PortNo: n.PortNo,
 	}
 }
 

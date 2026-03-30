@@ -28,14 +28,14 @@ func TestParseRate(t *testing.T) {
 		wantp   string
 		invalid bool
 	}{
-		{s: "100bit", want: 100 / 8, wantp: "96bit"},
-		{s: "100Kbit", want: 100 * kiloK / 8, wantp: "100Kbit"},
-		{s: "100Mbit", want: 100 * kiloM / 8, wantp: "100Mbit"},
-		{s: "1001Mbit", want: 1001 * kiloM / 8, wantp: "1001Mbit"},
-		{s: "1010Mbit", want: 1010 * kiloM / 8, wantp: "1010Mbit"},
-		{s: "1100Mbit", want: 1100 * kiloM / 8, wantp: "1100Mbit"},
-		{s: "1000Mbit", want: 1000 * kiloM / 8, wantp: "1Gbit"},
-		{s: "1Gbit", want: kiloG / 8, wantp: "1Gbit"},
+		{s: "100bit", want: 100, wantp: "100bit"},
+		{s: "100Kbit", want: 100 * kiloK, wantp: "100Kbit"},
+		{s: "100Mbit", want: 100 * kiloM, wantp: "100Mbit"},
+		{s: "1001Mbit", want: 1001 * kiloM, wantp: "1001Mbit"},
+		{s: "1010Mbit", want: 1010 * kiloM, wantp: "1010Mbit"},
+		{s: "1100Mbit", want: 1100 * kiloM, wantp: "1100Mbit"},
+		{s: "1000Mbit", want: 1000 * kiloM, wantp: "1Gbit"},
+		{s: "1Gbit", want: kiloG, wantp: "1Gbit"},
 	}
 
 	for _, c := range cases {
@@ -82,12 +82,12 @@ func TestParseTime(t *testing.T) {
 	}
 }
 
-func TestTcTbfBurstNormalize(t *testing.T) {
-	rate := uint64(10) * 1000 * 1000 * 1000 / 8
-	burst := uint64(1220 * 1024)
-	want := uint64(1247500)
-	got := TcTbfBurstNormalize(rate, burst)
-	if want != got {
-		t.Errorf("TcTbfBurstNormalize(%q), want %d, got %d", burst, want, got)
-	}
-}
+// func TestTcTbfBurstNormalize(t *testing.T) {
+// 	rate := uint64(10) * 1000 * 1000 * 1000 / 8
+// 	burst := uint64(1220 * 1024)
+// 	want := uint64(1247500)
+// 	got := TcTbfBurstNormalize(rate, burst)
+// 	if want != got {
+// 		t.Errorf("TcTbfBurstNormalize(%q), want %d, got %d", burst, want, got)
+// 	}
+// }

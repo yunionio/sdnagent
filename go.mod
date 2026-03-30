@@ -4,9 +4,9 @@ go 1.21
 
 require (
 	github.com/coreos/go-iptables v0.6.0
-	github.com/digitalocean/go-openvswitch v0.0.20240920
+	github.com/digitalocean/go-openvswitch v0.0.20260416
 	github.com/fsnotify/fsnotify v1.5.4
-	github.com/golang/protobuf v1.5.3
+	github.com/golang/protobuf v1.5.4
 	github.com/mitchellh/go-homedir v1.1.0
 	github.com/pkg/errors v0.9.1
 	github.com/spf13/cobra v0.0.5
@@ -14,13 +14,13 @@ require (
 	github.com/spf13/viper v1.3.2
 	github.com/vishvananda/netlink v1.1.0
 	github.com/vishvananda/netns v0.0.5-0.20240412164733-9469873f4601
-	golang.org/x/net v0.21.0
+	golang.org/x/net v0.23.0
 	google.golang.org/grpc v1.62.0
 	google.golang.org/protobuf v1.35.1
 	yunion.io/x/jsonutils v1.0.1-0.20250507052344-1abcf4f443b1
 	yunion.io/x/log v1.0.1-0.20240305175729-7cf2d6cd5a91
-	yunion.io/x/onecloud v0.0.0-20250901151529-36dc17edc22d
-	yunion.io/x/pkg v1.10.4-0.20250820035218-6008459eb4f0
+	yunion.io/x/onecloud v0.0.0-20260423055212-a47d46602b72
+	yunion.io/x/pkg v1.10.4-0.20260422030155-01b100134978
 )
 
 require (
@@ -96,11 +96,11 @@ require (
 	go.uber.org/atomic v1.7.0 // indirect
 	go.uber.org/multierr v1.6.0 // indirect
 	go.uber.org/zap v1.17.0 // indirect
-	golang.org/x/crypto v0.19.0 // indirect
+	golang.org/x/crypto v0.21.0 // indirect
 	golang.org/x/oauth2 v0.17.0 // indirect
 	golang.org/x/sync v0.8.0 // indirect
 	golang.org/x/sys v0.26.0 // indirect
-	golang.org/x/term v0.17.0 // indirect
+	golang.org/x/term v0.18.0 // indirect
 	golang.org/x/text v0.14.0 // indirect
 	golang.org/x/time v0.5.0 // indirect
 	google.golang.org/appengine v1.6.8 // indirect
@@ -115,20 +115,20 @@ require (
 	k8s.io/apimachinery v0.19.3 // indirect
 	k8s.io/client-go v0.19.3 // indirect
 	k8s.io/cluster-bootstrap v0.19.3 // indirect
-	k8s.io/cri-api v0.22.17 // indirect
+	k8s.io/cri-api v0.28.15 // indirect
 	k8s.io/klog/v2 v2.20.0 // indirect
 	k8s.io/utils v0.0.0-20201110183641-67b214c5f920 // indirect
 	moul.io/http2curl/v2 v2.3.0 // indirect
 	sigs.k8s.io/structured-merge-diff/v4 v4.0.1 // indirect
 	sigs.k8s.io/yaml v1.2.0 // indirect
-	yunion.io/x/cloudmux v0.3.10-0-alpha.1.0.20250829114859-d5e440233b39 // indirect
-	yunion.io/x/executor v0.0.0-20250518005516-5402e9e0bed0 // indirect
+	yunion.io/x/cloudmux v0.3.10-0-alpha.1.0.20260305042141-39d16105837f // indirect
+	yunion.io/x/executor v0.0.0-20260312022053-f538abd2b005 // indirect
 	yunion.io/x/s3cli v0.0.0-20241221171442-1c11599d28e1 // indirect
-	yunion.io/x/sqlchemy v1.1.3-0.20250806073422-e37f5197cec0 // indirect
+	yunion.io/x/sqlchemy v1.1.3-0.20251231025938-b0a38f6e9fab // indirect
 	yunion.io/x/structarg v0.0.0-20231017124457-df4d5009457c // indirect
 )
 
 replace (
-	github.com/digitalocean/go-openvswitch => yunion.io/x/go-openvswitch v0.0.20240920
+	github.com/digitalocean/go-openvswitch => yunion.io/x/go-openvswitch v0.0.20260416
 	github.com/jaypipes/ghw => github.com/zexi/ghw v0.9.1
 )

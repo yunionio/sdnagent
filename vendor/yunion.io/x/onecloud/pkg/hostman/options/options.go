@@ -60,6 +60,8 @@ type SHostBaseOptions struct {
 	TelegrafKafkaOutputSaslUsername  string `json:"telegraf_kafka_output_sasl_username" help:"telegraf kafka output sasl_username"`
 	TelegrafKafkaOutputSaslPassword  string `json:"telegraf_kafka_output_sasl_password" help:"telegraf kafka output sasl_password"`
 	TelegrafKafkaOutputSaslMechanism string `json:"telegraf_kafka_output_sasl_mechanism" help:"telegraf kafka output sasl_mechanism"`
+
+	BackupTaskWorkerCount int `default:"3" help:"backup task worker count"`
 }
 
 type SHostOptions struct {
@@ -143,12 +145,12 @@ type SHostOptions struct {
 	UseBootVga             bool `default:"false" help:"Use boot VGA GPU for guest"`
 
 	EnableStrictCpuBind         bool   `default:"false" help:"Enable strict cpu bind, one vcpu bind one pcpu"`
-	EnableHostAgentNumaAllocate bool   `default:"false" help:"Enable host agent numa allocate"`
+	EnableHostAgentNumaAllocate bool   `default:"true" help:"Enable host agent numa allocate"`
 	EnableCpuBinding            bool   `default:"true" help:"Enable cpu binding and rebalance"`
 	EnableOpenflowController    bool   `default:"false"`
 	BootVgaPciAddr              string `help:"Specific boot vga pci addr incase detect wrong device"`
 
-	PingRegionInterval int      `default:"60" help:"interval to ping region, deefault is 1 minute"`
+	PingRegionInterval int      `default:"60" help:"interval to ping region, default is 1 minute"`
 	LogSystemdUnits    []string `help:"Systemd units log collected by fluent-bit"`
 	// 更改默认带宽限速为400GBps, qiujian
 	BandwidthLimit int `default:"400000" help:"Bandwidth upper bound when migrating disk image in MB/sec, default 400GBps"`
@@ -249,6 +251,13 @@ type SHostOptions struct {
 	EnableDirtyRecoverySeconds int  `help:"Seconds to delay enable dirty guests recovery feature, default 15 minutes" default:"900"`
 	EnableContainerCniPortmap  bool `help:"Use container cni portmap plugin" default:"false"`
 	DisableReconcileContainer  bool `help:"disable reconcile container" default:"false"`
+
+	// Container log rotation (Docker-style max-size and max-file)
+	ContainerLogMaxSize  string `help:"Max size of container log file before rotation (e.g. 10m, 100k). Disabled if empty or <= 0" default:"256m"`
+	ContainerLogMaxFiles int    `help:"Max number of container log files to keep (current + rotated). Disabled if <= 0" default:"1"`
+
+	PortMappingRangeStart int `default:"20000" help:"port mapping range start for guest port mapping allocation"`
+	PortMappingRangeEnd   int `default:"25000" help:"port mapping range end for guest port mapping allocation"`
 }
 
 func (o SHostOptions) HostLocalNetconfPath(br string) string {

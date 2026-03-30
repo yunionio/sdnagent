@@ -73,8 +73,34 @@ func (p *actionParser) Parse() ([]Action, []string, error) {
 		actions = append(actions, a)
 		raw = append(raw, r)
 	}
-
+	actions = mergeLoads(actions)
 	return actions, raw, nil
+}
+
+func mergeLoads(actions []Action) []Action {
+	merged := make([]Action, 0)
+	for i := range actions {
+		doMerge := false
+		if load, ok := actions[i].(*loadSetFieldAction); ok {
+			for j := range merged {
+				if oldLoad, ok := merged[j].(*loadSetFieldAction); ok && oldLoad.field == load.field && oldLoad.byteAligned() && load.byteAligned() {
+					if oldLoad.endIdx+1 == load.startIdx {
+						oldLoad.value = "0x" + load.alignedValue() + oldLoad.alignedValue()
+						oldLoad.endIdx = load.endIdx
+						doMerge = true
+					} else if oldLoad.startIdx == load.endIdx+1 {
+						oldLoad.value = "0x" + oldLoad.alignedValue() + load.alignedValue()
+						oldLoad.startIdx = load.startIdx
+						doMerge = true
+					}
+				}
+			}
+		}
+		if !doMerge {
+			merged = append(merged, actions[i])
+		}
+	}
+	return merged
 }
 
 // parseAction parses a single Action and its raw text from the wrapped

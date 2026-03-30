@@ -39,7 +39,7 @@ github.com/coreos/go-systemd/v22/journal
 # github.com/davecgh/go-spew v1.1.1
 ## explicit
 github.com/davecgh/go-spew/spew
-# github.com/digitalocean/go-openvswitch v0.0.20240920 => yunion.io/x/go-openvswitch v0.0.20240920
+# github.com/digitalocean/go-openvswitch v0.0.20260416 => yunion.io/x/go-openvswitch v0.0.20260416
 ## explicit; go 1.16
 github.com/digitalocean/go-openvswitch/ovs
 # github.com/docker/docker v17.12.0-ce-rc1.0.20200916142827-bd33bbf0497b+incompatible
@@ -105,8 +105,8 @@ github.com/golang-plus/uuid/internal/namebased/md5
 github.com/golang-plus/uuid/internal/namebased/sha1
 github.com/golang-plus/uuid/internal/random
 github.com/golang-plus/uuid/internal/timebased
-# github.com/golang/protobuf v1.5.3
-## explicit; go 1.9
+# github.com/golang/protobuf v1.5.4
+## explicit; go 1.17
 github.com/golang/protobuf/proto
 github.com/golang/protobuf/ptypes
 github.com/golang/protobuf/ptypes/any
@@ -352,7 +352,7 @@ go.uber.org/zap/internal/color
 go.uber.org/zap/internal/exit
 go.uber.org/zap/zapcore
 go.uber.org/zap/zapgrpc
-# golang.org/x/crypto v0.19.0
+# golang.org/x/crypto v0.21.0
 ## explicit; go 1.18
 golang.org/x/crypto/argon2
 golang.org/x/crypto/bcrypt
@@ -367,7 +367,7 @@ golang.org/x/crypto/sha3
 golang.org/x/crypto/ssh
 golang.org/x/crypto/ssh/internal/bcrypt_pbkdf
 golang.org/x/crypto/ssh/terminal
-# golang.org/x/net v0.21.0
+# golang.org/x/net v0.23.0
 ## explicit; go 1.18
 golang.org/x/net/bpf
 golang.org/x/net/context
@@ -400,7 +400,7 @@ golang.org/x/sys/cpu
 golang.org/x/sys/plan9
 golang.org/x/sys/unix
 golang.org/x/sys/windows
-# golang.org/x/term v0.17.0
+# golang.org/x/term v0.18.0
 ## explicit; go 1.18
 golang.org/x/term
 # golang.org/x/text v0.14.0
@@ -709,8 +709,8 @@ k8s.io/client-go/util/workqueue
 ## explicit; go 1.15
 k8s.io/cluster-bootstrap/token/api
 k8s.io/cluster-bootstrap/token/util
-# k8s.io/cri-api v0.22.17
-## explicit; go 1.16
+# k8s.io/cri-api v0.28.15
+## explicit; go 1.20
 k8s.io/cri-api/pkg/apis/runtime/v1
 # k8s.io/klog/v2 v2.20.0
 ## explicit; go 1.13
@@ -727,7 +727,7 @@ sigs.k8s.io/structured-merge-diff/v4/value
 # sigs.k8s.io/yaml v1.2.0
 ## explicit; go 1.12
 sigs.k8s.io/yaml
-# yunion.io/x/cloudmux v0.3.10-0-alpha.1.0.20250829114859-d5e440233b39
+# yunion.io/x/cloudmux v0.3.10-0-alpha.1.0.20260305042141-39d16105837f
 ## explicit; go 1.21
 yunion.io/x/cloudmux/pkg/apis
 yunion.io/x/cloudmux/pkg/apis/billing
@@ -739,7 +739,7 @@ yunion.io/x/cloudmux/pkg/multicloud/esxi
 yunion.io/x/cloudmux/pkg/multicloud/esxi/vcenter
 yunion.io/x/cloudmux/pkg/multicloud/objectstore
 yunion.io/x/cloudmux/pkg/multicloud/objectstore/provider
-# yunion.io/x/executor v0.0.0-20250518005516-5402e9e0bed0
+# yunion.io/x/executor v0.0.0-20260312022053-f538abd2b005
 ## explicit; go 1.12
 yunion.io/x/executor/apis
 yunion.io/x/executor/client
@@ -750,7 +750,7 @@ yunion.io/x/jsonutils
 ## explicit; go 1.12
 yunion.io/x/log
 yunion.io/x/log/hooks
-# yunion.io/x/onecloud v0.0.0-20250901151529-36dc17edc22d
+# yunion.io/x/onecloud v0.0.0-20260423055212-a47d46602b72
 ## explicit; go 1.21
 yunion.io/x/onecloud/locales
 yunion.io/x/onecloud/pkg/apihelper
@@ -813,6 +813,9 @@ yunion.io/x/onecloud/pkg/hostman/hostutils/kubelet/eviction
 yunion.io/x/onecloud/pkg/hostman/isolated_device
 yunion.io/x/onecloud/pkg/hostman/metadata
 yunion.io/x/onecloud/pkg/hostman/options
+yunion.io/x/onecloud/pkg/hostman/storageman/backupstorage
+yunion.io/x/onecloud/pkg/hostman/storageman/backupstorage/nfs
+yunion.io/x/onecloud/pkg/hostman/storageman/backupstorage/object
 yunion.io/x/onecloud/pkg/hostman/system_service
 yunion.io/x/onecloud/pkg/httperrors
 yunion.io/x/onecloud/pkg/i18n
@@ -883,7 +886,7 @@ yunion.io/x/onecloud/pkg/util/tagutils
 yunion.io/x/onecloud/pkg/util/yunionmeta
 yunion.io/x/onecloud/pkg/vpcagent/models
 yunion.io/x/onecloud/pkg/vpcagent/ovn/mac
-# yunion.io/x/pkg v1.10.4-0.20250820035218-6008459eb4f0
+# yunion.io/x/pkg v1.10.4-0.20260422030155-01b100134978
 ## explicit; go 1.18
 yunion.io/x/pkg/appctx
 yunion.io/x/pkg/errors
@@ -931,12 +934,12 @@ yunion.io/x/pkg/utils
 # yunion.io/x/s3cli v0.0.0-20241221171442-1c11599d28e1
 ## explicit; go 1.12
 yunion.io/x/s3cli
-# yunion.io/x/sqlchemy v1.1.3-0.20250806073422-e37f5197cec0
+# yunion.io/x/sqlchemy v1.1.3-0.20251231025938-b0a38f6e9fab
 ## explicit; go 1.17
 yunion.io/x/sqlchemy
 yunion.io/x/sqlchemy/backends/clickhouse
 # yunion.io/x/structarg v0.0.0-20231017124457-df4d5009457c
 ## explicit; go 1.12
 yunion.io/x/structarg
-# github.com/digitalocean/go-openvswitch => yunion.io/x/go-openvswitch v0.0.20240920
+# github.com/digitalocean/go-openvswitch => yunion.io/x/go-openvswitch v0.0.20260416
 # github.com/jaypipes/ghw => github.com/zexi/ghw v0.9.1

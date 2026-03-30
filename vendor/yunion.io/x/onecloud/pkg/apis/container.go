@@ -81,6 +81,8 @@ type ContainerResources struct {
 	// flag is enabled in a cgroup, a new cpuset cgroup will copy its
 	// configuration fromthe parent during initialization.
 	CpusetCloneChildren bool `json:"cpuset_clone_children"`
+	// cgroup memory.high
+	MemoryHighRatio *float64 `json:"memory_high_ratio"`
 }
 
 type ContainerEnvRefValueType string
@@ -94,6 +96,16 @@ type ContainerIsolatedDeviceOnlyEnv struct {
 	FromRenderPath  bool   `json:"from_render_path"`
 	FromIndex       bool   `json:"from_index"`
 	FromDeviceMinor bool   `json:"from_device_minor"`
+}
+
+type ContainerCDIKind string
+
+var (
+	CONTAINER_CDI_KIND_NVIDIA_GPU ContainerCDIKind = "nvidia.com/gpu"
+)
+
+type ContainerIsolatedDeviceCDI struct {
+	Kind ContainerCDIKind
 }
 
 type ContainerSpec struct {
@@ -246,9 +258,16 @@ func (o ContainerVolumeMountDiskOverlay) IsValid() error {
 	return nil
 }
 
+type HostLowerPath struct {
+	PrePath  string `json:"pre_path"`
+	PostPath string `json:"post_path"`
+}
+
 type ContainerVolumeMountDiskPostImageOverlay struct {
 	Id      string            `json:"id"`
 	PathMap map[string]string `json:"path_map"`
+	// 宿主机底层目录映射, key 为 PathMap 的 key，value 为 overlay lower 格式，多目录以 ":" 分隔
+	HostLowerMap map[string]*HostLowerPath `json:"host_lower_map"`
 }
 
 type ContainerVolumeMountDiskPostImageOverlayUnpacker ContainerVolumeMountDiskPostImageOverlay
@@ -261,6 +280,7 @@ func (ov *ContainerVolumeMountDiskPostImageOverlay) UnmarshalJSON(data []byte) e
 	ov.Id = nov.Id
 	// 防止 PathMap 被合并，总是用 Unarmshal data 里面的 path_map
 	ov.PathMap = nov.PathMap
+	ov.HostLowerMap = nov.HostLowerMap
 	return nil
 }
 
@@ -279,6 +299,7 @@ type ContainerVolumeMountDiskPostOverlay struct {
 	Image              *ContainerVolumeMountDiskPostImageOverlay `json:"image"`
 	FsUser             *int64                                    `json:"fs_user,omitempty"`
 	FsGroup            *int64                                    `json:"fs_group,omitempty"`
+	FlattenLayers      bool                                      `json:"flatten_layers"`
 }
 
 func (o ContainerVolumeMountDiskPostOverlay) IsEqual(input ContainerVolumeMountDiskPostOverlay) bool {
@@ -361,4 +382,7 @@ type ContainerRootfs struct {
 	Type ContainerVolumeMountType  `json:"type"`
 	Disk *ContainerVolumeMountDisk `json:"disk"`
 	//CephFS *ContainerVolumeMountCephFS `json:"ceph_fs"`
+
+	// 是否持久化
+	Persistent bool `json:"persistent"`
 }

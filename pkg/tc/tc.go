@@ -17,6 +17,8 @@ package tc
 import (
 	"context"
 	"os/exec"
+
+	"yunion.io/x/pkg/errors"
 )
 
 type TcCli struct {
@@ -35,12 +37,16 @@ func (tc *TcCli) Details(details bool) *TcCli {
 }
 
 func (tc *TcCli) QdiscShow(ctx context.Context, ifname string) (*QdiscTree, error) {
-	cmd := exec.CommandContext(ctx, "tc", "qdisc", "show", "dev", ifname)
-	output, err := cmd.Output()
-	if err != nil {
-		return nil, err
+	outputs := make([]string, 3)
+	for i, tcType := range []string{"qdisc", "class", "filter"} {
+		cmd := exec.CommandContext(ctx, "tc", tcType, "show", "dev", ifname)
+		output, err := cmd.Output()
+		if err != nil {
+			return nil, errors.Wrapf(err, "tc %s show", tcType)
+		}
+		outputs[i] = string(output)
 	}
-	qt, err := NewQdiscTreeFromString(string(output))
+	qt, err := NewQdiscTreeFromString(string(outputs[0]), string(outputs[1]), string(outputs[2]))
 	return qt, err
 }
 

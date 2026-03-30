@@ -414,7 +414,7 @@ func (g *Guest) FlowsMapForNic(nic *GuestNIC) ([]*ovs.Flow, error) {
 			}
 		}
 
-		if nic.PortMappings != nil && len(nic.PortMappings) > 0 {
+		if len(nic.PortMappings) > 0 {
 			for _, pm := range nic.PortMappings {
 				if len(pm.RemoteIps) == 0 {
 					pm.RemoteIps = []string{"0.0.0.0/0"}

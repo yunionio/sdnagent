@@ -86,6 +86,15 @@ const (
 	tcpSRC      = "tcp_src"
 	vlanTCI1    = "vlan_tci1"
 	vlanTCI     = "vlan_tci"
+
+	nxmOfTcpSrc  = "NXM_OF_TCP_SRC[]"
+	nxmOfTcpDst  = "NXM_OF_TCP_DST[]"
+	nxmOfUdpSrc  = "NXM_OF_UDP_SRC[]"
+	nxmOfUdpDst  = "NXM_OF_UDP_DST[]"
+	nxmOfIpSrc   = "NXM_OF_IP_SRC[]"
+	nxmOfIpDst   = "NXM_OF_IP_DST[]"
+	nxmOfIpv6Src = "NXM_NX_IPV6_SRC[]"
+	nxmOfIpv6Dst = "NXM_NX_IPV6_DST[]"
 )
 
 // A Match is a type which can be marshaled into an OpenFlow packet matching
@@ -264,6 +273,23 @@ func (m *dataLinkVLANPCPMatch) GoString() string {
 // NetworkSource matches packets with a source IPv4 address or IPv4 CIDR
 // block matching ip.
 func NetworkSource(ip string) Match {
+	switch {
+	case strings.EqualFold(ip, "NXM_OF_IP_DST[]"):
+		return &networkAddrMatch{
+			key:   "NXM_OF_IP_SRC[]",
+			value: "NXM_OF_IP_DST[]",
+		}
+	case strings.EqualFold(ip, "nw_dst"):
+		return &networkAddrMatch{
+			key:   "nw_src",
+			value: "nw_dst",
+		}
+	case strings.EqualFold(ip, "ip_dst"):
+		return &networkAddrMatch{
+			key:   "ip_src",
+			value: "ip_dst",
+		}
+	}
 	return &networkMatch{
 		srcdst: source,
 		ip:     ip,
@@ -273,6 +299,23 @@ func NetworkSource(ip string) Match {
 // NetworkDestination matches packets with a destination IPv4 address or
 // IPv4 CIDR block matching ip.
 func NetworkDestination(ip string) Match {
+	switch {
+	case strings.EqualFold(ip, "NXM_OF_IP_SRC[]"):
+		return &networkAddrMatch{
+			key:   "NXM_OF_IP_DST[]",
+			value: "NXM_OF_IP_SRC[]",
+		}
+	case strings.EqualFold(ip, "nw_src"):
+		return &networkAddrMatch{
+			key:   "nw_dst",
+			value: "nw_src",
+		}
+	case strings.EqualFold(ip, "ip_src"):
+		return &networkAddrMatch{
+			key:   "ip_dst",
+			value: "ip_src",
+		}
+	}
 	return &networkMatch{
 		srcdst: destination,
 		ip:     ip,
@@ -582,6 +625,18 @@ func (m *networkProtocolMatch) GoString() string {
 // IPv6Source matches packets with a source IPv6 address or IPv6 CIDR
 // block matching ip.
 func IPv6Source(ip string) Match {
+	switch {
+	case strings.EqualFold(ip, "NXM_NX_IPV6_DST[]"):
+		return &networkAddrMatch{
+			key:   "NXM_NX_IPV6_SRC[]",
+			value: "NXM_NX_IPV6_DST[]",
+		}
+	case strings.EqualFold(ip, "ipv6_dst"):
+		return &networkAddrMatch{
+			key:   "ipv6_src",
+			value: "ipv6_dst",
+		}
+	}
 	return &ipv6Match{
 		srcdst: source,
 		ip:     ip,
@@ -591,6 +646,18 @@ func IPv6Source(ip string) Match {
 // IPv6Destination matches packets with a destination IPv6 address or
 // IPv6 CIDR block matching ip.
 func IPv6Destination(ip string) Match {
+	switch {
+	case strings.EqualFold(ip, "NXM_NX_IPV6_SRC[]"):
+		return &networkAddrMatch{
+			key:   "NXM_NX_IPV6_DST[]",
+			value: "NXM_NX_IPV6_SRC[]",
+		}
+	case strings.EqualFold(ip, "ipv6_src"):
+		return &networkAddrMatch{
+			key:   "ipv6_dst",
+			value: "ipv6_src",
+		}
+	}
 	return &ipv6Match{
 		srcdst: destination,
 		ip:     ip,
@@ -1660,6 +1727,8 @@ func (m *tunnelMatch) MarshalText() ([]byte, error) {
 func matchIPv4AddressOrCIDR(key string, ip string) ([]byte, error) {
 	errInvalidIPv4 := fmt.Errorf("%q is not a valid IPv4 address or IPv4 CIDR block", ip)
 
+	ip = strings.TrimSuffix(ip, "/32")
+
 	if ipAddr, _, err := net.ParseCIDR(ip); err == nil {
 		if ipAddr.To4() == nil {
 			return nil, errInvalidIPv4
@@ -1797,4 +1866,52 @@ func (m *fieldMatch) GoString() string {
 // MarshalText implements Match.
 func (m *fieldMatch) MarshalText() ([]byte, error) {
 	return bprintf("%s=%s", m.field, m.srcOrValue), nil
+}
+
+func TransportPortMatch(key string, value string) (Match, error) {
+	return &transportPortLearnMatch{
+		key:   key,
+		value: value,
+	}, nil
+}
+
+type transportPortLearnMatch struct {
+	key   string
+	value string
+}
+
+var _ Match = &transportPortLearnMatch{}
+
+// GoString implements Match.
+func (m *transportPortLearnMatch) GoString() string {
+	return fmt.Sprintf("ovs.TransportPortMatch(%v,%v)", m.key, m.value)
+}
+
+// MarshalText implements Match.
+func (m *transportPortLearnMatch) MarshalText() ([]byte, error) {
+	return bprintf("%s=%s", m.key, m.value), nil
+}
+
+func NetworkAddrMatch(key string, value string) (Match, error) {
+	return &networkAddrMatch{
+		key:   key,
+		value: value,
+	}, nil
+}
+
+type networkAddrMatch struct {
+	key   string
+	value string
+}
+
+var _ Match = &networkAddrMatch{}
+
+// GoString implements Match.
+func (m *networkAddrMatch) GoString() string {
+	return fmt.Sprintf("ovs.NetworkAddrMatch(%v,%v)", m.key, m.value)
+}
+
+// MarshalText implements Match.
+func (m *networkAddrMatch) MarshalText() ([]byte, error) {
+	return bprintf("%s=%s", m.key, m.value), nil
 }
