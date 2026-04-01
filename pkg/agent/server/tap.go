@@ -189,7 +189,9 @@ func (man *tapMan) syncTapConfig(ctx context.Context) error {
 	}
 	// sync brtap flows
 	flowman := man.agent.GetFlowMan(man.tapBridge())
-	flowman.updateFlows(ctx, "tapman", tapFlows)
+	if flowman != nil {
+		flowman.updateFlows(ctx, "tapman", tapFlows)
+	}
 
 	mirrorMap, err := fetchMirrorList(ctx)
 	if err != nil {
