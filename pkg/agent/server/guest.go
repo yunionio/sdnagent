@@ -174,7 +174,9 @@ func (g *Guest) updateClassicFlows(ctx context.Context) (err error) {
 	bfs, err := g.FlowsMap()
 	for bridge, flows := range bfs {
 		flowman := g.watcher.agent.GetFlowMan(bridge)
-		flowman.updateFlows(ctx, g.Who(), flows)
+		if flowman != nil {
+			flowman.updateFlows(ctx, g.Who(), flows)
+		}
 	}
 	return
 }
@@ -187,7 +189,9 @@ func (g *Guest) clearClassicFlows(ctx context.Context) {
 	}
 	for bridge, _ := range bridges {
 		flowman := g.watcher.agent.GetFlowMan(bridge)
-		flowman.updateFlows(ctx, g.Who(), []*ovs.Flow{})
+		if flowman != nil {
+			flowman.updateFlows(ctx, g.Who(), []*ovs.Flow{})
+		}
 	}
 	g.clearPending()
 }
