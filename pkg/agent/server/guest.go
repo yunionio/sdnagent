@@ -22,6 +22,7 @@ import (
 	"github.com/digitalocean/go-openvswitch/ovs"
 
 	"yunion.io/x/log"
+	"yunion.io/x/pkg/gotypes"
 	"yunion.io/x/sdnagent/pkg/agent/utils"
 
 	"yunion.io/x/onecloud/pkg/mcclient/auth"
@@ -187,6 +188,10 @@ func (g *Guest) clearClassicFlows(ctx context.Context) {
 	}
 	for bridge, _ := range bridges {
 		flowman := g.watcher.agent.GetFlowMan(bridge)
+		// 宿主机换过网桥名称，且宿主机上的虚拟机一直关机，未推送配置，会导致flowman为nil
+		if gotypes.IsNil(flowman) {
+			continue
+		}
 		flowman.updateFlows(ctx, g.Who(), []*ovs.Flow{})
 	}
 	g.clearPending()
