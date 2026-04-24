@@ -170,7 +170,8 @@ func (hcn *HostConfigNetwork) loadHostLocalNetconfs(hc *HostConfig) {
 type HostConfig struct {
 	options.SHostOptions
 
-	networks []*HostConfigNetwork
+	networks  []*HostConfigNetwork
+	masterNic *netutils2.SNetInterface
 }
 
 func (hc *HostConfig) MetadataPort() int {
@@ -290,4 +291,24 @@ func (hc *HostConfig) Auth(ctx context.Context) error {
 	}
 	auth.Init(a, debugClient, insecure, certfile, keyfile)
 	return nil
+}
+
+func (hc *HostConfig) findMasterNic() *netutils2.SNetInterface {
+	if hc.ListenInterface != "" {
+		return netutils2.NewNetInterface(hc.ListenInterface)
+	}
+	for _, network := range hc.networks {
+		if network.IP != nil || network.IP6 != nil {
+			return netutils2.NewNetInterface(network.Bridge)
+		}
+	}
+	return nil
+}
+
+func (hc *HostConfig) MasterNic() *netutils2.SNetInterface {
+	if hc.masterNic != nil {
+		return hc.masterNic
+	}
+	hc.masterNic = hc.findMasterNic()
+	return hc.masterNic
 }
