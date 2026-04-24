@@ -215,24 +215,27 @@ func (h *HostLocal) FlowsMap() (map[string][]*ovs.Flow, error) {
 			// 如果是从虚拟机发出的，新的报文，则应该丢弃
 			F(9, 31001, "reg0=0x4,tcp,ct_state=+new+trk", "drop"),
 			F(9, 31000, "reg0=0x4,udp,ct_state=+new+trk", "drop"),
-			// 如果从外部或者本地请求的新的报文，则commit，并正常转发
-			F(9, 30001, "tcp,ct_state=+new+trk", "ct(commit,exec(move:NXM_NX_REG0[]->NXM_NX_CT_MARK[])),normal"),
-			F(9, 30000, "udp,ct_state=+new+trk", "ct(commit,exec(move:NXM_NX_REG0[]->NXM_NX_CT_MARK[])),normal"),
-			// 如果是从虚拟机发出的，且ct_mark=2的，是直接请求流量的响应，需正常处理
-			F(9, 20003, "reg0=0x4,tcp,ct_state=+est+trk,ct_mark=0x2", "normal"),
-			F(9, 20002, "reg0=0x4,udp,ct_state=+est+trk,ct_mark=0x2", "normal"),
-			// 如果是从虚拟机发出的，且ct_mark=1的，是外部做了port_mapping请求的响应，需要转到table=10 UNDO DNAT
-			F(9, 20001, "reg0=0x4,tcp,ct_state=+est+trk,ct_mark=0x1", "resubmit(,10)"),
-			F(9, 20000, "reg0=0x4,udp,ct_state=+est+trk,ct_mark=0x1", "resubmit(,10)"),
-			// 其他的是从外部进入的，正常转发
-			F(9, 10001, "tcp,ct_state=+est+trk", "normal"),
-			F(9, 10000, "udp,ct_state=+est+trk", "normal"),
+			// 如果从外部或者本地请求的新的报文，本地端口，则commit，并正常转发
+			F(9, 30001, "reg0=0x1,tcp,ct_state=+new+trk", "ct(commit),output:NXM_NX_REG1[]"),
+			F(9, 30000, "reg0=0x1,udp,ct_state=+new+trk", "ct(commit),output:NXM_NX_REG1[]"),
+			// 如果从外部或者本地请求的新的报文，hostlocal端口，则commit，并正常转发
+			F(9, 30001, "reg0=0x2,tcp,ct_state=+new+trk", "ct(commit),local"),
+			F(9, 30000, "reg0=0x2,udp,ct_state=+new+trk", "ct(commit),local"),
+			// 如果是从虚拟机发出的响应，需table=10处理
+			F(9, 20003, "reg0=0x4,tcp,ct_state=+est+trk", "resubmit(,10)"),
+			F(9, 20002, "reg0=0x4,udp,ct_state=+est+trk", "resubmit(,10)"),
+			// 其他的是从外部进入的, 本地端口，正常转发
+			F(9, 10001, "reg0=0x1,tcp,ct_state=+est+trk", "output:NXM_NX_REG1[]"),
+			F(9, 10000, "reg0=0x1,udp,ct_state=+est+trk", "output:NXM_NX_REG1[]"),
+			// 其他的是从外部进入的， hostlocal端口, 正常转发
+			F(9, 10001, "reg0=0x2,tcp,ct_state=+est+trk", "local"),
+			F(9, 10000, "reg0=0x2,udp,ct_state=+est+trk", "local"),
 			// 其他 drop
 			F(9, 1000, "", "drop"),
 		)
 	} else {
 		flows = append(flows,
-			F(9, 1000, "", "normal"),
+			F(10, 1000, "", "drop"),
 		)
 	}
 	{
@@ -371,15 +374,15 @@ func ip6ToHex(ip6str string) string {
 	return stringutils.Bytes2Str(ip6[0:16])
 }
 
-func guestNicPortMappingFlows(nic *GuestNIC, nicPortNo int, nicIP string, nicMAC string) []*ovs.Flow {
+func guestNicPortMappingFlows(nic *GuestNIC, nicPortNo int, nicIP string, nicMAC string, phyPortNo int, vlanMatch string) []*ovs.Flow {
 	flows := make([]*ovs.Flow, 0, 128)
 	for _, pm := range nic.PortMappings {
-		flows = append(flows, eachGuestNicPortMappingFlows(pm, nicPortNo, nicIP, nicMAC)...)
+		flows = append(flows, eachGuestNicPortMappingFlows(pm, nicPortNo, nicIP, nicMAC, phyPortNo, vlanMatch)...)
 	}
 	return flows
 }
 
-func eachGuestNicPortMappingFlows(pm *compute.GuestPortMapping, nicPortNo int, nicIP string, nicMAC string) []*ovs.Flow {
+func eachGuestNicPortMappingFlows(pm *compute.GuestPortMapping, nicPortNo int, nicIP string, nicMAC string, phyPortNo int, vlanMatch string) []*ovs.Flow {
 	flows := make([]*ovs.Flow, 0, 16)
 	if len(pm.RemoteIps) == 0 {
 		pm.RemoteIps = []string{"0.0.0.0/0"}
@@ -410,35 +413,53 @@ func eachGuestNicPortMappingFlows(pm *compute.GuestPortMapping, nicPortNo int, n
 			nxmTpDst = "NXM_OF_TCP_DST[]"
 		}
 
-		learnStr := fmt.Sprintf("priority=10000,idle_timeout=30,in_port=%d,eth_type=0x0800,nw_proto=%d,%s=%d,%s,load:NXM_OF_ETH_DST[]->NXM_OF_ETH_SRC[],load:NXM_OF_ETH_SRC[]->NXM_OF_ETH_DST[],load:NXM_OF_IP_DST[]->NXM_OF_IP_SRC[],load:%s->%s,output:NXM_OF_IN_PORT[]", nicPortNo, protoNum, tpSrcField, pm.Port, tpDstMatch, nxmTpDst, nxmTpSrc)
-		flows = append(flows,
-			// 外部访问的流量, 需要DNAT, reg0=1
-			// F(0, 28200, fmt.Sprintf("in_port=%d,ip,%s%s,tp_dst=%d", portNoPhy, srcIpStr, pm.Protocol, *pm.HostPort), fmt.Sprintf("learn(%s),load:0x1->NXM_NX_REG0[],mod_dl_dst:%s,mod_nw_dst:%s,mod_tp_dst:%d,resubmit(,9)", learnStr, nicMAC, nicIP, pm.Port)),
-			F(0, 28200, fmt.Sprintf("ip,%s%s,tp_dst=%d", srcIpStr, pm.Protocol, *pm.HostPort), fmt.Sprintf("learn(table=10,%s),load:0x1->NXM_NX_REG0[],mod_dl_dst:%s,mod_nw_dst:%s,mod_tp_dst:%d,resubmit(,9)", learnStr, nicMAC, nicIP, pm.Port)),
-			// 外部直接访问的流量，不需要DNAT，reg0=2
-			// F(0, 28205, fmt.Sprintf("in_port=%d,ip,%snw_dst=%s,%s,tp_dst=%d", portNoPhy, srcIpStr, nicIP, pm.Protocol, pm.Port), "load:0x2->NXM_NX_REG0[],resubmit(,9)"),
-			F(0, 28205, fmt.Sprintf("ip,%snw_dst=%s,%s,tp_dst=%d", srcIpStr, nicIP, pm.Protocol, pm.Port), "load:0x2->NXM_NX_REG0[],resubmit(,9)"),
-		)
+		if nicPortNo < 0 {
+			learnStr1 := fmt.Sprintf("priority=10000,idle_timeout=300,in_port=LOCAL,eth_type=0x0800,nw_src=%s,NXM_OF_IP_DST[]=NXM_OF_IP_SRC[],nw_proto=%d,%s=%d,%s,load:NXM_OF_ETH_DST[]->NXM_OF_ETH_SRC[],load:NXM_OF_ETH_SRC[]->NXM_OF_ETH_DST[],load:NXM_OF_IP_DST[]->NXM_OF_IP_SRC[],load:%s->%s,output:NXM_OF_IN_PORT[]", nicIP, protoNum, tpSrcField, pm.Port, tpDstMatch, nxmTpDst, nxmTpSrc)
+			learnStr2 := fmt.Sprintf("priority=10000,idle_timeout=300,in_port=LOCAL,eth_type=0x0800,nw_src=%s,NXM_OF_IP_DST[]=NXM_OF_IP_SRC[],nw_proto=%d,%s=%d,%s,output:NXM_OF_IN_PORT[]", nicIP, protoNum, tpSrcField, pm.Port, tpDstMatch)
+			// to ports on hostlocal bridge
+			flows = append(flows,
+				// 外部访问的流量, 需要DNAT, reg0=1
+				F(0, 28200, fmt.Sprintf("ip,%s%s,tp_dst=%d", srcIpStr, pm.Protocol, *pm.HostPort), fmt.Sprintf("learn(table=10,%s),load:0x2->NXM_NX_REG0[],mod_dl_dst:%s,mod_nw_dst:%s,mod_tp_dst:%d,resubmit(,9)", learnStr1, nicMAC, nicIP, pm.Port)),
+				// 外部直接访问的流量，不需要DNAT，reg0=2
+				F(0, 28205, fmt.Sprintf("ip,%snw_dst=%s,%s,tp_dst=%d", srcIpStr, nicIP, pm.Protocol, pm.Port), fmt.Sprintf("learn(table=10,%s),load:0x2->NXM_NX_REG0[],resubmit(,9)", learnStr2)),
+			)
+		} else {
+			learnStr1 := fmt.Sprintf("priority=10000,idle_timeout=300,in_port=%d,eth_type=0x0800,nw_src=%s,NXM_OF_IP_DST[]=NXM_OF_IP_SRC[],nw_proto=%d,%s=%d,%s,load:NXM_OF_ETH_DST[]->NXM_OF_ETH_SRC[],load:NXM_OF_ETH_SRC[]->NXM_OF_ETH_DST[],load:NXM_OF_IP_DST[]->NXM_OF_IP_SRC[],load:%s->%s,output:NXM_OF_IN_PORT[]", nicPortNo, nicIP, protoNum, tpSrcField, pm.Port, tpDstMatch, nxmTpDst, nxmTpSrc)
+			learnStr2 := fmt.Sprintf("priority=10000,idle_timeout=300,in_port=%d,eth_type=0x0800,nw_src=%s,NXM_OF_IP_DST[]=NXM_OF_IP_SRC[],nw_proto=%d,%s=%d,%s,output:NXM_OF_IN_PORT[]", nicPortNo, nicIP, protoNum, tpSrcField, pm.Port, tpDstMatch)
+			// to local port
+			flows = append(flows,
+				// 外部访问的流量, 需要DNAT, reg0=1
+				// F(0, 28200, fmt.Sprintf("in_port=%d,ip,%s%s,tp_dst=%d", portNoPhy, srcIpStr, pm.Protocol, *pm.HostPort), fmt.Sprintf("learn(%s),load:0x1->NXM_NX_REG0[],mod_dl_dst:%s,mod_nw_dst:%s,mod_tp_dst:%d,resubmit(,9)", learnStr, nicMAC, nicIP, pm.Port)),
+				F(0, 28200, fmt.Sprintf("in_port=%d,ip,%s%s,tp_dst=%d", phyPortNo, srcIpStr, pm.Protocol, *pm.HostPort), fmt.Sprintf("learn(table=10,%s),load:0x1->NXM_NX_REG0[],load:0x%x->NXM_NX_REG1[],mod_dl_dst:%s,mod_nw_dst:%s,mod_tp_dst:%d,resubmit(,9)", learnStr1, nicPortNo, nicMAC, nicIP, pm.Port)),
+				// 外部直接访问的流量，不需要DNAT，reg0=2
+				// F(0, 28205, fmt.Sprintf("in_port=%d,ip,%snw_dst=%s,%s,tp_dst=%d", portNoPhy, srcIpStr, nicIP, pm.Protocol, pm.Port), "load:0x2->NXM_NX_REG0[],resubmit(,9)"),
+				F(0, 28205, fmt.Sprintf("in_port=%d,ip,%snw_dst=%s,%s,tp_dst=%d,%s", phyPortNo, srcIpStr, nicIP, pm.Protocol, pm.Port, vlanMatch), fmt.Sprintf("learn(table=10,%s),load:0x1->NXM_NX_REG0[],load:0x%x->NXM_NX_REG1[],strip_vlan,resubmit(,9)", learnStr2, nicPortNo)),
+			)
+		}
 
+	}
+	nicPortNoStr := fmt.Sprintf("%d", nicPortNo)
+	if nicPortNo < 0 {
+		nicPortNoStr = "LOCAL"
 	}
 	flows = append(flows,
 		// 本地流量, 直接访问，不需要DNAT, reg0=2 QIUJIAN: no local traffic, local traffic cannot go through ovs bridge
 		// F(0, 28201, fmt.Sprintf("in_port=LOCAL,ip,nw_dst=%s,%s,tp_dst=%d", nicIP, pm.Protocol, pm.Port), "load:0x2->NXM_NX_REG0[],resubmit(,9)"),
 		// 返回流量, reg0=4
-		F(0, 28202, fmt.Sprintf("in_port=%d,ip,%s,tp_src=%d", nicPortNo, pm.Protocol, pm.Port), "load:0x4->NXM_NX_REG0[],resubmit(,9)"),
+		F(0, 28202, fmt.Sprintf("in_port=%s,ip,nw_src=%s,%s,tp_src=%d", nicPortNoStr, nicIP, pm.Protocol, pm.Port), "load:0x4->NXM_NX_REG0[],resubmit(,9)"),
 	)
 	return flows
 }
 
-func guestNicPortMappingFlowsLocal(nic *GuestNIC, gwMAC string, nicPortNo int, nicIP string, nicMAC string) []*ovs.Flow {
+func guestNicPortMappingFlowsLocal(nic *GuestNIC, masterIp string, gwMAC string, nicPortNo int, nicIP string, nicMAC string) []*ovs.Flow {
 	flows := make([]*ovs.Flow, 0, 128)
 	for _, pm := range nic.PortMappings {
-		flows = append(flows, eachGuestNicPortMappingFlowsLocal(pm, gwMAC, nicPortNo, nicIP, nicMAC)...)
+		flows = append(flows, eachGuestNicPortMappingFlowsLocal(pm, masterIp, gwMAC, nicPortNo, nicIP, nicMAC)...)
 	}
 	return flows
 }
 
-func eachGuestNicPortMappingFlowsLocal(pm *compute.GuestPortMapping, gwMAC string, nicPortNo int, nicIP string, nicMAC string) []*ovs.Flow {
+func eachGuestNicPortMappingFlowsLocal(pm *compute.GuestPortMapping, masterIp string, gwMAC string, nicPortNo int, nicIP string, nicMAC string) []*ovs.Flow {
 	flows := make([]*ovs.Flow, 0, 16)
 	if len(pm.RemoteIps) == 0 {
 		pm.RemoteIps = []string{"0.0.0.0/0"}
@@ -469,19 +490,20 @@ func eachGuestNicPortMappingFlowsLocal(pm *compute.GuestPortMapping, gwMAC strin
 			nxmTpDst = "NXM_OF_TCP_DST[]"
 		}
 
-		learnStr := fmt.Sprintf("priority=10000,idle_timeout=30,in_port=%d,eth_type=0x0800,NXM_OF_IP_DST[]=NXM_OF_IP_SRC[],nw_proto=%d,%s=%d,%s,load:NXM_OF_ETH_DST[]->NXM_OF_ETH_SRC[],load:NXM_OF_ETH_SRC[]->NXM_OF_ETH_DST[],load:NXM_OF_IP_DST[]->NXM_OF_IP_SRC[],load:NXM_OF_IP_SRC[]->NXM_OF_IP_DST[],load:%s->%s,output:NXM_OF_IN_PORT[]", nicPortNo, protoNum, tpSrcField, pm.Port, tpDstMatch, nxmTpDst, nxmTpSrc)
+		learnStr1 := fmt.Sprintf("priority=10000,idle_timeout=300,in_port=%d,eth_type=0x0800,nw_src=%s,NXM_OF_IP_DST[]=NXM_OF_IP_SRC[],nw_proto=%d,%s=%d,%s,load:NXM_OF_ETH_DST[]->NXM_OF_ETH_SRC[],load:NXM_OF_ETH_SRC[]->NXM_OF_ETH_DST[],load:NXM_OF_IP_DST[]->NXM_OF_IP_SRC[],load:NXM_OF_IP_SRC[]->NXM_OF_IP_DST[],load:%s->%s,load:%s->%s,output:NXM_OF_IN_PORT[]", nicPortNo, nicIP, protoNum, tpSrcField, pm.Port, tpDstMatch, nxmTpDst, nxmTpSrc, nxmTpSrc, nxmTpDst)
+		learnStr2 := fmt.Sprintf("priority=10000,idle_timeout=300,in_port=%d,eth_type=0x0800,nw_src=%s,NXM_OF_IP_DST[]=NXM_OF_IP_SRC[],nw_proto=%d,%s=%d,%s,load:NXM_OF_ETH_DST[]->NXM_OF_ETH_SRC[],load:NXM_OF_ETH_SRC[]->NXM_OF_ETH_DST[],output:NXM_OF_IN_PORT[]", nicPortNo, nicIP, protoNum, tpSrcField, pm.Port, tpDstMatch)
 		flows = append(flows,
 			// 只允许bridge内主机之间的互访流量
-			F(0, 28200, fmt.Sprintf("ip,%s%s,tp_dst=%d", srcIpStr, pm.Protocol, *pm.HostPort), fmt.Sprintf("learn(table=9,%s),mod_dl_src:%s,mod_dl_dst:%s,mod_nw_dst:%s,mod_tp_dst:%d,output:%d", learnStr, gwMAC, nicMAC, nicIP, pm.Port, nicPortNo)),
-			// 外部直接访问的流量，不需要DNAT，reg0=2
-			F(0, 28205, fmt.Sprintf("ip,%snw_dst=%s,%s,tp_dst=%d", srcIpStr, nicIP, pm.Protocol, pm.Port), fmt.Sprintf("mod_dl_dst:%s,output:%d", nicMAC, nicPortNo)),
+			F(0, 28200, fmt.Sprintf("ip,%s%s,nw_dst=%s,tp_dst=%d", srcIpStr, pm.Protocol, masterIp, *pm.HostPort), fmt.Sprintf("learn(table=10,%s),mod_dl_src:%s,mod_dl_dst:%s,mod_nw_dst:%s,mod_tp_dst:%d,output:%d", learnStr1, gwMAC, nicMAC, nicIP, pm.Port, nicPortNo)),
+			// 外部直接访问的流量，不需要DNAT
+			F(0, 28205, fmt.Sprintf("ip,%snw_dst=%s,%s,tp_dst=%d", srcIpStr, nicIP, pm.Protocol, pm.Port), fmt.Sprintf("learn(table=10,%s),mod_dl_dst:%s,output:%d", learnStr2, nicMAC, nicPortNo)),
 		)
 	}
 	flows = append(flows,
 		// 本地流量, 直接访问，不需要DNAT, reg0=2 QIUJIAN: no local traffic, local traffic cannot go through ovs bridge
 		// F(0, 28201, fmt.Sprintf("in_port=LOCAL,ip,nw_dst=%s,%s,tp_dst=%d", nicIP, pm.Protocol, pm.Port), "load:0x2->NXM_NX_REG0[],resubmit(,9)"),
-		// 返回流量, reg0=4
-		F(0, 28202, fmt.Sprintf("in_port=%d,ip,%s,tp_src=%d", nicPortNo, pm.Protocol, pm.Port), "resubmit(,9)"),
+		// 返回流量
+		F(0, 28202, fmt.Sprintf("in_port=%d,ip,nw_src=%s,%s,tp_src=%d", nicPortNo, nicIP, pm.Protocol, pm.Port), "resubmit(,10)"),
 	)
 	return flows
 }
@@ -728,16 +750,16 @@ func (g *Guest) FlowsMapForNic(nic *GuestNIC) (map[string][]*ovs.Flow, error) {
 					if err != nil {
 						continue
 					}
-					localFlows := guestNicPortMappingFlows(nic, -1, nic.IP, mac.String())
+					localFlows := guestNicPortMappingFlows(nic, -1, nic.IP, mac.String(), 0, "")
 					if fs, ok := flowsMap[hcn.Bridge]; ok {
 						flowsMap[hcn.Bridge] = append(fs, localFlows...)
 					} else {
 						flowsMap[hcn.Bridge] = localFlows
 					}
 				}
-				flows = append(flows, guestNicPortMappingFlowsLocal(nic, m["MACPhy"].(string), nic.PortNo, nic.IP, nic.MAC)...)
+				flows = append(flows, guestNicPortMappingFlowsLocal(nic, g.HostConfig.MasterNic().Addr, m["MACPhy"].(string), nic.PortNo, nic.IP, nic.MAC)...)
 			} else {
-				flows = append(flows, guestNicPortMappingFlows(nic, nic.PortNo, nic.IP, nic.MAC)...)
+				flows = append(flows, guestNicPortMappingFlows(nic, nic.PortNo, nic.IP, nic.MAC, m["PortNoPhy"].(int), m["_dl_vlan"].(string))...)
 			}
 		}
 
