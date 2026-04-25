@@ -86,7 +86,7 @@ func ParseRate(s string) (bytesPerSec uint64, err error) {
 		err = fmt.Errorf("unknown suffix %s", suffix)
 		return
 	}
-	bytesPerSec = uint64(rate) * scale / 8
+	bytesPerSec = uint64(rate) * scale
 	return
 }
 
@@ -95,7 +95,7 @@ func PrintRate(bytesPerSec uint64) string {
 	UNITS := [5]string{"", "K", "M", "G", "T"}
 	var i int
 
-	bps := bytesPerSec * 8
+	bps := bytesPerSec
 	for i, _ = range UNITS {
 		if bps < 1000 {
 			break
@@ -168,38 +168,53 @@ func ParseSize(s string) (bytes uint64, err error) {
 	switch strings.ToLower(suffix) {
 	case "b", "":
 	case "kb", "k":
-		bytes *= 1024
+		bytes *= 1000
 	case "mb", "m":
-		bytes *= 1024 * 1024
+		bytes *= 1000 * 1000
 	case "gb", "g":
-		bytes *= 1024 * 1024 * 1024
+		bytes *= 1000 * 1000 * 1000
+	case "tb", "t":
+		bytes *= 1000 * 1000 * 1000 * 1000
 	case "kbit":
-		bytes *= 1024 / 8
+		bytes *= 1000 / 8
 	case "mbit":
-		bytes *= 1024 * 1024 / 8
+		bytes *= 1000 * 1000 / 8
 	case "gbit":
-		bytes *= 1024 * 1024 * 1024 / 8
+		bytes *= 1000 * 1000 * 1000 / 8
+	case "tbit":
+		bytes *= 1000 * 1000 * 1000 * 1000 / 8
 	default:
 		err = fmt.Errorf("unknown size suffix %s", suffix)
 	}
 	return
 }
 
+const (
+	tbase = 1000 * 1000 * 1000 * 1000
+	gbase = 1000 * 1000 * 1000
+	mbase = 1000 * 1000
+	kbase = 1000
+)
+
 func PrintSize(bytes uint64) string {
-	if bytes >= 1024*1024 && bytes-(1024*1024)*(bytes/(1024*1024)) < 1024 {
-		return fmt.Sprintf("%dMb", bytes/(1024*1024))
-	} else if bytes >= 1024 && bytes-(1024)*(bytes/(1024)) < 16 {
-		return fmt.Sprintf("%dKb", bytes/(1024))
+	if bytes >= tbase && (bytes/tbase)*tbase == bytes {
+		return fmt.Sprintf("%dTb", bytes/tbase)
+	} else if bytes >= gbase && bytes/gbase*gbase == bytes {
+		return fmt.Sprintf("%dGb", bytes/gbase)
+	} else if bytes >= 1000*1000 && bytes/mbase*mbase == bytes {
+		return fmt.Sprintf("%dMb", bytes/mbase)
+	} else if bytes >= 1000 && bytes/kbase*kbase == bytes {
+		return fmt.Sprintf("%dKb", bytes/kbase)
 	} else {
 		return fmt.Sprintf("%db", bytes)
 	}
 }
 
-func TcTbfBurstNormalize(bytesPerSec uint64, burst uint64) uint64 {
-	// tc parses burst into buffer
-	time := uint64(1000000 * float64(burst) / float64(bytesPerSec))
-	buffer := uint64(tickInUsec * float64(time)) // aka. ticks
-	// then translates it back on query
-	burst = bytesPerSec * uint64(float64(buffer)/tickInUsec) / 1000000
-	return burst
-}
+// func TcTbfBurstNormalize(bytesPerSec uint64, burst uint64) uint64 {
+// tc parses burst into buffer
+// time := uint64(1000000 * float64(burst) / float64(bytesPerSec))
+// buffer := uint64(tickInUsec * float64(time)) // aka. ticks
+// // then translates it back on query
+// burst = bytesPerSec * uint64(float64(buffer)/tickInUsec) / 1000000
+// return burst
+// }

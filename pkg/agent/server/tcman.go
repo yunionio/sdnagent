@@ -20,84 +20,28 @@ import (
 	"sync"
 	"time"
 
-	"github.com/vishvananda/netlink"
-
 	"yunion.io/x/log"
-	"yunion.io/x/pkg/errors"
 	"yunion.io/x/sdnagent/pkg/agent/utils"
 	"yunion.io/x/sdnagent/pkg/tc"
 )
 
-type TcManPage struct {
-	ifname string
-	data   *utils.TcData
-	qtWant *tc.QdiscTree
-	qtGot  *tc.QdiscTree
-}
-
-func (p *TcManPage) batchReplaceInput() string {
-	// lines := []string{"qdisc del dev " + p.ifname + " root"}
-	lines := []string{}
-	lines = append(lines, p.qtWant.BatchReplaceLines(p.ifname)...)
-	lines = append(lines, "qdisc show dev "+p.ifname)
-	input := strings.Join(lines, "\n")
-	// NOTE final newline is needed to workaround buffer overflow issues in
-	// earlier versions of tc
-	//
-	// - utils: fix makeargs stack overflowm,
-	//   https://github.com/shemminger/iproute2/commit/bd9cea5d8c9dc6266f9529e1be6bc7dab4519d9c
-	input += "\n"
-	return input
-}
-
-func (p *TcManPage) deleteDevQdiscs(ifname string) error {
-	link, err := netlink.LinkByName(ifname)
-	if err != nil {
-		return errors.Wrapf(err, "get iface by name: %s", ifname)
-	}
-	qdiscs, err := netlink.QdiscList(link)
-	if err != nil {
-		return errors.Wrapf(err, "get iface qdiscs: %s", ifname)
-	}
-
-	errs := []error{}
-	for _, qdisc := range qdiscs {
-		if err := netlink.QdiscDel(qdisc); err != nil {
-			errs = append(errs, err)
-		}
-	}
-	return errors.NewAggregate(errs)
-}
+const (
+	tcManHostLocalWho = "hostlocal"
+)
 
 type TcManSection struct {
-	pages map[string]*TcManPage
+	// key is the ifname of tcpmanpage
+	pages map[string]*utils.TcData
 }
 
 func NewTcManSection() *TcManSection {
 	return &TcManSection{
-		pages: map[string]*TcManPage{},
+		pages: make(map[string]*utils.TcData),
 	}
 }
 
 func (s *TcManSection) Update(t *TcManSection) {
-	pages0 := s.pages
-	pages1 := t.pages
-	for ifname, page0 := range pages0 {
-		page1, ok := pages1[ifname]
-		if ok {
-			if !page0.qtWant.Equals(page1.qtWant) {
-				pages0[ifname] = page1
-			}
-		} else {
-			delete(pages0, ifname)
-		}
-	}
-	for ifname, page1 := range pages1 {
-		_, ok := pages0[ifname]
-		if !ok {
-			pages0[ifname] = page1
-		}
-	}
+	s.pages = t.pages
 }
 
 type TcManCmdType int
@@ -118,8 +62,9 @@ type TcManCmd struct {
 
 // TODO
 // delete qdisc on delete who?
-
 type TcMan struct {
+	// key is id of guest or hostlocal
+	// value is the config of a guest or hostlocal
 	book      map[string]*TcManSection
 	idleTimer *time.Ticker
 	cmdChan   chan *TcManCmd
@@ -157,56 +102,94 @@ out:
 func (tm *TcMan) doIdleCheck(ctx context.Context) {
 	log.Infof("tcman: doing idle check")
 	defer log.Infof("tcman: done idle check")
-	for _, section := range tm.book {
-		tm.doCheckSection(ctx, section)
+	for who, section := range tm.book {
+		if who == tcManHostLocalWho {
+			continue
+		}
+		tm.doCheckGuestSection(ctx, section)
+	}
+	// finally check host tc rules
+	tm.doCheckHostSection(ctx, tm.book[tcManHostLocalWho])
+}
+
+func (tm *TcMan) doCheckSection(ctx context.Context, who string, section *TcManSection) {
+	if who == tcManHostLocalWho {
+		tm.doCheckHostSection(ctx, section)
+	} else {
+		tm.doCheckGuestSection(ctx, section)
 	}
 }
 
-func (tm *TcMan) doCheckSection(ctx context.Context, section *TcManSection) {
-	for _, page := range section.pages {
-		tm.doCheckPage(ctx, page)
+func (tm *TcMan) doCheckGuestSection(ctx context.Context, section *TcManSection) {
+	for _, tcdata := range section.pages {
+		tm.doCheckGuestTcData(ctx, tcdata)
 	}
 }
 
-func (tm *TcMan) doCheckPage(ctx context.Context, page *TcManPage) {
-	ifname := page.ifname
-	qt, err := tm.tcCli.QdiscShow(ctx, ifname)
+func (tm *TcMan) doCheckGuestTcData(ctx context.Context, tcdata *utils.TcData) {
+	qt, err := tm.tcCli.QdiscShow(ctx, tcdata.Ifname)
 	if err != nil {
 		// if device does not exist, expect super man to tell us
-		log.Errorf("tcman: qdisc show %s failed: %s", ifname, err)
+		log.Errorf("tcman: qdisc show %s failed: %s", tcdata.Ifname, err)
 		return
 	}
-	if root := qt.Root(); root.BaseQdisc().Kind == "mq" {
-		log.Infof("skip %s: it uses mq", ifname)
-		return
-	}
-	if qt.Equals(page.qtWant) {
-		if page.qtGot == nil {
-			page.qtGot = qt
+	// if root := qt.Root(); root.BaseQdisc().Kind == "mq" {
+	//	log.Infof("skip %s: it uses mq", ifname)
+	//	return
+	// }
+	expectTree := tcdata.GuestQdiscTree()
+
+	cmds := expectTree.Delta(qt, tcdata.Ifname)
+	if len(cmds) > 0 {
+		output, stderr, err := tm.tcCli.Batch(ctx, strings.Join(cmds, "\n"))
+		if err != nil {
+			log.Errorf("tcman: batch failed: %s cmds: %s\n%s\nstderr:\n%s", err, cmds, output, stderr)
+			return
 		}
+		log.Infof("tcman: %s: updated qdisc\n%s\n===\n%s", tcdata.Ifname, cmds, output)
+	}
+}
+
+func (tm *TcMan) doCheckHostSection(ctx context.Context, section *TcManSection) {
+	for _, page := range section.pages {
+		tm.doCheckHostTcData(ctx, page)
+	}
+}
+
+func (tm *TcMan) doCheckHostTcData(ctx context.Context, tcdata *utils.TcData) {
+	qt, err := tm.tcCli.QdiscShow(ctx, tcdata.Ifname)
+	if err != nil {
+		log.Errorf("tcman: qdisc show %s failed: %s", tcdata.Ifname, err)
 		return
 	}
-	if page.qtGot != nil && qt.Equals(page.qtGot) {
-		return
+	expectTree := tcdata.HostRootQdiscTree()
+	rootQdisc := expectTree.RootQdisc()
+	rootClass := expectTree.RootClass()
+	for who, section := range tm.book {
+		if who == tcManHostLocalWho {
+			continue
+		}
+		for _, guestnicTcData := range section.pages {
+			if guestnicTcData.Bridge != tcdata.Bridge {
+				continue
+			}
+			guestNicTree := guestnicTcData.HostGuestQdiscTree(rootClass, rootQdisc)
+			expectTree.Merge(guestNicTree)
+		}
 	}
 
-	// TODO batch them all
-	if err := page.deleteDevQdiscs(page.ifname); err != nil {
-		log.Warningf("delete ifname %s all qdiscs before batch replace: %v", page.ifname, err)
+	cmds := expectTree.Delta(qt, tcdata.Ifname)
+	if len(cmds) > 0 {
+		output, stderr, err := tm.tcCli.Batch(ctx, strings.Join(cmds, "\n"))
+		if err != nil {
+			log.Errorf("tcman: batch failed: %s cnds: %s\n%s\nstderr:\n%s", err, cmds, output, stderr)
+			for _, cmd := range cmds {
+				log.Debugf("tcman: %s", cmd)
+			}
+			return
+		}
+		log.Infof("tcman: %s: updated qdisc\n%s", tcdata.Ifname, output)
 	}
-	input := page.batchReplaceInput()
-	output, stderr, err := tm.tcCli.Batch(ctx, input)
-	if err != nil {
-		log.Errorf("tcman: batch failed: %s\n%s\nstderr:\n%s", err, input, stderr)
-		return
-	}
-	log.Infof("tcman: %s: updated qdisc\n%s\n===\n%s", ifname, input, output)
-	qt, err = tc.NewQdiscTreeFromString(output)
-	if err != nil {
-		log.Errorf("tcman: parse qdisc tree failed: %s\n%s", err, output)
-		return
-	}
-	page.qtGot = qt
 }
 
 func (tm *TcMan) doCmd(ctx context.Context, cmd *TcManCmd) {
@@ -220,7 +203,7 @@ func (tm *TcMan) doCmd(ctx context.Context, cmd *TcManCmd) {
 			section.Update(cmd.section)
 		}
 		if cmd.sync {
-			tm.doCheckSection(ctx, section)
+			tm.doCheckSection(ctx, cmd.who, section)
 		}
 	case TcManCmdDel:
 		delete(tm.book, cmd.who)
@@ -240,21 +223,10 @@ func (tm *TcMan) sendCmd(ctx context.Context, cmd *TcManCmd) {
 
 func (tm *TcMan) AddIfaces(ctx context.Context, who string, data []*utils.TcData, sync bool) {
 	section := &TcManSection{
-		pages: map[string]*TcManPage{},
+		pages: map[string]*utils.TcData{},
 	}
 	for _, d := range data {
-		qt, err := d.QdiscTree()
-		if err != nil {
-			log.Errorf("tcman: making qdisc tree from tcdata(%q) failed: %s", d, err)
-			return
-		}
-		ifname := d.Ifname
-		page := &TcManPage{
-			ifname: ifname,
-			data:   d,
-			qtWant: qt,
-		}
-		section.pages[ifname] = page
+		section.pages[d.Ifname] = d
 	}
 	cmd := &TcManCmd{
 		typ:     TcManCmdAdd,

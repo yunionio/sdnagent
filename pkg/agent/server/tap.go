@@ -17,6 +17,8 @@ package server
 import (
 	"context"
 	"fmt"
+	"os"
+	"path/filepath"
 	"strings"
 	"sync"
 	"time"
@@ -32,6 +34,7 @@ import (
 	"yunion.io/x/onecloud/pkg/cloudcommon/types"
 	"yunion.io/x/onecloud/pkg/mcclient/auth"
 	compute_modules "yunion.io/x/onecloud/pkg/mcclient/modules/compute"
+	"yunion.io/x/onecloud/pkg/util/fileutils2"
 	"yunion.io/x/onecloud/pkg/util/iproute2"
 	"yunion.io/x/onecloud/pkg/util/sysutils"
 
@@ -124,14 +127,38 @@ func (man *tapMan) run(ctx context.Context) {
 	}
 }
 
-func (man *tapMan) syncTapConfig(ctx context.Context) error {
-	cli := ovs.New().VSwitch
-
+func (man *tapMan) fetchTapConfig(ctx context.Context) (jsonutils.JSONObject, error) {
 	hc := man.agent.hostConfig
+	tapFilePath := filepath.Join(hc.ServersPath, api.TapConfigFileName)
+	if fileutils2.IsFile(tapFilePath) {
+		cfgBytes, err := os.ReadFile(tapFilePath)
+		if err != nil {
+			log.Errorf("ReadFile tap-config.json: %s", err)
+		} else {
+			cfgJson, err := jsonutils.Parse(cfgBytes)
+			if err != nil {
+				log.Errorf("Parse tap-config.json: %s", err)
+			} else {
+				log.Debugf("tap config from file %s: %s", tapFilePath, cfgJson.PrettyString())
+				return cfgJson, nil
+			}
+		}
+	}
+	log.Debugf("tap config from api")
 	s := auth.GetAdminSession(ctx, hc.Region)
 	cfgJson, err := compute_modules.Hosts.GetSpecific(s, man.agent.hostId, "tap-config", nil)
 	if err != nil {
-		return errors.Wrap(err, "Hosts.GetSpecific tap-config")
+		return nil, errors.Wrap(err, "Hosts.GetSpecific tap-config")
+	}
+	return cfgJson, nil
+}
+
+func (man *tapMan) syncTapConfig(ctx context.Context) error {
+	cli := ovs.New().VSwitch
+
+	cfgJson, err := man.fetchTapConfig(ctx)
+	if err != nil {
+		return errors.Wrap(err, "fetchTapConfig")
 	}
 
 	cfg := api.SHostTapConfig{}

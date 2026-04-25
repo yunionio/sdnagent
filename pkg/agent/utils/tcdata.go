@@ -20,61 +20,118 @@ import (
 	"yunion.io/x/sdnagent/pkg/tc"
 )
 
-type TcDataType string
-
 const (
-	TC_DATA_TYPE_HOSTLOCAL TcDataType = "hostlocal"
-	TC_DATA_TYPE_GUEST     TcDataType = "guest"
+	OvsLocalPortNo = 65534 // reference: https://github.com/openvswitch/ovs/blob/master/lib/netdev-offload.c#L1214
+
+	DefaultHostHtbRate = 1000 * 1000 * 1000 * 1000 // 1000Gbps
 )
 
 type TcData struct {
-	Type        TcDataType
-	Ifname      string
-	IngressMbps uint64
-	EgressMbps  uint64
+	Ifname      string `json:"ifname"`
+	IngressMbps uint64 `json:"ingress_mbps"`
+	EgressMbps  uint64 `json:"egress_mbps"`
+
+	Bridge string `json:"bridge"`
+	PortNo int    `json:"port_no"`
 }
 
-func (td *TcData) String() string {
-	switch td.Type {
-	case TC_DATA_TYPE_GUEST:
-		return fmt.Sprintf("%s %s: ingress=%dMbps", td.Type, td.Ifname, td.IngressMbps)
-	case TC_DATA_TYPE_HOSTLOCAL:
-		return fmt.Sprintf("%s %s", td.Type, td.Ifname)
-	}
-	return ""
-}
-
-func (td *TcData) qdiscTreeGuest() (qt *tc.QdiscTree, err error) {
-	if td.IngressMbps == 0 {
-		qt, err = tc.NewQdiscTreeFromString("qdisc fq_codel root handle 1:")
-		return
-	}
-	bytesPerSec := td.IngressMbps * 1000 * 1000 / 8
+func (td *TcData) guestNicRootQdisc() []tc.IQdisc {
+	rates := td.IngressMbps * 1000 * 1000
+	bytesPerSec := rates / 8
 	burst := bytesPerSec / 1000
 	if burst < 3400 {
 		burst = 3400
 	}
-	rates := tc.PrintRate(bytesPerSec)
-	bursts := tc.PrintSize(burst)
-	// tc accepts "mpu 64b" yet prints "mpu 0b" on qdisc show
-	s := fmt.Sprintf("qdisc tbf root handle 1: rate %s burst %s latency 100ms\n", rates, bursts)
-	s += "qdisc fq_codel parent 1: handle 10:\n"
-	qt, err = tc.NewQdiscTreeFromString(s)
-	return
-}
-
-func (td *TcData) qdiscTreeHostLocal() (qt *tc.QdiscTree, err error) {
-	s := "qdisc fq_codel root handle 1:\n"
-	qt, err = tc.NewQdiscTreeFromString(s)
-	return qt, err
-}
-
-func (td *TcData) QdiscTree() (qt *tc.QdiscTree, err error) {
-	switch td.Type {
-	case TC_DATA_TYPE_GUEST:
-		qt, err = td.qdiscTreeGuest()
-	case TC_DATA_TYPE_HOSTLOCAL:
-		qt, err = td.qdiscTreeHostLocal()
+	latency := 100000000 // 100ms
+	return []tc.IQdisc{
+		&tc.QdiscTbf{
+			SBaseTcQdisc: &tc.SBaseTcQdisc{
+				Kind:   "tbf",
+				Handle: "1:",
+				Parent: "",
+			},
+			Rate:    rates,
+			Burst:   burst,
+			Latency: uint64(latency),
+		},
 	}
-	return
+}
+
+func (td *TcData) hostRootQdisc() []tc.IQdisc {
+	return []tc.IQdisc{
+		&tc.QdiscHtb{
+			SBaseTcQdisc: &tc.SBaseTcQdisc{
+				Kind:   "htb",
+				Handle: "1:",
+				Parent: "",
+			},
+			DefaultClass: OvsLocalPortNo,
+		},
+	}
+}
+
+func (td *TcData) hostRootClass() []tc.IClass {
+	rootClass := &tc.SHtbClass{
+		SBaseTcClass: &tc.SBaseTcClass{
+			Kind:    "htb",
+			ClassId: "1:1",
+			Parent:  nil,
+		},
+		Rate: DefaultHostHtbRate,
+		Ceil: DefaultHostHtbRate,
+	}
+	defaultClass := &tc.SHtbClass{
+		SBaseTcClass: &tc.SBaseTcClass{
+			Kind:    "htb",
+			ClassId: fmt.Sprintf("1:%x", OvsLocalPortNo),
+			Parent:  rootClass,
+		},
+		Rate: DefaultHostHtbRate,
+		Ceil: DefaultHostHtbRate,
+	}
+	return []tc.IClass{
+		rootClass,
+		defaultClass,
+	}
+}
+
+func (td *TcData) guestNicClass(hostRootClass tc.IClass) []tc.IClass {
+	return []tc.IClass{
+		&tc.SHtbClass{
+			SBaseTcClass: &tc.SBaseTcClass{
+				Kind:    "htb",
+				ClassId: fmt.Sprintf("1:%x", td.PortNo),
+				Parent:  hostRootClass,
+			},
+			Rate: td.EgressMbps * 1000 * 1000,
+			Ceil: td.EgressMbps * 1000 * 1000,
+		},
+	}
+}
+
+func (td *TcData) guestNicFilter(hostRootQdisc tc.IQdisc) []tc.IFilter {
+	return []tc.IFilter{
+		&tc.SFwFilter{
+			SBaseTcFilter: &tc.SBaseTcFilter{
+				Kind:     "fw",
+				Parent:   hostRootQdisc,
+				Prio:     1,
+				Protocol: "ip",
+			},
+			ClassId: fmt.Sprintf("1:%x", td.PortNo),
+			Handle:  uint32(td.PortNo),
+		},
+	}
+}
+
+func (td *TcData) GuestQdiscTree() *tc.QdiscTree {
+	return tc.NewQdiscTree(td.guestNicRootQdisc(), nil, nil)
+}
+
+func (td *TcData) HostRootQdiscTree() *tc.QdiscTree {
+	return tc.NewQdiscTree(td.hostRootQdisc(), td.hostRootClass(), nil)
+}
+
+func (td *TcData) HostGuestQdiscTree(rootCls tc.IClass, rootQdisc tc.IQdisc) *tc.QdiscTree {
+	return tc.NewQdiscTree(nil, td.guestNicClass(rootCls), td.guestNicFilter(rootQdisc))
 }

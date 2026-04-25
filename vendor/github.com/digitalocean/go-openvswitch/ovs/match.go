@@ -1727,6 +1727,8 @@ func (m *tunnelMatch) MarshalText() ([]byte, error) {
 func matchIPv4AddressOrCIDR(key string, ip string) ([]byte, error) {
 	errInvalidIPv4 := fmt.Errorf("%q is not a valid IPv4 address or IPv4 CIDR block", ip)
 
+	ip = strings.TrimSuffix(ip, "/32")
+
 	if ipAddr, _, err := net.ParseCIDR(ip); err == nil {
 		if ipAddr.To4() == nil {
 			return nil, errInvalidIPv4

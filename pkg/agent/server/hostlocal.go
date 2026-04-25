@@ -91,12 +91,12 @@ func (hl *HostLocal) updateTc(ctx context.Context, sync bool) {
 	data := []*utils.TcData{}
 	for _, hcn := range hl.watcher.hostConfig.HostNetworkConfigs() {
 		td := &utils.TcData{
-			Type:   utils.TC_DATA_TYPE_HOSTLOCAL,
-			Ifname: hcn.Ifname,
+			Ifname: hcn.Bridge,
+			Bridge: hcn.Bridge,
 		}
 		data = append(data, td)
 	}
-	hl.watcher.tcMan.AddIfaces(ctx, "hostlocal", data, sync)
+	hl.watcher.tcMan.AddIfaces(ctx, tcManHostLocalWho, data, sync)
 }
 
 func (hl *HostLocal) UpdateSettings(ctx context.Context, sync bool) {
