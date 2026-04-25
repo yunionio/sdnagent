@@ -16,6 +16,8 @@ package tc
 
 import (
 	"testing"
+
+	"yunion.io/x/jsonutils"
 )
 
 type tcCase struct {
@@ -24,42 +26,7 @@ type tcCase struct {
 	lineDelete  string
 	lineReplace string
 	isRoot      bool
-}
-
-func TestQdiscFqCodel(t *testing.T) {
-	cases := []tcCase{
-		{
-			ifname:      "wp1-136",
-			line:        "qdisc fq_codel 10: parent 1: limit 10240p flows 1024 quantum 1514 target 5.0ms interval 100.0ms ecn",
-			lineDelete:  "qdisc delete dev wp1-136 parent 1: handle 10:",
-			lineReplace: "qdisc replace dev wp1-136 parent 1: handle 10: fq_codel",
-		},
-		{
-			ifname:      "vnet10-1",
-			line:        "qdisc fq_codel 8003: root refcnt 2 limit 10240p flows 1024 quantum 1514 target 5.0ms interval 100.0ms ecn",
-			lineDelete:  "qdisc delete dev vnet10-1 root handle 8003:",
-			lineReplace: "qdisc replace dev vnet10-1 root handle 8003: fq_codel",
-			isRoot:      true,
-		},
-	}
-	for _, c := range cases {
-		q, err := NewQdiscFromString(c.line)
-		if err != nil {
-			t.Errorf("%s", err)
-			continue
-		}
-		if c.isRoot && !q.IsRoot() {
-			t.Errorf("isroot want: %v, got %v", c.isRoot, q.IsRoot())
-		}
-		if lineDelete := q.DeleteLine(c.ifname); lineDelete != c.lineDelete {
-			t.Errorf("delete line want: %s, got: %s", c.lineDelete, lineDelete)
-			continue
-		}
-		if lineReplace := q.ReplaceLine(c.ifname); lineReplace != c.lineReplace {
-			t.Errorf("replace line want: %s, got: %s", c.lineReplace, lineReplace)
-			continue
-		}
-	}
+	wantQdisc   IQdisc
 }
 
 func TestQdiscTbf(t *testing.T) {
@@ -68,65 +35,85 @@ func TestQdiscTbf(t *testing.T) {
 			ifname:      "wp1-136",
 			line:        "qdisc tbf 1: root refcnt 2 rate 500000Kbit burst 64000b/1 mpu 0b lat 100.0ms",
 			lineDelete:  "qdisc delete dev wp1-136 root handle 1:",
-			lineReplace: "qdisc replace dev wp1-136 root handle 1: tbf rate 500Mbit burst 64000b latency 100ms",
+			lineReplace: "qdisc add dev wp1-136 root handle 1: tbf rate 500Mbit burst 64Kb latency 100ms",
 			isRoot:      true,
+			wantQdisc: &QdiscTbf{
+				SBaseTcQdisc: &SBaseTcQdisc{
+					Kind:   "tbf",
+					Handle: "1:",
+					Parent: "",
+				},
+				Rate:    500000000,
+				Burst:   64000,
+				Latency: 100000,
+			},
 		},
 		{
 			ifname:      "wp1-136",
 			line:        "qdisc tbf 1: root refcnt 2 rate 500000Kbit burst 64000b/4 mpu 0b lat 100.0ms",
 			lineDelete:  "qdisc delete dev wp1-136 root handle 1:",
-			lineReplace: "qdisc replace dev wp1-136 root handle 1: tbf rate 500Mbit burst 64000b/4 latency 100ms",
+			lineReplace: "qdisc add dev wp1-136 root handle 1: tbf rate 500Mbit burst 64Kb latency 100ms",
 			isRoot:      true,
+			wantQdisc: &QdiscTbf{
+				SBaseTcQdisc: &SBaseTcQdisc{
+					Kind:   "tbf",
+					Handle: "1:",
+					Parent: "",
+				},
+				Rate:    500000000,
+				Burst:   64000,
+				Latency: 100000,
+			},
 		},
-	}
-
-	for _, c := range cases {
-		q, err := NewQdiscFromString(c.line)
-		if err != nil {
-			t.Errorf("%s", err)
-			continue
-		}
-		if c.isRoot && !q.IsRoot() {
-			t.Errorf("isroot want: %v, got %v", c.isRoot, q.IsRoot())
-		}
-		if lineDelete := q.DeleteLine(c.ifname); lineDelete != c.lineDelete {
-			t.Errorf("delete line want: %s, got: %s", c.lineDelete, lineDelete)
-			continue
-		}
-		if lineReplace := q.ReplaceLine(c.ifname); lineReplace != c.lineReplace {
-			t.Errorf("replace line want: %s, got: %s", c.lineReplace, lineReplace)
-			continue
-		}
-	}
-}
-
-func TestQdiscIngress(t *testing.T) {
-	cases := []tcCase{
 		{
-			ifname:      "adm0-99",
-			line:        "qdisc ingress ffff: dev adm0-99 parent ffff:fff1 ----------------",
-			lineDelete:  "qdisc delete dev adm0-99 parent ffff:fff1 handle ffff:",
-			lineReplace: "qdisc replace dev adm0-99 parent ffff:fff1 handle ffff: ingress",
-			isRoot:      false,
+			ifname:      "br0",
+			line:        "qdisc htb 1: root refcnt 2 r2q 10 default 0x2 direct_packets_stat 6 direct_qlen 1000",
+			lineDelete:  "qdisc delete dev br0 root handle 1:",
+			lineReplace: "qdisc add dev br0 root handle 1: htb default 0x2",
+			isRoot:      true,
+			wantQdisc: &QdiscHtb{
+				SBaseTcQdisc: &SBaseTcQdisc{
+					Kind:   "htb",
+					Handle: "1:",
+					Parent: "",
+				},
+				DefaultClass: 2,
+			},
+		},
+		{
+			ifname:      "eth0",
+			line:        "qdisc tbf 1: root refcnt 2 rate 100Mbit burst 12500b lat 100ms",
+			lineDelete:  "qdisc delete dev eth0 root handle 1:",
+			lineReplace: "qdisc add dev eth0 root handle 1: tbf rate 100Mbit burst 12500b latency 100ms",
+			isRoot:      true,
+			wantQdisc: &QdiscTbf{
+				SBaseTcQdisc: &SBaseTcQdisc{
+					Kind:   "tbf",
+					Handle: "1:",
+					Parent: "",
+				},
+				Rate:    100000000,
+				Burst:   12500,
+				Latency: 100000,
+			},
 		},
 	}
 
 	for _, c := range cases {
-		q, err := NewQdiscFromString(c.line)
+		qs, err := parseQdiscLines([]string{c.line})
 		if err != nil {
-			t.Errorf("NewQdiscFromString: %s", err)
+			t.Errorf("parseQdiscLines: %s", err)
 			continue
 		}
-		if c.isRoot && !q.IsRoot() {
-			t.Errorf("isroot want: %v, got %v", c.isRoot, q.IsRoot())
-			continue
+		if !qs[0].Equals(c.wantQdisc) {
+			t.Errorf("Qdisc want %v, got %v", jsonutils.Marshal(c.wantQdisc), jsonutils.Marshal(qs[0]))
 		}
-		if lineDelete := q.DeleteLine(c.ifname); lineDelete != c.lineDelete {
+		if lineDelete := qs[0].DeleteLine(c.ifname); lineDelete != c.lineDelete {
 			t.Errorf("delete line want: %s, got: %s", c.lineDelete, lineDelete)
 			continue
 		}
-		if lineReplace := q.ReplaceLine(c.ifname); lineReplace != c.lineReplace {
-			t.Errorf("replace line want: %s, got: %s", c.lineReplace, lineReplace)
+		if lineReplace := qs[0].AddLine(c.ifname); lineReplace != c.lineReplace {
+			t.Errorf("add line want: %s, got: %s", c.lineReplace, lineReplace)
 			continue
 		}
 	}

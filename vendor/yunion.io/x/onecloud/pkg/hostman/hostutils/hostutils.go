@@ -215,6 +215,10 @@ func UpdateServerProgress(ctx context.Context, sid string, progress, progressMbp
 	return modules.Servers.Update(GetComputeSession(ctx), sid, jsonutils.Marshal(params))
 }
 
+func UploadGuestStatus(ctx context.Context, sid string, resp *computeapi.HostUploadGuestStatusInput) (jsonutils.JSONObject, error) {
+	return modules.Servers.PerformAction(GetComputeSession(ctx), sid, "upload-status", jsonutils.Marshal(resp))
+}
+
 func UploadGuestsStatus(ctx context.Context, resp *computeapi.HostUploadGuestsStatusInput) (jsonutils.JSONObject, error) {
 	return modules.Servers.PerformClassAction(GetComputeSession(ctx), "upload-status", jsonutils.Marshal(resp))
 }
@@ -310,7 +314,7 @@ func initImageCacheWorkerManager() {
 }
 
 func initBackupWorkerManager() {
-	backupW = workmanager.NewWorkManger("BackupDelayTaskWorkers", TaskFailed, TaskComplete, options.HostOptions.DefaultRequestWorkerCount)
+	backupW = workmanager.NewWorkManger("BackupDelayTaskWorkers", TaskFailed, TaskComplete, options.HostOptions.BackupTaskWorkerCount)
 }
 
 func InitWorkerManagerWithCount(count int) {

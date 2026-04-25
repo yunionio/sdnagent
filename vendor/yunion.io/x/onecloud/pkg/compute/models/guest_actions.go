@@ -746,6 +746,8 @@ func (self *SGuest) PerformClone(ctx context.Context, userCred mcclient.TokenCre
 	createInput.AutoStart = cloneInput.AutoStart
 
 	createInput.EipBw = cloneInput.EipBw
+	createInput.EipTxBw = cloneInput.EipTxBw
+	createInput.EipRxBw = cloneInput.EipRxBw
 	createInput.Eip = cloneInput.Eip
 	createInput.EipChargeType = cloneInput.EipChargeType
 	if err := GuestManager.validateEip(ctx, userCred, createInput, createInput.PreferRegion, createInput.PreferManager); err != nil {
@@ -1121,6 +1123,61 @@ func (self *SGuest) StartResumeTask(ctx context.Context, userCred mcclient.Token
 	}
 
 	return driver.StartResumeTask(ctx, userCred, self, nil, parentTaskId)
+}
+
+func (self *SGuest) PerformRestoreVirtualIsolatedDevices(ctx context.Context, userCred mcclient.TokenCredential, query jsonutils.JSONObject, data jsonutils.JSONObject) (jsonutils.JSONObject, error) {
+	config := self.GetMetadataJson(ctx, api.VM_METADATA_VIRTUAL_ISOLATED_DEVICE_CONFIG, userCred)
+	if config == nil {
+		return nil, nil
+	}
+	devConfigs := make([]api.IsolatedDeviceConfig, 0)
+	err := config.Unmarshal(&devConfigs)
+	if err != nil {
+		return nil, errors.Wrap(err, "unmarshal virtual dev configs")
+	}
+	devs, err := self.GetIsolatedDevices()
+	if err != nil {
+		return nil, errors.Wrap(err, "GetIsolatedDevices")
+	}
+	devCount := map[string]int{}
+	for i := range devConfigs {
+		key := devConfigs[i].DevType + "-" + devConfigs[i].Model
+		if cnt, ok := devCount[key]; ok {
+			devCount[key] = cnt + 1
+		} else {
+			devCount[key] = 1
+		}
+	}
+	for i := range devs {
+		key := devConfigs[i].DevType + "-" + devConfigs[i].Model
+		if cnt, ok := devCount[key]; ok {
+			devCount[key] = cnt - 1
+		}
+	}
+
+	host, err := self.GetHost()
+	if err != nil {
+		return nil, errors.Wrap(err, "get host")
+	}
+	lockman.LockObject(ctx, host)
+	defer lockman.ReleaseObject(ctx, host)
+
+	usedDeviceMap := map[string]*SIsolatedDevice{}
+	for key, cnt := range devCount {
+		if cnt <= 0 {
+			continue
+		}
+		segs := strings.SplitN(key, "-", 2)
+		devConfig := &api.IsolatedDeviceConfig{
+			Model:   segs[1],
+			DevType: segs[0],
+		}
+		err := IsolatedDeviceManager.attachHostDeviceToGuestByModel(ctx, self, host, devConfig, userCred, usedDeviceMap, nil)
+		if err != nil {
+			return nil, errors.Wrap(err, "attachHostDeviceToGuestByModel")
+		}
+	}
+	return nil, nil
 }
 
 // 开机
@@ -1555,6 +1612,68 @@ func (self *SGuest) StartInsertVfdTask(ctx context.Context, floppyOrdinal int64,
 	return nil
 }
 
+func (self *SGuest) RebalanceVirtualIsolatedDevices(ctx context.Context, userCred mcclient.TokenCredential) error {
+	devs, err := self.GetIsolatedDevices()
+	if err != nil {
+		return errors.Wrap(err, "guest get isolated devices")
+	}
+	if len(devs) == 0 {
+		return nil
+	}
+	host, err := self.GetHost()
+	if err != nil {
+		return errors.Wrap(err, "guest get host")
+	}
+	var numaNodeBalance = true
+	detachDevs := make([]SIsolatedDevice, 0)
+	originDevConfigs := make([]api.IsolatedDeviceConfig, 0)
+	for i := range devs {
+		if utils.IsInStringArray(devs[i].DevType, api.VITRUAL_DEVICE_TYPES) {
+			originDevConfigs = append(originDevConfigs, api.IsolatedDeviceConfig{
+				Model:   devs[i].Model,
+				DevType: devs[i].DevType,
+			})
+			detachDevs = append(detachDevs, devs[i])
+			isBalance, err := host.VirtualDeviceNumaBalance(devs[i].DevType, devs[i].NumaNode)
+			if err != nil {
+				return errors.Wrap(err, "VirtualDeviceNumaBalance")
+			}
+			if numaNodeBalance && !isBalance {
+				numaNodeBalance = false
+			}
+		}
+	}
+	log.Infof("Guest %s on host %s start virtual devices numa node balance %v", self.Id, host.Id, numaNodeBalance)
+	if !numaNodeBalance {
+		err := self.SetMetadata(ctx, api.VM_METADATA_VIRTUAL_ISOLATED_DEVICE_CONFIG, originDevConfigs, userCred)
+		if err != nil {
+			return errors.Wrap(err, "set metadata virtual isolated device config")
+		}
+		lockman.LockObject(ctx, host)
+		defer lockman.ReleaseObject(ctx, host)
+
+		for i := 0; i < len(detachDevs); i++ {
+			err := self.detachIsolateDevice(ctx, userCred, &detachDevs[i])
+			if err != nil {
+				return errors.Wrapf(err, "detach device %s", detachDevs[i].GetId())
+			}
+		}
+
+		usedDeviceMap := map[string]*SIsolatedDevice{}
+		for i := range detachDevs {
+			devConfig := &api.IsolatedDeviceConfig{
+				Model:   detachDevs[i].Model,
+				DevType: detachDevs[i].DevType,
+			}
+			err := IsolatedDeviceManager.attachHostDeviceToGuestByModel(ctx, self, host, devConfig, userCred, usedDeviceMap, nil)
+			if err != nil {
+				return errors.Wrap(err, "attachHostDeviceToGuestByModel")
+			}
+		}
+	}
+	return nil
+}
+
 func (self *SGuest) StartGueststartTask(
 	ctx context.Context, userCred mcclient.TokenCredential,
 	data *jsonutils.JSONDict, parentTaskId string,
@@ -1576,6 +1695,13 @@ func (self *SGuest) StartGueststartTask(
 		err := self.SetCpuNumaPin(ctx, userCred, nil, nil)
 		if err != nil {
 			return errors.Wrap(err, "clean cpu numa pin")
+		}
+	}
+
+	if options.Options.VirtualDeviceNumaBalance {
+		err := self.RebalanceVirtualIsolatedDevices(ctx, userCred)
+		if err != nil {
+			return errors.Wrap(err, "rebalance virtual isolated devices")
 		}
 	}
 
@@ -1706,15 +1832,24 @@ func (self *SGuest) StartDeleteGuestTask(
 	ctx context.Context, userCred mcclient.TokenCredential, parentTaskId string,
 	opts api.ServerDeleteInput,
 ) error {
-	driver, err := self.GetDriver()
-	if err != nil {
-		return errors.Wrapf(err, "GetDriver")
-	}
 	params := jsonutils.NewDict()
 	params.Add(jsonutils.NewString(self.Status), "guest_status")
 	params.Update(jsonutils.Marshal(opts))
 	self.SetStatus(ctx, userCred, api.VM_START_DELETE, "")
-	return driver.StartDeleteGuestTask(ctx, userCred, self, params, parentTaskId)
+	if self.HostId != "" {
+		driver, err := self.GetDriver()
+		if err != nil {
+			return errors.Wrapf(err, "GetDriver")
+		}
+		return driver.StartDeleteGuestTask(ctx, userCred, self, params, parentTaskId)
+	} else {
+		task, err := taskman.TaskManager.NewTask(ctx, "GuestDeleteWithoutHostTask", self, userCred, params, parentTaskId, "", nil)
+		if err != nil {
+			return errors.Wrap(err, "NewTask GuestDeleteWithoutHostTask")
+		}
+		task.ScheduleRun(nil)
+		return nil
+	}
 }
 
 // 清除虚拟机记录(仅数据库操作)
@@ -1790,9 +1925,11 @@ func (self *SGuest) PerformRebuildRoot(
 		}
 
 		// compare os arch
-		if len(self.InstanceType) > 0 {
+		if len(img.Properties["os_arch"]) > 0 && len(self.OsArch) > 0 && !apis.IsSameArch(self.OsArch, img.Properties["os_arch"]) {
+			return nil, httperrors.NewConflictError("root disk image(%s) and guest(%s) OsArch mismatch", img.Properties["os_arch"], self.OsArch)
+		} else if len(self.InstanceType) > 0 {
 			sku, _ := ServerSkuManager.FetchSkuByNameAndProvider(self.InstanceType, region.Provider, true)
-			if sku != nil && len(sku.CpuArch) > 0 && len(img.Properties["os_arch"]) > 0 && !strings.Contains(img.Properties["os_arch"], sku.CpuArch) {
+			if sku != nil && len(sku.CpuArch) > 0 && len(img.Properties["os_arch"]) > 0 && !apis.IsSameArch(img.Properties["os_arch"], sku.CpuArch) {
 				return nil, httperrors.NewConflictError("root disk image(%s) and sku(%s) architecture mismatch", img.Properties["os_arch"], sku.CpuArch)
 			}
 		}
@@ -2623,6 +2760,12 @@ func (self *SGuest) PerformChangeIpaddr(
 	if conf.BwLimit == 0 {
 		conf.BwLimit = gn.BwLimit
 	}
+	if conf.TxBwLimit == 0 {
+		conf.TxBwLimit = gn.TxBwLimit
+	}
+	if conf.RxBwLimit == 0 {
+		conf.RxBwLimit = gn.RxBwLimit
+	}
 	if conf.Index == 0 {
 		conf.Index = int(gn.Index)
 	}
@@ -2769,6 +2912,9 @@ func (self *SGuest) PerformChangeIpaddr(
 			taskData.Set("in_block_stream", jsonutils.JSONTrue)
 		}
 		self.SetStatus(ctx, userCred, api.VM_RESTART_NETWORK, "restart network")
+	}
+	if input.NoSync != nil && *input.NoSync {
+		return nil, nil
 	}
 	return nil, self.startSyncTask(ctx, userCred, false, "", taskData)
 }
@@ -3106,9 +3252,8 @@ func (guest *SGuest) PerformChangeBandwidth(
 		return nil, httperrors.NewBadRequestError("Cannot change bandwidth in status %s", guest.Status)
 	}
 
-	bandwidth := input.Bandwidth
-	if bandwidth < 0 {
-		return nil, httperrors.NewBadRequestError("Bandwidth must be non-negative")
+	if input.Bandwidth < 0 && input.TxBwLimit < 0 && input.RxBwLimit < 0 {
+		return nil, httperrors.NewBadRequestError("Bandwidth, tx_bw_limit and rx_bw_limit must be non-negative")
 	}
 
 	guestnic, err := guest.findGuestnetworkByInfo(input.ServerNetworkInfo)
@@ -3116,9 +3261,11 @@ func (guest *SGuest) PerformChangeBandwidth(
 		return nil, errors.Wrap(err, "findGuestnetworkByInfo")
 	}
 
-	if guestnic.BwLimit != int(bandwidth) {
+	if guestnic.BwLimit != int(input.Bandwidth) || guestnic.TxBwLimit != int(input.TxBwLimit) || guestnic.RxBwLimit != int(input.RxBwLimit) {
 		diff, err := db.Update(guestnic, func() error {
-			guestnic.BwLimit = int(bandwidth)
+			guestnic.BwLimit = int(input.Bandwidth)
+			guestnic.TxBwLimit = int(input.TxBwLimit)
+			guestnic.RxBwLimit = int(input.RxBwLimit)
 			return nil
 		})
 		if err != nil {
@@ -3512,38 +3659,46 @@ func (m *SGuestManager) PerformUploadStatus(ctx context.Context, userCred mcclie
 			}
 			continue
 		}
-		if err := gst.SetStatusFromHost(ctx, userCred, *status, false, ""); err != nil {
-			out.Guests[id] = &api.GuestUploadStatusResponse{
-				Error: err.Error(),
-			}
-		} else {
-			out.Guests[id] = &api.GuestUploadStatusResponse{
-				OK: true,
-			}
-		}
-		for cId, cStatus := range status.Containers {
-			if len(out.Guests[id].Containers) == 0 {
-				out.Guests[id].Containers = make(map[string]*api.GuestUploadContainerStatusResponse)
-			}
-			ctr, err := GetContainerManager().FetchById(cId)
-			if err != nil {
-				out.Guests[id].Containers[cId] = &api.GuestUploadContainerStatusResponse{
-					Error: err.Error(),
-				}
-				continue
-			}
-			if _, err := ctr.(*SContainer).PerformStatus(ctx, userCred, query, *cStatus); err != nil {
-				out.Guests[id].Containers[cId] = &api.GuestUploadContainerStatusResponse{
-					Error: err.Error(),
-				}
-			} else {
-				out.Guests[id].Containers[cId] = &api.GuestUploadContainerStatusResponse{
-					OK: true,
-				}
-			}
+		resp, err := gst.PerformUploadStatus(ctx, userCred, query, *status)
+		out.Guests[id] = resp
+		if err != nil {
+			resp.Error = err.Error()
+			continue
 		}
 	}
 	return out, nil
+}
+
+func (self *SGuest) PerformUploadStatus(ctx context.Context, userCred mcclient.TokenCredential, query jsonutils.JSONObject, input api.HostUploadGuestStatusInput) (*api.GuestUploadStatusResponse, error) {
+	err := self.SetStatusFromHost(ctx, userCred, input, false, "")
+	if err != nil {
+		return nil, errors.Wrap(err, "set status from host")
+	}
+
+	resp := &api.GuestUploadStatusResponse{
+		OK:         true,
+		Containers: make(map[string]*api.GuestUploadContainerStatusResponse),
+	}
+
+	for cId, cStatus := range input.Containers {
+		ctr, err := GetContainerManager().FetchById(cId)
+		if err != nil {
+			resp.Containers[cId] = &api.GuestUploadContainerStatusResponse{
+				Error: err.Error(),
+			}
+			continue
+		}
+		if _, err := ctr.(*SContainer).PerformStatus(ctx, userCred, query, *cStatus); err != nil {
+			resp.Containers[cId] = &api.GuestUploadContainerStatusResponse{
+				Error: err.Error(),
+			}
+		} else {
+			resp.Containers[cId] = &api.GuestUploadContainerStatusResponse{
+				OK: true,
+			}
+		}
+	}
+	return resp, nil
 }
 
 // 同步状态
@@ -3621,14 +3776,20 @@ func (self *SGuest) PerformStatus(ctx context.Context, userCred mcclient.TokenCr
 // 关机
 func (self *SGuest) PerformStop(ctx context.Context, userCred mcclient.TokenCredential, query jsonutils.JSONObject,
 	input api.ServerStopInput) (jsonutils.JSONObject, error) {
-	// XXX if is force, force stop guest
-	if input.IsForce || utils.IsInStringArray(self.Status, []string{api.VM_RUNNING, api.VM_STOP_FAILED, api.POD_STATUS_CRASH_LOOP_BACK_OFF, api.POD_STATUS_CONTAINER_EXITED}) {
-		if err := self.ValidateEncryption(ctx, userCred); err != nil {
-			return nil, errors.Wrap(httperrors.ErrForbidden, "encryption key not accessible")
-		}
-		return nil, self.StartGuestStopTask(ctx, userCred, input.TimeoutSecs, input.IsForce, input.StopCharging, "")
+	drv, err := self.GetDriver()
+	if err != nil {
+		return nil, errors.Wrap(err, "GetDriver")
 	}
-	return nil, httperrors.NewInvalidStatusError("Cannot stop server in status %s", self.Status)
+	if !input.IsForce {
+		err := drv.CanStop(self)
+		if err != nil {
+			return nil, errors.Wrap(err, "Cannot stop server")
+		}
+	}
+	if err := self.ValidateEncryption(ctx, userCred); err != nil {
+		return nil, errors.Wrap(httperrors.ErrForbidden, "encryption key not accessible")
+	}
+	return nil, self.StartGuestStopTask(ctx, userCred, input.TimeoutSecs, input.IsForce, input.StopCharging, "")
 }
 
 // 冻结虚拟机

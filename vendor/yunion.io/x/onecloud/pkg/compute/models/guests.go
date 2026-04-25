@@ -2325,8 +2325,7 @@ func (manager *SGuestManager) validateEip(ctx context.Context, userCred mcclient
 		return nil
 	}
 	eipStr := input.Eip
-	eipBw := input.EipBw
-	if len(eipStr) > 0 || eipBw > 0 {
+	if len(eipStr) > 0 || input.EipTxBw > 0 || input.EipRxBw > 0 || input.EipBw > 0 {
 		if !driver.IsSupportEip() {
 			return httperrors.NewNotImplementedError("eip not supported for %s", input.Hypervisor)
 		}
@@ -2487,7 +2486,9 @@ func getGuestResourceRequirements(
 
 	eipCnt := 0
 	eipBw := input.EipBw
-	if eipBw > 0 {
+	eipTxBw := input.EipTxBw
+	eipRxBw := input.EipRxBw
+	if eipBw > 0 || eipTxBw > 0 || eipRxBw > 0 {
 		eipCnt = 1
 	}
 
@@ -3568,6 +3569,8 @@ type Attach2NetworkArgs struct {
 	RequireIPv6         bool
 
 	BwLimit        int
+	RxBwLimit      int
+	TxBwLimit      int
 	NicDriver      string
 	NumQueues      int
 	RxTrafficLimit int64
@@ -3598,6 +3601,8 @@ func (args *Attach2NetworkArgs) onceArgs(i int) attach2NetworkOnceArgs {
 		requireIPv6:         args.RequireIPv6,
 
 		bwLimit:        args.BwLimit,
+		rxBwLimit:      args.RxBwLimit,
+		txBwLimit:      args.TxBwLimit,
 		nicDriver:      args.NicDriver,
 		numQueues:      args.NumQueues,
 		txTrafficLimit: args.TxTrafficLimit,
@@ -3640,6 +3645,8 @@ type attach2NetworkOnceArgs struct {
 	requireIPv6         bool
 
 	bwLimit        int
+	rxBwLimit      int
+	txBwLimit      int
 	nicDriver      string
 	numQueues      int
 	nicConf        SNicConfig
@@ -3720,6 +3727,8 @@ func (self *SGuest) attach2NetworkOnce(
 		ifname:         args.nicConf.Ifname,
 		macAddr:        args.nicConf.Mac,
 		bwLimit:        args.bwLimit,
+		rxBwLimit:      args.rxBwLimit,
+		txBwLimit:      args.txBwLimit,
 		nicDriver:      nicDriver,
 		numQueues:      args.numQueues,
 		teamWithMac:    args.teamWithMac,
@@ -4492,6 +4501,8 @@ func (self *SGuest) attach2NamedNetworkDesc(ctx context.Context, userCred mcclie
 			NicDriver:           netConfig.Driver,
 			NumQueues:           netConfig.NumQueues,
 			BwLimit:             netConfig.BwLimit,
+			RxBwLimit:           netConfig.RxBwLimit,
+			TxBwLimit:           netConfig.TxBwLimit,
 			RxTrafficLimit:      netConfig.RxTrafficLimit,
 			TxTrafficLimit:      netConfig.TxTrafficLimit,
 			Virtual:             netConfig.Vip,
@@ -4737,6 +4748,8 @@ func (self *SGuest) CreateIsolatedDeviceOnHost(ctx context.Context, userCred mcc
 		}
 	}
 
+	lockman.LockObject(ctx, host)
+	defer lockman.ReleaseObject(ctx, host)
 	usedDeviceMap := map[string]*SIsolatedDevice{}
 	for _, devConfig := range devs {
 		if devConfig.DevType == api.NIC_TYPE || devConfig.DevType == api.NVME_PT_TYPE {
@@ -4961,9 +4974,6 @@ func (self *SGuest) AllowDeleteItem(ctx context.Context, userCred mcclient.Token
 
 // 删除虚拟机
 func (self *SGuest) CustomizeDelete(ctx context.Context, userCred mcclient.TokenCredential, query api.ServerDeleteInput, data jsonutils.JSONObject) error {
-	if len(self.HostId) == 0 {
-		return self.RealDelete(ctx, userCred)
-	}
 	return self.StartDeleteGuestTask(ctx, userCred, "", query)
 }
 
@@ -6486,6 +6496,8 @@ func (self *SGuest) ToCreateInput(ctx context.Context, userCred mcclient.TokenCr
 	userInput.SecgroupId = genInput.SecgroupId
 	userInput.KeypairId = genInput.KeypairId
 	userInput.EipBw = genInput.EipBw
+	userInput.EipTxBw = genInput.EipTxBw
+	userInput.EipRxBw = genInput.EipRxBw
 	userInput.EipChargeType = genInput.EipChargeType
 	drv, _ := self.GetDriver()
 	if drv != nil && drv.IsSupportPublicIp() {
@@ -6560,6 +6572,8 @@ func (self *SGuest) toCreateInput() *api.ServerCreateInput {
 		switch eip.Mode {
 		case api.EIP_MODE_STANDALONE_EIP:
 			r.EipBw = eip.Bandwidth
+			r.EipTxBw = eip.TxBwLimit
+			r.EipRxBw = eip.RxBwLimit
 			r.EipChargeType = eip.ChargeType
 		case api.EIP_MODE_INSTANCE_PUBLICIP:
 			drv, _ := self.GetDriver()
@@ -6641,6 +6655,8 @@ func (self *SGuest) ToNetworksConfig() []*api.NetworkConfig {
 		// netConf.Reserved
 		netConf.Driver = guestNetwork.Driver
 		netConf.BwLimit = guestNetwork.BwLimit
+		netConf.RxBwLimit = guestNetwork.RxBwLimit
+		netConf.TxBwLimit = guestNetwork.TxBwLimit
 		netConf.RequireTeaming = requireTeaming
 		// netConf.NetType
 		ret = append(ret, netConf)
@@ -7124,4 +7140,43 @@ func (guest *SGuest) SaveLastStartAt() error {
 		return nil
 	})
 	return errors.Wrap(err, "SaveLastStartAt")
+}
+
+func (guest *SGuest) finalizeFakeDeleteTask(ctx context.Context, userCred mcclient.TokenCredential, task taskman.ITask) {
+	db.OpsLog.LogEvent(guest, db.ACT_PENDING_DELETE, guest.GetShortDesc(ctx), userCred)
+	logclient.AddActionLogWithStartable(task, guest, logclient.ACT_PENDING_DELETE, guest.GetShortDesc(ctx), userCred, true)
+	if !guest.IsSystem {
+		guest.EventNotify(ctx, userCred, notifyclient.ActionPendingDelete)
+	}
+}
+
+func (guest *SGuest) finalizeRealDeleteTask(ctx context.Context, userCred mcclient.TokenCredential, task taskman.ITask) {
+	guest.RealDelete(ctx, userCred)
+	guest.RemoveAllMetadata(ctx, userCred)
+	db.OpsLog.LogEvent(guest, db.ACT_DELOCATE, guest.GetShortDesc(ctx), userCred)
+	logclient.AddActionLogWithStartable(task, guest, logclient.ACT_DELOCATE, nil, userCred, true)
+	if !guest.IsSystem {
+		guest.EventNotify(ctx, userCred, notifyclient.ActionDelete)
+	}
+	HostManager.ClearSchedDescCache(guest.HostId)
+}
+
+func (guest *SGuest) FinalizeDeleteTask(ctx context.Context, userCred mcclient.TokenCredential, task taskman.ITask, data jsonutils.JSONObject) {
+	if jsonutils.QueryBoolean(data, "real_delete", false) {
+		guest.finalizeRealDeleteTask(ctx, userCred, task)
+	} else {
+		guest.finalizeFakeDeleteTask(ctx, userCred, task)
+	}
+}
+
+func (guest *SGuest) StartBaseDeleteTask(ctx context.Context, t taskman.ITask) error {
+	task, err := taskman.TaskManager.NewTask(ctx, "BaseGuestDeleteTask", guest, t.GetUserCred(), t.GetParams(), t.GetTaskId(), "", nil)
+	if err != nil {
+		return errors.Wrap(err, "StartBaseDeleteTask")
+	}
+	err = task.ScheduleRun(nil)
+	if err != nil {
+		return errors.Wrap(err, "ScheduleRun")
+	}
+	return nil
 }

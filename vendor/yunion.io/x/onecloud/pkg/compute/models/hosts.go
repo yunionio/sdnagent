@@ -53,6 +53,7 @@ import (
 	hostapi "yunion.io/x/onecloud/pkg/apis/host"
 	napi "yunion.io/x/onecloud/pkg/apis/notify"
 	"yunion.io/x/onecloud/pkg/appsrv"
+	"yunion.io/x/onecloud/pkg/cloudcommon/consts"
 	"yunion.io/x/onecloud/pkg/cloudcommon/db"
 	"yunion.io/x/onecloud/pkg/cloudcommon/db/lockman"
 	"yunion.io/x/onecloud/pkg/cloudcommon/db/quotas"
@@ -1447,7 +1448,7 @@ func (hh *SHostManager) GetPropertyK8sMasterNodeIps(ctx context.Context, userCre
 }
 
 func (hh *SHostManager) GetPropertyBmStartRegisterScript(ctx context.Context, userCred mcclient.TokenCredential, query jsonutils.JSONObject) (jsonutils.JSONObject, error) {
-	regionUri, err := auth.GetPublicServiceURL("compute_v2", options.Options.Region, "")
+	regionUri, err := auth.GetPublicServiceURL(consts.GetServiceType(), options.Options.Region, "", httputils.POST)
 	if err != nil {
 		return nil, err
 	}
@@ -1855,36 +1856,43 @@ func (hh *SHostManager) GetEnabledKvmHostForBackupStorage(bs *SBackupStorage) (*
 }
 
 func (hh *SHostManager) GetEnabledKvmHostForDiskBackup(backup *SDiskBackup) (*SHost, error) {
-	bs, err := backup.GetBackupStorage()
-	if err != nil {
-		return nil, errors.Wrap(err, "unable to get backupStorage")
-	}
-	storage, err := backup.GetStorage()
-	if err != nil {
-		return nil, errors.Wrap(err, "unable to get storage of diskbackup")
-	}
-
-	hbs, err := HostBackupstorageManager.GetBackupStoragesByBackup(bs.Id)
-	if err != nil {
-		return nil, errors.Wrap(err, "HostBackupstorageManager.GetBackupStoragesByBackup")
-	}
 	hbsCandidates := stringutils2.NewSortedStrings(nil)
-	for i := range hbs {
-		hbsCandidates = hbsCandidates.Append(hbs[i].HostId)
-	}
-	hss, err := HoststorageManager.GetHostStoragesByStorageId(storage.Id)
-	if err != nil {
-		return nil, errors.Wrap(err, "HoststorageManager.GetStorages")
-	}
 	hssCandidates := stringutils2.NewSortedStrings(nil)
-	for i := range hss {
-		hssCandidates = hssCandidates.Append(hss[i].HostId)
-	}
 	var candidates []string
-	if len(hbsCandidates) == 0 {
-		candidates = []string(hssCandidates)
+
+	{
+		bs, err := backup.GetBackupStorage()
+		if err != nil {
+			return nil, errors.Wrap(err, "unable to get backupStorage")
+		}
+		hbs, err := HostBackupstorageManager.GetBackupStoragesByBackup(bs.Id)
+		if err != nil {
+			return nil, errors.Wrap(err, "HostBackupstorageManager.GetBackupStoragesByBackup")
+		}
+
+		for i := range hbs {
+			hbsCandidates = hbsCandidates.Append(hbs[i].HostId)
+		}
+	}
+	if len(backup.StorageId) > 0 {
+		storage, err := backup.GetStorage()
+		if err != nil {
+			return nil, errors.Wrap(err, "unable to get storage of diskbackup")
+		}
+		hss, err := HoststorageManager.GetHostStoragesByStorageId(storage.Id)
+		if err != nil {
+			return nil, errors.Wrap(err, "HoststorageManager.GetStorages")
+		}
+		for i := range hss {
+			hssCandidates = hssCandidates.Append(hss[i].HostId)
+		}
+		if len(hbsCandidates) == 0 {
+			candidates = []string(hssCandidates)
+		} else {
+			candidates = []string(stringutils2.Intersect(hbsCandidates, hssCandidates))
+		}
 	} else {
-		candidates = []string(stringutils2.Intersect(hbsCandidates, hssCandidates))
+		candidates = []string(hbsCandidates)
 	}
 
 	host, err := HostManager.GetEnabledKvmHost(candidates)
@@ -1898,6 +1906,7 @@ func (hh *SHostManager) GetEnabledKvmHost(candidates []string) (*SHost, error) {
 	hostq := HostManager.Query().IsTrue("enabled")
 	hostq = hostq.Equals("host_status", api.HOST_ONLINE)
 	hostq = hostq.In("host_type", []string{api.HOST_TYPE_HYPERVISOR, api.HOST_TYPE_KVM, api.HOST_TYPE_CONTAINER})
+	hostq = hostq.IsNullOrEmpty("manager_id")
 	if len(candidates) > 0 {
 		hostq = hostq.In("id", candidates)
 	}
@@ -5205,6 +5214,13 @@ func (hh *SHost) PerformPing(ctx context.Context, userCred mcclient.TokenCredent
 		return nil, errors.Wrap(err, "get host files")
 	}
 	result.Set("host_files", jsonutils.Marshal(hostFiles))
+	// get tap config
+	tapConfig, err := hh.getTapConfig()
+	if err != nil {
+		log.Errorf("get tap config error %s", err)
+	} else {
+		result.Set("tap_config", jsonutils.Marshal(tapConfig))
+	}
 
 	appParams := appsrv.AppContextGetParams(ctx)
 	if appParams != nil {
@@ -7718,6 +7734,17 @@ func (h *SHost) GetDetailsAppOptions(ctx context.Context, userCred mcclient.Toke
 
 func (h *SHost) GetDetailsWorkerStats(ctx context.Context, userCred mcclient.TokenCredential, query jsonutils.JSONObject) (jsonutils.JSONObject, error) {
 	return h.Request(ctx, userCred, httputils.GET, "/worker_stats", nil, nil)
+}
+
+func (hh *SHost) GetDetailsIsolatedDeviceNumaStats(ctx context.Context, userCred mcclient.TokenCredential, input *api.HostIsolatedDeviceNumaStatsInput) (jsonutils.JSONObject, error) {
+	if !utils.IsInStringArray(input.DevType, api.VALID_PASSTHROUGH_TYPES) {
+		return nil, httperrors.NewInputParameterError("dev_type %s is invalid", input.DevType)
+	}
+	stats, err := IsolatedDeviceManager.GetHostAllocatedIsolatedDeviceNumaStats(input.DevType, hh.Id)
+	if err != nil {
+		return nil, err
+	}
+	return jsonutils.Marshal(stats), nil
 }
 
 func (hh *SHost) IsAttach2Wire(wireId string) bool {
