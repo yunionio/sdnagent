@@ -16,11 +16,16 @@ package server
 
 import (
 	"context"
+	"fmt"
+	"os"
+	"os/exec"
 	"strings"
 	"sync"
 	"time"
 
 	"yunion.io/x/log"
+	"yunion.io/x/pkg/errors"
+
 	"yunion.io/x/sdnagent/pkg/agent/utils"
 	"yunion.io/x/sdnagent/pkg/tc"
 )
@@ -120,18 +125,101 @@ func (tm *TcMan) doCheckSection(ctx context.Context, who string, section *TcManS
 	}
 }
 
-func (tm *TcMan) doCheckGuestSection(ctx context.Context, section *TcManSection) {
-	for _, tcdata := range section.pages {
-		tm.doCheckGuestTcData(ctx, tcdata)
+func (tm *TcMan) doCleanSection(ctx context.Context, who string, section *TcManSection) {
+	if who != tcManHostLocalWho {
+		tm.doCleanGuestSection(ctx, section)
 	}
 }
 
-func (tm *TcMan) doCheckGuestTcData(ctx context.Context, tcdata *utils.TcData) {
+func (tm *TcMan) doCheckGuestSection(ctx context.Context, section *TcManSection) {
+	for _, tcdata := range section.pages {
+		err := tm.doCheckGuestIfbTcData(ctx, tcdata)
+		if err != nil {
+			log.Errorf("tcman: check guest ifb tc data failed: %s", err)
+			continue
+		}
+		err = tm.doCheckGuestTcData(ctx, tcdata)
+		if err != nil {
+			log.Errorf("tcman: check guest tc data failed: %s", err)
+			continue
+		}
+	}
+}
+
+func (tm *TcMan) doCleanGuestSection(ctx context.Context, section *TcManSection) {
+	for _, tcdata := range section.pages {
+		err := tm.doCleanGuestIfbTcData(ctx, tcdata)
+		if err != nil {
+			log.Errorf("tcman: clean guest ifb tc data failed: %s", err)
+			continue
+		}
+	}
+}
+
+func (tm *TcMan) removeIfbIfname(ctx context.Context, ifname string) error {
+	if !tm.isIfnameExists(ifname) {
+		return nil
+	}
+	return exec.CommandContext(ctx, "ip", "link", "delete", ifname).Run()
+}
+
+func (tm *TcMan) isIfnameExists(ifname string) bool {
+	_, err := os.Stat(fmt.Sprintf("/sys/class/net/%s", ifname))
+	return err == nil
+}
+
+func (tm *TcMan) ensureIfbIfname(ctx context.Context, ifname string) error {
+	if tm.isIfnameExists(ifname) {
+		return nil
+	}
+	err := exec.CommandContext(ctx, "ip", "link", "add", ifname, "type", "ifb").Run()
+	if err != nil {
+		return errors.Wrapf(err, "add ifb ifname %s", ifname)
+	}
+	err = exec.CommandContext(ctx, "ip", "link", "set", ifname, "up").Run()
+	if err != nil {
+		return errors.Wrapf(err, "add ifb ifname %s", ifname)
+	}
+	return nil
+}
+
+func (tm *TcMan) doCleanGuestIfbTcData(ctx context.Context, tcdata *utils.TcData) error {
+	err := tm.removeIfbIfname(ctx, tcdata.IfbIfname())
+	if err != nil {
+		return errors.Wrapf(err, "remove ifb ifname %s", tcdata.IfbIfname())
+	}
+	return nil
+}
+
+func (tm *TcMan) doCheckGuestIfbTcData(ctx context.Context, tcdata *utils.TcData) error {
+	err := tm.ensureIfbIfname(ctx, tcdata.IfbIfname())
+	if err != nil {
+		return errors.Wrapf(err, "ensure ifb ifname %s", tcdata.IfbIfname())
+	}
+
+	qt, err := tm.tcCli.QdiscShow(ctx, tcdata.IfbIfname())
+	if err != nil {
+		log.Errorf("tcman: qdisc show %s failed: %s", tcdata.IfbIfname(), err)
+		return errors.Wrapf(err, "qdisc show %s", tcdata.IfbIfname())
+	}
+	expectTree := tcdata.GuestIfbQdiscTree()
+	cmds := expectTree.Delta(qt, tcdata.IfbIfname())
+	if len(cmds) > 0 {
+		output, stderr, err := tm.tcCli.Batch(ctx, strings.Join(cmds, "\n"))
+		if err != nil {
+			log.Errorf("tcman: batch failed: %s cmds: %s\n%s\nstderr:\n%s", err, cmds, output, stderr)
+			return errors.Wrapf(err, "batch failed: %s cmds: %s\n%s\nstderr:\n%s", err, cmds, output, stderr)
+		}
+	}
+	return nil
+}
+
+func (tm *TcMan) doCheckGuestTcData(ctx context.Context, tcdata *utils.TcData) error {
 	qt, err := tm.tcCli.QdiscShow(ctx, tcdata.Ifname)
 	if err != nil {
 		// if device does not exist, expect super man to tell us
 		log.Errorf("tcman: qdisc show %s failed: %s", tcdata.Ifname, err)
-		return
+		return errors.Wrapf(err, "qdisc show %s", tcdata.Ifname)
 	}
 	// if root := qt.Root(); root.BaseQdisc().Kind == "mq" {
 	//	log.Infof("skip %s: it uses mq", ifname)
@@ -144,10 +232,11 @@ func (tm *TcMan) doCheckGuestTcData(ctx context.Context, tcdata *utils.TcData) {
 		output, stderr, err := tm.tcCli.Batch(ctx, strings.Join(cmds, "\n"))
 		if err != nil {
 			log.Errorf("tcman: batch failed: %s cmds: %s\n%s\nstderr:\n%s", err, cmds, output, stderr)
-			return
+			return errors.Wrapf(err, "batch failed: %s cmds: %s\n%s\nstderr:\n%s", err, cmds, output, stderr)
 		}
-		log.Infof("tcman: %s: updated qdisc\n%s\n===\n%s", tcdata.Ifname, cmds, output)
+		log.Debugf("tcman: %s: updated qdisc\n%s\n===\n%s", tcdata.Ifname, cmds, output)
 	}
+	return nil
 }
 
 func (tm *TcMan) doCheckHostSection(ctx context.Context, section *TcManSection) {
@@ -188,7 +277,7 @@ func (tm *TcMan) doCheckHostTcData(ctx context.Context, tcdata *utils.TcData) {
 			}
 			return
 		}
-		log.Infof("tcman: %s: updated qdisc\n%s", tcdata.Ifname, output)
+		log.Debugf("tcman: %s: updated qdisc\n%s", tcdata.Ifname, output)
 	}
 }
 
@@ -203,10 +292,14 @@ func (tm *TcMan) doCmd(ctx context.Context, cmd *TcManCmd) {
 			section.Update(cmd.section)
 		}
 		if cmd.sync {
-		    tm.doCheckSection(ctx, cmd.who, section)
+			tm.doCheckSection(ctx, cmd.who, section)
 		}
 	case TcManCmdDel:
-		delete(tm.book, cmd.who)
+		section, ok := tm.book[cmd.who]
+		if ok {
+			tm.doCleanSection(ctx, cmd.who, section)
+			delete(tm.book, cmd.who)
+		}
 	case TcManCmdSync:
 		tm.doIdleCheck(ctx)
 	}

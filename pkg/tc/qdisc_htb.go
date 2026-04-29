@@ -32,6 +32,8 @@ tc class add dev br0 parent 1:1 classid 1:3 htb rate 100mbit ceil 100mbit
 tc filter add dev br0 protocol ip parent 1: prio 1 handle 599 fw classid 1:3
 */
 
+var _ IQdisc = &QdiscHtb{}
+
 type QdiscHtb struct {
 	*SBaseTcQdisc
 	DefaultClass uint16

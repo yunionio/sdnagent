@@ -2,6 +2,7 @@ package tc
 
 import (
 	"fmt"
+	"regexp"
 	"strconv"
 	"strings"
 
@@ -10,11 +11,20 @@ import (
 )
 
 /*
- * // add
+ * // add fw
  * tc filter add dev br0 protocol ip parent 1: prio 1 handle 599 fw classid 1:3
- * // show
+ * // show fw
  * filter parent 1: protocol ip pref 1 fw chain 0
  * filter parent 1: protocol ip pref 1 fw chain 0 handle 0x257 classid 1:3
+ * // add u32
+ * tc filter add dev vnet2202-232 parent ffff: protocol ip u32 match u32 0 0 action mirred egress redirect dev rvnet2202-232
+ * // show u32
+ * filter parent ffff: protocol ip pref 49152 u32 chain 0
+ * filter parent ffff: protocol ip pref 49152 u32 chain 0 fh 800: ht divisor 1
+ * filter parent ffff: protocol ip pref 49152 u32 chain 0 fh 800::800 order 2048 key ht 800 bkt 0 terminal flowid ??? not_in_hw
+ *   match 00000000/00000000 at 0
+ *   action order 1: mirred (Egress Redirect to device reth0) stolen
+ *   index 1 ref 1 bind 1
  */
 
 type IFilter interface {
@@ -241,29 +251,121 @@ func parseFwFilter(chunks []string) (*SFwFilter, error) {
 	return f, nil
 }
 
+type SU32Filter struct {
+	*SBaseTcFilter
+	RedirectDev string
+}
+
+func (f *SU32Filter) Base() *SBaseTcFilter {
+	return f.SBaseTcFilter
+}
+
+func (f *SU32Filter) Compare(itc IComparable) int {
+	baseFilter, ok := itc.(IFilter)
+	if !ok {
+		return -1
+	}
+	baseCmp := f.Base().Compare(baseFilter.Base())
+	if baseCmp != 0 {
+		return baseCmp
+	}
+	f2 := baseFilter.(*SU32Filter)
+	if f.RedirectDev != f2.RedirectDev {
+		return strings.Compare(f.RedirectDev, f2.RedirectDev)
+	}
+	return 0
+}
+
+func (f *SU32Filter) Equals(fi IComparable) bool {
+	return f.Compare(fi) == 0
+}
+
+func (f *SU32Filter) basicLineElements(action string, ifname string) []string {
+	elms := f.SBaseTcFilter.basicLineElements(action, ifname)
+	if len(f.RedirectDev) > 0 {
+		elms = append(elms,
+			"u32",
+			"match",
+			"u32",
+			"0",
+			"0",
+			"action",
+			"mirred",
+			"egress",
+			"redirect",
+			"dev",
+			f.RedirectDev,
+		)
+	}
+	return elms
+}
+
+func (f *SU32Filter) AddLine(ifname string) string {
+	elms := f.basicLineElements("add", ifname)
+	return strings.Join(elms, " ")
+}
+
+func (f *SU32Filter) ReplaceLine(ifname string) string {
+	elms := f.basicLineElements("replace", ifname)
+	return strings.Join(elms, " ")
+}
+
+func (f *SU32Filter) DeleteLine(ifname string) string {
+	elms := f.basicLineElements("delete", ifname)
+	return strings.Join(elms, " ")
+}
+
+var (
+	ingressMatchReg = regexp.MustCompile(`mirred \(Egress Redirect to device (?P<ifname>[a-z0-9._-]+)\)`)
+)
+
+func parseU32Filter(chunks []string) (*SU32Filter, error) {
+	m := ingressMatchReg.FindStringSubmatch(strings.Join(chunks, " "))
+	if m != nil {
+		f := &SU32Filter{}
+		f.RedirectDev = m[1]
+		return f, nil
+	}
+	return nil, errors.Wrapf(errors.ErrInvalidFormat, "unknown u32 filter")
+}
+
 func parseFilter(chunks []string, parents []IQdisc) (IFilter, error) {
 	f, err := parseBaseFilter(chunks, parents)
 	if err != nil {
 		return nil, errors.Wrapf(err, "parse base filter")
 	}
-	if f.Kind == "fw" {
+	switch f.Kind {
+	case "fw":
 		fwFilter, err := parseFwFilter(chunks)
 		if err != nil {
 			return nil, errors.Wrapf(err, "parse fw filter")
 		}
 		fwFilter.SBaseTcFilter = f
 		return fwFilter, nil
+	case "u32":
+		u32Filter, err := parseU32Filter(chunks)
+		if err != nil {
+			return nil, errors.Wrapf(err, "parse u32 filter")
+		}
+		u32Filter.SBaseTcFilter = f
+		return u32Filter, nil
 	}
 	return nil, errors.Wrapf(errors.ErrInvalidFormat, "unknown filter kind %s", f.Kind)
 }
 
 func parseFilterLines(lines []string, parents []IQdisc) ([]IFilter, error) {
 	filters := []IFilter{}
-	for _, line := range lines {
-		chunks := strings.Split(strings.TrimSpace(line), " ")
+	for i := 0; i < len(lines); {
+		line := strings.TrimSpace(lines[i])
+		i++
+		for i < len(lines) && !strings.HasPrefix(strings.TrimSpace(lines[i]), "filter parent ") {
+			line += " " + strings.TrimSpace(lines[i])
+			i++
+		}
+		chunks := strings.Split(line, " ")
 		filter, err := parseFilter(chunks, parents)
 		if err != nil {
-			log.Errorf("parse filter %s: %v", line, err)
+			log.Debugf("parse filter %s: %v", line, err)
 		} else {
 			filters = append(filters, filter)
 		}

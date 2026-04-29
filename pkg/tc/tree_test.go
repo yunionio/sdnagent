@@ -43,6 +43,7 @@ filter parent 1: protocol ip pref 1 fw chain 0 handle 0x257 classid 1:3`,
 						Kind:   "htb",
 						Handle: "1:",
 						Parent: "",
+						Root:   true,
 					},
 					DefaultClass: 0x2,
 				}
@@ -104,6 +105,7 @@ filter parent 1: protocol ip pref 1 fw chain 0 handle 0x257 classid 1:3`,
 						Kind:   "htb",
 						Handle: "1:",
 						Parent: "",
+						Root:   true,
 					},
 					DefaultClass: 0x2,
 				}
@@ -163,6 +165,7 @@ filter parent 1: protocol ip pref 1 fw chain 0 handle 0x257 classid 1:3`,
 						Kind:   "htb",
 						Handle: "1:",
 						Parent: "",
+						Root:   true,
 					},
 					DefaultClass: 0x2,
 				}
@@ -227,6 +230,7 @@ qdisc fq_codel 10: parent 1: limit 10240p flows 1024 quantum 1514 target 5ms int
 						Kind:   "tbf",
 						Handle: "1:",
 						Parent: "",
+						Root:   true,
 					},
 					Rate:    100000000,
 					Burst:   12500,
@@ -246,6 +250,7 @@ qdisc fq_codel 10: parent 1: limit 10240p flows 1024 quantum 1514 target 5ms int
 						Kind:   "tbf",
 						Handle: "1:",
 						Parent: "",
+						Root:   true,
 					},
 					Rate:    100000000,
 					Burst:   12500,
@@ -255,6 +260,46 @@ qdisc fq_codel 10: parent 1: limit 10240p flows 1024 quantum 1514 target 5ms int
 			}(),
 			deltaLines: []string{
 				"qdisc add dev eth0 root handle 1: tbf rate 100Mbit burst 12500b latency 100ms",
+			},
+		},
+		{
+			qdisc:  ``,
+			class:  ``,
+			filter: ``,
+			wantQdiscTree: func() *QdiscTree {
+				tbfQdisc := &QdiscTbf{
+					SBaseTcQdisc: &SBaseTcQdisc{
+						Kind:   "tbf",
+						Handle: "1:",
+						Parent: "",
+						Root:   true,
+					},
+					Rate:    100000000,
+					Burst:   12500,
+					Latency: 100000,
+				}
+				ingressQdisc := &QdiscIngress{
+					SBaseTcQdisc: &SBaseTcQdisc{
+						Kind:   "ingress",
+						Handle: "ffff:",
+						Parent: "",
+					},
+				}
+				ingressFilter := &SU32Filter{
+					SBaseTcFilter: &SBaseTcFilter{
+						Kind:     "u32",
+						Prio:     49152,
+						Protocol: "ip",
+						Parent:   ingressQdisc,
+					},
+					RedirectDev: "reth0",
+				}
+				return NewQdiscTree([]IQdisc{tbfQdisc, ingressQdisc}, []IClass{}, []IFilter{ingressFilter})
+			}(),
+			deltaLines: []string{
+				"qdisc add dev eth0 root handle 1: tbf rate 100Mbit burst 12500b latency 100ms",
+				"qdisc add dev eth0 handle ffff: ingress",
+				"filter add dev eth0 parent ffff: protocol ip prio 49152 u32 match u32 0 0 action mirred egress redirect dev reth0",
 			},
 		},
 	}
