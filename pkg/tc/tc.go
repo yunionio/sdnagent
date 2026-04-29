@@ -46,6 +46,15 @@ func (tc *TcCli) QdiscShow(ctx context.Context, ifname string) (*QdiscTree, erro
 		}
 		outputs[i] = string(output)
 	}
+	{
+		// show filter root
+		cmd := exec.CommandContext(ctx, "tc", "filter", "show", "dev", ifname, "root")
+		output, err := cmd.Output()
+		if err != nil {
+			return nil, errors.Wrapf(err, "tc filter show root")
+		}
+		outputs[2] += string(output)
+	}
 	qt, err := NewQdiscTreeFromString(string(outputs[0]), string(outputs[1]), string(outputs[2]))
 	return qt, err
 }

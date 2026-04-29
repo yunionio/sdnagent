@@ -299,7 +299,7 @@ func parseClassLines(lines []string) ([]IClass, error) {
 						visitedClasses[cls.Id()] = struct{}{}
 					}
 				} else {
-					log.Errorf("parse class %s: %v", line, err)
+					log.Debugf("parse class %s: %v", line, err)
 				}
 			} else {
 				classes = append(classes, cls)
