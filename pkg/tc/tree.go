@@ -17,6 +17,7 @@ package tc
 import (
 	"strings"
 
+	"yunion.io/x/jsonutils"
 	"yunion.io/x/pkg/errors"
 )
 
@@ -24,6 +25,26 @@ type QdiscTree struct {
 	qdisc   []IQdisc
 	classes []IClass
 	filters []IFilter
+}
+
+func (qt QdiscTree) String() string {
+	lines := strings.Builder{}
+	lines.WriteString("qdisc:\n")
+	for i := range qt.qdisc {
+		lines.WriteString(jsonutils.Marshal(qt.qdisc[i]).String())
+		lines.WriteString("\n")
+	}
+	lines.WriteString("classes:\n")
+	for i := range qt.classes {
+		lines.WriteString(jsonutils.Marshal(qt.classes[i]).String())
+		lines.WriteString("\n")
+	}
+	lines.WriteString("filters:\n")
+	for i := range qt.filters {
+		lines.WriteString(jsonutils.Marshal(qt.filters[i]).String())
+		lines.WriteString("\n")
+	}
+	return lines.String()
 }
 
 func (qt *QdiscTree) RootQdisc() IQdisc {

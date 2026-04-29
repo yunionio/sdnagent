@@ -86,9 +86,9 @@ func StartService() {
 		s.Stop()
 	})
 	go func() {
-		sigChan := make(chan os.Signal)
-		signal.Notify(sigChan, syscall.SIGINT)
-		signal.Notify(sigChan, syscall.SIGTERM)
+		sigChan := make(chan os.Signal, 1)
+		signal.Notify(sigChan, syscall.SIGINT, syscall.SIGTERM)
+		defer signal.Stop(sigChan)
 		sig := <-sigChan
 		log.Infof("signal received: %s", sig)
 		s.Stop()
