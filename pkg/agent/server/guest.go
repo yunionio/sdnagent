@@ -80,7 +80,7 @@ func (g *Guest) reloadDesc(ctx context.Context) error {
 	if g.NeedsSync() {
 		go func() {
 			// desc change will be picked up by watcher
-			log.Infof("guest sync %s", g.Id)
+			log.Debugf("guest sync %s", g.Id)
 			hc := g.watcher.hostConfig
 			s := auth.GetAdminSession(ctx, hc.Region)
 			_, err := mcclient_modules.Servers.PerformAction(s, g.Id, "sync", nil)
@@ -245,15 +245,15 @@ func (g *Guest) clearOvn(ctx context.Context) {
 func (g *Guest) UpdateSettings(ctx context.Context, sync bool) {
 	start := time.Now()
 	err := g.refresh(ctx)
-	log.Infof("guest UpdateSettings refresh %f", time.Since(start).Seconds())
+	log.Debugf("guest UpdateSettings refresh %f", time.Since(start).Seconds())
 	switch err {
 	case nil:
 		g.updateClassicFlows(ctx)
-		log.Infof("guest UpdateSettings updateClassicFlows %f", time.Since(start).Seconds())
+		log.Debugf("guest UpdateSettings updateClassicFlows %f", time.Since(start).Seconds())
 		g.updateTc(ctx, sync)
-		log.Infof("guest UpdateSettings updateTc %f", time.Since(start).Seconds())
+		log.Debugf("guest UpdateSettings updateTc %f", time.Since(start).Seconds())
 		g.updateOvn(ctx)
-		log.Infof("guest UpdateSettings updateOvn %f", time.Since(start).Seconds())
+		log.Debugf("guest UpdateSettings updateOvn %f", time.Since(start).Seconds())
 		if g.HostId != "" {
 			g.watcher.agent.HostId(g.HostId)
 		}

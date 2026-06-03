@@ -21,8 +21,8 @@ func TestParseClassLines(t *testing.T) {
 		ifname      string
 		in          []string
 		want        []IClass
-		delLine     []string
-		replaceLine []string
+		delLine     [][]string
+		replaceLine [][]string
 	}{
 		{
 			ifname: "eth0",
@@ -52,15 +52,15 @@ func TestParseClassLines(t *testing.T) {
 					Ceil: 100000000,
 				},
 			},
-			delLine: []string{
-				"class delete dev eth0 parent 1: classid 1:1 htb rate 10Gbit ceil 10Gbit",
-				"class delete dev eth0 parent 1:1 classid 1:2 htb rate 1Gbit ceil 10Gbit",
-				"class delete dev eth0 parent 1:1 classid 1:3 htb rate 100Mbit ceil 100Mbit",
+			delLine: [][]string{
+				[]string{"class", "delete", "dev", "eth0", "parent", "1:", "classid", "1:1", "htb", "rate", "10Gbit", "ceil", "10Gbit"},
+				[]string{"class", "delete", "dev", "eth0", "parent", "1:1", "classid", "1:2", "htb", "rate", "1Gbit", "ceil", "10Gbit"},
+				[]string{"class", "delete", "dev", "eth0", "parent", "1:1", "classid", "1:3", "htb", "rate", "100Mbit", "ceil", "100Mbit"},
 			},
-			replaceLine: []string{
-				"class add dev eth0 parent 1: classid 1:1 htb rate 10Gbit ceil 10Gbit",
-				"class add dev eth0 parent 1:1 classid 1:2 htb rate 1Gbit ceil 10Gbit",
-				"class add dev eth0 parent 1:1 classid 1:3 htb rate 100Mbit ceil 100Mbit",
+			replaceLine: [][]string{
+				[]string{"class", "add", "dev", "eth0", "parent", "1:", "classid", "1:1", "htb", "rate", "10Gbit", "ceil", "10Gbit"},
+				[]string{"class", "add", "dev", "eth0", "parent", "1:1", "classid", "1:2", "htb", "rate", "1Gbit", "ceil", "10Gbit"},
+				[]string{"class", "add", "dev", "eth0", "parent", "1:1", "classid", "1:3", "htb", "rate", "100Mbit", "ceil", "100Mbit"},
 			},
 		},
 	}
@@ -78,14 +78,14 @@ func TestParseClassLines(t *testing.T) {
 				t.Fatalf("class %d: want %s, got %s", i, jsonutils.Marshal(c.want[i]), jsonutils.Marshal(got[i]))
 			}
 		}
-		delLines := []string{}
+		delLines := [][]string{}
 		for _, cls := range got {
 			delLines = append(delLines, cls.DeleteLine(c.ifname))
 		}
 		if !reflect.DeepEqual(delLines, c.delLine) {
 			t.Fatalf("want %v, got %v", c.delLine, delLines)
 		}
-		replaceLines := []string{}
+		replaceLines := [][]string{}
 		for _, cls := range got {
 			replaceLines = append(replaceLines, cls.AddLine(c.ifname))
 		}

@@ -1,9 +1,5 @@
 package tc
 
-import (
-	"strings"
-)
-
 /*
  * modprobe ifb numifbs=0
  * ip link add dev rvnet2202-232 type ifb
@@ -48,16 +44,16 @@ func parseQdiscIngress(chunks []string) (*QdiscIngress, error) {
 	return q, nil
 }
 
-func (q *QdiscIngress) basicLine(action string, ifname string) string {
+func (q *QdiscIngress) basicLine(action string, ifname string) []string {
 	elms := q.SBaseTcQdisc.basicLineElements(action, ifname)
 	elms = append(elms, q.Kind)
-	return strings.Join(elms, " ")
+	return elms
 }
 
-func (q *QdiscIngress) AddLine(ifname string) string {
+func (q *QdiscIngress) AddLine(ifname string) []string {
 	return q.basicLine("add", ifname)
 }
 
-func (q *QdiscIngress) ReplaceLine(ifname string) string {
+func (q *QdiscIngress) ReplaceLine(ifname string) []string {
 	return q.basicLine("replace", ifname)
 }

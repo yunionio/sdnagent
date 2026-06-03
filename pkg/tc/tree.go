@@ -74,8 +74,8 @@ func (qt *QdiscTree) Merge(qt2 *QdiscTree) {
 	Sort(qt.filters)
 }
 
-func (qt *QdiscTree) Delta(qt2 *QdiscTree, ifname string) []string {
-	lines := []string{}
+func (qt *QdiscTree) Delta(qt2 *QdiscTree, ifname string) [][]string {
+	lines := [][]string{}
 	addedQdisc, updatedQdisc1, updatedQdisc2, removedQdisc := Split(qt.qdisc, qt2.qdisc, true)
 	addedClass, updatedClass1, updatedClass2, removedClass := Split(qt.classes, qt2.classes, true)
 	addedFilter, _, _, removedFilter := Split(qt.filters, qt2.filters, false)
