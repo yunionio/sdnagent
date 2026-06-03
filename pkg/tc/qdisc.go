@@ -114,10 +114,9 @@ func (q *SBaseTcQdisc) basicLineElements(action string, ifname string) []string 
 	return elms
 }
 
-func (q *SBaseTcQdisc) DeleteLine(ifname string) string {
+func (q *SBaseTcQdisc) DeleteLine(ifname string) []string {
 	elms := q.basicLineElements("delete", ifname)
-	line := strings.Join(elms, " ")
-	return line
+	return elms
 }
 
 func parseBaseQdisc(chunks []string) (*SBaseTcQdisc, error) {

@@ -186,9 +186,9 @@ func (w *serversWatcher) withWait(ctx context.Context, f func(context.Context)) 
 	ctx = context.WithValue(ctx, "waitData", waitData)
 	start := time.Now()
 	funcName := GetFunctionName(f)
-	log.Debugf("[serversWatcher] start wait %s context ....", funcName)
+	log.Debugf("serversWatcher.withWait start wait %s context ....", funcName)
 	f(ctx)
-	log.Debugf("[serversWatcher] end wait %s context %f....", funcName, time.Since(start).Seconds())
+	log.Debugf("serversWatcher.withWait end wait %s context %f....", funcName, time.Since(start).Seconds())
 	for _, wd := range waitData {
 		wd.FlowMan.waitDecr(wd.Count)
 		wd.FlowMan.SyncFlows(ctx)
@@ -256,6 +256,7 @@ func (w *serversWatcher) Start(ctx context.Context, agent *AgentServer) {
 	defer refreshTicker.Stop()
 	defer pendingRefreshTicker.Stop()
 	for {
+		log.Debugf("watcher start new round....")
 		var pendingChan <-chan time.Time
 		if w.hasRecentPending() {
 			pendingChan = pendingRefreshTicker.C
@@ -319,9 +320,9 @@ func (w *serversWatcher) Start(ctx context.Context, agent *AgentServer) {
 			w.withWait(ctx, func(ctx context.Context) {
 				w.hostLocal.UpdateSettings(ctx, false)
 				w.scan(ctx)
-				// for _, g := range w.guests {
-				//	g.UpdateSettings(ctx)
-				// }
+				for _, g := range w.guests {
+					g.UpdateSettings(ctx, false)
+				}
 			})
 		case err, ok := <-w.watcher.Errors:
 			if !ok {
@@ -332,6 +333,7 @@ func (w *serversWatcher) Start(ctx context.Context, agent *AgentServer) {
 			panic("watcher error: %s" + err.Error())
 			return
 		case cmd := <-w.cmdCh:
+			log.Infof("watcher receive cmd: %d", cmd.cmd)
 			switch cmd.cmd {
 			case wCmdFindGuestDescByIdIP:
 				var (
@@ -391,6 +393,7 @@ func (w *serversWatcher) Start(ctx context.Context, agent *AgentServer) {
 		}
 	}
 out:
+	log.Infof("watcher out")
 }
 
 func (w *serversWatcher) FindGuestDescByNetIdIP(netId, ip string) *desc.SGuestDesc {

@@ -9,8 +9,8 @@ import (
 type QdiscTbf struct {
 	*SBaseTcQdisc
 	Rate    uint64
-	Burst   uint64
-	Latency uint64
+	Burst   uint64 // bytes
+	Latency uint64 // us
 }
 
 func (q *QdiscTbf) Base() *SBaseTcQdisc {
@@ -38,9 +38,9 @@ func (q *QdiscTbf) Compare(itc IComparable) int {
 	} else if q.Burst > q2.Burst && q.Burst-500 > q2.Burst {
 		return 1
 	}
-	if q.Latency < q2.Latency {
+	if q.Latency < q2.Latency && q.Latency+70000 < q2.Latency {
 		return -1
-	} else if q.Latency > q2.Latency {
+	} else if q.Latency > q2.Latency && q.Latency-70000 > q2.Latency {
 		return 1
 	}
 	return 0
@@ -54,7 +54,7 @@ func (q *QdiscTbf) Equals(qi IComparable) bool {
 	return q.Compare(qi) == 0
 }
 
-func (q *QdiscTbf) basicLine(action string, ifname string) string {
+func (q *QdiscTbf) basicLine(action string, ifname string) []string {
 	elms := q.SBaseTcQdisc.basicLineElements(action, ifname)
 	elms = append(elms, q.Kind)
 	elms = append(elms, "rate", PrintRate(q.Rate))
@@ -63,14 +63,14 @@ func (q *QdiscTbf) basicLine(action string, ifname string) string {
 	if q.Latency != 0 {
 		elms = append(elms, "latency", PrintTime(q.Latency))
 	}
-	return strings.Join(elms, " ")
+	return elms
 }
 
-func (q *QdiscTbf) AddLine(ifname string) string {
+func (q *QdiscTbf) AddLine(ifname string) []string {
 	return q.basicLine("add", ifname)
 }
 
-func (q *QdiscTbf) ReplaceLine(ifname string) string {
+func (q *QdiscTbf) ReplaceLine(ifname string) []string {
 	return q.basicLine("replace", ifname)
 }
 

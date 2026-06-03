@@ -17,7 +17,9 @@ package tc
 import (
 	"context"
 	"os/exec"
+	"strings"
 
+	"github.com/coredns/coredns/plugin/pkg/log"
 	"yunion.io/x/pkg/errors"
 )
 
@@ -59,7 +61,31 @@ func (tc *TcCli) QdiscShow(ctx context.Context, ifname string) (*QdiscTree, erro
 	return qt, err
 }
 
-func (tc *TcCli) Batch(ctx context.Context, input string) (stdout string, stderr string, err error) {
+func (tc *TcCli) Batch(ctx context.Context, cmdlines [][]string) (string, string, error) {
+	var errs []error
+	var stdout strings.Builder
+	var stderr strings.Builder
+	var err error
+	for i := range cmdlines {
+		cmdline := cmdlines[i]
+		sout, serr, e := tc.singleCmd(ctx, cmdline)
+		if len(sout) > 0 {
+			stdout.WriteString(sout)
+		}
+		if len(serr) > 0 {
+			stderr.WriteString(serr)
+		}
+		if e != nil {
+			errs = append(errs, e)
+		}
+	}
+	if len(errs) > 0 {
+		err = errors.NewAggregate(errs)
+	}
+	return stdout.String(), stderr.String(), err
+}
+
+func (tc *TcCli) singleCmd(ctx context.Context, cmdline []string) (stdout string, stderr string, err error) {
 	args := make([]string, 0, 4)
 	if tc.details {
 		args = append(args, "-details")
@@ -67,24 +93,18 @@ func (tc *TcCli) Batch(ctx context.Context, input string) (stdout string, stderr
 	if tc.force {
 		args = append(args, "-force")
 	}
-	args = append(args, "-batch", "-")
+	args = append(args, cmdline...)
 	cmd := exec.CommandContext(ctx, "tc", args...)
-	stdin, err := cmd.StdinPipe()
-	if err != nil {
-		return
-	}
-	n, err := stdin.Write([]byte(input))
-	if n != len(input) {
-		return
-	}
-	stdin.Close()
 	output, err := cmd.Output()
 	if err == nil {
 		stdout = string(output)
-	} else if ee, ok := err.(*exec.ExitError); ok {
-		stderr = string(ee.Stderr)
+	} else {
+		log.Errorf("tc: %s failed: %s", strings.Join(cmdline, " "), err)
+		if ee, ok := err.(*exec.ExitError); ok {
+			stderr = string(ee.Stderr)
+		}
 	}
-	return
+	return stdout, stderr, err
 }
 
 func NewTcCli() *TcCli {

@@ -131,6 +131,7 @@ func (g *Guest) IsPending() bool {
 }
 
 func (g *Guest) refresh(ctx context.Context) (err error) {
+	log.Debugf("refresh guest %s", g.Id)
 	setPending := true
 	defer func() {
 		if err != nil {
