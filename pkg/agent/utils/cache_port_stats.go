@@ -5,6 +5,8 @@ import (
 	"time"
 
 	"github.com/digitalocean/go-openvswitch/ovs"
+
+	"yunion.io/x/log"
 )
 
 const (
@@ -57,6 +59,7 @@ func (cache *PortStatsCache) DumpPort(bridge, port string) (*ovs.PortStats, erro
 	if data, ok := cache.store[key]; ok && !data.staled() {
 		ps := data.get()
 		cache.rw.RUnlock()
+		log.Debugf("DumpPort %s, %s, %d from cache", bridge, port, ps.PortID)
 		return ps, nil
 	}
 	cache.rw.RUnlock()
@@ -65,6 +68,7 @@ func (cache *PortStatsCache) DumpPort(bridge, port string) (*ovs.PortStats, erro
 	if err != nil {
 		return ps, err
 	}
+	log.Debugf("DumpPort %s, %s, %d from ovs", bridge, port, ps.PortID)
 
 	cache.rw.Lock()
 	defer cache.rw.Unlock()
