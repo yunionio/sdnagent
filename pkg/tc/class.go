@@ -105,19 +105,19 @@ func (q *SBaseTcClass) Equals(qi IComparable) bool {
 	return q.Compare(qi) == 0
 }
 
-func (cls *SBaseTcClass) AddLine(ifname string) string {
+func (cls *SBaseTcClass) AddLine(ifname string) []string {
 	elms := cls.basicLineElements("add", ifname)
-	return strings.Join(elms, " ")
+	return elms
 }
 
-func (cls *SBaseTcClass) ReplaceLine(ifname string) string {
+func (cls *SBaseTcClass) ReplaceLine(ifname string) []string {
 	elms := cls.basicLineElements("replace", ifname)
-	return strings.Join(elms, " ")
+	return elms
 }
 
-func (cls *SBaseTcClass) DeleteLine(ifname string) string {
+func (cls *SBaseTcClass) DeleteLine(ifname string) []string {
 	elms := cls.basicLineElements("delete", ifname)
-	return strings.Join(elms, " ")
+	return elms
 }
 
 func (cls *SBaseTcClass) Base() *SBaseTcClass {
@@ -220,19 +220,19 @@ func (cls *SHtbClass) basicLineElements(action string, ifname string) []string {
 	return elms
 }
 
-func (cls *SHtbClass) AddLine(ifname string) string {
+func (cls *SHtbClass) AddLine(ifname string) []string {
 	elms := cls.basicLineElements("add", ifname)
-	return strings.Join(elms, " ")
+	return elms
 }
 
-func (cls *SHtbClass) ReplaceLine(ifname string) string {
+func (cls *SHtbClass) ReplaceLine(ifname string) []string {
 	elms := cls.basicLineElements("replace", ifname)
-	return strings.Join(elms, " ")
+	return elms
 }
 
-func (cls *SHtbClass) DeleteLine(ifname string) string {
+func (cls *SHtbClass) DeleteLine(ifname string) []string {
 	elms := cls.basicLineElements("delete", ifname)
-	return strings.Join(elms, " ")
+	return elms
 }
 
 func parseHtbClass(chunks []string) (*SHtbClass, error) {

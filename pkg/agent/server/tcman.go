@@ -19,7 +19,6 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
-	"strings"
 	"sync"
 	"time"
 
@@ -80,7 +79,7 @@ func NewTcMan() *TcMan {
 	return &TcMan{
 		book:    map[string]*TcManSection{},
 		tcCli:   tc.NewTcCli().Details(true).Force(true),
-		cmdChan: make(chan *TcManCmd),
+		cmdChan: make(chan *TcManCmd, 1024),
 	}
 }
 
@@ -205,7 +204,7 @@ func (tm *TcMan) doCheckGuestIfbTcData(ctx context.Context, tcdata *utils.TcData
 	expectTree := tcdata.GuestIfbQdiscTree()
 	cmds := expectTree.Delta(qt, tcdata.IfbIfname())
 	if len(cmds) > 0 {
-		output, stderr, err := tm.tcCli.Batch(ctx, strings.Join(cmds, "\n"))
+		output, stderr, err := tm.tcCli.Batch(ctx, cmds)
 		if err != nil {
 			log.Errorf("tcman: batch failed: %s cmds: %s\n%s\nstderr:\n%s", err, cmds, output, stderr)
 			return errors.Wrapf(err, "batch failed: %s cmds: %s\n%s\nstderr:\n%s", err, cmds, output, stderr)
@@ -229,7 +228,7 @@ func (tm *TcMan) doCheckGuestTcData(ctx context.Context, tcdata *utils.TcData) e
 
 	cmds := expectTree.Delta(qt, tcdata.Ifname)
 	if len(cmds) > 0 {
-		output, stderr, err := tm.tcCli.Batch(ctx, strings.Join(cmds, "\n"))
+		output, stderr, err := tm.tcCli.Batch(ctx, cmds)
 		if err != nil {
 			log.Errorf("tcman: batch failed: %s cmds: %s\n%s\nstderr:\n%s", err, cmds, output, stderr)
 			return errors.Wrapf(err, "batch failed: %s cmds: %s\n%s\nstderr:\n%s", err, cmds, output, stderr)
@@ -269,9 +268,9 @@ func (tm *TcMan) doCheckHostTcData(ctx context.Context, tcdata *utils.TcData) {
 
 	cmds := expectTree.Delta(qt, tcdata.Ifname)
 	if len(cmds) > 0 {
-		output, stderr, err := tm.tcCli.Batch(ctx, strings.Join(cmds, "\n"))
+		output, stderr, err := tm.tcCli.Batch(ctx, cmds)
 		if err != nil {
-			log.Errorf("tcman: batch failed: %s cnds: %s\n%s\nstderr:\n%s", err, cmds, output, stderr)
+			log.Errorf("tcman: batch failed: %s cmds: %s\n%s\nstderr:\n%s", err, cmds, output, stderr)
 			for _, cmd := range cmds {
 				log.Debugf("tcman: %s", cmd)
 			}
