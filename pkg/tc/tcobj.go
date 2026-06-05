@@ -13,7 +13,7 @@ type ITcObj interface {
 }
 
 type ITcObjAlter interface {
-	DeleteLine(ifname string) string
-	AddLine(ifname string) string
-	ReplaceLine(ifname string) string
+	DeleteLine(ifname string) []string
+	AddLine(ifname string) []string
+	ReplaceLine(ifname string) []string
 }

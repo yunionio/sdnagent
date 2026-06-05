@@ -95,8 +95,11 @@ func (f *SBaseTcFilter) Equals(fi IComparable) bool {
 }
 
 // tc filter replace dev eth0 parent 1: prio 1 handle 10: flower src_ip 192.168.1.10 action mirred egress redirect dev ifb0
-func (f *SBaseTcFilter) basicLineElements(action string, ifname string) []string {
+func (f *SBaseTcFilter) basicLineElements(action string, ifname string, isRoot bool) []string {
 	elms := []string{"filter", action, "dev", ifname}
+	if isRoot {
+		elms = append(elms, "root")
+	}
 	if f.Parent != nil {
 		elms = append(elms, "parent", f.Parent.Id())
 	}
@@ -192,26 +195,26 @@ func (f *SFwFilter) Equals(fi IComparable) bool {
 }
 
 func (f *SFwFilter) basicLineElements(action string, ifname string) []string {
-	elms := f.SBaseTcFilter.basicLineElements(action, ifname)
+	elms := f.SBaseTcFilter.basicLineElements(action, ifname, false)
 	elms = append(elms, "handle", fmt.Sprintf("0x%x", f.Handle))
 	elms = append(elms, "fw")
 	elms = append(elms, "classid", f.ClassId)
 	return elms
 }
 
-func (f *SFwFilter) AddLine(ifname string) string {
+func (f *SFwFilter) AddLine(ifname string) []string {
 	elms := f.basicLineElements("add", ifname)
-	return strings.Join(elms, " ")
+	return elms
 }
 
-func (f *SFwFilter) ReplaceLine(ifname string) string {
+func (f *SFwFilter) ReplaceLine(ifname string) []string {
 	elms := f.basicLineElements("replace", ifname)
-	return strings.Join(elms, " ")
+	return elms
 }
 
-func (f *SFwFilter) DeleteLine(ifname string) string {
+func (f *SFwFilter) DeleteLine(ifname string) []string {
 	elms := f.basicLineElements("delete", ifname)
-	return strings.Join(elms, " ")
+	return elms
 }
 
 func parseFwFilter(chunks []string) (*SFwFilter, error) {
@@ -254,6 +257,8 @@ func parseFwFilter(chunks []string) (*SFwFilter, error) {
 type SU32Filter struct {
 	*SBaseTcFilter
 	RedirectDev string
+
+	Handle string
 }
 
 func (f *SU32Filter) Base() *SBaseTcFilter {
@@ -281,7 +286,7 @@ func (f *SU32Filter) Equals(fi IComparable) bool {
 }
 
 func (f *SU32Filter) basicLineElements(action string, ifname string) []string {
-	elms := f.SBaseTcFilter.basicLineElements(action, ifname)
+	elms := f.SBaseTcFilter.basicLineElements(action, ifname, false)
 	if len(f.RedirectDev) > 0 {
 		elms = append(elms,
 			"u32",
@@ -300,23 +305,28 @@ func (f *SU32Filter) basicLineElements(action string, ifname string) []string {
 	return elms
 }
 
-func (f *SU32Filter) AddLine(ifname string) string {
+func (f *SU32Filter) AddLine(ifname string) []string {
 	elms := f.basicLineElements("add", ifname)
-	return strings.Join(elms, " ")
+	return elms
 }
 
-func (f *SU32Filter) ReplaceLine(ifname string) string {
+func (f *SU32Filter) ReplaceLine(ifname string) []string {
 	elms := f.basicLineElements("replace", ifname)
-	return strings.Join(elms, " ")
+	return elms
 }
 
-func (f *SU32Filter) DeleteLine(ifname string) string {
-	elms := f.basicLineElements("delete", ifname)
-	return strings.Join(elms, " ")
+// tc filter delete dev GUESTNET-170 root protocol ip prio 49152 handle 800::1 u32
+func (f *SU32Filter) DeleteLine(ifname string) []string {
+	elms := f.SBaseTcFilter.basicLineElements("delete", ifname, true)
+	if len(f.Handle) > 0 {
+		elms = append(elms, "handle", f.Handle)
+	}
+	elms = append(elms, "u32")
+	return elms
 }
 
 var (
-	ingressMatchReg = regexp.MustCompile(`mirred \(Egress Redirect to device (?P<ifname>[a-z0-9._-]+)\)`)
+	ingressMatchReg = regexp.MustCompile(`mirred \(Egress Redirect to device (?P<ifname>[A-Za-z0-9._*-]+)\)`)
 )
 
 func parseU32Filter(chunks []string) (*SU32Filter, error) {
@@ -324,6 +334,16 @@ func parseU32Filter(chunks []string) (*SU32Filter, error) {
 	if m != nil {
 		f := &SU32Filter{}
 		f.RedirectDev = m[1]
+		for i := range chunks {
+			switch chunks[i] {
+			case "fh":
+				i++
+				if i >= len(chunks) {
+					return nil, errors.Wrap(errors.ErrInvalidFormat, "eol before getting fh")
+				}
+				f.Handle = chunks[i]
+			}
+		}
 		return f, nil
 	}
 	return nil, errors.Wrapf(errors.ErrInvalidFormat, "unknown u32 filter")
@@ -358,7 +378,7 @@ func parseFilterLines(lines []string, parents []IQdisc) ([]IFilter, error) {
 	for i := 0; i < len(lines); {
 		line := strings.TrimSpace(lines[i])
 		i++
-		for i < len(lines) && !strings.HasPrefix(strings.TrimSpace(lines[i]), "filter parent ") {
+		for i < len(lines) && !strings.HasPrefix(strings.TrimSpace(lines[i]), "filter ") {
 			line += " " + strings.TrimSpace(lines[i])
 			i++
 		}
