@@ -147,15 +147,15 @@ func (w *serversWatcher) scan(ctx context.Context) {
 		id := fi.Name()
 		if REGEX_UUID.MatchString(id) {
 			guestStart := time.Now()
-			log.Infof("scan guest %s", id)
+			log.Debugf("scan guest %s", id)
 			path := path.Join(serversPath, id)
 			g, err := w.addGuestWatch(id, path)
 			if err != nil {
 				log.Errorf("inotify events watch guest failed during scan: %s: %s", path, err)
 			}
-			log.Infof("end of scan guest %s addGuestWatch: %f", id, time.Since(guestStart).Seconds())
+			log.Debugf("end of scan guest %s addGuestWatch: %f", id, time.Since(guestStart).Seconds())
 			g.UpdateSettings(ctx, false)
-			log.Infof("end of scan guest %s: %f", id, time.Since(guestStart).Seconds())
+			log.Debugf("end of scan guest %s: %f", id, time.Since(guestStart).Seconds())
 		}
 	}
 }
@@ -186,9 +186,9 @@ func (w *serversWatcher) withWait(ctx context.Context, f func(context.Context)) 
 	ctx = context.WithValue(ctx, "waitData", waitData)
 	start := time.Now()
 	funcName := GetFunctionName(f)
-	log.Debugf("[serversWatcher] start wait %s context ....", funcName)
+	log.Debugf("serversWatcher.withWait start wait %s context ....", funcName)
 	f(ctx)
-	log.Debugf("[serversWatcher] end wait %s context %f....", funcName, time.Since(start).Seconds())
+	log.Debugf("serversWatcher.withWait end wait %s context %f....", funcName, time.Since(start).Seconds())
 	for _, wd := range waitData {
 		wd.FlowMan.waitDecr(wd.Count)
 		wd.FlowMan.SyncFlows(ctx)
@@ -266,7 +266,6 @@ func (w *serversWatcher) Start(ctx context.Context, agent *AgentServer) {
 				log.Errorf("fsnotity.watch.Events error")
 				goto out
 			}
-			log.Infof("receive inotify events!")
 			wev := w.watchEvent(&ev)
 			if wev == nil {
 				log.Debugf("inotify events ignored: %s", ev)
@@ -276,7 +275,7 @@ func (w *serversWatcher) Start(ctx context.Context, agent *AgentServer) {
 				guestPath := wev.guestPath
 				switch wev.evType {
 				case watchEventTypeAddServerDir:
-					log.Infof("received guest path add event: %s", guestPath)
+					log.Debugf("received guest path add event: %s", guestPath)
 					g, err := w.addGuestWatch(guestId, guestPath)
 					if err != nil {
 						log.Errorf("watch guest failed: %s: %s", guestPath, err)
@@ -288,9 +287,7 @@ func (w *serversWatcher) Start(ctx context.Context, agent *AgentServer) {
 						g.ClearSettings(ctx)
 						delete(w.guests, guestId)
 					}
-					log.Infof("guest path deleted: %s", guestPath)
 				case watchEventTypeUpdServer:
-					log.Infof("watchEventTypeUpdServer %s", guestId)
 					if g, ok := w.guests[guestId]; ok {
 						g.UpdateSettings(ctx, true)
 					} else {
@@ -298,7 +295,6 @@ func (w *serversWatcher) Start(ctx context.Context, agent *AgentServer) {
 					}
 				case watchEventTypeDelServer:
 					if g, ok := w.guests[guestId]; ok {
-						log.Infof("remove guest settings %s", guestId)
 						g.ClearSettings(ctx)
 					} else {
 						log.Warningf("unexpected guest down event: %s", guestPath)
@@ -306,7 +302,6 @@ func (w *serversWatcher) Start(ctx context.Context, agent *AgentServer) {
 				}
 			}
 		case <-pendingChan:
-			log.Infof("watcher refresh pendings")
 			w.withWait(ctx, func(ctx context.Context) {
 				for _, g := range w.guests {
 					if g.IsPending() {
@@ -315,13 +310,12 @@ func (w *serversWatcher) Start(ctx context.Context, agent *AgentServer) {
 				}
 			})
 		case <-refreshTicker.C:
-			log.Infof("watcher refresh time ;)")
 			w.withWait(ctx, func(ctx context.Context) {
 				w.hostLocal.UpdateSettings(ctx, false)
 				w.scan(ctx)
-				// for _, g := range w.guests {
-				//	g.UpdateSettings(ctx)
-				// }
+				for _, g := range w.guests {
+					g.UpdateSettings(ctx, false)
+				}
 			})
 		case err, ok := <-w.watcher.Errors:
 			if !ok {

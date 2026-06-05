@@ -96,17 +96,17 @@ func parseQdiscHtb(chunks []string) (*QdiscHtb, error) {
 	return q, nil
 }
 
-func (q *QdiscHtb) basicLine(action string, ifname string) string {
+func (q *QdiscHtb) basicLine(action string, ifname string) []string {
 	elms := q.SBaseTcQdisc.basicLineElements(action, ifname)
 	elms = append(elms, q.Kind)
 	elms = append(elms, "default", fmt.Sprintf("0x%x", q.DefaultClass))
-	return strings.Join(elms, " ")
+	return elms
 }
 
-func (q *QdiscHtb) AddLine(ifname string) string {
+func (q *QdiscHtb) AddLine(ifname string) []string {
 	return q.basicLine("add", ifname)
 }
 
-func (q *QdiscHtb) ReplaceLine(ifname string) string {
+func (q *QdiscHtb) ReplaceLine(ifname string) []string {
 	return q.basicLine("replace", ifname)
 }

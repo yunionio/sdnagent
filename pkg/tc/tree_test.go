@@ -27,7 +27,7 @@ func TestQdiscTree(t *testing.T) {
 		class         string
 		filter        string
 		wantQdiscTree *QdiscTree
-		deltaLines    []string
+		deltaLines    [][]string
 	}{
 		{
 			qdisc: `qdisc htb 1: root refcnt 2 r2q 10 default 0x2 direct_packets_stat 6 direct_qlen 1000
@@ -89,7 +89,7 @@ filter parent 1: protocol ip pref 1 fw chain 0 handle 0x257 classid 1:3`,
 					},
 				})
 			}(),
-			deltaLines: []string{},
+			deltaLines: [][]string{},
 		},
 		{
 			qdisc: `qdisc htb 1: root refcnt 2 r2q 10 default 0x2 direct_packets_stat 6 direct_qlen 1000
@@ -151,8 +151,8 @@ filter parent 1: protocol ip pref 1 fw chain 0 handle 0x257 classid 1:3`,
 					},
 				})
 			}(),
-			deltaLines: []string{
-				"class replace dev eth0 parent 1:1 classid 1:3 htb rate 100Mbit ceil 100Mbit",
+			deltaLines: [][]string{
+				{"class", "replace", "dev", "eth0", "parent", "1:1", "classid", "1:3", "htb", "rate", "100Mbit", "ceil", "100Mbit"},
 			},
 		},
 		{
@@ -211,12 +211,12 @@ filter parent 1: protocol ip pref 1 fw chain 0 handle 0x257 classid 1:3`,
 					},
 				})
 			}(),
-			deltaLines: []string{
-				"qdisc add dev eth0 root handle 1: htb default 0x2",
-				"class add dev eth0 parent 1: classid 1:1 htb rate 10Gbit ceil 10Gbit",
-				"class add dev eth0 parent 1:1 classid 1:2 htb rate 1Gbit ceil 10Gbit",
-				"class add dev eth0 parent 1:1 classid 1:3 htb rate 100Mbit ceil 100Mbit",
-				"filter add dev eth0 parent 1: protocol ip prio 1 handle 0x257 fw classid 1:3",
+			deltaLines: [][]string{
+				{"qdisc", "add", "dev", "eth0", "root", "handle", "1:", "htb", "default", "0x2"},
+				{"class", "add", "dev", "eth0", "parent", "1:", "classid", "1:1", "htb", "rate", "10Gbit", "ceil", "10Gbit"},
+				{"class", "add", "dev", "eth0", "parent", "1:1", "classid", "1:2", "htb", "rate", "1Gbit", "ceil", "10Gbit"},
+				{"class", "add", "dev", "eth0", "parent", "1:1", "classid", "1:3", "htb", "rate", "100Mbit", "ceil", "100Mbit"},
+				{"filter", "add", "dev", "eth0", "parent", "1:", "protocol", "ip", "prio", "1", "handle", "0x257", "fw", "classid", "1:3"},
 			},
 		},
 		{
@@ -238,7 +238,7 @@ qdisc fq_codel 10: parent 1: limit 10240p flows 1024 quantum 1514 target 5ms int
 				}
 				return NewQdiscTree([]IQdisc{qdisc}, []IClass{}, []IFilter{})
 			}(),
-			deltaLines: []string{},
+			deltaLines: [][]string{},
 		},
 		{
 			qdisc:  ``,
@@ -258,8 +258,8 @@ qdisc fq_codel 10: parent 1: limit 10240p flows 1024 quantum 1514 target 5ms int
 				}
 				return NewQdiscTree([]IQdisc{qdisc}, []IClass{}, []IFilter{})
 			}(),
-			deltaLines: []string{
-				"qdisc add dev eth0 root handle 1: tbf rate 100Mbit burst 12500b latency 100ms",
+			deltaLines: [][]string{
+				{"qdisc", "add", "dev", "eth0", "root", "handle", "1:", "tbf", "rate", "100Mbit", "burst", "12500b", "latency", "100ms"},
 			},
 		},
 		{
@@ -296,10 +296,10 @@ qdisc fq_codel 10: parent 1: limit 10240p flows 1024 quantum 1514 target 5ms int
 				}
 				return NewQdiscTree([]IQdisc{tbfQdisc, ingressQdisc}, []IClass{}, []IFilter{ingressFilter})
 			}(),
-			deltaLines: []string{
-				"qdisc add dev eth0 root handle 1: tbf rate 100Mbit burst 12500b latency 100ms",
-				"qdisc add dev eth0 handle ffff: ingress",
-				"filter add dev eth0 parent ffff: protocol ip prio 49152 u32 match u32 0 0 action mirred egress redirect dev reth0",
+			deltaLines: [][]string{
+				{"qdisc", "add", "dev", "eth0", "root", "handle", "1:", "tbf", "rate", "100Mbit", "burst", "12500b", "latency", "100ms"},
+				{"qdisc", "add", "dev", "eth0", "handle", "ffff:", "ingress"},
+				{"filter", "add", "dev", "eth0", "parent", "ffff:", "protocol", "ip", "prio", "49152", "u32", "match", "u32", "0", "0", "action", "mirred", "egress", "redirect", "dev", "reth0"},
 			},
 		},
 	}
