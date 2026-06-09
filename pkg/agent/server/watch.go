@@ -32,6 +32,7 @@ import (
 
 	"yunion.io/x/onecloud/pkg/hostman/guestman/desc"
 	fwdpb "yunion.io/x/onecloud/pkg/hostman/guestman/forwarder/api"
+	"yunion.io/x/onecloud/pkg/util/hashcache"
 
 	"yunion.io/x/sdnagent/pkg/agent/utils"
 )
@@ -81,8 +82,8 @@ type serversWatcher struct {
 
 	cmdCh chan wCmdReq
 
-	bridgeIpNicCache map[string]*desc.SGuestDesc
-	netIdIpNicCache  map[string]*desc.SGuestDesc
+	bridgeIpNicCache *hashcache.Cache // map[string]*desc.SGuestDesc
+	netIdIpNicCache  *hashcache.Cache // map[string]*desc.SGuestDesc
 }
 
 func newServersWatcher() (*serversWatcher, error) {
@@ -92,8 +93,9 @@ func newServersWatcher() (*serversWatcher, error) {
 
 		cmdCh: make(chan wCmdReq),
 
-		bridgeIpNicCache: make(map[string]*desc.SGuestDesc),
-		netIdIpNicCache:  make(map[string]*desc.SGuestDesc),
+		// cache for 10 seconds, avoid frequent lookup of guest desc
+		bridgeIpNicCache: hashcache.NewCache(512, 10*time.Second),
+		netIdIpNicCache:  hashcache.NewCache(512, 10*time.Second),
 	}
 	return w, nil
 }
@@ -334,8 +336,9 @@ func (w *serversWatcher) Start(ctx context.Context, agent *AgentServer) {
 					ip    = data.IP
 					robj  *desc.SGuestDesc
 				)
-				if gDesc, ok := w.netIdIpNicCache[netId]; ok {
-					robj = gDesc
+				gDescIntf := w.netIdIpNicCache.Get(netId)
+				if gDescIntf != nil {
+					robj = gDescIntf.(*desc.SGuestDesc)
 				} else {
 					for guestId, guest := range w.guests {
 						if nic := guest.FindNicByNetIdIP(netId, ip); nic != nil {
@@ -348,7 +351,7 @@ func (w *serversWatcher) Start(ctx context.Context, agent *AgentServer) {
 						}
 					}
 					if robj != nil {
-						w.netIdIpNicCache[netId] = robj
+						w.netIdIpNicCache.Set(netId, robj)
 					}
 				}
 				data.RespCh <- robj
@@ -360,8 +363,9 @@ func (w *serversWatcher) Start(ctx context.Context, agent *AgentServer) {
 					robj      *desc.SGuestDesc
 				)
 				mapKey := fmt.Sprintf("%s:%s", hostLocal.Bridge, ip)
-				if gDesc, ok := w.bridgeIpNicCache[mapKey]; ok {
-					robj = gDesc
+				gDescIntf := w.bridgeIpNicCache.Get(mapKey)
+				if gDescIntf != nil {
+					robj = gDescIntf.(*desc.SGuestDesc)
 				} else {
 					for guestId, guest := range w.guests {
 						if nic := guest.FindNicByHostLocalIP(hostLocal, ip); nic != nil {
@@ -374,7 +378,7 @@ func (w *serversWatcher) Start(ctx context.Context, agent *AgentServer) {
 						}
 					}
 					if robj != nil {
-						w.bridgeIpNicCache[mapKey] = robj
+						w.bridgeIpNicCache.Set(mapKey, robj)
 					}
 				}
 				data.RespCh <- robj
