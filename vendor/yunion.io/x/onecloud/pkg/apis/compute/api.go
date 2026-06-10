@@ -320,6 +320,12 @@ type IsolatedDeviceConfig struct {
 	WireId       string `json:"wire_id"`
 	DiskIndex    *int8  `json:"disk_index"`
 	DevicePath   string `json:"device_path"`
+	// MemoryMb is the minimum on-device memory in MiB required from the
+	// candidate isolated_device (e.g. NVIDIA GPU VRAM). 0 means no constraint.
+	// The scheduler excludes devices whose memory_size > 0 and is below this
+	// threshold; devices with memory_size == 0 are treated as unknown and
+	// allowed through to avoid penalising hosts that haven't reported yet.
+	MemoryMb int `json:"memory_mb,omitempty"`
 }
 
 type BaremetalDiskConfig struct {
@@ -366,7 +372,10 @@ type ServerConfigs struct {
 	PreferRegion string `json:"prefer_region_id"`
 
 	// 调度到指定可用区,优先级低于prefer_host_id
-	PreferZone string `json:"prefer_zone_id"`
+	PreferZone string `json:"prefer_zone_id" yunion-deprecated-by:"prefer_zones"`
+
+	// 调度到指定可用区列表,优先级低于prefer_host_id
+	PreferZones []string `json:"prefer_zones"`
 
 	// 调度使用指定二层网络, 优先级低于prefer_host_id
 	PreferWire string `json:"prefer_wire_id"`
@@ -446,6 +455,9 @@ type ServerConfigs struct {
 	// required: false
 	Schedtags []*SchedtagConfig `json:"schedtags"`
 
+	// 宿主机路径调度约束，仅检查 auto_create=false 的 host_path
+	HostPathRequirements []apis.HostPathRequirement `json:"host_path_requirements,omitempty"`
+
 	// 透传设备列表
 	// required: false
 	IsolatedDevices []*IsolatedDeviceConfig `json:"isolated_devices"`
@@ -472,6 +484,20 @@ func NewServerConfigs() *ServerConfigs {
 		BaremetalDiskConfigs: make([]*BaremetalDiskConfig, 0),
 		InstanceGroupIds:     make([]string, 0),
 	}
+}
+
+func (c *ServerConfigs) GetPreferZones() []string {
+	if len(c.PreferZones) > 0 {
+		return c.PreferZones
+	}
+	if c.PreferZone != "" {
+		return []string{c.PreferZone}
+	}
+	return nil
+}
+
+func (c *ServerConfigs) HasPreferZone() bool {
+	return len(c.GetPreferZones()) > 0
 }
 
 type DeployConfig struct {

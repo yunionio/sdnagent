@@ -3465,7 +3465,11 @@ func (self *SGuest) PerformModifySrcCheck(ctx context.Context, userCred mcclient
 }
 
 // 调整配置
+// 要求虚拟机运行中或关机状态下可以调整配置
 func (self *SGuest) PerformChangeConfig(ctx context.Context, userCred mcclient.TokenCredential, query jsonutils.JSONObject, input api.ServerChangeConfigInput) (jsonutils.JSONObject, error) {
+	if !utils.IsInStringArray(self.Status, []string{api.VM_RUNNING, api.VM_READY}) {
+		return nil, httperrors.NewInvalidStatusError("Cannot change config in status %s", self.Status)
+	}
 	driver, err := self.GetDriver()
 	if err != nil {
 		return nil, err
@@ -3488,13 +3492,13 @@ func (self *SGuest) PerformChangeConfig(ctx context.Context, userCred mcclient.T
 		return nil, errors.Wrap(err, "ValidateGuestChangeConfigInput")
 	}
 
-	if confs.CpuChanged() || confs.MemChanged() || confs.InstanceTypeChanged() {
-		changeStatus, err := driver.GetChangeInstanceTypeStatus()
+	if (confs.CpuChanged() || confs.MemChanged() || confs.InstanceTypeChanged()) && self.Status == api.VM_RUNNING {
+		runningOk, err := driver.IsChangeInstanceTypeWhileRunningSupported(self)
 		if err != nil {
-			return nil, httperrors.NewInputParameterError("%v", err)
+			return nil, err
 		}
-		if !utils.IsInStringArray(self.Status, changeStatus) {
-			return nil, httperrors.NewInvalidStatusError("Cannot change config in %s for %s, requires %s", self.Status, self.GetHypervisor(), changeStatus)
+		if !runningOk && !input.ForceStop {
+			return nil, httperrors.NewInvalidStatusError("Cannot change config in %s for %s, requires force_stop to change config", self.Status, self.GetHypervisor())
 		}
 	}
 
@@ -7146,6 +7150,22 @@ func (self *SGuest) PerformSetTpm(ctx context.Context, userCred mcclient.TokenCr
 	} else {
 		return nil, self.RemoveMetadata(ctx, api.VM_METADATA_ENABLE_TPM, userCred)
 	}
+}
+
+func (self *SGuest) PerformSetCpuNumaPin(ctx context.Context, userCred mcclient.TokenCredential, query jsonutils.JSONObject, data jsonutils.JSONObject) (jsonutils.JSONObject, error) {
+	if !data.Contains("cpu_numa_pin") {
+		return nil, httperrors.NewMissingParameterError("cpu_numa_pin")
+	}
+	cpuNumaPin := make([]api.SCpuNumaPin, 0)
+	err := data.Unmarshal(&cpuNumaPin, "cpu_numa_pin")
+	if err != nil {
+		return nil, httperrors.NewInputParameterError("failed unmarshal cpu_numa_pin %s", err)
+	} else {
+		if err = self.SetCpuNumaPin(ctx, userCred, nil, cpuNumaPin); err != nil {
+			return nil, errors.Wrap(err, "failed set cpu numa pin")
+		}
+	}
+	return nil, nil
 }
 
 // 设置操作系统信息
