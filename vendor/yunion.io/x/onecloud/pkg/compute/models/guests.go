@@ -969,6 +969,25 @@ func (manager *SGuestManager) InitializeData() error {
 	if err := manager.initAdminSecgroupId(); err != nil {
 		return errors.Wrap(err, "initAdminSecgroupId")
 	}
+	if err := manager.initCloudpodsGuest(); err != nil {
+		return errors.Wrapf(err, "initCloudpodsGuest")
+	}
+	return nil
+}
+
+func (manager *SGuestManager) initCloudpodsGuest() error {
+	q := manager.Query().Equals("hypervisor", "cloudpods")
+	guests := []SGuest{}
+	err := db.FetchModelObjects(manager, q, &guests)
+	if err != nil {
+		return errors.Wrapf(err, "db.FetchModelObjects")
+	}
+	for i := range guests {
+		db.Update(&guests[i], func() error {
+			guests[i].Hypervisor = api.HYPERVISOR_DEFAULT
+			return nil
+		})
+	}
 	return nil
 }
 
@@ -1550,7 +1569,16 @@ func serverCreateInput2ComputeQuotaKeys(input api.ServerCreateInput, ownerId mcc
 			keys.ZoneId = wire.ZoneId
 		}
 	}
-	if len(input.PreferZone) > 0 {
+	if len(input.PreferZones) > 0 {
+		zoneObj, err := ZoneManager.FetchById(input.PreferZones[0])
+		if err != nil {
+			return keys, err
+		}
+		zone := zoneObj.(*SZone)
+		input.PreferRegion = zone.CloudregionId
+		keys.ZoneId = zone.Id
+		keys.RegionId = zone.CloudregionId
+	} else if len(input.PreferZone) > 0 {
 		zoneObj, err := ZoneManager.FetchById(input.PreferZone)
 		if err != nil {
 			return keys, err
@@ -1749,15 +1777,15 @@ func (manager *SGuestManager) validateCreateData(
 		return nil, errors.Wrap(err, "checkGuestImage")
 	}
 
-	if len(input.PreferManager) > 0 && len(input.Provider) == 0 {
-		providerObj, err := CloudproviderManager.FetchById(input.PreferManager)
+	preferZones := input.GetPreferZones()
+	if len(preferZones) > 0 && len(input.Provider) == 0 {
+		zoneObj, err := ZoneManager.FetchById(preferZones[0])
 		if err != nil {
-			return nil, errors.Wrapf(err, "zone fetch by id %s", input.PreferZone)
+			return nil, errors.Wrapf(err, "zone fetch by id %s", preferZones[0])
 		}
-		provider := providerObj.(*SCloudprovider)
-		input.Provider = provider.Provider
-	}
-	if len(input.PreferZone) > 0 && len(input.Provider) == 0 {
+		zone := zoneObj.(*SZone)
+		input.PreferRegion = zone.CloudregionId
+	} else if len(input.PreferZone) > 0 && len(input.Provider) == 0 {
 		zoneObj, err := ZoneManager.FetchById(input.PreferZone)
 		if err != nil {
 			return nil, errors.Wrapf(err, "zone fetch by id %s", input.PreferZone)
@@ -1772,6 +1800,15 @@ func (manager *SGuestManager) validateCreateData(
 		}
 		region := regionObj.(*SCloudregion)
 		input.Provider = region.Provider
+	}
+	// pve, vmware provider is OneCloud
+	if len(input.PreferManager) > 0 && len(input.Provider) == 0 {
+		providerObj, err := CloudproviderManager.FetchById(input.PreferManager)
+		if err != nil {
+			return nil, errors.Wrapf(err, "zone fetch by id %s", input.PreferZone)
+		}
+		provider := providerObj.(*SCloudprovider)
+		input.Provider = provider.Provider
 	}
 	if len(input.Provider) == 0 {
 		input.Provider = api.CLOUD_PROVIDER_ONECLOUD
@@ -1958,7 +1995,7 @@ func (manager *SGuestManager) validateCreateData(
 		return nil, err
 	}
 
-	optionSystemHypervisor := []string{api.HYPERVISOR_KVM, api.HYPERVISOR_ESXI, api.HYPERVISOR_POD}
+	optionSystemHypervisor := []string{api.HYPERVISOR_KVM, api.HYPERVISOR_ESXI, api.HYPERVISOR_PROXMOX, api.HYPERVISOR_POD}
 
 	if !utils.IsInStringArray(input.Hypervisor, optionSystemHypervisor) && len(input.Disks[0].ImageId) == 0 && len(input.Disks[0].SnapshotId) == 0 && input.Cdrom == "" {
 		return nil, httperrors.NewBadRequestError("Miss operating system???")
@@ -2607,6 +2644,11 @@ func (self *SGuest) PostUpdate(ctx context.Context, userCred mcclient.TokenCrede
 		err := self.SetSshPort(ctx, userCred, int(port))
 		if err != nil {
 			log.Errorf("unable to set sshport for guest %s", self.GetId())
+		}
+	}
+	if data.Contains("name") && len(self.ExternalId) == 0 && len(self.HostId) > 0 {
+		if err := self.StartSyncTask(ctx, userCred, false, ""); err != nil {
+			log.Errorf("StartSyncTask after rename fail: %s", err)
 		}
 	}
 }

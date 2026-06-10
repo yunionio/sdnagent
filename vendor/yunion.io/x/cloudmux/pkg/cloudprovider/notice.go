@@ -12,16 +12,22 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-package monitor
+package cloudprovider
 
-import (
-	"yunion.io/x/onecloud/pkg/mcclient/modules"
-	"yunion.io/x/onecloud/pkg/mcclient/modules/tasks"
-)
+import "time"
 
-func init() {
-	Tasks, ArchivedTasks = tasks.NewTaskManagers(modules.NewMonitorV2Manager)
+// IsNoticePublishedToday reports whether t falls on the current calendar day in Asia/Shanghai.
+func IsNoticePublishedToday(t time.Time) bool {
+	if t.IsZero() {
+		return false
+	}
+	loc, err := time.LoadLocation("Asia/Shanghai")
+	if err != nil {
+		loc = time.FixedZone("CST", 8*3600)
+	}
+	now := time.Now().In(loc)
+	t = t.In(loc)
+	y1, m1, d1 := now.Date()
+	y2, m2, d2 := t.Date()
+	return y1 == y2 && m1 == m2 && d1 == d2
 }
-
-var Tasks tasks.TasksManager
-var ArchivedTasks tasks.TasksManager

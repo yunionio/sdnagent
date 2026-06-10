@@ -59,16 +59,6 @@ github.com/fsnotify/fsnotify
 # github.com/ghodss/yaml v1.0.0
 ## explicit
 github.com/ghodss/yaml
-# github.com/gin-contrib/sse v0.1.0
-## explicit; go 1.12
-github.com/gin-contrib/sse
-# github.com/gin-gonic/gin v1.7.7
-## explicit; go 1.13
-github.com/gin-gonic/gin
-github.com/gin-gonic/gin/binding
-github.com/gin-gonic/gin/internal/bytesconv
-github.com/gin-gonic/gin/internal/json
-github.com/gin-gonic/gin/render
 # github.com/go-logr/logr v1.4.2
 ## explicit; go 1.18
 github.com/go-logr/logr
@@ -86,16 +76,6 @@ github.com/go-openapi/jsonreference/internal
 # github.com/go-openapi/swag v0.19.14
 ## explicit; go 1.11
 github.com/go-openapi/swag
-# github.com/go-playground/locales v0.13.0
-## explicit; go 1.13
-github.com/go-playground/locales
-github.com/go-playground/locales/currency
-# github.com/go-playground/universal-translator v0.17.0
-## explicit; go 1.13
-github.com/go-playground/universal-translator
-# github.com/go-playground/validator/v10 v10.4.1
-## explicit; go 1.13
-github.com/go-playground/validator/v10
 # github.com/gogo/protobuf v1.3.2
 ## explicit; go 1.15
 github.com/gogo/protobuf/gogoproto
@@ -186,9 +166,6 @@ github.com/json-iterator/go
 # github.com/klauspost/cpuid/v2 v2.2.3
 ## explicit; go 1.15
 github.com/klauspost/cpuid/v2
-# github.com/leodido/go-urn v1.2.0
-## explicit; go 1.13
-github.com/leodido/go-urn
 # github.com/lufia/plan9stats v0.0.0-20220913051719-115f729f3c8c
 ## explicit; go 1.16
 github.com/lufia/plan9stats
@@ -314,9 +291,6 @@ github.com/tklauser/numcpus
 github.com/tredoe/osutil/user/crypt
 github.com/tredoe/osutil/user/crypt/common
 github.com/tredoe/osutil/user/crypt/sha512_crypt
-# github.com/ugorji/go/codec v1.1.7
-## explicit
-github.com/ugorji/go/codec
 # github.com/ulikunitz/xz v0.5.12
 ## explicit; go 1.12
 github.com/ulikunitz/xz
@@ -407,7 +381,6 @@ golang.org/x/crypto/chacha20
 golang.org/x/crypto/curve25519
 golang.org/x/crypto/internal/alias
 golang.org/x/crypto/internal/poly1305
-golang.org/x/crypto/sha3
 golang.org/x/crypto/ssh
 golang.org/x/crypto/ssh/internal/bcrypt_pbkdf
 golang.org/x/crypto/ssh/terminal
@@ -872,7 +845,7 @@ sigs.k8s.io/structured-merge-diff/v4/value
 # sigs.k8s.io/yaml v1.3.0
 ## explicit; go 1.12
 sigs.k8s.io/yaml
-# yunion.io/x/cloudmux v0.3.10-0-alpha.1.0.20260422030631-9c29a593263c
+# yunion.io/x/cloudmux v0.3.10-0-alpha.1.0.20260609055727-275f3963d64c
 ## explicit; go 1.24
 yunion.io/x/cloudmux/pkg/apis
 yunion.io/x/cloudmux/pkg/apis/billing
@@ -895,12 +868,12 @@ yunion.io/x/jsonutils
 ## explicit; go 1.12
 yunion.io/x/log
 yunion.io/x/log/hooks
-# yunion.io/x/onecloud v0.0.0-20260424034553-0c6a3770b597
+# yunion.io/x/onecloud v0.0.0-20260609150204-44f7c6e68845
 ## explicit; go 1.24
 yunion.io/x/onecloud/locales
 yunion.io/x/onecloud/pkg/apihelper
 yunion.io/x/onecloud/pkg/apis
-yunion.io/x/onecloud/pkg/apis/ansible
+yunion.io/x/onecloud/pkg/apis/ansibleserver
 yunion.io/x/onecloud/pkg/apis/baremetal
 yunion.io/x/onecloud/pkg/apis/billing
 yunion.io/x/onecloud/pkg/apis/cloudcommon/db
@@ -1032,7 +1005,7 @@ yunion.io/x/onecloud/pkg/util/tagutils
 yunion.io/x/onecloud/pkg/util/yunionmeta
 yunion.io/x/onecloud/pkg/vpcagent/models
 yunion.io/x/onecloud/pkg/vpcagent/ovn/mac
-# yunion.io/x/pkg v1.10.4-0.20260224071200-5c269fa62429
+# yunion.io/x/pkg v1.10.4-0.20260422030155-01b100134978
 ## explicit; go 1.18
 yunion.io/x/pkg/appctx
 yunion.io/x/pkg/errors
@@ -1049,7 +1022,6 @@ yunion.io/x/pkg/util/clock
 yunion.io/x/pkg/util/cloudinit
 yunion.io/x/pkg/util/compare
 yunion.io/x/pkg/util/delayedwork
-yunion.io/x/pkg/util/errors
 yunion.io/x/pkg/util/fileutils
 yunion.io/x/pkg/util/httputils
 yunion.io/x/pkg/util/imagetools
