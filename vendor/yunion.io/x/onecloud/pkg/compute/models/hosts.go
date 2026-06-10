@@ -2958,12 +2958,31 @@ func IsNeedSkipSync(ext cloudprovider.ICloudResource) (bool, string) {
 	if len(options.Options.SkipServerBySysTagKeys) == 0 &&
 		len(options.Options.SkipServerByUserTagKeys) == 0 &&
 		len(options.Options.SkipServerByUserTagValues) == 0 &&
+		len(options.Options.SkipServerByUserTags) == 0 &&
 		len(options.Options.RetentionServerByUserTagKeys) == 0 &&
 		len(options.Options.RetentionServerByUserTagValues) == 0 &&
 		len(options.Options.RetentionServerByUserTags) == 0 {
 		return false, ""
 	}
 	tags, _ := ext.GetTags()
+	keys, values, pairs := []string{}, []string{}, []string{}
+	for key, value := range tags {
+		key = strings.Trim(key, "")
+		keys = append(keys, key)
+		values = append(values, value)
+		pairs = append(pairs, fmt.Sprintf("%s:%s", key, value))
+		pairs = append(pairs, fmt.Sprintf("%s=%s", key, value))
+		pairs = append(pairs, fmt.Sprintf("%s=%s", db.USER_TAG_PREFIX+key, value))
+	}
+
+	if len(options.Options.SkipServerByUserTags) > 0 {
+		for _, tag := range pairs {
+			if utils.IsInStringArray(tag, options.Options.SkipServerByUserTags) {
+				return true, tag
+			}
+		}
+	}
+
 	if keys := strings.Split(options.Options.SkipServerBySysTagKeys, ","); len(keys) > 0 {
 		for key := range ext.GetSysTags() {
 			key = strings.Trim(key, "")
@@ -2987,13 +3006,6 @@ func IsNeedSkipSync(ext cloudprovider.ICloudResource) (bool, string) {
 				return true, value
 			}
 		}
-	}
-	keys, values, pairs := []string{}, []string{}, []string{}
-	for key, value := range tags {
-		key = strings.Trim(key, "")
-		keys = append(keys, key)
-		values = append(values, value)
-		pairs = append(pairs, fmt.Sprintf("%s:%s", key, value))
 	}
 
 	if len(options.Options.RetentionServerByUserTagKeys) > 0 {
@@ -7953,6 +7965,22 @@ func (manager *SHostManager) initOvnMappedIp6Addr() error {
 	return nil
 }
 
+func (manager *SHostManager) initCloudpodsHost() error {
+	q := manager.Query().Equals("host_type", api.HOST_TYPE_CLOUDPODS)
+	hosts := []SHost{}
+	err := db.FetchModelObjects(manager, q, &hosts)
+	if err != nil {
+		return errors.Wrapf(err, "db.FetchModelObjects")
+	}
+	for i := range hosts {
+		db.Update(&hosts[i], func() error {
+			hosts[i].HostType = api.HOST_TYPE_HYPERVISOR
+			return nil
+		})
+	}
+	return nil
+}
+
 func (manager *SHostManager) InitializeData() error {
 	var err error
 	err = manager.initHostname()
@@ -7962,6 +7990,10 @@ func (manager *SHostManager) InitializeData() error {
 	err = manager.initOvnMappedIp6Addr()
 	if err != nil {
 		return errors.Wrapf(err, "initOvnMappedIp6Addr")
+	}
+	err = manager.initCloudpodsHost()
+	if err != nil {
+		return errors.Wrapf(err, "initCloudpodsHost")
 	}
 	return nil
 }
@@ -8163,6 +8195,10 @@ func (h *SHost) GetDetailsAppOptions(ctx context.Context, userCred mcclient.Toke
 
 func (h *SHost) GetDetailsWorkerStats(ctx context.Context, userCred mcclient.TokenCredential, query jsonutils.JSONObject) (jsonutils.JSONObject, error) {
 	return h.Request(ctx, userCred, httputils.GET, "/worker_stats", nil, nil)
+}
+
+func (h *SHost) GetDetailsApiStats(ctx context.Context, userCred mcclient.TokenCredential, query jsonutils.JSONObject) (jsonutils.JSONObject, error) {
+	return h.Request(ctx, userCred, httputils.GET, "/stats", nil, nil)
 }
 
 func (hh *SHost) GetDetailsIsolatedDeviceNumaStats(ctx context.Context, userCred mcclient.TokenCredential, input *api.HostIsolatedDeviceNumaStatsInput) (jsonutils.JSONObject, error) {

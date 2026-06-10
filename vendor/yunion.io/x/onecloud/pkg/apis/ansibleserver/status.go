@@ -12,16 +12,13 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-package monitor
+package ansibleserver
 
-import (
-	"yunion.io/x/onecloud/pkg/mcclient/modules"
-	"yunion.io/x/onecloud/pkg/mcclient/modules/tasks"
+const (
+	AnsiblePlaybookStatusInit      = "init"
+	AnsiblePlaybookStatusRunning   = "running"
+	AnsiblePlaybookStatusSucceeded = "succeeded"
+	AnsiblePlaybookStatusFailed    = "failed"
+	AnsiblePlaybookStatusCanceled  = "canceled"
+	AnsiblePlaybookStatusUnknown   = "unknown"
 )
-
-func init() {
-	Tasks, ArchivedTasks = tasks.NewTaskManagers(modules.NewMonitorV2Manager)
-}
-
-var Tasks tasks.TasksManager
-var ArchivedTasks tasks.TasksManager

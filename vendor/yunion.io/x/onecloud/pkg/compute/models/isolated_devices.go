@@ -117,6 +117,9 @@ type SIsolatedDevice struct {
 	IsInfinibandNic bool `nullable:"false" default:"false" list:"user" create:"optional"`
 	// NVME disk size
 	NvmeSizeMB int `nullable:"true" list:"domain" update:"domain" create:"domain_optional"`
+	// On-device memory in MiB (NVIDIA GPU VRAM via `nvidia-smi memory.total`,
+	// or per-slice quota for MPS share mode). 0 means unknown / not applicable.
+	MemorySize int `nullable:"true" default:"0" list:"domain" update:"domain" create:"domain_optional"`
 	// guest disk index
 	DiskIndex int8 `nullable:"true" default:"-1" list:"user" update:"user"`
 
@@ -475,13 +478,16 @@ func (manager *SIsolatedDeviceManager) fuzzyMatchModel(fuzzyStr string, devType 
 		q = q.Equals("dev_type", devType)
 	}
 
-	qe := q.Equals("model", fuzzyStr)
-	cnt, err := qe.CountWithError()
-	if err != nil || cnt == 0 {
-		qe = q.Contains("model", fuzzyStr)
+	if fuzzyStr != "" {
+		qe := q.Equals("model", fuzzyStr)
+		cnt, err := qe.CountWithError()
+		if err != nil || cnt == 0 {
+			qe = q.Contains("model", fuzzyStr)
+		}
+		q = qe
 	}
 
-	err = qe.First(&dev)
+	err := q.First(&dev)
 	if err == nil {
 		return &dev
 	}
@@ -641,6 +647,11 @@ func (manager *SIsolatedDeviceManager) attachHostDeviceToGuestByDevicePath(ctx c
 	if err != nil || len(devs) == 0 {
 		return fmt.Errorf("Can't found model %s device_path %s on host %s", devConfig.Model, devConfig.DevicePath, host.Id)
 	}
+	devs = filterDevicesByMemoryMb(devs, devConfig.MemoryMb)
+	if len(devs) == 0 {
+		return fmt.Errorf("device_path %s on host %s does not satisfy memory_mb=%d",
+			devConfig.DevicePath, host.Id, devConfig.MemoryMb)
+	}
 	var selectedDev SIsolatedDevice
 	for i := range devs {
 		if _, ok := usedDevMap[devs[i].DevicePath]; !ok {
@@ -652,6 +663,24 @@ func (manager *SIsolatedDeviceManager) attachHostDeviceToGuestByDevicePath(ctx c
 		selectedDev = devs[0]
 	}
 	return guest.attachIsolatedDevice(ctx, userCred, &selectedDev, devConfig.NetworkIndex, devConfig.DiskIndex)
+}
+
+// filterDevicesByMemoryMb drops devices whose MemorySize > 0 and is below the
+// requested minMemMb. MemorySize == 0 means the host hasn't reported it yet
+// and is treated as unknown (allowed through) to avoid mass-excluding rows
+// pending backfill. minMemMb <= 0 short-circuits — no filtering.
+func filterDevicesByMemoryMb(devs []SIsolatedDevice, minMemMb int) []SIsolatedDevice {
+	if minMemMb <= 0 {
+		return devs
+	}
+	out := devs[:0]
+	for _, d := range devs {
+		if d.MemorySize > 0 && d.MemorySize < minMemMb {
+			continue
+		}
+		out = append(out, d)
+	}
+	return out
 }
 
 type GroupDevs struct {
@@ -810,6 +839,14 @@ func (manager *SIsolatedDeviceManager) attachHostDeviceToGuestByModel(
 	devs, err := manager.findHostUnusedByDevConfig(devConfig.Model, devConfig.DevType, host.Id, devConfig.WireId)
 	if err != nil || len(devs) == 0 {
 		return fmt.Errorf("Can't found model %s on host %s", devConfig.Model, host.Id)
+	}
+	// Honour the request's VRAM floor. Predicate already verified enough
+	// fitting devices exist on the host; here we make sure attach picks one
+	// of them rather than a same-Model but smaller-VRAM card.
+	devs = filterDevicesByMemoryMb(devs, devConfig.MemoryMb)
+	if len(devs) == 0 {
+		return fmt.Errorf("model %s on host %s has no device with memory_mb>=%d",
+			devConfig.Model, host.Id, devConfig.MemoryMb)
 	}
 	// 1. group devices by device_path and numa nodes
 	//groupDevs := make(SorttedGroupDevs, 0)
@@ -1285,6 +1322,7 @@ func (self *SIsolatedDevice) getDesc() *api.IsolatedDeviceJsonDesc {
 		OvsOffloadInterface: self.OvsOffloadInterface,
 		DiskIndex:           self.DiskIndex,
 		NvmeSizeMB:          self.NvmeSizeMB,
+		MemorySize:          self.MemorySize,
 		MdevId:              self.MdevId,
 		NumaNode:            self.NumaNode,
 	}

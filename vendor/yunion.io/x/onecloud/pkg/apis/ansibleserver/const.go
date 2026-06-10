@@ -12,16 +12,16 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-package monitor
+package ansibleserver
 
-import (
-	"yunion.io/x/onecloud/pkg/mcclient/modules"
-	"yunion.io/x/onecloud/pkg/mcclient/modules/tasks"
+import "yunion.io/x/onecloud/pkg/apis"
+
+const (
+	SERVICE_TYPE    = apis.SERVICE_TYPE_ANSIBLE
+	SERVICE_VERSION = ""
+
+	APReferenceMethodOffline = "offline"
+	APReferenceMethodOnline  = "online"
+
+	APReferenceStatusReady = "ready"
 )
-
-func init() {
-	Tasks, ArchivedTasks = tasks.NewTaskManagers(modules.NewMonitorV2Manager)
-}
-
-var Tasks tasks.TasksManager
-var ArchivedTasks tasks.TasksManager
