@@ -18,7 +18,6 @@ import (
 	"context"
 	"fmt"
 	"os"
-	"os/signal"
 	"syscall"
 
 	"yunion.io/x/log"
@@ -85,14 +84,13 @@ func StartService() {
 		log.Warningf("host config content changed")
 		s.Stop()
 	})
-	go func() {
-		sigChan := make(chan os.Signal, 1)
-		signal.Notify(sigChan, syscall.SIGINT, syscall.SIGTERM)
-		defer signal.Stop(sigChan)
-		sig := <-sigChan
-		log.Infof("signal received: %s", sig)
+	signalutils.SetDumpStackSignal()
+	quitSignals := []os.Signal{syscall.SIGHUP, syscall.SIGINT, syscall.SIGQUIT, syscall.SIGTERM}
+	signalutils.RegisterSignal(func() {
+		log.Infof("signal received")
 		s.Stop()
-	}()
+	}, quitSignals...)
+	signalutils.StartTrap()
 	if err := s.Start(ctx); err != nil {
 		log.Warningf("Start server error: %v", err)
 	}
