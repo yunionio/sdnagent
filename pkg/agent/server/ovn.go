@@ -98,6 +98,8 @@ func (man *ovnMan) Start(ctx context.Context) {
 			man.refresh(ctx)
 		case <-ctx.Done():
 			log.Infof("ovn man bye")
+			close(man.c)
+			man.c = nil
 			return
 		}
 	}
@@ -410,6 +412,9 @@ func (man *ovnMan) SetHostId(ctx context.Context, hostId string) {
 }
 
 func (man *ovnMan) SetGuestNICs(ctx context.Context, guestId string, nics []*utils.GuestNIC) {
+	if man.c == nil {
+		return
+	}
 	req := &ovnReq{
 		ctx:     ctx,
 		guestId: guestId,
