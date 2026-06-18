@@ -31,11 +31,11 @@ func parseMatch(key string, value string) (Match, error) {
 		return parseMACMatch(key, value)
 	case arpOp:
 		return parseArpOp(value)
-	case icmpType, icmpCode, icmp6Type, icmp6Code, nwProto:
+	case icmpType, icmpCode, icmp6Type, icmp6Code, nwProto, ctNwProto:
 		return parseIntMatch(key, value, math.MaxUint8)
 	case ctZone:
 		return parseIntMatch(key, value, math.MaxUint16)
-	case tpSRC, tpDST, udpSRC, udpDST, tcpSRC, tcpDST, nxmOfTcpSrc, nxmOfTcpDst, nxmOfUdpSrc, nxmOfUdpDst:
+	case tpSRC, tpDST, udpSRC, udpDST, tcpSRC, tcpDST, nxmOfTcpSrc, nxmOfTcpDst, nxmOfUdpSrc, nxmOfUdpDst, ctTpSrc, ctTpDst:
 		return parsePort(key, value, math.MaxUint16)
 	case conjID:
 		return parseIntMatch(key, value, math.MaxUint32)
@@ -84,8 +84,12 @@ func parseMatch(key string, value string) (Match, error) {
 		return parseIntMatch(key, value, math.MaxInt32)
 	case ipv6SRC, nxmOfIpv6Src:
 		return IPv6Source(value), nil
+	case ctIpv6Src:
+		return CtIPv6Source(value), nil
 	case ipv6DST, nxmOfIpv6Dst:
 		return IPv6Destination(value), nil
+	case ctIpv6Dst:
+		return CtIPv6Destination(value), nil
 	case metadata:
 		return parseMetadata(value)
 	case tunv6SRC:
@@ -96,10 +100,14 @@ func parseMatch(key string, value string) (Match, error) {
 		return parseIPv6Label(value)
 	case nwSRC, ipSRC, nxmOfIpSrc:
 		return NetworkSource(value), nil
+	case ctNwSrc:
+		return CtNetworkSource(value), nil
 	case tunSRC:
-		return NetworkSource(value), nil
+		return TunNetworkSource(value), nil
 	case tunDST:
-		return NetworkDestination(value), nil
+		return TunNetworkDestination(value), nil
+	case ctNWDst:
+		return CtNetworkDestination(value), nil
 	case nwDST, ipDST, nxmOfIpDst:
 		return NetworkDestination(value), nil
 	case vlanTCI1:
@@ -205,6 +213,8 @@ func parseIntMatch(key string, value string, max int) (Match, error) {
 		return TunnelFlags(int(t)), nil
 	case nwProto:
 		return NetworkProtocol(uint8(t)), nil
+	case ctNwProto:
+		return NetworkProtocol(uint8(t)), nil
 	case ctZone:
 		return ConnectionTrackingZone(uint16(t)), nil
 	case conjID:
@@ -218,9 +228,9 @@ func parseIntMatch(key string, value string, max int) (Match, error) {
 // with a maximum possible value of max.
 func parsePort(key string, value string, max int) (Match, error) {
 	switch key {
-	case tpSRC, tpDST, udpSRC, udpDST, tcpSRC, tcpDST, nxmOfTcpSrc, nxmOfTcpDst, nxmOfUdpSrc, nxmOfUdpDst:
+	case tpSRC, tpDST, udpSRC, udpDST, tcpSRC, tcpDST, nxmOfTcpSrc, nxmOfTcpDst, nxmOfUdpSrc, nxmOfUdpDst, ctTpSrc, ctTpDst:
 		switch value {
-		case tpSRC, tpDST, udpSRC, udpDST, tcpSRC, tcpDST, nxmOfTcpSrc, nxmOfTcpDst, nxmOfUdpSrc, nxmOfUdpDst:
+		case tpSRC, tpDST, udpSRC, udpDST, tcpSRC, tcpDST, nxmOfTcpSrc, nxmOfTcpDst, nxmOfUdpSrc, nxmOfUdpDst, ctTpSrc, ctTpDst:
 			return TransportPortMatch(key, value)
 		}
 	}
@@ -268,6 +278,10 @@ func parsePort(key string, value string, max int) (Match, error) {
 		return TCPSourceMaskedPort(uint16(values[0]), uint16(values[1])), nil
 	case tcpDST:
 		return TCPDestinationMaskedPort(uint16(values[0]), uint16(values[1])), nil
+	case ctTpSrc:
+		return TransportSourceMaskedPort(uint16(values[0]), uint16(values[1])), nil
+	case ctTpDst:
+		return TransportDestinationMaskedPort(uint16(values[0]), uint16(values[1])), nil
 	}
 	// Return error if input is invalid
 	return nil, fmt.Errorf("no action matched for %s=%s", key, value)

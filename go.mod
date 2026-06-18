@@ -4,8 +4,8 @@ go 1.24
 
 require (
 	github.com/coreos/go-iptables v0.6.0
-	github.com/digitalocean/go-openvswitch v0.0.20260416
-	github.com/fsnotify/fsnotify v1.8.0
+	github.com/digitalocean/go-openvswitch v0.0.20260616
+	github.com/fsnotify/fsnotify v1.6.0
 	github.com/golang/protobuf v1.5.4
 	github.com/mitchellh/go-homedir v1.1.0
 	github.com/pkg/errors v0.9.1
@@ -19,7 +19,7 @@ require (
 	google.golang.org/protobuf v1.35.1
 	yunion.io/x/jsonutils v1.0.1-0.20250507052344-1abcf4f443b1
 	yunion.io/x/log v1.0.1-0.20240305175729-7cf2d6cd5a91
-	yunion.io/x/onecloud v0.0.0-20260609150140-3172a1e86c28
+	yunion.io/x/onecloud v0.0.0-20260617065025-9f0d1af48408
 	yunion.io/x/pkg v1.10.4-0.20260422030155-01b100134978
 )
 
@@ -30,7 +30,6 @@ require (
 	github.com/basgys/goxml2json v1.1.1-0.20181031222924-996d9fc8d313 // indirect
 	github.com/beevik/etree v1.1.0 // indirect
 	github.com/cloudflare/golz4 v0.0.0-20150217214814-ef862a3cdc58 // indirect
-	github.com/coredns/coredns v1.10.1 // indirect
 	github.com/coreos/go-semver v0.3.0 // indirect
 	github.com/coreos/go-systemd/v22 v22.5.0 // indirect
 	github.com/davecgh/go-spew v1.1.1 // indirect
@@ -127,7 +126,7 @@ require (
 	sigs.k8s.io/json v0.0.0-20220713155537-f223a00ba0e2 // indirect
 	sigs.k8s.io/structured-merge-diff/v4 v4.2.3 // indirect
 	sigs.k8s.io/yaml v1.3.0 // indirect
-	yunion.io/x/cloudmux v0.3.10-0-alpha.1.0.20260609055723-8f64c190c26d // indirect
+	yunion.io/x/cloudmux v0.3.10-0-alpha.1.0.20260618060037-f823123bd958 // indirect
 	yunion.io/x/executor v0.0.0-20260312022053-f538abd2b005 // indirect
 	yunion.io/x/s3cli v0.0.0-20241221171442-1c11599d28e1 // indirect
 	yunion.io/x/sqlchemy v1.1.3-0.20251231025938-b0a38f6e9fab // indirect
@@ -135,6 +134,6 @@ require (
 )
 
 replace (
-	github.com/digitalocean/go-openvswitch => yunion.io/x/go-openvswitch v0.0.20260416
+	github.com/digitalocean/go-openvswitch => yunion.io/x/go-openvswitch v0.0.20260616
 	github.com/jaypipes/ghw => github.com/zexi/ghw v0.9.1
 )
