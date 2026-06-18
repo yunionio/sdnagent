@@ -315,9 +315,6 @@ func (w *serversWatcher) Start(ctx context.Context, agent *AgentServer) {
 			w.withWait(ctx, func(ctx context.Context) {
 				w.hostLocal.UpdateSettings(ctx, false)
 				w.scan(ctx)
-				for _, g := range w.guests {
-					g.UpdateSettings(ctx, false)
-				}
 			})
 		case err, ok := <-w.watcher.Errors:
 			if !ok {
