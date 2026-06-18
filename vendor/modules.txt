@@ -24,9 +24,6 @@ github.com/beevik/etree
 # github.com/cloudflare/golz4 v0.0.0-20150217214814-ef862a3cdc58
 ## explicit
 github.com/cloudflare/golz4
-# github.com/coredns/coredns v1.10.1
-## explicit; go 1.18
-github.com/coredns/coredns/plugin/pkg/log
 # github.com/coreos/go-iptables v0.6.0
 ## explicit; go 1.16
 github.com/coreos/go-iptables/iptables
@@ -39,7 +36,7 @@ github.com/coreos/go-systemd/v22/journal
 # github.com/davecgh/go-spew v1.1.1
 ## explicit
 github.com/davecgh/go-spew/spew
-# github.com/digitalocean/go-openvswitch v0.0.20260416 => yunion.io/x/go-openvswitch v0.0.20260416
+# github.com/digitalocean/go-openvswitch v0.0.20260616 => yunion.io/x/go-openvswitch v0.0.20260616
 ## explicit; go 1.16
 github.com/digitalocean/go-openvswitch/ovs
 # github.com/docker/spdystream v0.0.0-20160310174837-449fdfce4d96
@@ -845,7 +842,7 @@ sigs.k8s.io/structured-merge-diff/v4/value
 # sigs.k8s.io/yaml v1.3.0
 ## explicit; go 1.12
 sigs.k8s.io/yaml
-# yunion.io/x/cloudmux v0.3.10-0-alpha.1.0.20260609055727-275f3963d64c
+# yunion.io/x/cloudmux v0.3.10-0-alpha.1.0.20260616131535-66f82e2327e6
 ## explicit; go 1.24
 yunion.io/x/cloudmux/pkg/apis
 yunion.io/x/cloudmux/pkg/apis/billing
@@ -868,7 +865,7 @@ yunion.io/x/jsonutils
 ## explicit; go 1.12
 yunion.io/x/log
 yunion.io/x/log/hooks
-# yunion.io/x/onecloud v0.0.0-20260609150204-44f7c6e68845
+# yunion.io/x/onecloud v0.0.0-20260617065020-2b927e742dd1
 ## explicit; go 1.24
 yunion.io/x/onecloud/locales
 yunion.io/x/onecloud/pkg/apihelper
@@ -1059,5 +1056,5 @@ yunion.io/x/sqlchemy/backends/clickhouse
 # yunion.io/x/structarg v0.0.0-20231017124457-df4d5009457c
 ## explicit; go 1.12
 yunion.io/x/structarg
-# github.com/digitalocean/go-openvswitch => yunion.io/x/go-openvswitch v0.0.20260416
+# github.com/digitalocean/go-openvswitch => yunion.io/x/go-openvswitch v0.0.20260616
 # github.com/jaypipes/ghw => github.com/zexi/ghw v0.9.1
