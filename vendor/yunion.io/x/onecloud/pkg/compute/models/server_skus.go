@@ -486,7 +486,7 @@ func (self *SServerSkuManager) ValidateCreateData(ctx context.Context, userCred 
 		}
 
 		if input.MemorySizeMB < 512 || input.MemorySizeMB > 1024*options.Options.SkuMaxMemSize {
-			return input, httperrors.NewOutOfRangeError("memory_size_mb, shoud be range of 512~%d", 1024*options.Options.SkuMaxMemSize)
+			return input, httperrors.NewOutOfRangeError("memory_size_mb, should be range of 512~%d", 1024*options.Options.SkuMaxMemSize)
 		}
 
 		if len(input.InstanceTypeCategory) == 0 {
@@ -494,7 +494,7 @@ func (self *SServerSkuManager) ValidateCreateData(ctx context.Context, userCred 
 		}
 
 		if !utils.IsInStringArray(input.InstanceTypeCategory, api.SKU_FAMILIES) {
-			return input, httperrors.NewInputParameterError("instance_type_category shoud be one of %s", api.SKU_FAMILIES)
+			return input, httperrors.NewInputParameterError("instance_type_category should be one of %s", api.SKU_FAMILIES)
 		}
 
 		input.LocalCategory = input.InstanceTypeCategory
@@ -522,7 +522,7 @@ func (self *SServerSkuManager) ValidateCreateData(ctx context.Context, userCred 
 		}
 		count, err := q.CountWithError()
 		if err != nil {
-			return input, httperrors.NewInternalServerError("checkout server sku name duplicate error: %v", err)
+			return input, httperrors.NewInternalServerError("check server sku name duplicate failed: %v", err)
 		}
 		if count > 0 {
 			return input, httperrors.NewDuplicateResourceError("Duplicate sku %s", input.Name)
@@ -709,7 +709,7 @@ func (manager *SServerSkuManager) GetPropertyInstanceSpecs(ctx context.Context, 
 	err = db.FetchModelObjects(manager, q, &skus)
 	if err != nil {
 		log.Errorf("FetchModelObjects %s: %s", q.DebugString(), err)
-		return nil, httperrors.NewBadRequestError("instance specs list query error")
+		return nil, httperrors.NewBadRequestError("failed to query instance specs list")
 	}
 
 	cpus := jsonutils.NewArray()
@@ -825,11 +825,11 @@ func (self *SServerSku) ValidateDeleteCondition(ctx context.Context, info *api.S
 		totalGuestCnt, _ = self.GetGuestCount()
 	}
 	if totalGuestCnt > 0 {
-		return httperrors.NewNotEmptyError("now allow to delete inuse instance_type.please remove related servers first: %s", self.Name)
+		return httperrors.NewNotEmptyError("not allowed to delete in-use instance_type.please remove related servers first: %s", self.Name)
 	}
 
 	if !options.Options.EnableDeletePublicCloudSku && utils.IsInStringArray(self.Provider, api.PUBLIC_CLOUD_PROVIDERS) {
-		return httperrors.NewForbiddenError("not allow to delete public cloud instance_type: %s", self.Name)
+		return httperrors.NewForbiddenError("not allowed to delete public cloud instance_type: %s", self.Name)
 	}
 
 	return nil
@@ -951,10 +951,6 @@ func (manager *SServerSkuManager) ListItemFilter(
 		q = q.Filter(sqlchemy.OR(conditions...))
 	}
 
-	if query.Distinct {
-		q = q.GroupBy(q.Field("name"))
-	}
-
 	brands := query.Brands
 	if len(brands) > 0 {
 		q = q.Filter(sqlchemy.In(q.Field("brand"), brands))
@@ -973,24 +969,20 @@ func (manager *SServerSkuManager) ListItemFilter(
 		q = q.IsTrue("enabled")
 	}
 
-	zoneStr := query.ZoneId
-	if len(zoneStr) > 0 {
-		zoneObj, err := validators.ValidateModel(ctx, userCred, ZoneManager, &zoneStr)
-		if err != nil {
-			return nil, err
-		}
-		zone := zoneObj.(*SZone)
-		region, err := zone.GetRegion()
-		if err != nil {
-			return nil, errors.Wrapf(err, "GetRegion %s", zone.Name)
-		}
+	if len(query.ZoneIds) > 0 {
+		zones := ZoneManager.Query("id")
+		zones = zones.Filter(sqlchemy.OR(sqlchemy.In(zones.Field("id"), query.ZoneIds), sqlchemy.In(zones.Field("name"), query.ZoneIds)))
+
+		regionIds := ZoneManager.Query("cloudregion_id")
+		regionIds = regionIds.Filter(sqlchemy.OR(sqlchemy.In(regionIds.Field("id"), query.CloudregionId), sqlchemy.In(regionIds.Field("name"), query.CloudregionId))).Distinct()
+
 		q = q.Filter(
 			sqlchemy.OR(
 				sqlchemy.AND(
-					sqlchemy.Equals(q.Field("cloudregion_id"), region.Id),
+					sqlchemy.In(q.Field("cloudregion_id"), regionIds.SubQuery()),
 					sqlchemy.IsNullOrEmpty(q.Field("zone_id")),
 				),
-				sqlchemy.Equals(q.Field("zone_id"), zone.Id),
+				sqlchemy.In(q.Field("zone_id"), zones.SubQuery()),
 			),
 		)
 	}
@@ -1026,6 +1018,11 @@ func (manager *SServerSkuManager) ListItemFilter(
 	}
 	if len(query.CpuCoreCount) > 0 {
 		q = q.In("cpu_core_count", query.CpuCoreCount)
+	}
+
+	if query.Distinct {
+		sq := q.Copy().GroupBy("name").SubQuery()
+		q = q.In("id", sq.Query(sq.Field("id")).SubQuery())
 	}
 
 	return q, err
