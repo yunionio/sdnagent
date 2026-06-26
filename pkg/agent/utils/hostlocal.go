@@ -15,10 +15,10 @@
 package utils
 
 import (
+	"fmt"
 	"net"
 	"sync"
 
-	"yunion.io/x/onecloud/pkg/apis/compute"
 	"yunion.io/x/onecloud/pkg/appsrv"
 )
 
@@ -26,17 +26,27 @@ var hostLocalMap *sync.Map
 
 type HostLocal struct {
 	HostConfig *HostConfig
-	Bridge     string
-	Ifname     string
-	IP         net.IP
-	IP6        net.IP
-	IP6Local   net.IP
-	MAC        net.HardwareAddr
 
-	HostLocalNets []compute.NetworkDetails
+	*HostConfigNetwork
 
 	metadataPort int
 	metadataApp  *appsrv.Application
+}
+
+func (h *HostLocal) String() string {
+	prefix, mdIp, mdMac := h.fakeMdSrcIpMac(0)
+	prefix6, mdIp6, mdMac6 := h.fakeMdSrcIp6Mac(0, "")
+	return fmt.Sprintf("HostLocal: Bridge=%s, ifname=%s, IP=%s, IPLocal=%s, IP6=%s, IP6Local=%s, MAC=%s, fakeMdPrefix=%s fakeMdIp=%s fakeMdPrefix6=%s fakeMdSrcIpMac=%s fakeMdIp6=%s fakeMdSrcIp6Mac=%s", h.Bridge, h.Ifname, h.IP, h.IPLocal, h.IP6, h.IP6Local, h.mac, prefix, mdIp, mdMac, prefix6, mdIp6, mdMac6)
+}
+
+func (h *HostLocal) IP4() net.IP {
+	if h.IP != nil {
+		return h.IP
+	}
+	if h.IPLocal != nil {
+		return h.IPLocal
+	}
+	return nil
 }
 
 func init() {

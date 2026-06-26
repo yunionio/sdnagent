@@ -58,9 +58,17 @@ func StartService() {
 	)
 	ctx = context.WithValue(ctx, appctx.APP_CONTEXT_KEY_APPNAME, "sdnagent")
 	if hc, err = utils.NewHostConfig(); err != nil {
-		log.Errorln(errors.Wrap(err, "host config"))
-	} else if err = hc.Auth(ctx); err != nil {
-		log.Errorln(errors.Wrap(err, "keystone auth"))
+		log.Fatalln(errors.Wrap(err, "host config"))
+	} else {
+		err := hc.WaitMacReady()
+		if err != nil {
+			log.Fatalln(errors.Wrap(err, "wait addr ready"))
+		}
+		log.Infof("host config all networks mac ready")
+	}
+
+	if err = hc.Auth(ctx); err != nil {
+		log.Fatalln(errors.Wrap(err, "keystone auth"))
 	}
 
 	{

@@ -29,7 +29,7 @@ import (
 )
 
 func (h *HostLocal) fakeMdSrcIpMac(port int) (string, string, string) {
-	return fakeMdSrcIpMac(h.IP.String(), h.MAC.String(), port)
+	return fakeMdSrcIpMac(h.IP4().String(), h.mac.String(), port)
 }
 
 func fakeMdSrcIpMac(ip, mac string, port int) (string, string, string) {
@@ -52,7 +52,7 @@ func fakeMdSrcIpMac(ip, mac string, port int) (string, string, string) {
 }
 
 func (h *HostLocal) fakeMdSrcIp6Mac(port int, metaSrvIp6 string) (string, string, string) {
-	return fakeMdSrcIp6Mac(h.IP6Local.String(), h.MAC.String(), port, metaSrvIp6)
+	return fakeMdSrcIp6Mac(h.IP6Local.String(), h.mac.String(), port, metaSrvIp6)
 }
 
 func mergeByte(a, b byte) uint16 {
@@ -81,7 +81,7 @@ func fakeMdSrcIp6Mac(ip6, mac string, port int, metaSrvIp6 string) (string, stri
 }
 
 func (h *HostLocal) StartMetadataServer(watcher IServerWatcher) {
-	var addr string
+	addr := "" // listen for both ipv4 and ipv6
 	sport := h.HostConfig.MetadataPort() + 1
 	for port := sport; port < sport+64; port++ {
 		if !netutils2.IsTcpPortUsed(addr, port) {
@@ -100,12 +100,11 @@ func (h *HostLocal) StartMetadataServer(watcher IServerWatcher) {
 			watcher:   watcher,
 		},
 	}
-	dbAccess := false
 	h.metadataApp = app.InitApp(&common_options.BaseOptions{
 		ApplicationID:          "metadata-server-class-network",
 		RequestWorkerCount:     4,
 		RequestWorkerQueueSize: 128,
-	}, dbAccess)
+	}, false)
 	log.Infof("Start metadata server at %s on port %s:%d", h.Bridge, addr, h.metadataPort)
 	metadata.Start(h.metadataApp, svc)
 }
