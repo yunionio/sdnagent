@@ -462,9 +462,9 @@ func (w *serversWatcher) watchEvent(ev *fsnotify.Event) (wev *watchEvent) {
 	return nil
 }
 
-func (w *serversWatcher) GetHostLocalByIp(ip string) *utils.HostLocal {
+func (w *serversWatcher) GetHostLocalByIp4(ip string) *utils.HostLocal {
 	for _, hl := range w.hostLocal.bridgeMap {
-		if hl.IP.String() == ip {
+		if hl.IP4() != nil && hl.IP4().String() == ip {
 			return hl
 		}
 	}
