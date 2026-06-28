@@ -41,10 +41,16 @@ type HostConfigNetwork struct {
 	IP     net.IP
 	mac    net.HardwareAddr
 
+	IPLocal net.IP
+
 	IP6      net.IP
 	IP6Local net.IP
 
 	HostLocalNets []apis.NetworkDetails
+}
+
+func (hcn *HostConfigNetwork) String() string {
+	return fmt.Sprintf("HostConfigNetwork: Bridge=%s, Ifname=%s, IP=%s, IPLocal=%s, IP6=%s, IP6Local=%s", hcn.Bridge, hcn.Ifname, hcn.IP, hcn.IPLocal, hcn.IP6, hcn.IP6Local)
 }
 
 func (hcn *HostConfigNetwork) IpAddr() string {
@@ -103,7 +109,7 @@ func NewHostConfigNetwork(network string) (*HostConfigNetwork, error) {
 }
 
 func (hcn *HostConfigNetwork) MAC() (net.HardwareAddr, error) {
-	if hcn.mac == nil {
+	if (hcn.IP == nil && hcn.IPLocal == nil) || hcn.mac == nil {
 		netif := netutils2.NewNetInterfaceWithExpectIp(hcn.Bridge, hcn.IpAddr(), hcn.Ip6Addr(), hcn.HostLocalGatewayIps())
 		if !netif.Exist() {
 			return nil, errors.Wrapf(errors.ErrNotFound, "net interface %s not found", hcn.Bridge)
@@ -118,7 +124,12 @@ func (hcn *HostConfigNetwork) MAC() (net.HardwareAddr, error) {
 		if len(netif.Addr) > 0 {
 			hcn.IP = net.ParseIP(netif.Addr)
 		}
+		if len(netif.Addr4LinkLocal) > 0 {
+			hcn.IPLocal = net.ParseIP(netif.Addr4LinkLocal)
+		}
 		hcn.mac = netif.GetHardwareAddr()
+
+		log.Infoln(hcn.String())
 	}
 	if hcn.mac != nil {
 		return hcn.mac, nil
@@ -212,6 +223,34 @@ func NewHostConfig() (*HostConfig, error) {
 	}
 
 	return hc, nil
+}
+
+func (hc *HostConfig) WaitMacReady() error {
+	ready := false
+	const TIMEOUT = 5 * 60 * time.Second // 5 minutes
+	startTime := time.Now()
+	for !ready && time.Since(startTime) < TIMEOUT {
+		err := hc.checkMacReady()
+		if err != nil {
+			time.Sleep(1 * time.Second)
+		} else {
+			ready = true
+		}
+	}
+	if !ready {
+		return errors.Wrapf(errors.ErrTimeout, "wait mac ready timeout")
+	}
+	return nil
+}
+
+func (hc *HostConfig) checkMacReady() error {
+	for _, network := range hc.networks {
+		_, err := network.MAC()
+		if err != nil {
+			return errors.Wrapf(err, "wait addr ready for network %s", network.Bridge)
+		}
+	}
+	return nil
 }
 
 func (hc *HostConfig) GetOverlayMTU() int {
