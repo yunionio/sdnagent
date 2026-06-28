@@ -141,11 +141,11 @@ func (h *HostLocal) FlowsMap() (map[string][]*ovs.Flow, error) {
 	}
 	m := map[string]interface{}{
 		"MetadataPort": h.metadataPort,
-		"MAC":          h.MAC,
+		"MAC":          h.mac.String(),
 		"PortNoPhy":    portNoPhy,
 	}
-	if h.IP != nil {
-		m["IP"] = h.IP
+	if h.IP4() != nil {
+		m["IP"] = h.IP4()
 	}
 	if h.IP6 != nil {
 		m["IP6"] = h.IP6
@@ -166,20 +166,21 @@ func (h *HostLocal) FlowsMap() (map[string][]*ovs.Flow, error) {
 			F(0, 26900, T("in_port={{.PortNoPhy}},dl_dst={{.MAC}}"), "normal"),
 		)
 	}
-	if h.IP != nil {
+	if h.IP != nil || h.IPLocal != nil {
 		flows = append(flows,
 			// drop arp request from outside to metadata IPv4 address
 			F(0, 29312, T("in_port={{.PortNoPhy}},arp,arp_op=1,arp_tpa=169.254.169.254"), "drop"),
 			// arp response to metadata IPv4 address for guest
-			F(0, 29311, "arp,arp_op=1,arp_tpa=169.254.169.254", FakeArpRespActions(h.MAC.String())),
+			F(0, 29311, "arp,arp_op=1,arp_tpa=169.254.169.254", FakeArpRespActions(h.mac.String())),
 		)
 		// direct all ipv4 metadata response to table 12
 		prefix, _, mac := h.fakeMdSrcIpMac(0)
+		flowMatch := fmt.Sprintf("in_port=LOCAL,tcp,dl_dst=%s,nw_dst=%s,tp_src=%d", mac, prefix, h.metadataPort)
 		flows = append(flows,
-			F(0, 29310, fmt.Sprintf("in_port=LOCAL,tcp,dl_dst=%s,nw_dst=%s,tp_src=%d", mac, prefix, h.metadataPort), "resubmit(,12)"),
+			F(0, 29310, flowMatch, "resubmit(,12)"),
 		)
 	}
-	if h.IP6 != nil {
+	if h.IP6 != nil || h.IP6Local != nil {
 		// drop nbp solicitation from outside to IPv6 metadata  address
 		for i := range h.HostConfig.MetadataServerIp6s {
 			metaSrvIp6 := h.HostConfig.MetadataServerIp6s[i]
@@ -540,6 +541,8 @@ func (g *Guest) FlowsMapForNic(nic *GuestNIC) (map[string][]*ovs.Flow, error) {
 		}
 		if hcn.IP != nil {
 			m["IPPhy"] = hcn.IP.String()
+		} else if hcn.IPLocal != nil {
+			m["IPPhy"] = hcn.IPLocal.String()
 		}
 		if hcn.IP6Local != nil {
 			// ipv6 use link local address to servce metadata service
