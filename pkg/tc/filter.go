@@ -317,7 +317,7 @@ func (f *SU32Filter) ReplaceLine(ifname string) []string {
 
 // tc filter delete dev GUESTNET-170 root protocol ip prio 49152 handle 800::1 u32
 func (f *SU32Filter) DeleteLine(ifname string) []string {
-	elms := f.SBaseTcFilter.basicLineElements("delete", ifname, true)
+	elms := f.SBaseTcFilter.basicLineElements("delete", ifname, false)
 	if len(f.Handle) > 0 {
 		elms = append(elms, "handle", f.Handle)
 	}
