@@ -80,7 +80,7 @@ func TestParseFilterLines(t *testing.T) {
 				},
 			},
 			delLine: [][]string{
-				{"filter", "delete", "dev", "eth0", "root", "parent", "ffff:", "protocol", "ip", "prio", "49152", "handle", "800::800", "u32"},
+				{"filter", "delete", "dev", "eth0", "parent", "ffff:", "protocol", "ip", "prio", "49152", "handle", "800::800", "u32"},
 			},
 			replaceLine: [][]string{
 				{"filter", "add", "dev", "eth0", "parent", "ffff:", "protocol", "ip", "prio", "49152", "u32", "match", "u32", "0", "0", "action", "mirred", "egress", "redirect", "dev", "reth0"},
@@ -124,8 +124,8 @@ func TestParseFilterLines(t *testing.T) {
 				},
 			},
 			delLine: [][]string{
-				{"filter", "delete", "dev", "eth0", "root", "parent", "ffff:", "protocol", "ip", "prio", "49152", "handle", "800::800", "u32"},
-				{"filter", "delete", "dev", "eth0", "root", "parent", "ffff:", "protocol", "ip", "prio", "49152", "handle", "800::801", "u32"},
+				{"filter", "delete", "dev", "eth0", "parent", "ffff:", "protocol", "ip", "prio", "49152", "handle", "800::800", "u32"},
+				{"filter", "delete", "dev", "eth0", "parent", "ffff:", "protocol", "ip", "prio", "49152", "handle", "800::801", "u32"},
 			},
 			replaceLine: [][]string{
 				{"filter", "add", "dev", "eth0", "parent", "ffff:", "protocol", "ip", "prio", "49152", "u32", "match", "u32", "0", "0", "action", "mirred", "egress", "redirect", "dev", "reth0"},
