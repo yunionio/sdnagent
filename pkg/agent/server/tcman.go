@@ -204,10 +204,10 @@ func (tm *TcMan) doCheckGuestIfbTcData(ctx context.Context, tcdata *utils.TcData
 	expectTree := tcdata.GuestIfbQdiscTree()
 	cmds := expectTree.Delta(qt, tcdata.IfbIfname())
 	if len(cmds) > 0 {
-		output, stderr, err := tm.tcCli.Batch(ctx, cmds)
+		_, _, err := tm.tcCli.Batch(ctx, cmds)
 		if err != nil {
-			log.Errorf("tcman: batch failed: %s cmds: %s\n%s\nstderr:\n%s", err, cmds, output, stderr)
-			return errors.Wrapf(err, "batch failed: %s cmds: %s\n%s\nstderr:\n%s", err, cmds, output, stderr)
+			// log.Errorf("tcman: batch failed: %s cmds: %s\n%s\nstderr:\n%s", err, cmds, output, stderr)
+			return errors.Wrapf(err, "batch failed")
 		}
 	}
 	return nil
@@ -228,12 +228,12 @@ func (tm *TcMan) doCheckGuestTcData(ctx context.Context, tcdata *utils.TcData) e
 
 	cmds := expectTree.Delta(qt, tcdata.Ifname)
 	if len(cmds) > 0 {
-		output, stderr, err := tm.tcCli.Batch(ctx, cmds)
+		_, _, err := tm.tcCli.Batch(ctx, cmds)
 		if err != nil {
-			log.Errorf("tcman: batch failed: %s cmds: %s\n%s\nstderr:\n%s", err, cmds, output, stderr)
-			return errors.Wrapf(err, "batch failed: %s cmds: %s\n%s\nstderr:\n%s", err, cmds, output, stderr)
+			// log.Errorf("tcman: batch failed: %s cmds: %s\n%s\nstderr:\n%s", err, cmds, output, stderr)
+			return errors.Wrapf(err, "batch failed")
 		}
-		log.Debugf("tcman: %s: updated qdisc\n%s\n===\n%s", tcdata.Ifname, cmds, output)
+		// log.Debugf("tcman: %s: updated qdisc\n%s\n===\n%s", tcdata.Ifname, cmds, output)
 	}
 	return nil
 }
@@ -244,11 +244,11 @@ func (tm *TcMan) doCheckHostSection(ctx context.Context, section *TcManSection) 
 	}
 }
 
-func (tm *TcMan) doCheckHostTcData(ctx context.Context, tcdata *utils.TcData) {
+func (tm *TcMan) doCheckHostTcData(ctx context.Context, tcdata *utils.TcData) error {
 	qt, err := tm.tcCli.QdiscShow(ctx, tcdata.Ifname)
 	if err != nil {
 		log.Errorf("tcman: qdisc show %s failed: %s", tcdata.Ifname, err)
-		return
+		return errors.Wrapf(err, "qdisc show %s", tcdata.Ifname)
 	}
 	expectTree := tcdata.HostRootQdiscTree()
 	rootQdisc := expectTree.RootQdisc()
@@ -268,16 +268,17 @@ func (tm *TcMan) doCheckHostTcData(ctx context.Context, tcdata *utils.TcData) {
 
 	cmds := expectTree.Delta(qt, tcdata.Ifname)
 	if len(cmds) > 0 {
-		output, stderr, err := tm.tcCli.Batch(ctx, cmds)
+		_, _, err := tm.tcCli.Batch(ctx, cmds)
 		if err != nil {
-			log.Errorf("tcman: batch failed: %s cmds: %s\n%s\nstderr:\n%s", err, cmds, output, stderr)
-			for _, cmd := range cmds {
-				log.Debugf("tcman: %s", cmd)
-			}
-			return
+			// log.Errorf("tcman: batch failed: %s cmds: %s\n%s\nstderr:\n%s", err, cmds, output, stderr)
+			// for _, cmd := range cmds {
+			//	log.Debugf("tcman: %s", cmd)
+			//}
+			return errors.Wrapf(err, "batch failed")
 		}
-		log.Debugf("tcman: %s: updated qdisc\n%s", tcdata.Ifname, output)
+		// log.Debugf("tcman: %s: updated qdisc\n%s", tcdata.Ifname, output)
 	}
+	return nil
 }
 
 func (tm *TcMan) doCmd(ctx context.Context, cmd *TcManCmd) {
