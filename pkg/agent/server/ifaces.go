@@ -17,7 +17,7 @@ package server
 import (
 	"context"
 	"fmt"
-	"io/ioutil"
+	"os"
 	"path"
 	"strings"
 	"sync"
@@ -150,7 +150,7 @@ func (ij *ifaceJanitor) scan(ctx context.Context) error {
 
 func (ij *ifaceJanitor) scanDescs(hc *utils.HostConfig) (brIfaceMap, error) {
 	serversPath := hc.ServersPath
-	fis, err := ioutil.ReadDir(serversPath)
+	fis, err := os.ReadDir(serversPath)
 	if err != nil {
 		return nil, fmt.Errorf("scan servers path %s: %s", serversPath, err)
 	}

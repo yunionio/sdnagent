@@ -449,7 +449,11 @@ func (w *serversWatcher) FindGuestDescByHostLocalIp(hostLocal *utils.HostLocal, 
 func (w *serversWatcher) watchEvent(ev *fsnotify.Event) (wev *watchEvent) {
 	dir, file := filepath.Split(ev.Name)
 	dir = path.Clean(dir)
-	if REGEX_UUID.MatchString(file) && dir == w.hostConfig.ServersPath {
+	log.Debugf("watchEvent: ev.Name: %s, dir: %s, file: %s", ev.Name, dir, file)
+	if dir == w.hostConfig.ServersPath {
+		if !REGEX_UUID.MatchString(file) {
+			return nil
+		}
 		wev = &watchEvent{
 			guestId:   file,
 			guestPath: ev.Name,
@@ -461,7 +465,18 @@ func (w *serversWatcher) watchEvent(ev *fsnotify.Event) (wev *watchEvent) {
 			wev.evType = watchEventTypeDelServerDir
 			return wev
 		}
-	} else if file == "desc" {
+		return nil
+	}
+	// else dir != w.hostConfig.ServersPath
+	parentDir, baseDir := filepath.Split(dir)
+	if parentDir != w.hostConfig.ServersPath {
+		return nil
+	}
+	if !REGEX_UUID.MatchString(baseDir) {
+		return nil
+	}
+	switch file {
+	case "desc":
 		_, guestId := filepath.Split(dir)
 		if ev.Op&fsnotify.Write != 0 {
 			wev = &watchEvent{
@@ -471,7 +486,7 @@ func (w *serversWatcher) watchEvent(ev *fsnotify.Event) (wev *watchEvent) {
 			}
 			return wev
 		}
-	} else if file == "pid" {
+	case "pid":
 		_, guestId := filepath.Split(dir)
 		wev = &watchEvent{
 			guestId:   guestId,
