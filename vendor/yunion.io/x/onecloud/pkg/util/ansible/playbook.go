@@ -17,7 +17,6 @@ package ansible
 import (
 	"context"
 	"io"
-	"io/ioutil"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -26,6 +25,8 @@ import (
 
 	"yunion.io/x/pkg/errors"
 	"yunion.io/x/pkg/gotypes"
+
+	"yunion.io/x/onecloud/pkg/util/fileutils2"
 )
 
 type pbState int
@@ -49,10 +50,10 @@ func (pbs pbState) String() string {
 }
 
 type Playbook struct {
-	Inventory  Inventory
-	Modules    []Module
-	PrivateKey []byte
-	Files      map[string][]byte
+	Inventory   Inventory
+	Modules     []Module
+	PrivateKeys []string
+	Files       map[string][]byte
 
 	tmpdir        string
 	noCleanOnExit bool
@@ -73,7 +74,7 @@ func (pb *Playbook) Copy() *Playbook {
 	pb1 := NewPlaybook()
 	pb1.Inventory = gotypes.DeepCopy(pb.Inventory).(Inventory)
 	pb1.Modules = gotypes.DeepCopy(pb.Modules).([]Module)
-	pb1.PrivateKey = gotypes.DeepCopy(pb.PrivateKey).([]byte)
+	pb1.PrivateKeys = gotypes.DeepCopy(pb.PrivateKeys).([]string)
 	pb1.Files = gotypes.DeepCopy(pb.Files).(map[string][]byte)
 	return pb1
 }
@@ -100,8 +101,24 @@ func (pb *Playbook) Running() bool {
 	return pb.state == pbStateRunning
 }
 
+func (pb *Playbook) Run(ctx context.Context) error {
+	errs := make([]error, 0, len(pb.PrivateKeys))
+	for i, privateKey := range pb.PrivateKeys {
+		err := pb.runOnce(ctx, privateKey)
+		if err != nil {
+			errs = append(errs, err)
+			if i != len(pb.PrivateKeys)-1 {
+				pb.state = pbStateInit
+			}
+		} else {
+			return nil
+		}
+	}
+	return errors.NewAggregate(errs)
+}
+
 // Run runs the playbook
-func (pb *Playbook) Run(ctx context.Context) (err error) {
+func (pb *Playbook) runOnce(ctx context.Context, privateKey string) error {
 	var (
 		tmpdir string
 	)
@@ -124,10 +141,9 @@ func (pb *Playbook) Run(ctx context.Context) (err error) {
 	}
 
 	// make tmpdir
-	tmpdir, err = os.MkdirTemp("", "onecloud-ansible")
+	tmpdir, err := os.MkdirTemp("", "onecloud-ansible")
 	if err != nil {
-		err = errors.Wrap(err, "making tmp dir")
-		return
+		return errors.Wrap(err, "making tmp dir")
 	}
 	pb.tmpdir = tmpdir
 	defer func() {
@@ -141,51 +157,45 @@ func (pb *Playbook) Run(ctx context.Context) (err error) {
 
 	// write out inventory
 	inventory := filepath.Join(tmpdir, "inventory")
-	err = ioutil.WriteFile(inventory, pb.Inventory.Data(), os.FileMode(0600))
+	err = os.WriteFile(inventory, pb.Inventory.Data(), os.FileMode(0600))
 	if err != nil {
-		err = errors.Wrapf(err, "writing inventory %s", inventory)
-		return
+		return errors.Wrapf(err, "writing inventory %s", inventory)
 	}
 
 	// write out private key
-	var privateKey string
-	if len(pb.PrivateKey) > 0 {
-		privateKey = filepath.Join(tmpdir, "private_key")
-		err = ioutil.WriteFile(privateKey, pb.PrivateKey, os.FileMode(0600))
+	var privateKeyFile string
+	if len(privateKey) > 0 {
+		privateKeyFile = filepath.Join(tmpdir, "private_key")
+		err = os.WriteFile(privateKeyFile, []byte(privateKey), os.FileMode(0600))
 		if err != nil {
-			err = errors.Wrapf(err, "writing private key %s", privateKey)
-			return
+			return errors.Wrapf(err, "writing private key %s", privateKeyFile)
 		}
 	}
 
 	// write out files
 	for name, content := range pb.Files {
-		path := filepath.Join(tmpdir, name)
+		path, err := fileutils2.JoinInside(tmpdir, name)
+		if err != nil {
+			return errors.Wrapf(err, "playbook file %s", name)
+		}
 		dir := filepath.Dir(path)
 		err = os.MkdirAll(dir, os.FileMode(0700))
 		if err != nil {
-			err = errors.Wrapf(err, "mkdir -p %s", dir)
-			return
+			return errors.Wrapf(err, "mkdir -p %s", dir)
 		}
-		err = ioutil.WriteFile(path, content, os.FileMode(0600))
+		err = os.WriteFile(path, content, os.FileMode(0600))
 		if err != nil {
-			err = errors.Wrapf(err, "writing file %s", name)
-			return
+			return errors.Wrapf(err, "writing file %s", name)
 		}
 	}
 
 	// run modules one by one
 	var errs []error
-	defer func() {
-		if len(errs) > 0 {
-			err = errors.NewAggregate(errs)
-		}
-	}()
 	for _, m := range pb.Modules {
 		select {
 		case <-ctx.Done():
-			err = ctx.Err()
-			return
+			errs = append(errs, errors.Wrap(ctx.Err(), "context done"))
+			return errors.NewAggregate(errs)
 		default:
 		}
 		modArgs := strings.Join(m.Args, " ")
@@ -196,7 +206,7 @@ func (pb *Playbook) Run(ctx context.Context) (err error) {
 			"all",
 		}
 		if privateKey != "" {
-			args = append(args, "--private-key", privateKey)
+			args = append(args, "--private-key", privateKeyFile)
 		}
 		cmd := exec.CommandContext(ctx, "ansible", args...)
 		cmd.Dir = pb.tmpdir
@@ -206,7 +216,7 @@ func (pb *Playbook) Run(ctx context.Context) (err error) {
 		stderr, _ := cmd.StderrPipe()
 		if err1 := cmd.Start(); err1 != nil {
 			errs = append(errs, errors.Wrapf(err1, "run module %q, args %q", m.Name, modArgs))
-			return
+			continue
 		}
 		// Mix stdout, stderr
 		if pb.outputWriter != nil {
@@ -215,10 +225,10 @@ func (pb *Playbook) Run(ctx context.Context) (err error) {
 		}
 		if err1 := cmd.Wait(); err1 != nil {
 			errs = append(errs, errors.Wrapf(err1, "wait module %q, args %q", m.Name, modArgs))
-			// continue to next
+			continue
 		}
 	}
-	return nil
+	return errors.NewAggregate(errs)
 }
 
 func (pb *Playbook) OutputWriter(w io.Writer) {

@@ -44,23 +44,30 @@ const (
 	ContainerDeviceTypeNvidiaGpu      ContainerDeviceType = api.CONTAINER_DEV_NVIDIA_GPU
 	ContainerDeviceTypeNvidiaMps      ContainerDeviceType = api.CONTAINER_DEV_NVIDIA_MPS
 	ContainerDeviceTypeNvidiaGpuShare ContainerDeviceType = api.CONTAINER_DEV_NVIDIA_GPU_SHARE
+	ContainerDeviceTypeNvidiaHAMI     ContainerDeviceType = api.CONTAINER_DEV_NVIDIA_HAMI
 	ContainerDeviceTypeAscendNpu      ContainerDeviceType = api.CONTAINER_DEV_ASCEND_NPU
+	ContainerDeviceTypeAscendNpuHami  ContainerDeviceType = api.CONTAINER_DEV_ASCEND_NPU_HAMI
 	ContainerDeviceTypeVastaitechGpu  ContainerDeviceType = api.CONTAINER_DEV_VASTAITECH_GPU
+	ContainerDeviceTypeHygonDcu       ContainerDeviceType = api.CONTAINER_DEV_HYGON_DCU
+	ContainerDeviceTypeHygonDcuHami   ContainerDeviceType = api.CONTAINER_DEV_HYGON_DCU_HAMI
+	ContainerDeviceTypeIluvatarGpu    ContainerDeviceType = api.CONTAINER_DEV_ILUVATAR_GPU
+	ContainerDeviceTypeTHeadPpu       ContainerDeviceType = api.CONTAINER_DEV_THEAD_PPU
+	ContainerDeviceTypeKunlunxinXpu   ContainerDeviceType = api.CONTAINER_DEV_KUNLUNXIN_XPU
 )
 
-func GetContainerDeviceManager(t ContainerDeviceType) (IContainerDeviceManager, error) {
-	man, ok := containerDeviceManagers[t]
+func GetContainerDeviceManager(devType ContainerDeviceType) (IContainerDeviceManager, error) {
+	man, ok := containerDeviceManagers[devType]
 	if !ok {
-		return nil, errors.Wrapf(errors.ErrNotFound, "not found container device manager by %q", t)
+		return nil, errors.Wrapf(errors.ErrNotFound, "not found container device manager by %q", devType)
 	}
 	return man, nil
 }
 
 func RegisterContainerDeviceManager(man IContainerDeviceManager) {
-	if _, ok := containerDeviceManagers[man.GetType()]; ok {
-		panic(fmt.Sprintf("container device manager %s is already registered", man.GetType()))
+	if _, ok := containerDeviceManagers[man.GetRegisterType()]; ok {
+		panic(fmt.Sprintf("container device manager %s is already registered", man.GetRegisterType()))
 	}
-	containerDeviceManagers[man.GetType()] = man
+	containerDeviceManagers[man.GetRegisterType()] = man
 }
 
 func GetContainerCDIManager(t apis.ContainerCDIKind) (IContainerCDIManager, error) {
@@ -89,11 +96,16 @@ type ContainerDeviceConfiguration struct {
 }
 
 type IContainerDeviceManager interface {
-	GetType() ContainerDeviceType
+	GetRegisterType() ContainerDeviceType
 	NewDevices(dev *ContainerDevice) ([]IDevice, error)
 	NewContainerDevices(input *hostapi.ContainerCreateInput, dev *hostapi.ContainerDevice) ([]*runtimeapi.Device, []*runtimeapi.Device, error)
 	ProbeDevices() ([]IDevice, error)
 	GetContainerExtraConfigures(devs []*hostapi.ContainerDevice) ([]*runtimeapi.KeyValue, []*runtimeapi.Mount)
+}
+
+// IContainerDeviceReleaseManager is implemented by device managers that need cleanup on container delete.
+type IContainerDeviceReleaseManager interface {
+	ReleaseContainerDevices(devs []*hostapi.ContainerDevice)
 }
 
 type IContainerCDIManager interface {

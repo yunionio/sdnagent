@@ -544,56 +544,7 @@ func (man *SDiskManager) BatchCreateValidateCreateData(ctx context.Context, user
 }
 
 func diskCreateInput2ComputeQuotaKeys(input api.DiskCreateInput, ownerId mcclient.IIdentityProvider) (SComputeResourceKeys, error) {
-	var keys SComputeResourceKeys
-	if len(input.PreferHost) > 0 {
-		hostObj, err := HostManager.FetchById(input.PreferHost)
-		if err != nil {
-			return keys, err
-		}
-		host := hostObj.(*SHost)
-		input.PreferZone = host.ZoneId
-		keys.ZoneId = host.ZoneId
-	}
-	if len(input.PreferWire) > 0 {
-		wireObj, err := WireManager.FetchById(input.PreferWire)
-		if err != nil {
-			return keys, err
-		}
-		wire := wireObj.(*SWire)
-		if len(wire.ZoneId) > 0 {
-			input.PreferZone = wire.ZoneId
-			keys.ZoneId = wire.ZoneId
-		}
-	}
-	if len(input.PreferZones) > 0 {
-		zoneObj, err := ZoneManager.FetchById(input.PreferZones[0])
-		if err != nil {
-			return keys, err
-		}
-		zone := zoneObj.(*SZone)
-		input.PreferRegion = zone.CloudregionId
-		keys.ZoneId = zone.Id
-		keys.RegionId = zone.CloudregionId
-	} else if len(input.PreferZone) > 0 {
-		zoneObj, err := ZoneManager.FetchById(input.PreferZone)
-		if err != nil {
-			return keys, err
-		}
-		zone := zoneObj.(*SZone)
-		input.PreferRegion = zone.CloudregionId
-		keys.ZoneId = zone.Id
-		keys.RegionId = zone.CloudregionId
-	}
-	if len(input.PreferRegion) > 0 {
-		regionObj, err := CloudregionManager.FetchById(input.PreferRegion)
-		if err != nil {
-			return keys, err
-		}
-		region := regionObj.(*SCloudregion)
-		keys.RegionId = region.GetId()
-		keys.Brand = region.Provider
-	}
-	return keys, nil
+	return serverCreateInput2ComputeQuotaKeys(*input.ToServerCreateInput(), ownerId)
 }
 
 func (manager *SDiskManager) ValidateCreateData(ctx context.Context, userCred mcclient.TokenCredential, ownerId mcclient.IIdentityProvider, query jsonutils.JSONObject, input api.DiskCreateInput) (api.DiskCreateInput, error) {
@@ -678,7 +629,10 @@ func (manager *SDiskManager) ValidateCreateData(ctx context.Context, userCred mc
 		encInput := input.EncryptedResourceCreateInput
 		input = *serverInput.ToDiskCreateInput()
 		input.EncryptedResourceCreateInput = encInput
-		quotaKey, _ = diskCreateInput2ComputeQuotaKeys(input, ownerId)
+		quotaKey, err = diskCreateInput2ComputeQuotaKeys(input, ownerId)
+		if err != nil {
+			return input, errors.Wrap(err, "diskCreateInput2ComputeQuotaKeys")
+		}
 	}
 
 	input.VirtualResourceCreateInput, err = manager.SVirtualResourceBaseManager.ValidateCreateData(ctx, userCred, ownerId, query, input.VirtualResourceCreateInput)
@@ -826,7 +780,7 @@ func (disk *SDisk) SetStorageByHost(hostId string, diskConfig *api.DiskConfig, s
 	return err
 }
 
-func getDiskResourceRequirements(ctx context.Context, userCred mcclient.TokenCredential, ownerId mcclient.IIdentityProvider, input api.DiskCreateInput, count int) SQuota {
+func getDiskResourceRequirements(ctx context.Context, userCred mcclient.TokenCredential, ownerId mcclient.IIdentityProvider, input api.DiskCreateInput, count int) (SQuota, error) {
 	req := SQuota{
 		Storage: input.SizeMb * count,
 	}
@@ -843,10 +797,14 @@ func getDiskResourceRequirements(ctx context.Context, userCred mcclient.TokenCre
 			input.Hypervisor,
 		)
 	} else {
-		quotaKey, _ = diskCreateInput2ComputeQuotaKeys(input, ownerId)
+		var err error
+		quotaKey, err = diskCreateInput2ComputeQuotaKeys(input, ownerId)
+		if err != nil {
+			return SQuota{}, errors.Wrap(err, "diskCreateInput2ComputeQuotaKeys")
+		}
 	}
 	req.SetKeys(quotaKey)
-	return req
+	return req, nil
 }
 
 func (disk *SDisk) OnMetadataUpdated(ctx context.Context, userCred mcclient.TokenCredential) {
@@ -891,7 +849,14 @@ func (manager *SDiskManager) OnCreateComplete(ctx context.Context, items []db.IM
 		log.Errorf("!!!data.Unmarshal api.DiskCreateInput fail %s", err)
 	}
 
-	pendingUsage := getDiskResourceRequirements(ctx, userCred, ownerId, input, len(items))
+	pendingUsage, err := getDiskResourceRequirements(ctx, userCred, ownerId, input, len(items))
+	if err != nil {
+		for i := range items {
+			disk := items[i].(*SDisk)
+			disk.SetStatus(ctx, userCred, api.DISK_ALLOC_FAILED, err.Error())
+		}
+		return
+	}
 	parentTaskId, _ := data[0].GetString("parent_task_id")
 	RunBatchCreateTask(ctx, items, userCred, data, pendingUsage, SRegionQuota{}, "DiskBatchCreateTask", parentTaskId)
 }
@@ -928,14 +893,19 @@ func (self *SDisk) GetSnapshotFuseUrl() (string, error) {
 
 func (self *SDisk) GetSnapshotCount() (int, error) {
 	q := SnapshotManager.Query()
-	return q.Filter(sqlchemy.AND(sqlchemy.Equals(q.Field("disk_id"), self.Id),
-		sqlchemy.Equals(q.Field("fake_deleted"), false))).CountWithError()
+	return q.Filter(sqlchemy.Equals(q.Field("disk_id"), self.Id)).CountWithError()
 }
 
 func (self *SDisk) GetManualSnapshotCount() (int, error) {
 	return SnapshotManager.Query().
-		Equals("disk_id", self.Id).Equals("fake_deleted", false).
+		Equals("disk_id", self.Id).
 		Equals("created_by", api.SNAPSHOT_MANUAL).CountWithError()
+}
+
+func (self *SDisk) GetAutoSnapshotCount() (int, error) {
+	return SnapshotManager.Query().
+		Equals("disk_id", self.Id).
+		Equals("created_by", api.SNAPSHOT_AUTO).CountWithError()
 }
 
 func (self *SDisk) getDiskAllocateFromBackupInput(ctx context.Context, backupId string) (*api.DiskAllocateFromBackupInput, error) {
@@ -955,9 +925,10 @@ func (self *SDisk) getDiskAllocateFromBackupInput(ctx context.Context, backupId 
 	return &api.DiskAllocateFromBackupInput{
 		BackupId:                backupId,
 		BackupStorageId:         bs.GetId(),
-		BackupStorageAccessInfo: jsonutils.Marshal(accessInfo).(*jsonutils.JSONDict),
+		BackupStorageAccessInfo: accessInfo,
 		DiskConfig:              &backup.DiskConfig.DiskConfig,
 		BackupAsTar:             backup.DiskConfig.BackupAsTar,
+		BackupFilePath:          backup.BackupFilePath,
 	}, nil
 }
 
@@ -1020,36 +991,6 @@ func (self *SDisk) StartAllocate(ctx context.Context, host *SHost, storage *SSto
 		return driver.RequestRebuildDiskOnStorage(ctx, host, storage, self, task, input)
 	}
 	return driver.RequestAllocateDiskOnStorage(ctx, userCred, host, storage, self, task, input)
-}
-
-// make snapshot after reset out of chain
-func (self *SDisk) CleanUpDiskSnapshots(ctx context.Context, userCred mcclient.TokenCredential, snapshot *SSnapshot) error {
-	dest := make([]SSnapshot, 0)
-	query := SnapshotManager.Query()
-	query.Filter(sqlchemy.Equals(query.Field("disk_id"), self.Id)).
-		GT("created_at", snapshot.CreatedAt).Asc("created_at").All(&dest)
-	if len(dest) == 0 {
-		return nil
-	}
-	convertSnapshots := jsonutils.NewArray()
-	deleteSnapshots := jsonutils.NewArray()
-	for i := 0; i < len(dest); i++ {
-		if !dest[i].FakeDeleted && !dest[i].OutOfChain {
-			convertSnapshots.Add(jsonutils.NewString(dest[i].Id))
-		} else if dest[i].FakeDeleted {
-			deleteSnapshots.Add(jsonutils.NewString(dest[i].Id))
-		}
-	}
-	params := jsonutils.NewDict()
-	params.Set("convert_snapshots", convertSnapshots)
-	params.Set("delete_snapshots", deleteSnapshots)
-	task, err := taskman.TaskManager.NewTask(ctx, "DiskCleanUpSnapshotsTask", self, userCred, params, "", "", nil)
-	if err != nil {
-		return err
-	} else {
-		task.ScheduleRun(nil)
-	}
-	return nil
 }
 
 func (self *SDisk) PerformDiskReset(ctx context.Context, userCred mcclient.TokenCredential, query jsonutils.JSONObject, input *api.DiskResetInput) (jsonutils.JSONObject, error) {
@@ -2428,11 +2369,14 @@ func (self *SDisk) fetchDiskInfo(diskConfig *api.DiskConfig) error {
 		self.Nonpersistent = true
 	} else {
 		if len(self.DiskType) == 0 {
-			diskType := api.DISK_TYPE_DATA
-			if diskConfig.DiskType == api.DISK_TYPE_VOLUME {
-				diskType = api.DISK_TYPE_VOLUME
+			// 无镜像的空白盘（如 pod rootfs）也要尊重传入的 disk_type；
+			// 否则只能依赖 ImageId 才能标成 sys，pod 两块盘都会变成 data。
+			switch diskConfig.DiskType {
+			case api.DISK_TYPE_SYS, api.DISK_TYPE_DATA, api.DISK_TYPE_VOLUME:
+				self.DiskType = diskConfig.DiskType
+			default:
+				self.DiskType = api.DISK_TYPE_DATA
 			}
-			self.DiskType = diskType
 		}
 		self.Nonpersistent = false
 	}
@@ -3053,6 +2997,19 @@ func (manager *SDiskManager) AutoDiskSnapshot(ctx context.Context, userCred mccl
 			log.Errorf("get disk error: %v", err)
 			continue
 		}
+		snapCnt, err := disk.GetAutoSnapshotCount()
+		if err != nil {
+			log.Errorf("failed get snapshot count: %v", err)
+			continue
+		}
+		if snapCnt > options.Options.RetentionCountLimit {
+			msg := fmt.Sprintf("disk %s auto snapshot count %d more than retention count limit %d", disk.GetId(), snapCnt, options.Options.RetentionCountLimit)
+			log.Errorf("auto snapshot %s error: %v", disk.Name, msg)
+			db.OpsLog.LogEvent(disk, db.ACT_DISK_AUTO_SNAPSHOT_FAIL, msg, userCred)
+			notifyclient.NotifySystemErrorWithCtx(ctx, disk.Id, disk.Name, db.ACT_DISK_AUTO_SNAPSHOT_FAIL, msg)
+			continue
+		}
+
 		if guest := disk.GetGuest(); guest != nil {
 			if dps, ok := guestDps[guest.Id]; ok {
 				guestDps[guest.Id] = append(dps, disks[i])
@@ -3136,12 +3093,6 @@ func (self *SDisk) CreateSnapshotAuto(
 
 	// inherit encrypt_key_id
 	snapshot.EncryptKeyId = self.EncryptKeyId
-
-	driver, err := storage.GetRegionDriver()
-	if err != nil {
-		return nil, errors.Wrapf(err, "GetRegionDriver")
-	}
-	snapshot.OutOfChain = driver.SnapshotIsOutOfChain(self)
 	snapshot.VirtualSize = self.DiskSize
 	snapshot.DiskType = self.DiskType
 	snapshot.Location = ""
@@ -3253,7 +3204,7 @@ func (self *SDisk) UpdataSnapshotsBackingDisk(backingDiskId string) error {
 func (self *SDisk) GetSnapshotsNotInInstanceSnapshot() ([]SSnapshot, error) {
 	snapshots := make([]SSnapshot, 0)
 	sq := InstanceSnapshotJointManager.Query("snapshot_id").SubQuery()
-	q := SnapshotManager.Query().IsFalse("fake_deleted").Equals("disk_id", self.Id)
+	q := SnapshotManager.Query().Equals("disk_id", self.Id)
 	q = q.LeftJoin(sq, sqlchemy.Equals(q.Field("id"), sq.Field("snapshot_id"))).
 		Filter(sqlchemy.IsNull(sq.Field("snapshot_id")))
 	err := db.FetchModelObjects(SnapshotManager, q, &snapshots)

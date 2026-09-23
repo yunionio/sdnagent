@@ -42,7 +42,7 @@ func (el *Vpc) Copy() *Vpc {
 type RouteTable struct {
 	compute_models.SRouteTable
 
-	Vpc *Vpc
+	Vpc *Vpc `json:"-"`
 }
 
 func (el *RouteTable) Copy() *RouteTable {
@@ -54,7 +54,7 @@ func (el *RouteTable) Copy() *RouteTable {
 type Wire struct {
 	compute_models.SWire
 
-	Vpc *Vpc
+	Vpc *Vpc `json:"-"`
 }
 
 func (el *Wire) Copy() *Wire {
@@ -65,6 +65,8 @@ func (el *Wire) Copy() *Wire {
 
 type Network struct {
 	compute_models.SNetwork
+
+	Routes [][]string `json:"routes"`
 
 	Vpc                  *Vpc                 `json:"-"`
 	Wire                 *Wire                `json:"-"`
@@ -77,6 +79,7 @@ type Network struct {
 func (el *Network) Copy() *Network {
 	return &Network{
 		SNetwork: el.SNetwork,
+		Routes:   el.Routes,
 	}
 }
 
@@ -260,7 +263,7 @@ func (el *Elasticip) Copy() *Elasticip {
 type DnsRecord struct {
 	compute_models.SDnsRecord
 
-	DnsZone *DnsZone
+	DnsZone *DnsZone `json:"-"`
 }
 
 func (el *DnsRecord) Copy() *DnsRecord {
@@ -272,7 +275,7 @@ func (el *DnsRecord) Copy() *DnsRecord {
 type DnsZone struct {
 	compute_models.SDnsZone
 
-	Records DnsRecords
+	Records DnsRecords `json:"-"`
 }
 
 func (el *DnsZone) Copy() *DnsZone {
