@@ -461,6 +461,7 @@ func FetchServerCreateInputByJSON(obj jsonutils.JSONObject) (*compute.ServerCrea
 		input.SecgroupId = secgroup
 	}
 	input.Secgroups, _ = jsonutils.GetStringArray(obj, "secgroups")
+	input.NetworkTags, _ = jsonutils.GetStringArray(obj, "network_tags")
 
 	return input, nil
 }
@@ -475,6 +476,9 @@ func FetchDiskCreateInputByJSON(data jsonutils.JSONObject) (*compute.DiskCreateI
 	}
 	if data.Contains("disk") {
 		desc, err := data.GetString("disk")
+		if err != nil {
+			return nil, err
+		}
 		config, err = ParseDiskConfig(desc, -1)
 		if err != nil {
 			return nil, err
