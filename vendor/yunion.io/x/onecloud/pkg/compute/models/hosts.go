@@ -26,6 +26,7 @@ import (
 	"strings"
 	"sync"
 	"time"
+	"yunion.io/x/onecloud/pkg/compute/sshkeys"
 
 	"golang.org/x/sync/errgroup"
 	v1 "k8s.io/api/core/v1"
@@ -280,7 +281,11 @@ func (manager *SHostManager) ListItemFilter(
 	}
 
 	if len(query.AnyMac) > 0 {
-		anyMac := netutils.FormatMacAddr(query.AnyMac)
+		anyMacI, err := net.ParseMAC(query.AnyMac)
+		if err != nil {
+			return nil, errors.Wrapf(httperrors.ErrInputParameter, "invalid any_mac address %s: %s", query.AnyMac, err)
+		}
+		anyMac := anyMacI.String()
 		if len(anyMac) == 0 {
 			return nil, errors.Wrapf(httperrors.ErrInputParameter, "invalid any_mac address %s", query.AnyMac)
 		}
@@ -817,14 +822,14 @@ func (manager *SHostManager) OrderByExtraFields(
 				true,
 			),
 			sqlchemy.SUB("host_mem_size", host.Field("mem_size"), host.Field("mem_reserved")),
-		).LeftJoin(host, sqlchemy.Equals(guestSQ.Field("host_id"), host.Field("id"))).GroupBy(guestSQ.Field("host_id")).SubQuery()
+		).LeftJoin(host, sqlchemy.Equals(guestSQ.Field("host_id"), host.Field("id"))).SubQuery()
 
 		vsq := vq.Query(
 			vq.Field("host_id"),
 			sqlchemy.DIV("virtual_mem_usage", vq.Field("mem_commit"), sqlchemy.DIV("cmt_mem_size", vq.Field("mem_cmtbound"), vq.Field("host_mem_size"))),
 		)
 
-		vqq := vsq.GroupBy(vsq.Field("host_id")).SubQuery()
+		vqq := vsq.SubQuery()
 
 		q = q.LeftJoin(vqq, sqlchemy.Equals(q.Field("id"), vqq.Field("host_id")))
 
@@ -857,14 +862,14 @@ func (manager *SHostManager) OrderByExtraFields(
 				true,
 			),
 			sqlchemy.SUB("host_cpu_size", host.Field("cpu_count"), host.Field("cpu_reserved")),
-		).LeftJoin(host, sqlchemy.Equals(guestSQ.Field("host_id"), host.Field("id"))).GroupBy(guestSQ.Field("host_id")).SubQuery()
+		).LeftJoin(host, sqlchemy.Equals(guestSQ.Field("host_id"), host.Field("id"))).SubQuery()
 
 		vsq := vq.Query(
 			vq.Field("host_id"),
 			sqlchemy.DIV("virtual_cpu_usage", vq.Field("cpu_commit"), sqlchemy.DIV("cmt_cpu_size", vq.Field("cpu_cmtbound"), vq.Field("host_cpu_size"))),
 		)
 
-		vqq := vsq.GroupBy(vsq.Field("host_id")).SubQuery()
+		vqq := vsq.SubQuery()
 
 		q = q.LeftJoin(vqq, sqlchemy.Equals(q.Field("id"), vqq.Field("host_id")))
 
@@ -1443,17 +1448,35 @@ func (hh *SHostManager) GetPropertyK8sMasterNodeIps(ctx context.Context, userCre
 	if err != nil {
 		return nil, errors.Wrap(err, "list master nodes")
 	}
-	ips := make([]string, 0)
+	ips := map[string]struct{}{}
 	for i := range nodes.Items {
 		for j := range nodes.Items[i].Status.Addresses {
 			if nodes.Items[i].Status.Addresses[j].Type == v1.NodeInternalIP {
-				ips = append(ips, nodes.Items[i].Status.Addresses[j].Address)
+				ips[nodes.Items[i].Status.Addresses[j].Address] = struct{}{}
 			}
 		}
 	}
 	log.Infof("k8s master nodes ips %v", ips)
+	if jsonutils.QueryBoolean(query, "kvm_hosts", false) {
+		hostq := hh.Query("access_ip")
+		hostq = hostq.In("host_type", []string{api.HOST_TYPE_HYPERVISOR, api.HOST_TYPE_KVM, api.HOST_TYPE_CONTAINER})
+		type HostIp struct {
+			AccessIp string
+		}
+		hostIps := make([]HostIp, 0)
+		if err := hostq.All(&hostIps); err != nil && err != sql.ErrNoRows {
+			return nil, err
+		}
+		for i := range hostIps {
+			ips[hostIps[i].AccessIp] = struct{}{}
+		}
+	}
+	ipArr := make([]string, 0, len(ips))
+	for k := range ips {
+		ipArr = append(ipArr, k)
+	}
 	res := jsonutils.NewDict()
-	res.Set("ips", jsonutils.Marshal(ips))
+	res.Set("ips", jsonutils.Marshal(ipArr))
 	return res, nil
 }
 
@@ -1759,6 +1782,15 @@ func (cap *SStorageCapacity) toCapacityInfo() api.SStorageCapacityInfo {
 	info.CommitRate = cap.GetCommitRate()
 	info.FreeCapacity = cap.GetFree()
 	return info
+}
+
+func (hh *SHost) GetBmAttachedLocalStorageCapacity() SStorageCapacity {
+	ret := SStorageCapacity{}
+	storages := hh._getAttachedStorages(tristate.True, tristate.True, api.HOST_STORAGE_LOCAL_TYPES)
+	for _, s := range storages {
+		ret.Add(s.getStorageCapacity())
+	}
+	return ret
 }
 
 func (hh *SHost) GetAttachedLocalStorageCapacity() SStorageCapacity {
@@ -3307,6 +3339,23 @@ func (hh *SHost) SyncHostVMs(ctx context.Context, userCred mcclient.TokenCredent
 
 func (hh *SHost) getNetworkOfIPOnHost(ctx context.Context, ipAddr string) (*SNetwork, error) {
 	netInterfaces := hh.GetHostNetInterfaces()
+	// VMware: only associate networks under wires of the same manager_id
+	if hh.HostType == api.HOST_TYPE_ESXI {
+		if len(hh.ManagerId) == 0 {
+			return nil, fmt.Errorf("ESXi host %s has empty manager_id, cannot resolve network for IP %s", hh.Id, ipAddr)
+		}
+		for _, netInterface := range netInterfaces {
+			wire := netInterface.GetWire()
+			if wire == nil || wire.ManagerId != hh.ManagerId {
+				continue
+			}
+			network, err := netInterface.GetCandidateNetworkForIp(ctx, nil, nil, rbacscope.ScopeNone, ipAddr)
+			if err == nil && network != nil {
+				return network, nil
+			}
+		}
+		return nil, fmt.Errorf("IP %s not reachable on ESXi host %s under manager %s", ipAddr, hh.Id, hh.ManagerId)
+	}
 	for _, netInterface := range netInterfaces {
 		network, err := netInterface.GetCandidateNetworkForIp(ctx, nil, nil, rbacscope.ScopeNone, ipAddr)
 		if err == nil && network != nil {
@@ -3526,13 +3575,13 @@ func (manager *SHostManager) totalCountQ(
 
 	q = db.ObjectIdQueryWithPolicyResult(ctx, q, HostManager, policyResult)
 
-	isolatedDevices := IsolatedDeviceManager.Query().SubQuery()
+	isolatedDevices := IsolatedDeviceManager.queryWithoutGuest(IsolatedDeviceManager.Query()).SubQuery()
 	iq := isolatedDevices.Query(
 		isolatedDevices.Field("host_id"),
 		sqlchemy.SUM("isolated_reserved_memory", isolatedDevices.Field("reserved_memory")),
 		sqlchemy.SUM("isolated_reserved_cpu", isolatedDevices.Field("reserved_cpu")),
 		sqlchemy.SUM("isolated_reserved_storage", isolatedDevices.Field("reserved_storage")),
-	).IsNullOrEmpty("guest_id").GroupBy(isolatedDevices.Field("host_id")).SubQuery()
+	).GroupBy(isolatedDevices.Field("host_id")).SubQuery()
 	q = q.LeftJoin(iq, sqlchemy.Equals(q.Field("id"), iq.Field("host_id")))
 	q.AppendField(
 		iq.Field("isolated_reserved_memory"),
@@ -4110,7 +4159,25 @@ func (hh *SHost) GetDevsReservedResource(devs []SIsolatedDevice) *api.IsolatedDe
 		ReservedCpu:     &reservedCpu,
 	}
 	for _, dev := range devs {
-		if !utils.IsInStringArray(dev.DevType, api.VALID_GPU_TYPES) {
+		if !dev.IsKvmExclusiveGPU() {
+			continue
+		}
+		reservedCpu += dev.ReservedCpu
+		reservedMem += dev.ReservedMemory
+		reservedStorage += dev.ReservedStorage
+	}
+	return &reservedResourceForGpu
+}
+
+func (hh *SHost) GetDevsReservedResourceByDevStats(devs []IsolatedDeviceAllocateStat) *api.IsolatedDeviceReservedResourceInput {
+	reservedCpu, reservedMem, reservedStorage := 0, 0, 0
+	reservedResourceForGpu := api.IsolatedDeviceReservedResourceInput{
+		ReservedStorage: &reservedStorage,
+		ReservedMemory:  &reservedMem,
+		ReservedCpu:     &reservedCpu,
+	}
+	for _, dev := range devs {
+		if !dev.IsKvmExclusiveGPU() {
 			continue
 		}
 		reservedCpu += dev.ReservedCpu
@@ -4419,6 +4486,19 @@ func (hh *SHost) GetDetailsIpmi(ctx context.Context, userCred mcclient.TokenCred
 		return nil, err
 	}
 	ret.Set("password", jsonutils.NewString(descryptedPassword))
+	return ret, nil
+}
+
+func (hh *SHost) GetDetailsGuestIsolatedDevicesInitialized(ctx context.Context, userCred mcclient.TokenCredential, query jsonutils.JSONObject) (jsonutils.JSONObject, error) {
+	inited, err := IsolatedDeviceManager.isInitializeDataDone()
+	if err != nil {
+		return nil, err
+	}
+	if !inited {
+		return nil, httperrors.NewResourceNotReadyError("isolated device not isitialized")
+	}
+	ret := jsonutils.NewDict()
+	ret.Set("initialized", jsonutils.NewString("ok"))
 	return ret, nil
 }
 
@@ -5045,6 +5125,9 @@ func fetchIpmiInfo(data api.HostIpmiAttributes, hostId string) (types.SIPMIInfo,
 	}
 	if data.IpmiLanChannel != nil {
 		info.LanChannel = *data.IpmiLanChannel
+	}
+	if data.IpmiCipherSuite != nil {
+		info.CipherSuite = *data.IpmiCipherSuite
 	}
 	if data.IpmiVerified != nil {
 		info.Verified = *data.IpmiVerified
@@ -5731,6 +5814,32 @@ func (hm *SHostManager) PerformValidateIpmi(ctx context.Context, userCred mcclie
 	return out, nil
 }
 
+func (hh *SHost) CreateFakeBaremetalServer(ctx context.Context, userCred mcclient.TokenCredential, serverName string, ownerId mcclient.IIdentityProvider) error {
+	guest := &SGuest{}
+	name, err := db.GenerateName(ctx, GuestManager, nil, serverName)
+	if err != nil {
+		return httperrors.NewInternalServerError("generate name failed %s", err)
+	}
+	guest.Name = name
+	guest.VmemSize = hh.MemSize
+	guest.VcpuCount = hh.CpuCount
+	guest.DisableDelete = tristate.True
+	guest.Hypervisor = api.HYPERVISOR_BAREMETAL
+	guest.HostId = hh.Id
+	guest.ProjectId = ownerId.GetProjectId()
+	guest.DomainId = ownerId.GetProjectDomainId()
+	guest.Status = api.VM_RUNNING
+	guest.PowerStates = api.VM_POWER_STATES_ON
+	guest.OsType = "Linux"
+	guest.SetModelManager(GuestManager, guest)
+	err = GuestManager.TableSpec().Insert(ctx, guest)
+	if err != nil {
+		return httperrors.NewInternalServerError("Guest create error: %s", err)
+	}
+
+	return guest.fixFakeServerCreateFromBmImport(ctx, userCred)
+}
+
 func (hh *SHost) PerformInitialize(
 	ctx context.Context, userCred mcclient.TokenCredential,
 	query jsonutils.JSONObject, data jsonutils.JSONObject,
@@ -5745,51 +5854,115 @@ func (hh *SHost) PerformInitialize(
 	if err != nil || hh.GetBaremetalServer() != nil {
 		return nil, nil
 	}
-	err = db.NewNameValidator(ctx, GuestManager, userCred, name, nil)
-	if err != nil {
-		return nil, err
+	if len(name) == 0 {
+		name = hh.Name + "-server"
 	}
 
 	if hh.IpmiInfo == nil || !hh.IpmiInfo.Contains("ip_addr") ||
 		!hh.IpmiInfo.Contains("password") {
 		return nil, httperrors.NewBadRequestError("IPMI infomation not configured")
 	}
-	guest := &SGuest{}
-	guest.Name = name
-	guest.VmemSize = hh.MemSize
-	guest.VcpuCount = hh.CpuCount
-	guest.DisableDelete = tristate.True
-	guest.Hypervisor = api.HYPERVISOR_BAREMETAL
-	guest.HostId = hh.Id
-	guest.ProjectId = userCred.GetProjectId()
-	guest.DomainId = userCred.GetProjectDomainId()
-	guest.Status = api.VM_RUNNING
-	guest.PowerStates = api.VM_POWER_STATES_ON
-	guest.OsType = "Linux"
-	guest.SetModelManager(GuestManager, guest)
-	err = GuestManager.TableSpec().Insert(ctx, guest)
-	if err != nil {
-		return nil, httperrors.NewInternalServerError("Guest Insert error: %s", err)
+	if err := hh.CreateFakeBaremetalServer(ctx, userCred, name, userCred); err != nil {
+		log.Errorf("CreateFakeBaremetalServer failed %s", err)
 	}
-	guest.SetAllMetadata(ctx, map[string]interface{}{
-		"is_fake_baremetal_server": true, "host_ip": hh.AccessIp}, userCred)
 
-	caps := hh.GetAttachedLocalStorageCapacity()
-	diskConfig := &api.DiskConfig{SizeMb: int(caps.GetFree())}
-	err = guest.CreateDisksOnHost(ctx, userCred, hh, []*api.DiskConfig{diskConfig}, nil, true, true, nil, nil, true)
-	if err != nil {
-		log.Errorf("Host perform initialize failed on create disk %s", err)
+	return nil, nil
+}
+
+func (hh *SHost) PerformCreateFromImportBaremetal(
+	ctx context.Context, userCred mcclient.TokenCredential,
+	query jsonutils.JSONObject, data jsonutils.JSONObject,
+) (jsonutils.JSONObject, error) {
+	if !hh.IsImport {
+		return nil, httperrors.NewBadRequestError("Is not import host")
 	}
-	net, err := hh.getNetworkOfIPOnHost(ctx, hh.AccessIp)
+	ownerId, err := GuestManager.FetchOwnerId(ctx, data)
 	if err != nil {
-		log.Errorf("host perfrom initialize failed fetch net of access ip %s", err)
-	} else {
-		if options.Options.BaremetalServerReuseHostIp {
-			_, err = guest.attach2NetworkDesc(ctx, userCred, hh, &api.NetworkConfig{Network: net.Id}, nil, nil)
-			if err != nil {
-				log.Errorf("host perform initialize failed on attach network %s", err)
-			}
+		return nil, err
+	}
+	if ownerId == nil {
+		ownerId = userCred
+	}
+	name, err := data.GetString("name")
+	if err != nil {
+		return nil, httperrors.NewMissingParameterError("name")
+	}
+	if hh.GetBaremetalServer() != nil {
+		return nil, httperrors.NewInsufficientResourceError("host allocated")
+	}
+	if len(name) == 0 {
+		name = hh.Name + "-server"
+	}
+	if err := hh.CreateFakeBaremetalServer(ctx, userCred, name, ownerId); err != nil {
+		return nil, errors.Wrap(err, "CreateFakeBaremetalServer")
+	}
+	guest := hh.GetBaremetalServer()
+	if guest == nil {
+		return nil, errors.Errorf("failed get guest")
+	}
+	params := jsonutils.NewDict()
+	params.Set("restart", jsonutils.JSONTrue)
+	params.Set("fake_create_from_bm_import", jsonutils.JSONTrue)
+	return nil, guest.StartGuestDeployTask(ctx, userCred, params, "create", "")
+}
+
+func (hh *SHost) PerformAttachIsolatedDevices(
+	ctx context.Context, userCred mcclient.TokenCredential,
+	query jsonutils.JSONObject, data jsonutils.JSONObject,
+) (jsonutils.JSONObject, error) {
+	if hh.HostType != api.HOST_TYPE_BAREMETAL {
+		return nil, httperrors.NewBadRequestError("Not support host type %s", hh.HostType)
+	}
+	guest := hh.GetBaremetalServer()
+	if guest == nil {
+		return nil, httperrors.NewBadRequestError("baremetal not created")
+	}
+	devs, err := hh.GetIsolateDevices()
+	if err != nil {
+		return nil, errors.Wrap(err, "GetIsolateDevices")
+	}
+	for i := range devs {
+		if devs[i].IsFull() {
+			continue
 		}
+		if err := guest.attachIsolatedDevice(ctx, userCred, &devs[i], nil, nil, nil, ""); err != nil {
+			return nil, errors.Wrap(err, "attachIsolatedDevice")
+		}
+	}
+	return nil, nil
+}
+
+func (hh *SHost) PerformBaremetalProbeIsolatedDevices(
+	ctx context.Context, userCred mcclient.TokenCredential,
+	query jsonutils.JSONObject, data jsonutils.JSONObject,
+) (jsonutils.JSONObject, error) {
+	if hh.HostType != api.HOST_TYPE_BAREMETAL {
+		return nil, httperrors.NewBadRequestError("Not support host type %s", hh.HostType)
+	}
+	guest := hh.GetBaremetalServer()
+	if guest == nil {
+		return nil, httperrors.NewBadRequestError("baremetal not created")
+	}
+	username := "cloudroot"
+	accessIp := hh.AccessIp
+	private1, _, err := sshkeys.GetSshProjectKeypair(ctx, guest.ProjectId)
+	if err != nil {
+		return nil, errors.Wrap(err, "GetSshProjectKeypair")
+	}
+	private, _, err := sshkeys.GetSshAdminKeypair(ctx)
+	if err != nil {
+		return nil, errors.Wrap(err, "GetSshAdminKeypair")
+	}
+	privateKyes := append(private, private1...)
+	params := jsonutils.NewDict()
+	params.Set("access_ip", jsonutils.NewString(accessIp))
+	params.Set("username", jsonutils.NewString(username))
+	params.Set("private_key", jsonutils.NewStringArray(privateKyes))
+	url := fmt.Sprintf("/baremetals/%s/probe-isolated-devices", hh.Id)
+	header := mcclient.GetTokenHeaders(userCred)
+	_, err = hh.BaremetalSyncRequest(ctx, "POST", url, header, params)
+	if err != nil {
+		return nil, errors.Wrap(err, "BaremetalSyncRequest")
 	}
 	return nil, nil
 }
@@ -6915,14 +7088,24 @@ func (host *SHost) SyncHostExternalNics(ctx context.Context, userCred mcclient.T
 						enables = append(enables, extNics[j])
 					}
 				} else {
-					wireId := ""
-					extWire := extNics[j].GetIWire()
-					if extWire != nil {
-						wire, err := WireManager.FetchWireByExternalId(provider.Id, extWire.GetGlobalId())
-						if err != nil {
-							result.AddError(err)
+					wireId := netIfs[i].WireId
+					ipAddr := extNics[j].GetIpAddr()
+					// Proxmox only associates to on-premise wires; do not sync remote L2 wire ids
+					if provider.Provider != api.CLOUD_PROVIDER_PROXMOX {
+						extWire := extNics[j].GetIWire()
+						if extWire != nil {
+							wire, err := WireManager.FetchWireByExternalId(provider.Id, extWire.GetGlobalId())
+							if err != nil {
+								result.AddError(err)
+							} else {
+								wireId = wire.Id
+							}
 						} else {
-							wireId = wire.Id
+							wireId = ""
+						}
+					} else if len(ipAddr) > 0 {
+						if ipWire, werr := WireManager.GetOnPremiseWireOfIp(ipAddr); werr == nil {
+							wireId = ipWire.Id
 						}
 					}
 					// in sync, sync interface and bridge
@@ -7007,7 +7190,25 @@ func (host *SHost) SyncHostExternalNics(ctx context.Context, userCred mcclient.T
 		netif := host.GetNetInterface(enables[i].GetMac(), enables[i].GetVlanId())
 		// always true reserved address pool
 		log.Debugf("enable netif %s", enables[i].GetMac())
-		err = host.EnableNetif(ctx, userCred, netif, "", enables[i].GetIpAddr(), "", "", "", true, true, false, false)
+		ipAddr := enables[i].GetIpAddr()
+		if provider.Provider == api.CLOUD_PROVIDER_PROXMOX && len(ipAddr) > 0 {
+			ipWire, werr := WireManager.GetOnPremiseWireOfIp(ipAddr)
+			if werr != nil {
+				result.AddError(werr)
+				continue
+			}
+			if netif.WireId != ipWire.Id {
+				_, err := db.Update(netif, func() error {
+					netif.WireId = ipWire.Id
+					return nil
+				})
+				if err != nil {
+					result.AddError(err)
+					continue
+				}
+			}
+		}
+		err = host.EnableNetif(ctx, userCred, netif, "", ipAddr, "", "", "", true, true, false, false)
 		if err != nil {
 			result.AddError(err)
 		} else {
@@ -7029,16 +7230,21 @@ func (host *SHost) SyncHostExternalNics(ctx context.Context, userCred mcclient.T
 			strBridge = &bridge
 		}
 		wireId := ""
-		extWire := extNic.GetIWire()
-		if extWire != nil {
-			wire, err := WireManager.FetchWireByExternalId(provider.Id, extWire.GetGlobalId())
-			if err != nil {
-				result.AddError(err)
-			} else {
-				wireId = wire.Id
+		ipAddr := extNic.GetIpAddr()
+		// Proxmox does not sync remote L2 wires; leave wireId empty so addNetif
+		// resolves the on-premise wire via GetOnPremiseWireOfIp.
+		if provider.Provider != api.CLOUD_PROVIDER_PROXMOX {
+			extWire := extNic.GetIWire()
+			if extWire != nil {
+				wire, err := WireManager.FetchWireByExternalId(provider.Id, extWire.GetGlobalId())
+				if err != nil {
+					result.AddError(err)
+				} else {
+					wireId = wire.Id
+				}
 			}
 		}
-		err = host.addNetif(ctx, userCred, extNic.GetMac(), extNic.GetVlanId(), wireId, extNic.GetIpAddr(), "", 0,
+		err = host.addNetif(ctx, userCred, extNic.GetMac(), extNic.GetVlanId(), wireId, ipAddr, "", 0,
 			compute.TNicType(extNic.GetNicType()), int(extNic.GetIndex()),
 			extNic.IsLinkUp(), int16(extNic.GetMtu()), false, strNetIf, strBridge, true, true, false, false)
 		if err != nil {
@@ -7335,6 +7541,10 @@ func (host *SHost) RemoteHealthStatus(ctx context.Context) string {
 }
 
 func (host *SHost) GetHostnameByName() string {
+	if host.Hostname != "" {
+		return host.Hostname
+	}
+
 	hostname := host.Name
 	accessIp := strings.Replace(host.AccessIp, ".", "-", -1)
 	if strings.HasSuffix(host.Name, "-"+accessIp) {
@@ -7619,7 +7829,10 @@ func (hh *SHost) GetDetailsJnlp(ctx context.Context, userCred mcclient.TokenCred
 
 func (hh *SHost) PerformInsertIso(ctx context.Context, userCred mcclient.TokenCredential, query jsonutils.JSONObject, data jsonutils.JSONObject) (jsonutils.JSONObject, error) {
 	if utils.IsInStringArray(hh.Status, []string{api.BAREMETAL_READY, api.BAREMETAL_RUNNING}) {
-		imageStr, err := data.GetString("image")
+		imageStr, _ := data.GetString("image")
+		if len(imageStr) == 0 {
+			return nil, httperrors.NewInputParameterError("missing image")
+		}
 		image, err := CachedimageManager.getImageInfo(ctx, userCred, imageStr, false)
 		if err != nil {
 			if err == sql.ErrNoRows {
@@ -8202,10 +8415,10 @@ func (h *SHost) GetDetailsApiStats(ctx context.Context, userCred mcclient.TokenC
 }
 
 func (hh *SHost) GetDetailsIsolatedDeviceNumaStats(ctx context.Context, userCred mcclient.TokenCredential, input *api.HostIsolatedDeviceNumaStatsInput) (jsonutils.JSONObject, error) {
-	if !utils.IsInStringArray(input.DevType, api.VALID_PASSTHROUGH_TYPES) {
-		return nil, httperrors.NewInputParameterError("dev_type %s is invalid", input.DevType)
+	if input.Model == "" {
+		return nil, httperrors.NewMissingParameterError("model")
 	}
-	stats, err := IsolatedDeviceManager.GetHostAllocatedIsolatedDeviceNumaStats(input.DevType, hh.Id)
+	stats, err := IsolatedDeviceManager.GetHostAllocatedIsolatedDeviceNumaStats(input.Model, hh.Id)
 	if err != nil {
 		return nil, err
 	}

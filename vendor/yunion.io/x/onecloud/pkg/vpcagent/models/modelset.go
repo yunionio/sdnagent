@@ -23,7 +23,6 @@ import (
 	"yunion.io/x/onecloud/pkg/apihelper"
 	computeapis "yunion.io/x/onecloud/pkg/apis/compute"
 	"yunion.io/x/onecloud/pkg/cloudcommon/db"
-	"yunion.io/x/onecloud/pkg/compute/models"
 	mcclient_modulebase "yunion.io/x/onecloud/pkg/mcclient/modulebase"
 	mcclient_modules "yunion.io/x/onecloud/pkg/mcclient/modules/compute"
 )
@@ -61,10 +60,6 @@ func (set Vpcs) ModelManager() mcclient_modulebase.IBaseManager {
 	return &mcclient_modules.Vpcs
 }
 
-func (set Vpcs) DBModelManager() db.IModelManager {
-	return models.VpcManager
-}
-
 func (set Vpcs) NewModel() db.IModel {
 	return &Vpc{}
 }
@@ -80,6 +75,10 @@ func (set Vpcs) Copy() apihelper.IModelSet {
 		setCopy[id] = el.Copy()
 	}
 	return setCopy
+}
+
+func (set Vpcs) IncludeDetails() bool {
+	return false
 }
 
 func (set Vpcs) ModelParamFilter() jsonutils.JSONObject {
@@ -167,10 +166,6 @@ func (set Wires) ModelManager() mcclient_modulebase.IBaseManager {
 	return &mcclient_modules.Wires
 }
 
-func (set Wires) DBModelManager() db.IModelManager {
-	return models.WireManager
-}
-
 func (set Wires) NewModel() db.IModel {
 	return &Wire{}
 }
@@ -186,6 +181,10 @@ func (set Wires) Copy() apihelper.IModelSet {
 		setCopy[id] = el.Copy()
 	}
 	return setCopy
+}
+
+func (set Wires) IncludeDetails() bool {
+	return false
 }
 
 func (set Wires) IncludeEmulated() bool {
@@ -216,10 +215,6 @@ func (set Guests) ModelManager() mcclient_modulebase.IBaseManager {
 	return &mcclient_modules.Servers
 }
 
-func (set Guests) DBModelManager() db.IModelManager {
-	return models.GuestManager
-}
-
 func (set Guests) NewModel() db.IModel {
 	return &Guest{}
 }
@@ -235,6 +230,10 @@ func (set Guests) Copy() apihelper.IModelSet {
 		setCopy[id] = el.Copy()
 	}
 	return setCopy
+}
+
+func (set Guests) IncludeDetails() bool {
+	return false
 }
 
 func (set Guests) ModelParamFilter() jsonutils.JSONObject {
@@ -331,10 +330,6 @@ func (set Hosts) ModelManager() mcclient_modulebase.IBaseManager {
 	return &mcclient_modules.Hosts
 }
 
-func (set Hosts) DBModelManager() db.IModelManager {
-	return models.HostManager
-}
-
 func (set Hosts) NewModel() db.IModel {
 	return &Host{}
 }
@@ -352,6 +347,10 @@ func (set Hosts) Copy() apihelper.IModelSet {
 	return setCopy
 }
 
+func (set Hosts) IncludeDetails() bool {
+	return false
+}
+
 func (set Hosts) ModelParamFilter() jsonutils.JSONObject {
 	params := jsonutils.NewDict()
 	params.Add(jsonutils.NewString("OneCloud"), "provider")
@@ -360,10 +359,6 @@ func (set Hosts) ModelParamFilter() jsonutils.JSONObject {
 
 func (set Networks) ModelManager() mcclient_modulebase.IBaseManager {
 	return &mcclient_modules.Networks
-}
-
-func (set Networks) DBModelManager() db.IModelManager {
-	return models.NetworkManager
 }
 
 func (set Networks) ModelParamFilter() jsonutils.JSONObject {
@@ -387,6 +382,10 @@ func (set Networks) Copy() apihelper.IModelSet {
 		setCopy[id] = el.Copy()
 	}
 	return setCopy
+}
+
+func (set Networks) IncludeDetails() bool {
+	return true
 }
 
 func (ms Networks) joinGuestnetworks(subEntries Guestnetworks) bool {
@@ -484,10 +483,6 @@ func (set Guestnetworks) ModelManager() mcclient_modulebase.IBaseManager {
 	return &mcclient_modules.Servernetworks
 }
 
-func (set Guestnetworks) DBModelManager() db.IModelManager {
-	return models.GuestnetworkManager
-}
-
 func (set Guestnetworks) NewModel() db.IModel {
 	return &Guestnetwork{}
 }
@@ -504,6 +499,10 @@ func (set Guestnetworks) Copy() apihelper.IModelSet {
 		setCopy[id] = el.Copy()
 	}
 	return setCopy
+}
+
+func (set Guestnetworks) IncludeDetails() bool {
+	return false
 }
 
 func (set Guestnetworks) joinGuests(subEntries Guests) bool {
@@ -604,10 +603,6 @@ func (set Guestnetworksecgroups) ModelManager() mcclient_modulebase.IBaseManager
 	return &mcclient_modules.Servernetworksecgroups
 }
 
-func (set Guestnetworksecgroups) DBModelManager() db.IModelManager {
-	return models.GuestnetworksecgroupManager
-}
-
 func (set Guestnetworksecgroups) NewModel() db.IModel {
 	return &Guestnetworksecgroup{}
 }
@@ -626,6 +621,10 @@ func (set Guestnetworksecgroups) Copy() apihelper.IModelSet {
 	return setCopy
 }
 
+func (set Guestnetworksecgroups) IncludeDetails() bool {
+	return false
+}
+
 func (set Guestnetworksecgroups) joinSecurityGroups(subEntries SecurityGroups) bool {
 	for _, gns := range set {
 		key := gns.SecgroupId
@@ -640,10 +639,6 @@ func (set Guestnetworksecgroups) joinSecurityGroups(subEntries SecurityGroups) b
 
 func (set NetworkAddresses) ModelManager() mcclient_modulebase.IBaseManager {
 	return &mcclient_modules.NetworkAddresses
-}
-
-func (set NetworkAddresses) DBModelManager() db.IModelManager {
-	return models.NetworkAddressManager
 }
 
 func (set NetworkAddresses) NewModel() db.IModel {
@@ -663,12 +658,12 @@ func (set NetworkAddresses) Copy() apihelper.IModelSet {
 	return setCopy
 }
 
-func (set SecurityGroups) ModelManager() mcclient_modulebase.IBaseManager {
-	return &mcclient_modules.SecGroups
+func (set NetworkAddresses) IncludeDetails() bool {
+	return false
 }
 
-func (set SecurityGroups) DBModelManager() db.IModelManager {
-	return models.SecurityGroupManager
+func (set SecurityGroups) ModelManager() mcclient_modulebase.IBaseManager {
+	return &mcclient_modules.SecGroups
 }
 
 func (set SecurityGroups) NewModel() db.IModel {
@@ -686,6 +681,10 @@ func (set SecurityGroups) Copy() apihelper.IModelSet {
 		setCopy[id] = el.Copy()
 	}
 	return setCopy
+}
+
+func (set SecurityGroups) IncludeDetails() bool {
+	return false
 }
 
 func (ms SecurityGroups) joinSecurityGroupRules(subEntries SecurityGroupRules) bool {
@@ -719,10 +718,6 @@ func (set SecurityGroupRules) ModelManager() mcclient_modulebase.IBaseManager {
 	return &mcclient_modules.SecGroupRules
 }
 
-func (set SecurityGroupRules) DBModelManager() db.IModelManager {
-	return models.SecurityGroupRuleManager
-}
-
 func (set SecurityGroupRules) NewModel() db.IModel {
 	return &SecurityGroupRule{}
 }
@@ -740,12 +735,12 @@ func (set SecurityGroupRules) Copy() apihelper.IModelSet {
 	return setCopy
 }
 
-func (set Guestsecgroups) ModelManager() mcclient_modulebase.IBaseManager {
-	return &mcclient_modules.Serversecgroups
+func (set SecurityGroupRules) IncludeDetails() bool {
+	return false
 }
 
-func (set Guestsecgroups) DBModelManager() db.IModelManager {
-	return models.GuestsecgroupManager
+func (set Guestsecgroups) ModelManager() mcclient_modulebase.IBaseManager {
+	return &mcclient_modules.Serversecgroups
 }
 
 func (set Guestsecgroups) NewModel() db.IModel {
@@ -763,6 +758,10 @@ func (set Guestsecgroups) Copy() apihelper.IModelSet {
 		setCopy[id] = el.Copy()
 	}
 	return setCopy
+}
+
+func (set Guestsecgroups) IncludeDetails() bool {
+	return false
 }
 
 func (set Guestsecgroups) joinSecurityGroups(subEntries SecurityGroups) bool {
@@ -810,10 +809,6 @@ func (set Elasticips) ModelManager() mcclient_modulebase.IBaseManager {
 	return &mcclient_modules.Elasticips
 }
 
-func (set Elasticips) DBModelManager() db.IModelManager {
-	return models.ElasticipManager
-}
-
 func (set Elasticips) NewModel() db.IModel {
 	return &Elasticip{}
 }
@@ -835,12 +830,12 @@ func (set Elasticips) Copy() apihelper.IModelSet {
 	return setCopy
 }
 
-func (set DnsZones) ModelManager() mcclient_modulebase.IBaseManager {
-	return &mcclient_modules.DnsZones
+func (set Elasticips) IncludeDetails() bool {
+	return false
 }
 
-func (set DnsZones) DBModelManager() db.IModelManager {
-	return models.DnsZoneManager
+func (set DnsZones) ModelManager() mcclient_modulebase.IBaseManager {
+	return &mcclient_modules.DnsZones
 }
 
 func (set DnsZones) NewModel() db.IModel {
@@ -858,6 +853,10 @@ func (set DnsZones) Copy() apihelper.IModelSet {
 		setCopy[id] = el.Copy()
 	}
 	return setCopy
+}
+
+func (set DnsZones) IncludeDetails() bool {
+	return false
 }
 
 func (ms DnsZones) joinRecords(subEntries DnsRecords) bool {
@@ -879,10 +878,6 @@ func (set DnsRecords) ModelManager() mcclient_modulebase.IBaseManager {
 	return &mcclient_modules.DnsRecords
 }
 
-func (set DnsRecords) DBModelManager() db.IModelManager {
-	return models.DnsRecordManager
-}
-
 func (set DnsRecords) NewModel() db.IModel {
 	return &DnsRecord{}
 }
@@ -900,12 +895,12 @@ func (set DnsRecords) Copy() apihelper.IModelSet {
 	return setCopy
 }
 
-func (set RouteTables) ModelManager() mcclient_modulebase.IBaseManager {
-	return &mcclient_modules.RouteTables
+func (set DnsRecords) IncludeDetails() bool {
+	return false
 }
 
-func (set RouteTables) DBModelManager() db.IModelManager {
-	return models.RouteTableManager
+func (set RouteTables) ModelManager() mcclient_modulebase.IBaseManager {
+	return &mcclient_modules.RouteTables
 }
 
 func (set RouteTables) NewModel() db.IModel {
@@ -925,12 +920,12 @@ func (set RouteTables) Copy() apihelper.IModelSet {
 	return setCopy
 }
 
-func (set Groupguests) ModelManager() mcclient_modulebase.IBaseManager {
-	return &mcclient_modules.InstanceGroupGuests
+func (set RouteTables) IncludeDetails() bool {
+	return false
 }
 
-func (set Groupguests) DBModelManager() db.IModelManager {
-	return models.GroupguestManager
+func (set Groupguests) ModelManager() mcclient_modulebase.IBaseManager {
+	return &mcclient_modules.InstanceGroupGuests
 }
 
 func (set Groupguests) NewModel() db.IModel {
@@ -951,12 +946,12 @@ func (set Groupguests) Copy() apihelper.IModelSet {
 	return setCopy
 }
 
-func (set LoadbalancerNetworks) ModelManager() mcclient_modulebase.IBaseManager {
-	return &mcclient_modules.Loadbalancernetworks
+func (set Groupguests) IncludeDetails() bool {
+	return false
 }
 
-func (set LoadbalancerNetworks) DBModelManager() db.IModelManager {
-	return models.LoadbalancernetworkManager
+func (set LoadbalancerNetworks) ModelManager() mcclient_modulebase.IBaseManager {
+	return &mcclient_modules.Loadbalancernetworks
 }
 
 func (set LoadbalancerNetworks) NewModel() db.IModel {
@@ -977,12 +972,12 @@ func (set LoadbalancerNetworks) Copy() apihelper.IModelSet {
 	return setCopy
 }
 
-func (set Groupnetworks) ModelManager() mcclient_modulebase.IBaseManager {
-	return &mcclient_modules.InstancegroupNetworks
+func (set LoadbalancerNetworks) IncludeDetails() bool {
+	return false
 }
 
-func (set Groupnetworks) DBModelManager() db.IModelManager {
-	return models.GroupnetworkManager
+func (set Groupnetworks) ModelManager() mcclient_modulebase.IBaseManager {
+	return &mcclient_modules.InstancegroupNetworks
 }
 
 func (set Groupnetworks) NewModel() db.IModel {
@@ -1001,6 +996,10 @@ func (set Groupnetworks) Copy() apihelper.IModelSet {
 		setCopy[id] = el.Copy()
 	}
 	return setCopy
+}
+
+func (set Groupnetworks) IncludeDetails() bool {
+	return false
 }
 
 func (set Groupnetworks) joinElasticips(subEntries Elasticips) bool {
@@ -1034,10 +1033,6 @@ func (set Groups) ModelManager() mcclient_modulebase.IBaseManager {
 	return &mcclient_modules.InstanceGroups
 }
 
-func (set Groups) DBModelManager() db.IModelManager {
-	return models.GroupManager
-}
-
 func (set Groups) NewModel() db.IModel {
 	return &Group{}
 }
@@ -1053,6 +1048,10 @@ func (set Groups) Copy() apihelper.IModelSet {
 		setCopy[id] = el.Copy()
 	}
 	return setCopy
+}
+
+func (set Groups) IncludeDetails() bool {
+	return false
 }
 
 func (set Groups) joinGroupnetworks(subEntries Groupnetworks, networks Networks) bool {
@@ -1134,10 +1133,6 @@ func (set LoadbalancerListeners) ModelManager() mcclient_modulebase.IBaseManager
 	return &mcclient_modules.LoadbalancerListeners
 }
 
-func (set LoadbalancerListeners) DBModelManager() db.IModelManager {
-	return models.LoadbalancerListenerManager
-}
-
 func (set LoadbalancerListeners) NewModel() db.IModel {
 	return &LoadbalancerListener{}
 }
@@ -1153,6 +1148,10 @@ func (set LoadbalancerListeners) Copy() apihelper.IModelSet {
 		setCopy[id] = el.Copy()
 	}
 	return setCopy
+}
+
+func (set LoadbalancerListeners) IncludeDetails() bool {
+	return false
 }
 
 func (set LoadbalancerListeners) joinLoadbalancerAcls(subEntries LoadbalancerAcls) bool {
@@ -1174,10 +1173,6 @@ func (set LoadbalancerAcls) ModelManager() mcclient_modulebase.IBaseManager {
 	return &mcclient_modules.LoadbalancerAcls
 }
 
-func (set LoadbalancerAcls) DBModelManager() db.IModelManager {
-	return models.LoadbalancerAclManager
-}
-
 func (set LoadbalancerAcls) NewModel() db.IModel {
 	return &LoadbalancerAcl{}
 }
@@ -1193,4 +1188,8 @@ func (set LoadbalancerAcls) Copy() apihelper.IModelSet {
 		setCopy[id] = el.Copy()
 	}
 	return setCopy
+}
+
+func (set LoadbalancerAcls) IncludeDetails() bool {
+	return false
 }

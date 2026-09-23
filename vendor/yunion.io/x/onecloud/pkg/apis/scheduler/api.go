@@ -89,6 +89,7 @@ type ScheduleInput struct {
 	CpuMode         string `json:"cpu_mode"`
 	OsArch          string `json:"os_arch"`
 	ResetCpuNumaPin bool   `json:"reset_cpu_numa_pin"`
+	QemuVersion     string `json:"qemu_version"`
 
 	ExtraCpuCount   int           `json:"extra_cpu_count"`
 	CpuNumaPin      []SCpuNumaPin `json:"cpu_numa_pin"`
@@ -100,6 +101,8 @@ type ScheduleInput struct {
 	HostMemPageSizeKB int    `json:"host_mem_page_size"`
 	SkipKernelCheck   *bool  `json:"skip_kernel_check"`
 	TargetHostKernel  string `json:"target_host_kernel"`
+
+	FakeCreateFromBmImport bool `json:"fake_create_from_bm_import"`
 
 	// In the migrate and create backup cases
 	// we don't need reallocate network

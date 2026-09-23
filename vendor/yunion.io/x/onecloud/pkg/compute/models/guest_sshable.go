@@ -87,11 +87,20 @@ func (guest *SGuest) GetDetailsSshable(
 	if err != nil {
 		return nil, httperrors.NewInternalServerError("fetch ssh private key: %v", err)
 	}
-	tryData.PrivateKey = privateKey
-	tryData.PublicKey = publicKey
+	var sshTryErrs []error
+	for i := range privateKey {
+		tryData.PrivateKey = privateKey[i]
+		tryData.PublicKey = publicKey[i]
 
-	if err := guest.sshableTryEach(ctx, userCred, tryData); err != nil {
-		return nil, err
+		if err := guest.sshableTryEach(ctx, userCred, tryData); err != nil {
+			sshTryErrs = append(sshTryErrs, err)
+		} else {
+			sshTryErrs = nil
+			break
+		}
+	}
+	if len(sshTryErrs) > 0 {
+		return nil, errors.NewAggregate(sshTryErrs)
 	}
 
 	{
@@ -405,8 +414,14 @@ func (guest *SGuest) PerformMakeSshable(
 	if input.User == "" {
 		return output, httperrors.NewBadRequestError("missing username")
 	}
+	if !ansible.IsValidAnsibleUser(input.User) {
+		return output, httperrors.NewInputParameterError("invalid username")
+	}
 	if input.PrivateKey == "" && input.Password == "" {
 		return output, httperrors.NewBadRequestError("private_key and password cannot both be empty")
+	}
+	if strings.ContainsAny(input.Password, "\x00\r\n") {
+		return output, httperrors.NewInputParameterError("invalid password")
 	}
 
 	_, projectPublicKey, err := sshkeys.GetSshProjectKeypair(ctx, guest.ProjectId)
@@ -460,6 +475,7 @@ func (guest *SGuest) PerformMakeSshable(
 					"name=cloudroot",
 					"state=present",
 					"group=cloudroot",
+					"home=/opt/cloudroot",
 				},
 			},
 			{
@@ -467,7 +483,7 @@ func (guest *SGuest) PerformMakeSshable(
 				Args: []string{
 					"user=cloudroot",
 					"state=present",
-					fmt.Sprintf("key=%q", adminPublicKey),
+					fmt.Sprintf("key=%q", adminPublicKey[0]),
 				},
 			},
 			{
@@ -475,7 +491,7 @@ func (guest *SGuest) PerformMakeSshable(
 				Args: []string{
 					"user=cloudroot",
 					"state=present",
-					fmt.Sprintf("key=%q", projectPublicKey),
+					fmt.Sprintf("key=%q", projectPublicKey[0]),
 				},
 			},
 			{
@@ -491,12 +507,14 @@ func (guest *SGuest) PerformMakeSshable(
 		},
 	}
 	if input.PrivateKey != "" {
-		pb.PrivateKey = []byte(input.PrivateKey)
+		pb.PrivateKeys = []string{input.PrivateKey}
 	} else if input.Password != "" {
 		host.SetVar("ansible_password", input.Password)
 	}
 
-	cliSess := auth.GetSession(ctx, userCred, "")
+	// the playbook content here is server-generated; use the admin session
+	// since ansible playbook creation requires system admin privilege
+	cliSess := auth.GetAdminSession(ctx, "")
 	pbId := ""
 	pbName := "make-sshable-" + guest.Id
 	pbModel, err := ansible_modules.AnsiblePlaybooks.UpdateOrCreatePbModel(
@@ -529,8 +547,8 @@ func (guest *SGuest) GetDetailsMakeSshableCmd(
 
 	varVals := [][2]string{
 		{"user", "cloudroot"},
-		{"adminpub", strings.TrimSpace(adminPublicKey)},
-		{"projpub", strings.TrimSpace(projectPublicKey)},
+		{"adminpub", strings.TrimSpace(adminPublicKey[0])},
+		{"projpub", strings.TrimSpace(projectPublicKey[0])},
 	}
 	shellCmd := ""
 	for i := range varVals {
@@ -539,23 +557,18 @@ func (guest *SGuest) GetDetailsMakeSshableCmd(
 	}
 
 	shellCmd += `
-group="$user"
-sshdir="/home/$user/.ssh"
-keyfile="$sshdir/authorized_keys"
-`
-	shellCmd += `
-id -g "$group" &>/dev/null || groupadd "$group"
-id -u "$user"  &>/dev/null || useradd --create-home --gid "$group" "$user"
-mkdir -p "$sshdir"
-grep -q -F "$adminpub" "$keyfile" &>/dev/null || echo "$adminpub" >>"$keyfile"
-grep -q -F "$projpub" "$keyfile"  &>/dev/null || echo "$projpub" >>"$keyfile"
-chown -R "$user:$group" "$sshdir"
-chmod -R 700 "$sshdir"
-chmod -R 600 "$keyfile"
-
-if ! grep -q "^$user " /etc/sudoers; then
-  echo "$user ALL=(ALL) NOPASSWD: ALL" | EDITOR='tee -a' visudo
-fi
+sshdir=/opt/$user/.ssh
+keyfile=$sshdir/authorized_keys
+grep -q "^$user:" /etc/group || groupadd "$user"
+shell=$(command -v bash || command -v zsh || true)
+id -u "$user" >/dev/null 2>&1 || useradd ${shell:+--shell "$shell"} -d $(dirname $sshdir) --create-home -g "$user" "$user"
+install -d -m 700 -o "$user" -g "$user" "$sshdir"
+for k in "$adminpub" "$projpub"; do
+  grep -qF "$k" "$keyfile" 2>/dev/null || echo "$k" >>"$keyfile"
+done
+chown -R "$user:$user" $(dirname $sshdir)
+chmod 600 "$keyfile"
+grep -q "^$user " /etc/sudoers || echo "$user ALL=(ALL) NOPASSWD: ALL" | EDITOR='tee -a' visudo
 `
 	output = compute_api.GuestMakeSshableCmdOutput{
 		ShellCmd: shellCmd,
@@ -582,6 +595,7 @@ func (guest *SGuest) PerformSetSshport(ctx context.Context, userCred mcclient.To
 	}
 	return nil, guest.SetSshPort(ctx, userCred, input.Port)
 }
+
 func (guest *SGuest) GetDetailsSshport(
 	ctx context.Context,
 	userCred mcclient.TokenCredential,

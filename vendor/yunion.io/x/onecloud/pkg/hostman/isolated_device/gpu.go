@@ -42,6 +42,9 @@ const (
 	CLASS_CODE_3D  = "0302"
 
 	CLASS_CODE_DISP = "0380"
+
+	CLASS_CODE_ASSIST = "0b40"
+	CLASS_CODE_PA     = "1200"
 )
 
 var (
@@ -254,9 +257,9 @@ type sGPUBaseDevice struct {
 	*SBaseDevice
 }
 
-func newGPUBaseDevice(dev *PCIDevice, devType string) *sGPUBaseDevice {
+func newGPUBaseDevice(dev *PCIDevice, devType, sharingMode string) *sGPUBaseDevice {
 	return &sGPUBaseDevice{
-		SBaseDevice: NewBaseDevice(dev, devType),
+		SBaseDevice: NewBaseDevice(dev, devType, sharingMode),
 	}
 }
 
@@ -332,9 +335,9 @@ type sGPUHPCDevice struct {
 	*sGPUBaseDevice
 }
 
-func NewGPUHPCDevice(dev *PCIDevice) *sGPUHPCDevice {
+func NewGPUHPCDevice(dev *PCIDevice, sharingMode string) *sGPUHPCDevice {
 	gpuDev := &sGPUHPCDevice{
-		sGPUBaseDevice: newGPUBaseDevice(dev, api.GPU_HPC_TYPE),
+		sGPUBaseDevice: newGPUBaseDevice(dev, api.GPU_TYPE, api.DEVICE_SHARING_MODE_EXCLUSIVE),
 	}
 	return gpuDev
 }
