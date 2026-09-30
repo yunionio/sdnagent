@@ -19,6 +19,7 @@ import (
 	"fmt"
 	"net"
 	"reflect"
+	"slices"
 	"strings"
 	"time"
 
@@ -33,6 +34,7 @@ import (
 	"yunion.io/x/onecloud/pkg/mcclient/auth"
 	"yunion.io/x/onecloud/pkg/util/fileutils2"
 	"yunion.io/x/onecloud/pkg/util/netutils2"
+	"yunion.io/x/onecloud/pkg/util/ovsutils"
 )
 
 type HostConfigNetwork struct {
@@ -110,6 +112,18 @@ func NewHostConfigNetwork(network string) (*HostConfigNetwork, error) {
 
 func (hcn *HostConfigNetwork) MAC() (net.HardwareAddr, error) {
 	if (hcn.IP == nil && hcn.IPLocal == nil) || hcn.mac == nil {
+		// ensure bridge exists
+		bridges := ovsutils.GetBridges()
+		if !slices.Contains(bridges, hcn.Bridge) {
+			return nil, errors.Wrapf(errors.ErrNotFound, "bridge %s not found", hcn.Bridge)
+		}
+		if len(hcn.Ifname) > 0 {
+			// ensure nic joins bridge
+			ifaces := ovsutils.GetDbPorts(hcn.Bridge)
+			if !slices.Contains(ifaces, hcn.Ifname) {
+				return nil, errors.Wrapf(errors.ErrNotFound, "nic %s not found in bridge %s", hcn.Ifname, hcn.Bridge)
+			}
+		}
 		netif := netutils2.NewNetInterfaceWithExpectIp(hcn.Bridge, hcn.IpAddr(), hcn.Ip6Addr(), hcn.HostLocalGatewayIps())
 		if !netif.Exist() {
 			return nil, errors.Wrapf(errors.ErrNotFound, "net interface %s not found", hcn.Bridge)
@@ -118,10 +132,10 @@ func (hcn *HostConfigNetwork) MAC() (net.HardwareAddr, error) {
 		if len(netif.Addr6LinkLocal) > 0 {
 			hcn.IP6Local = net.ParseIP(netif.Addr6LinkLocal)
 		}
-		if len(netif.Addr6) > 0 {
+		if len(netif.Addr6) > 0 && hcn.IP6 == nil {
 			hcn.IP6 = net.ParseIP(netif.Addr6)
 		}
-		if len(netif.Addr) > 0 {
+		if len(netif.Addr) > 0 && hcn.IP == nil {
 			hcn.IP = net.ParseIP(netif.Addr)
 		}
 		if len(netif.Addr4LinkLocal) > 0 {
