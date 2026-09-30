@@ -152,11 +152,6 @@ const TELEGRAF_INPUT_BAREMETAL = `
 [[inputs.diskio]]
     name_prefix = "agent_"
     skip_serial_number = false
-[[inputs.sensors]]
-    name_prefix = "agent_"
-[[inputs.smart]]
-    name_prefix = "agent_"
-    use_sudo = true
 [[inputs.mem]]
     name_prefix = "agent_"
 [[inputs.processes]]
@@ -175,6 +170,16 @@ const TELEGRAF_INPUT_BAREMETAL = `
     name_prefix = "agent_"
     collect_memstats = false
 [[inputs.nvidia_smi]]
+    name_prefix = "agent_"
+[[inputs.npu_smi]]
+    name_prefix = "agent_"
+[[inputs.ixsmi]]
+    name_prefix = "agent_"
+[[inputs.ppusmi]]
+    name_prefix = "agent_"
+[[inputs.hysmi]]
+    name_prefix = "agent_"
+[[inputs.xpusmi]]
     name_prefix = "agent_"
 `
 

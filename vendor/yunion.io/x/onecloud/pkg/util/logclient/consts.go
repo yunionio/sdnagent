@@ -318,4 +318,9 @@ const (
 
 	ACT_CLONE   = "clone"
 	ACT_REBUILD = "rebuild"
+
+	ACT_REGISTER_AIPROXY   = "register_aiproxy"
+	ACT_UNREGISTER_AIPROXY = "unregister_aiproxy"
+
+	ACT_RESUME_IMPORT = "resume_import"
 )
