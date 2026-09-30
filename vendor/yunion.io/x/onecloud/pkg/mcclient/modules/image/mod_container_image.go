@@ -12,31 +12,18 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-package apimap
+package image
 
 import (
-	"yunion.io/x/jsonutils"
-
-	"yunion.io/x/onecloud/pkg/mcclient"
 	"yunion.io/x/onecloud/pkg/mcclient/modulebase"
 	"yunion.io/x/onecloud/pkg/mcclient/modules"
 )
 
-var (
-	APIMap APIMapManager
-)
+var ContainerImages modulebase.ResourceManager
 
 func init() {
-	APIMap = APIMapManager{
-		ResourceManager: modules.NewAPIMapManager("", "", nil, nil),
-	}
-}
-
-type APIMapManager struct {
-	modulebase.ResourceManager
-}
-
-func (m APIMapManager) GetVPCAgentTopo(s *mcclient.ClientSession) (jsonutils.JSONObject, error) {
-	_, ret, err := modulebase.JsonRequest(m.ResourceManager, s, "GET", "/vpcagent", nil, nil)
-	return ret, err
+	ContainerImages = modules.NewImageManager("container_image", "container_images",
+		[]string{"ID", "Name", "Image_Name", "Image_Label", "Registry_Id", "Status"},
+		[]string{})
+	modules.Register(&ContainerImages)
 }
