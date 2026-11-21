@@ -379,43 +379,51 @@ func ip6ToHex(ip6str string) string {
 	return stringutils.Bytes2Str(ip6[0:16])
 }
 
-func guestNicPortMappingFlows(nic *GuestNIC, nicPortNo int, nicIP string, nicMAC string, phyPortNo int, vlanMatch string) []*ovs.Flow {
+func guestNicPortMappingFlows(nic *GuestNIC, nicPortNo int, nicIP string, nicMAC string, phyPortNo int, vlanMatch string, stripVlan bool) []*ovs.Flow {
 	flows := make([]*ovs.Flow, 0, 128)
 	for _, pm := range nic.PortMappings {
-		flows = append(flows, eachGuestNicPortMappingFlows(pm, nicPortNo, nicIP, nicMAC, phyPortNo, vlanMatch)...)
+		flows = append(flows, eachGuestNicPortMappingFlows(pm, nicPortNo, nicIP, nicMAC, phyPortNo, vlanMatch, stripVlan)...)
 	}
 	return flows
 }
 
-func eachGuestNicPortMappingFlows(pm *compute.GuestPortMapping, nicPortNo int, nicIP string, nicMAC string, phyPortNo int, vlanMatch string) []*ovs.Flow {
+func portMappingDirectActions(learnStr string, nicPortNo int, stripVlan bool) string {
+	actions := fmt.Sprintf("learn(table=10,%s),load:0x1->NXM_NX_REG0[],load:0x%x->NXM_NX_REG1[],", learnStr, nicPortNo)
+	if stripVlan {
+		actions += "strip_vlan,"
+	}
+	return actions + "resubmit(,9)"
+}
+
+func eachGuestNicPortMappingFlows(pm *compute.GuestPortMapping, nicPortNo int, nicIP string, nicMAC string, phyPortNo int, vlanMatch string, stripVlan bool) []*ovs.Flow {
 	flows := make([]*ovs.Flow, 0, 16)
 	if len(pm.RemoteIps) == 0 {
 		pm.RemoteIps = []string{"0.0.0.0/0"}
+	}
+	protoNum := 6
+	var tpSrcField string
+	var tpDstMatch string
+	var nxmTpSrc string
+	var nxmTpDst string
+	switch pm.Protocol {
+	case "udp":
+		protoNum = 17
+		tpSrcField = "udp_src"
+		tpDstMatch = "NXM_OF_UDP_DST[]=NXM_OF_UDP_SRC[]"
+		nxmTpSrc = "NXM_OF_UDP_SRC[]"
+		nxmTpDst = "NXM_OF_UDP_DST[]"
+	default:
+		// tcp
+		protoNum = 6
+		tpSrcField = "tcp_src"
+		tpDstMatch = "NXM_OF_TCP_DST[]=NXM_OF_TCP_SRC[]"
+		nxmTpSrc = "NXM_OF_TCP_SRC[]"
+		nxmTpDst = "NXM_OF_TCP_DST[]"
 	}
 	for _, remoteNet := range pm.RemoteIps {
 		srcIpStr := ""
 		if remoteNet != "0.0.0.0/0" {
 			srcIpStr = fmt.Sprintf("nw_src=%s,", remoteNet)
-		}
-		protoNum := 6
-		var tpSrcField string
-		var tpDstMatch string
-		var nxmTpSrc string
-		var nxmTpDst string
-		switch pm.Protocol {
-		case "udp":
-			protoNum = 17
-			tpSrcField = "udp_src"
-			tpDstMatch = "NXM_OF_UDP_DST[]=NXM_OF_UDP_SRC[]"
-			nxmTpSrc = "NXM_OF_UDP_SRC[]"
-			nxmTpDst = "NXM_OF_UDP_DST[]"
-		default:
-			// tcp
-			protoNum = 6
-			tpSrcField = "tcp_src"
-			tpDstMatch = "NXM_OF_TCP_DST[]=NXM_OF_TCP_SRC[]"
-			nxmTpSrc = "NXM_OF_TCP_SRC[]"
-			nxmTpDst = "NXM_OF_TCP_DST[]"
 		}
 
 		if nicPortNo < 0 {
@@ -435,10 +443,10 @@ func eachGuestNicPortMappingFlows(pm *compute.GuestPortMapping, nicPortNo int, n
 			flows = append(flows,
 				// 外部访问的流量, 需要DNAT, reg0=1
 				// F(0, 28200, fmt.Sprintf("in_port=%d,ip,%s%s,tp_dst=%d", portNoPhy, srcIpStr, pm.Protocol, *pm.HostPort), fmt.Sprintf("learn(%s),load:0x1->NXM_NX_REG0[],mod_dl_dst:%s,mod_nw_dst:%s,mod_tp_dst:%d,resubmit(,9)", learnStr, nicMAC, nicIP, pm.Port)),
-				F(0, 28200, fmt.Sprintf("in_port=%d,ip,%s%s,tp_dst=%d", phyPortNo, srcIpStr, pm.Protocol, *pm.HostPort), fmt.Sprintf("learn(table=10,%s),load:0x1->NXM_NX_REG0[],load:0x%x->NXM_NX_REG1[],mod_dl_dst:%s,mod_nw_dst:%s,mod_tp_dst:%d,resubmit(,9)", learnStr1, nicPortNo, nicMAC, nicIP, pm.Port)),
+				F(0, 28200, fmt.Sprintf("ip,%s%s,tp_dst=%d", srcIpStr, pm.Protocol, *pm.HostPort), fmt.Sprintf("learn(table=10,%s),load:0x1->NXM_NX_REG0[],load:0x%x->NXM_NX_REG1[],mod_dl_dst:%s,mod_nw_dst:%s,mod_tp_dst:%d,resubmit(,9)", learnStr1, nicPortNo, nicMAC, nicIP, pm.Port)),
 				// 外部直接访问的流量，不需要DNAT，reg0=2
 				// F(0, 28205, fmt.Sprintf("in_port=%d,ip,%snw_dst=%s,%s,tp_dst=%d", portNoPhy, srcIpStr, nicIP, pm.Protocol, pm.Port), "load:0x2->NXM_NX_REG0[],resubmit(,9)"),
-				F(0, 28205, fmt.Sprintf("in_port=%d,ip,%snw_dst=%s,%s,tp_dst=%d,%s", phyPortNo, srcIpStr, nicIP, pm.Protocol, pm.Port, vlanMatch), fmt.Sprintf("learn(table=10,%s),load:0x1->NXM_NX_REG0[],load:0x%x->NXM_NX_REG1[],strip_vlan,resubmit(,9)", learnStr2, nicPortNo)),
+				F(0, 28205, fmt.Sprintf("ip,%snw_dst=%s,%s,tp_dst=%d,%s", srcIpStr, nicIP, pm.Protocol, pm.Port, vlanMatch), portMappingDirectActions(learnStr2, nicPortNo, stripVlan)),
 			)
 		}
 
@@ -446,10 +454,14 @@ func eachGuestNicPortMappingFlows(pm *compute.GuestPortMapping, nicPortNo int, n
 	nicPortNoStr := fmt.Sprintf("%d", nicPortNo)
 	if nicPortNo < 0 {
 		nicPortNoStr = "LOCAL"
-	}
+	} /* else {
+		learnStr := fmt.Sprintf("priority=10000,idle_timeout=300,in_port=%d,eth_type=0x0800,nw_src=%s,NXM_OF_IP_DST[]=NXM_OF_IP_SRC[],nw_proto=%d,%s=%d,%s,output:NXM_OF_IN_PORT[]", nicPortNo, nicIP, protoNum, tpSrcField, pm.Port, tpDstMatch)
+		flows = append(flows,
+			// 本地流量, 直接访问，不需要DNAT, reg0=2 QIUJIAN: no local traffic, local traffic cannot go through ovs bridge
+			F(0, 28203, fmt.Sprintf("in_port=LOCAL,ip,nw_dst=%s,%s,tp_dst=%d", nicIP, pm.Protocol, pm.Port), fmt.Sprintf("learn(table=10,%s),load:0x1->NXM_NX_REG0[],load:0x%x->NXM_NX_REG1[],resubmit(,9)", learnStr, nicPortNo)),
+		)
+	} */
 	flows = append(flows,
-		// 本地流量, 直接访问，不需要DNAT, reg0=2 QIUJIAN: no local traffic, local traffic cannot go through ovs bridge
-		// F(0, 28201, fmt.Sprintf("in_port=LOCAL,ip,nw_dst=%s,%s,tp_dst=%d", nicIP, pm.Protocol, pm.Port), "load:0x2->NXM_NX_REG0[],resubmit(,9)"),
 		// 返回流量, reg0=4
 		F(0, 28202, fmt.Sprintf("in_port=%s,ip,nw_src=%s,%s,tp_src=%d", nicPortNoStr, nicIP, pm.Protocol, pm.Port), "load:0x4->NXM_NX_REG0[],resubmit(,9)"),
 	)
@@ -757,7 +769,7 @@ func (g *Guest) FlowsMapForNic(nic *GuestNIC) (map[string][]*ovs.Flow, error) {
 					if err != nil {
 						continue
 					}
-					localFlows := guestNicPortMappingFlows(nic, -1, nic.IP, mac.String(), 0, "")
+					localFlows := guestNicPortMappingFlows(nic, -1, nic.IP, mac.String(), 0, "", false)
 					if fs, ok := flowsMap[hcn.Bridge]; ok {
 						flowsMap[hcn.Bridge] = append(fs, localFlows...)
 					} else {
@@ -766,7 +778,7 @@ func (g *Guest) FlowsMapForNic(nic *GuestNIC) (map[string][]*ovs.Flow, error) {
 				}
 				flows = append(flows, guestNicPortMappingFlowsLocal(nic, g.HostConfig.MasterNic().Addr, m["MACPhy"].(string), nic.PortNo, nic.IP, nic.MAC)...)
 			} else {
-				flows = append(flows, guestNicPortMappingFlows(nic, nic.PortNo, nic.IP, nic.MAC, m["PortNoPhy"].(int), m["_dl_vlan"].(string))...)
+				flows = append(flows, guestNicPortMappingFlows(nic, nic.PortNo, nic.IP, nic.MAC, m["PortNoPhy"].(int), m["_dl_vlan"].(string), nic.VLAN > 1)...)
 			}
 		}
 
