@@ -46,12 +46,12 @@ func SyncGuestPortMappingDNAT(guestId string, nics []*GuestNIC) error {
 		return errors.Wrap(err, "iptables client")
 	}
 	if err := ensureNatPortMapChains(ipt); err != nil {
-		return err
+		return errors.Wrap(err, "ensureNatPortMapChains")
 	}
 
 	comment := portMapComment(guestId)
 	if err := clearPortMappingDNATByComment(ipt, comment); err != nil {
-		return err
+		return errors.Wrap(err, "clearPortMappingDNATByComment")
 	}
 
 	for _, nic := range nics {
@@ -60,7 +60,7 @@ func SyncGuestPortMappingDNAT(guestId string, nics []*GuestNIC) error {
 		}
 		for _, pm := range nic.PortMappings {
 			if err := ensurePortMappingDNAT(ipt, comment, nic.IP, pm); err != nil {
-				return err
+				return errors.Wrap(err, "ensurePortMappingDNAT")
 			}
 		}
 	}
@@ -91,10 +91,12 @@ func ensureNatPortMapChains(ipt *iptables.IPTables) error {
 }
 
 func ensurePortMappingDNAT(ipt *iptables.IPTables, comment, guestIP string, pm *compute.GuestPortMapping) error {
-	if pm == nil || pm.HostPort == nil {
+	if pm == nil {
 		return nil
 	}
-
+	if pm.HostPort == nil {
+		return nil
+	}
 	if guestIP == "" || pm.Port <= 0 {
 		return nil
 	}
