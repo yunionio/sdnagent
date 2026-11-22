@@ -308,11 +308,11 @@ func (w *serversWatcher) Start(ctx context.Context, agent *AgentServer) {
 				switch wev.evType {
 				case watchEventTypeAddServerDir:
 					log.Debugf("received guest path add event: %s", guestPath)
-					g, err := w.addGuestWatch(guestId, guestPath)
+					/*g, err := w.addGuestWatch(guestId, guestPath)
 					if err != nil {
 						log.Errorf("watch guest failed: %s: %s", guestPath, err)
 					}
-					g.UpdateSettings(ctx, true)
+					g.UpdateSettings(ctx, true)*/
 				case watchEventTypeDelServerDir:
 					if g, ok := w.guests[guestId]; ok {
 						// this is needed for containers
@@ -320,10 +320,16 @@ func (w *serversWatcher) Start(ctx context.Context, agent *AgentServer) {
 						delete(w.guests, guestId)
 					}
 				case watchEventTypeUpdServer:
+					log.Debugf("received guest path update event: %s", guestPath)
 					if g, ok := w.guests[guestId]; ok {
 						g.UpdateSettings(ctx, true)
 					} else {
-						log.Warningf("unexpected guest update event: %s", guestPath)
+						g, err = w.addGuestWatch(guestId, guestPath)
+						if err != nil {
+							log.Errorf("watch guest failed: %s: %s", guestPath, err)
+						} else {
+							g.UpdateSettings(ctx, true)
+						}
 					}
 				case watchEventTypeDelServer:
 					if g, ok := w.guests[guestId]; ok {
